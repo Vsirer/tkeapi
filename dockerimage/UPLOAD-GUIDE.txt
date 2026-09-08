@@ -2,16 +2,16 @@
   TokensByte 镜像上传指南
 ========================================
 
-📦 导出时间: 2026-08-15 15:35:47
+📦 导出时间: 2026-09-08 10:28:32
 
 📁 需要上传的文件:
-tkeapi-backend-20260815_153537.tar
-tkeapi-frontend-20260815_153537.tar
+tkeapi-backend-20260908_102734.tar
+tkeapi-frontend-20260908_102734.tar
 - import-images.sh (导入脚本)
 - docker-compose.yml (部署配置)
 - .env.example (环境变量模板)
 
-📊 总大小:  87M
+📊 总大小:  88M
 
 ========================================
   上传方法
@@ -54,13 +54,13 @@ put .env.example
 ----------------------
 1. 压缩文件:
    cd docker-images
-   tar -czf tokensbyte-images-20260815_153537.tar.gz *.tar import-images.sh
+   tar -czf tokensbyte-images-20260908_102734.tar.gz *.tar import-images.sh
 
 2. 上传到 OSS/S3/网盘
 
 3. 在服务器下载并解压:
    wget <download-url>
-   tar -xzf tokensbyte-images-20260815_153537.tar.gz
+   tar -xzf tokensbyte-images-20260908_102734.tar.gz
 
 ========================================
   服务器部署步骤
