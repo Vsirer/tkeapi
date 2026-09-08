@@ -63,10 +63,22 @@ docker build --platform linux/amd64 --build-arg USE_PREBUILT=1 -t tokensbyte-ws-
 
 ### 步骤 3: 导出离线压缩镜像包
 
+根据当前项目名与统一时间戳后缀导出项目专属离线压缩包：
+
 ```bash
 export PATH=/Applications/Docker.app/Contents/Resources/bin:$PATH
-docker save tokensbyte-ws-frontend:latest tokensbyte-ws-backend:latest | gzip > /tmp/tokensbyte-offline.tar.gz
-ls -lh /tmp/tokensbyte-offline.tar.gz
+PROJECT_NAME=${PROJECT_NAME:-$(basename "$PWD")}
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+docker save ${PROJECT_NAME}-frontend:latest ${PROJECT_NAME}-backend:latest | gzip > /tmp/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz
+# 同步更新项目内 dockerimage 目录与软链接
+mkdir -p ./dockerimage
+cp -f /tmp/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz ./dockerimage/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz
+(cd ./dockerimage && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
+(cd ./dockerimage && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "tokensbyte-offline.tar.gz" 2>/dev/null || true)
+(cd /tmp && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
+
+ls -lh /tmp/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz ./dockerimage/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz
 ```
 
 ### 4. 增量同步源码与上传离线安装包
@@ -82,9 +94,9 @@ rsync -avz -e "ssh -p <SSH_PORT> -o StrictHostKeyChecking=no" \
   --exclude ".env" \
   ./ <SSH_USER>@<SERVER_IP>:<DEPLOY_DIR>/
 
-# 2) 传输 85MB 离线安装包（使用 --inplace 和 -P 保证断点续传与校验）
+# 2) 传输离线安装包（使用 --inplace 和 -P 保证断点续传与校验，遵循项目名如 tkeapi-offline.tar.gz）
 rsync -avz --inplace -P -e "ssh -p <SSH_PORT> -o StrictHostKeyChecking=no" \
-  /tmp/tokensbyte-offline.tar.gz <SSH_USER>@<SERVER_IP>:<DEPLOY_DIR>/tokensbyte-offline.tar.gz
+  /tmp/${PROJECT_NAME:-tkeapi}-offline.tar.gz <SSH_USER>@<SERVER_IP>:<DEPLOY_DIR>/${PROJECT_NAME:-tkeapi}-offline.tar.gz
 ```
 
 ### 步骤 5: 服务器解压镜像与平滑重启服务
@@ -93,10 +105,8 @@ rsync -avz --inplace -P -e "ssh -p <SSH_PORT> -o StrictHostKeyChecking=no" \
 
 ```bash
 ssh -p <SSH_PORT> -o StrictHostKeyChecking=no <SSH_USER>@<SERVER_IP> "
-  docker load -i <DEPLOY_DIR>/tokensbyte-offline.tar.gz && \
-  docker tag tokensbyte-ws-backend:latest tokensbyte-backend:latest && \
-  docker tag tokensbyte-ws-frontend:latest tokensbyte-frontend:latest && \
   cd <DEPLOY_DIR> && \
+  docker load -i <DEPLOY_DIR>/${PROJECT_NAME:-tkeapi}-offline.tar.gz && \
   docker compose down && \
   docker compose up -d && \
   sleep 5 && \

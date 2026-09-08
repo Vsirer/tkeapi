@@ -80,10 +80,10 @@ _do_zigbuild() {
             mkdir -p "${CARGO_TARGET_DIR}"; echo "ℹ️  外置盘 → CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
         fi ;;
     esac
-    echo "🚀 cargo zigbuild --target ${_zig_target} --features cross_compile"
+    echo "🚀 cargo zigbuild --target ${_zig_target} --all-features"
     rustup target add "${_zig_target}" >/dev/null 2>&1 || true
     _n=$(sysctl -n hw.ncpu 2>/dev/null || echo 4); _zj=${_n}; [ "${_zj}" -gt 4 ] && _zj=4
-    (cd backend && cargo zigbuild --release --target "${_zig_target}" --features cross_compile -j "${_zj}") || return 1
+    (cd backend && cargo zigbuild --release --target "${_zig_target}" --all-features -j "${_zj}") || return 1
     _out="backend/target/${_zig_target}/release/tokensbyte-server"
     [ -n "${CARGO_TARGET_DIR:-}" ] && _out="${CARGO_TARGET_DIR}/${_zig_target}/release/tokensbyte-server"
     [ -f "${_out}" ] || { echo "❌ 未找到 ${_out}"; return 1; }
@@ -188,6 +188,18 @@ docker save -o "$FRONTEND_FILE" "$FRONTEND_IMAGE"
 FRONTEND_SIZE=$(du -h "$FRONTEND_FILE" | cut -f1)
 echo "    大小: $FRONTEND_SIZE"
 
+# 导出联合离线压缩包（保持与前后端镜像相同的日期时间戳编号）
+OFFLINE_FILE="$OUTPUT_DIR/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz"
+echo "  → 导出联合离线包到: $OFFLINE_FILE"
+docker save "$BACKEND_IMAGE" "$FRONTEND_IMAGE" | gzip > "$OFFLINE_FILE"
+OFFLINE_SIZE=$(du -h "$OFFLINE_FILE" | cut -f1)
+echo "    大小: $OFFLINE_SIZE"
+(cd "$OUTPUT_DIR" && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
+(cd "$OUTPUT_DIR" && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "tokensbyte-offline.tar.gz" 2>/dev/null || true)
+cp -f "$OFFLINE_FILE" "/tmp/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" 2>/dev/null || true
+(cd /tmp && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
+(cd /tmp && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "tokensbyte-offline.tar.gz" 2>/dev/null || true)
+
 echo "📋 正在同步 docker-compose.yml 与 .env 配置文件..."
 if [ -f "docker-compose.yml" ]; then
     cp -f docker-compose.yml "$OUTPUT_DIR/docker-compose.yml"
@@ -219,7 +231,7 @@ echo "  导出完成！"
 echo "========================================="
 echo ""
 echo "📁 导出文件列表:"
-ls -lh "$OUTPUT_DIR"/*${TIMESTAMP}.tar
+ls -lh "$OUTPUT_DIR"/*${TIMESTAMP}.tar "$OUTPUT_DIR"/*${TIMESTAMP}.tar.gz 2>/dev/null || true
 echo ""
 
 # 计算总大小
@@ -253,26 +265,36 @@ fi
 echo "✅ Docker 版本: $(docker --version)"
 echo ""
 
-# 查找所有 tar 文件
-tar_files=$(ls *.tar 2>/dev/null || true)
+# 优先导入项目专属联合离线包（优先匹配最新时间戳或固定名称）
+_latest_pkg=$(ls -t "${PROJECT_NAME}"-offline*.tar.gz 2>/dev/null | head -n 1)
+if [ -n "$_latest_pkg" ] && [ -f "$_latest_pkg" ]; then
+    echo "  → 导入联合镜像: $_latest_pkg"
+    docker load -i "$_latest_pkg"
+elif [ -f "tokensbyte-offline.tar.gz" ]; then
+    echo "  → 导入联合镜像: tokensbyte-offline.tar.gz"
+    docker load -i "tokensbyte-offline.tar.gz"
+else
+    # 查找所有 tar 文件
+    tar_files=$(ls *.tar 2>/dev/null || true)
 
-if [ -z "$tar_files" ]; then
-    echo "❌ 错误: 当前目录未找到 .tar 镜像文件"
-    echo "   请将导出的镜像文件上传到此目录"
-    exit 1
-fi
-
-echo "📥 开始导入镜像..."
-echo ""
-
-# 导入每个镜像文件
-for tar_file in *.tar; do
-    if [ -f "$tar_file" ]; then
-        echo "  → 导入: $tar_file"
-        docker load -i "$tar_file"
-        echo ""
+    if [ -z "$tar_files" ]; then
+        echo "❌ 错误: 当前目录未找到镜像文件 (.tar / .tar.gz)"
+        echo "   请将导出的镜像文件上传到此目录"
+        exit 1
     fi
-done
+
+    echo "📥 开始导入镜像..."
+    echo ""
+
+    # 导入每个镜像文件
+    for tar_file in *.tar; do
+        if [ -f "$tar_file" ]; then
+            echo "  → 导入: $tar_file"
+            docker load -i "$tar_file"
+            echo ""
+        fi
+    done
+fi
 
 echo "✅ 所有镜像导入完成！"
 echo ""
@@ -307,7 +329,9 @@ cat > "$OUTPUT_DIR/UPLOAD-GUIDE.txt" << EOF
 📦 导出时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 📁 需要上传的文件:
-$(ls -1 "$OUTPUT_DIR"/*${TIMESTAMP}.tar | xargs -n 1 basename)
+- ${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz (推荐：一键包含前端与后端的联合离线镜像包)
+- 或分卷镜像文件:
+$(ls -1 "$OUTPUT_DIR"/*${TIMESTAMP}.tar 2>/dev/null | xargs -n 1 basename)
 - import-images.sh (导入脚本)
 - docker-compose.yml (部署配置)
 - .env.example (环境变量模板)

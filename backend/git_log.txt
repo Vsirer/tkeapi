@@ -1,3 +1,5 @@
+474c324553a5214ebb142215f3b2cf86553f8b6e474c324cgm5pm2026-09-08 10:34:23 +0800更新打包镜像
+416cbd19425d8067689910be91920b19db2f8d9d416cbd1cgm5pm2026-09-08 10:25:50 +0800Update git_log.txt
 cc0e61831d04e4b075c51ac888d5abeb65eac23ccc0e618cgm5pm2026-09-08 10:24:58 +0800计费更新转发
 3555eb2d553bd5ee42eb8d621b3a9b6fe9f558d73555eb2cgm5pm2026-08-15 16:13:46 +0800cg
 7620f3549d9d04cb1b67a9d68bac1e530b0631ed7620f35cgm5pm2026-08-15 16:11:28 +0800更新
@@ -6,5 +8,3 @@ cc0e61831d04e4b075c51ac888d5abeb65eac23ccc0e618cgm5pm2026-09-08 10:24:58 +080
 3dbe5cb4d8f553930311eba65c7122feba7c67c23dbe5cbaqachatm5pm2026-08-10 09:01:03 +0800uodate
 ee5aedb2e3bba5f7909ac3d6c01cccb69b3e10beee5aedbcgm5pm2026-08-02 16:02:11 +0800update
 f1228ef49846b3c3c31893f432134578208c5e19f1228efcgm5pm2026-08-02 15:50:59 +0800update，更新开源版本的稳定性和新增加 minimax 的视频模型 h3 的计费
-14476ed19045ab732f025ca99a673ba13a25b29414476edArtsmcp2026-07-31 16:41:28 +0800fix(deploy): 优化 compose 镜像拉取策略为 always，禁止部署时触发本地 build
-433efd1ea890518bd91a2ed98c33e7a991f88b0a433efd1SAMDO-WORK-2025\samdo2026-07-31 14:09:34 +0800refactor(deploy): remove deprecated ADMIN_PASSWORD/ADMIN_USERNAME env vars in favor of Web UI initialization
