@@ -1,10 +1,10 @@
-05c7d7ce48d23b7d3f0ab347e0d5dda613192b7c05c7d7cecgm5pm2026-09-07 18:22:37 +0800fix(channels): 完善上游费率同步接口参数校验与前端表单回显细节
-45700b16004fe67ab6756d1bd15cd5d07390158c45700b16cgm5pm2026-09-07 17:52:50 +0800feat(channels): 渠道配置支持上游费率同步配置、高级同步策略与镜像数据源同步
-2f235715e55948f4d7bc48b6773c4b0dd36d74962f235715cgm5pm2026-09-07 12:49:54 +0800Merge branch 'cgdev09fp' into cgdev0808
-8d6bf20c67b22a35594c45932b0cc066de7ab26c8d6bf20ccgm5pm2026-09-07 12:49:15 +0800chore: 规范组件导出并清理未使用的导出项
-87f5e2d246fd88a461423245ed27e08290025d7087f5e2d2cgm5pm2026-09-07 12:48:07 +0800feat(invoices & payment): 优化发票开具申请表单交互、开票限额校验与支付管理配置
-ae7dc51e0c2b1b9c643b2ad045145bfa45041309ae7dc51ecgm5pm2026-09-07 11:00:41 +0800chore: 规范组件导出并同步合并 origin/cgdev0808 最新更新
-943f11195be3c9d793b9e5ce2ce232bcfc61d28b943f1119aqachatm5pm2026-09-06 16:55:53 +0800feat(marketing): 优化团队营销与高级营销配置及发票和支付页面交互
-bc4bc40f7570e77bce023631c6428f1fdd8c0f24bc4bc40faqachatm5pm2026-09-06 15:23:36 +0800feat(finance): 优化发票开具审核逻辑、用户KYC展示与支付参数设置
-a92c0a14ee7084bdd687b1a6fcc7bf07f6088730a92c0a14aqachatm5pm2026-09-06 02:15:59 +0800fix(invoices): 优化用户发票申请页面交互与表单展示
-b40f70987af49366c2f36b3d8c32ab5d43501f25b40f7098aqachatm5pm2026-09-06 02:12:21 +0800feat(finance): 新增发票审核管理与用户KYC详情查看组件及权限配置
+cc0e61831d04e4b075c51ac888d5abeb65eac23ccc0e618cgm5pm2026-09-08 10:24:58 +0800计费更新转发
+3555eb2d553bd5ee42eb8d621b3a9b6fe9f558d73555eb2cgm5pm2026-08-15 16:13:46 +0800cg
+7620f3549d9d04cb1b67a9d68bac1e530b0631ed7620f35cgm5pm2026-08-15 16:11:28 +0800更新
+0fc20ccd6fa4c36413eba456f6b2997c490924880fc20cccgm5pm2026-08-15 15:39:20 +0800docker
+7ebd17958138a3190f9e4088417e493d996959fb7ebd179cgm5pm2026-08-15 15:00:54 +0800update
+3dbe5cb4d8f553930311eba65c7122feba7c67c23dbe5cbaqachatm5pm2026-08-10 09:01:03 +0800uodate
+ee5aedb2e3bba5f7909ac3d6c01cccb69b3e10beee5aedbcgm5pm2026-08-02 16:02:11 +0800update
+f1228ef49846b3c3c31893f432134578208c5e19f1228efcgm5pm2026-08-02 15:50:59 +0800update，更新开源版本的稳定性和新增加 minimax 的视频模型 h3 的计费
+14476ed19045ab732f025ca99a673ba13a25b29414476edArtsmcp2026-07-31 16:41:28 +0800fix(deploy): 优化 compose 镜像拉取策略为 always，禁止部署时触发本地 build
+433efd1ea890518bd91a2ed98c33e7a991f88b0a433efd1SAMDO-WORK-2025\samdo2026-07-31 14:09:34 +0800refactor(deploy): remove deprecated ADMIN_PASSWORD/ADMIN_USERNAME env vars in favor of Web UI initialization
