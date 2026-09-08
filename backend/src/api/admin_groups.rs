@@ -52,7 +52,12 @@ pub async fn create_admin_group(
     Json(request): Json<CreateAdminGroupRequest>,
 ) -> Response {
     let result: AppResult<Json<serde_json::Value>> = (async {
-        let permissions_json = serde_json::to_string(&request.permissions.unwrap_or_default())?;
+        let permissions_json =
+            crate::admin_permission::AdminGroupPermissionPolicy::from_view_and_edit(
+                request.permissions.unwrap_or_default(),
+                request.edit_permissions,
+            )
+            .to_json_string()?;
 
         sqlx::query(
             &state.db.format_query("INSERT INTO admin_groups (name, permissions, description, sort_order) VALUES (?, ?, ?, ?)")
@@ -94,8 +99,25 @@ pub async fn update_admin_group(
                 .await?;
             }
 
-            if let Some(permissions) = request.permissions {
-                let p_json = serde_json::to_string(&permissions)?;
+            if request.permissions.is_some() || request.edit_permissions.is_some() {
+                let current_raw: Option<String> = sqlx::query_scalar(
+                    &state
+                        .db
+                        .format_query("SELECT permissions FROM admin_groups WHERE id = ?"),
+                )
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let mut policy = crate::admin_permission::AdminGroupPermissionPolicy::parse(
+                    current_raw.as_deref(),
+                );
+                if let Some(view) = request.permissions {
+                    policy.view = view;
+                }
+                if let Some(edit) = request.edit_permissions {
+                    policy.edit = edit;
+                }
+                let p_json = policy.normalized().to_json_string()?;
                 sqlx::query(
                     &state
                         .db

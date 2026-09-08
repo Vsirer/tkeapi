@@ -115,6 +115,7 @@ pub struct TaskLogQuery {
     pub end_date: Option<String>,
     pub log_id: Option<String>,
     pub task_id: Option<String>,
+    pub token_kid: Option<String>,
     pub search_keyword: Option<String>,
 }
 

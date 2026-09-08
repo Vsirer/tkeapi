@@ -1,10 +1,18 @@
 
-### 5. Các phản hồi lỗi thường gặp (Common Errors)
+### 5. Phản hồi lỗi phổ biến
 
-Giao diện API của chúng tôi tuân theo các mã trạng thái HTTP tiêu chuẩn và định dạng phản hồi lỗi JSON thống nhất. Dưới đây là các lỗi phổ biến và hướng dẫn khắc phục:
+Mã HTTP và khắc phục được tập trung tại trang chuyên dụng.
 
-*   **400 Bad Request (Lỗi tham số / Không tìm thấy model)**: Trả về khi tham số yêu cầu không hợp lệ hoặc mô hình được chỉ định không tồn tại.
-*   **401 Unauthorized (API Key không hợp lệ)**: Trả về khi API Key trong HTTP Header bị thiếu, hết hạn hoặc không hợp lệ.
-*   **429 Too Many Requests (Không đủ số dư / Giới hạn tần suất)**: Trả về khi số dư tài khoản không đủ để thanh toán hoặc tần suất yêu cầu vượt quá giới hạn Rate Limit.
+👉 **[Mã lỗi gateway & khắc phục]({{error_codes_href}})**
 
-*(※ Vui lòng tham khảo tài liệu phiên bản tiếng Anh [English (en)] để xem chi tiết cấu trúc JSON lỗi và các bước khắc phục cụ thể)*
+**Tóm tắt**（chi tiết xem trang chuyên dụng）：
+
+| Mã | Ý nghĩa |
+| :---: | :--- |
+| **402** | Số dư không đủ（**không phải** 429） |
+| **400** | Yêu cầu sai / lọc nội dung·bản quyền |
+| **429** | Giới hạn RPS/RPM, quá nhiều tác vụ đang chạy |
+| **403** | Quyền token（lọc nội dung → 400） |
+| **200 + `status: failed`** | Lỗi nghiệp vụ khi poll video bất đồng bộ |
+
+> Chỉ cập nhật mô tả lỗi tại `error-codes`; phụ lục các ví dụ chỉ liên kết.

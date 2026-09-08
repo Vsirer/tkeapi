@@ -19,11 +19,11 @@ use axum::{
 };
 use std::sync::Arc;
 
-pub async fn get_profile(
-    State(state): State<Arc<AppState>>,
-    Extension(claims): Extension<auth::Claims>,
-) -> AppResult<Json<User>> {
-    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
+pub(crate) async fn load_profile_user(
+    state: &Arc<AppState>,
+    claims: &auth::Claims,
+) -> AppResult<User> {
+    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
         .bind(&claims.sub)
         .fetch_optional(&state.db.pool)
         .await?
@@ -34,24 +34,16 @@ pub async fn get_profile(
         user.email = String::new();
     }
 
-    // 加载管理员权限
-    if let Some(group_id) = user.admin_group_id {
-        let permissions_row: Option<String> = sqlx::query_scalar(
-            &state
-                .db
-                .format_query("SELECT permissions FROM admin_groups WHERE id = ?"),
-        )
-        .bind(group_id)
-        .fetch_optional(&state.db.pool)
-        .await?;
-        user.permissions = Some(
-            permissions_row
-                .and_then(|p| serde_json::from_str::<Vec<String>>(&p).ok())
-                .unwrap_or_default(),
-        );
-    }
+    crate::admin_permission::hydrate_user_admin_permissions(state, &mut user).await?;
 
-    Ok(Json(user))
+    Ok(user)
+}
+
+pub async fn get_profile(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+) -> AppResult<Json<User>> {
+    Ok(Json(load_profile_user(&state, &claims).await?))
 }
 
 pub async fn update_profile(
@@ -59,7 +51,7 @@ pub async fn update_profile(
     Extension(claims): Extension<auth::Claims>,
     Json(request): Json<ProfileUpdateRequest>,
 ) -> AppResult<Json<User>> {
-    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
+    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
         .bind(&claims.sub)
         .fetch_optional(&state.db.pool)
         .await?
@@ -119,22 +111,7 @@ pub async fn update_profile(
     .execute(&state.db.pool)
     .await?;
 
-    // 加载管理员权限
-    if let Some(group_id) = user.admin_group_id {
-        let permissions_row: Option<String> = sqlx::query_scalar(
-            &state
-                .db
-                .format_query("SELECT permissions FROM admin_groups WHERE id = ?"),
-        )
-        .bind(group_id)
-        .fetch_optional(&state.db.pool)
-        .await?;
-        user.permissions = Some(
-            permissions_row
-                .and_then(|p| serde_json::from_str::<Vec<String>>(&p).ok())
-                .unwrap_or_default(),
-        );
-    }
+    crate::admin_permission::hydrate_user_admin_permissions(&state, &mut user).await?;
 
     Ok(Json(user))
 }

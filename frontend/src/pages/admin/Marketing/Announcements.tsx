@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Card,
   Table,
@@ -25,6 +25,7 @@ import {
   Divider,
   Alert,
   Segmented,
+  Tooltip,
 } from 'antd';
 import {
   PlusOutlined,
@@ -137,7 +138,6 @@ const NotificationSettingsForm: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to fetch settings:', error);
-      message.error('获取基础配置失败');
     } finally {
       setLoading(false);
     }
@@ -475,6 +475,99 @@ const NotificationSettingsForm: React.FC = () => {
   );
 };
 
+const InlineSortCell: React.FC<{
+  value: number;
+  onSave: (val: number) => Promise<void>;
+}> = ({ value: initialValue, onSave }) => {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState<number | null>(initialValue ?? 0);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<any>(null);
+
+  useEffect(() => {
+    setVal(initialValue ?? 0);
+  }, [initialValue]);
+
+  useEffect(() => {
+    if (editing) {
+      setTimeout(() => {
+        inputRef.current?.focus?.();
+      }, 50);
+    }
+  }, [editing]);
+
+  const handleCommit = async () => {
+    if (saving) return;
+    const nextVal = val === null || isNaN(val) ? 0 : Number(val);
+    if (nextVal === (initialValue ?? 0)) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(nextVal);
+      setEditing(false);
+    } catch {
+      setVal(initialValue ?? 0);
+      setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setVal(initialValue ?? 0);
+    setEditing(false);
+  };
+
+  if (!editing) {
+    return (
+      <Space size={6} align="center" style={{ justifyContent: 'center' }}>
+        <Text style={{ fontSize: 13, minWidth: 16 }}>{initialValue ?? 0}</Text>
+        <Tooltip title="快捷编辑排序">
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined style={{ fontSize: 12, color: 'var(--ant-color-primary, #1677ff)' }} />}
+            onClick={() => setEditing(true)}
+            style={{
+              width: 22,
+              height: 22,
+              padding: 0,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          />
+        </Tooltip>
+      </Space>
+    );
+  }
+
+  return (
+    <Space size={4} align="center" style={{ justifyContent: 'center' }}>
+      <InputNumber
+        ref={inputRef}
+        size="small"
+        min={-999999}
+        max={99999999}
+        value={val}
+        disabled={saving}
+        onChange={(v) => setVal(v)}
+        onPressEnter={handleCommit}
+        onBlur={handleCommit}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            handleCancel();
+          }
+        }}
+        style={{ width: 80 }}
+      />
+    </Space>
+  );
+};
+
 const Announcements: React.FC = () => {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(false);
@@ -489,7 +582,6 @@ const Announcements: React.FC = () => {
       setAnnouncements(response.data || []);
     } catch (error) {
       console.error('Failed to fetch announcements:', error);
-      message.error('获取通知列表失败');
     } finally {
       setLoading(false);
     }
@@ -499,10 +591,26 @@ const Announcements: React.FC = () => {
     fetchAnnouncements();
   }, []);
 
+  const handleInlineSortSave = async (id: number, newSortOrder: number) => {
+    try {
+      await (request.put(`/announcements/${id}`, { sort_order: newSortOrder }, SKIP_ERR as any) as any);
+      message.success('排序已更新');
+      setAnnouncements((prev) =>
+        prev
+          .map((item) => (item.id === id ? { ...item, sort_order: newSortOrder } : item))
+          .sort((a, b) => (b.sort_order || 0) - (a.sort_order || 0) || b.id - a.id),
+      );
+    } catch (error: any) {
+      console.error('Failed to update sort order:', error);
+      message.error(apiErrMsg(error, '更新排序失败'));
+      fetchAnnouncements();
+    }
+  };
+
   const handleAdd = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ is_pinned: false, is_active: true });
+    form.setFieldsValue({ is_pinned: false, is_popup: false, is_active: true, sort_order: 0 });
     setModalVisible(true);
   };
 
@@ -511,7 +619,9 @@ const Announcements: React.FC = () => {
     form.setFieldsValue({
       ...record,
       is_pinned: record.is_pinned === 1,
+      is_popup: record.is_popup === 1,
       is_active: record.is_active === 1,
+      sort_order: record.sort_order ?? 0,
     });
     setModalVisible(true);
   };
@@ -523,7 +633,6 @@ const Announcements: React.FC = () => {
       fetchAnnouncements();
     } catch (error) {
       console.error('Failed to delete announcement:', error);
-      message.error('删除失败');
     }
   };
 
@@ -534,7 +643,9 @@ const Announcements: React.FC = () => {
         title: values.title,
         content: values.content,
         is_pinned: values.is_pinned ? 1 : 0,
+        is_popup: values.is_popup ? 1 : 0,
         is_active: values.is_active ? 1 : 0,
+        sort_order: Number(values.sort_order) || 0,
       };
 
       if (editingId) {
@@ -564,12 +675,27 @@ const Announcements: React.FC = () => {
       key: 'title',
     },
     {
+      title: '排序',
+      dataIndex: 'sort_order',
+      key: 'sort_order',
+      width: 110,
+      align: 'center' as const,
+      sorter: (a: Announcement, b: Announcement) => (a.sort_order || 0) - (b.sort_order || 0),
+      render: (val: number, record: Announcement) => (
+        <InlineSortCell
+          value={val ?? record.sort_order ?? 0}
+          onSave={(newVal) => handleInlineSortSave(record.id, newVal)}
+        />
+      ),
+    },
+    {
       title: '状态',
       key: 'status',
       render: (_: any, record: Announcement) => (
-        <Space>
+        <Space wrap>
           {record.is_active === 1 ? <Tag color="success">上架</Tag> : <Tag color="default">下架</Tag>}
           {record.is_pinned === 1 && <Tag color="blue">置顶</Tag>}
+          {record.is_popup === 1 && <Tag color="default">弹窗通知</Tag>}
         </Space>
       ),
     },
@@ -644,8 +770,25 @@ const Announcements: React.FC = () => {
             <Input placeholder="请输入通知标题" />
           </Form.Item>
 
-          <Space size="large" style={{ marginBottom: 24 }}>
+          <Space size="large" wrap style={{ marginBottom: 24, alignItems: 'center' }}>
+            <Form.Item
+              name="sort_order"
+              label="排序权重"
+              tooltip="数字越大越靠前显示，默认为 0"
+              style={{ margin: 0 }}
+            >
+              <InputNumber min={-999999} max={99999999} placeholder="0" style={{ width: 120 }} />
+            </Form.Item>
             <Form.Item name="is_pinned" label="置顶显示" valuePropName="checked" style={{ margin: 0 }}>
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              name="is_popup"
+              label="弹窗通知"
+              valuePropName="checked"
+              tooltip="开启后用户每次登录控制台时将弹窗提醒此通知"
+              style={{ margin: 0 }}
+            >
               <Switch />
             </Form.Item>
             <Form.Item name="is_active" label="是否上架" valuePropName="checked" style={{ margin: 0 }}>

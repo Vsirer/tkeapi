@@ -26,6 +26,7 @@ pub struct AdminGroup {
 pub struct CreateAdminGroupRequest {
     pub name: String,
     pub permissions: Option<Vec<String>>,
+    pub edit_permissions: Option<Vec<String>>,
     pub description: Option<String>,
     pub sort_order: Option<i32>,
 }
@@ -34,6 +35,7 @@ pub struct CreateAdminGroupRequest {
 pub struct UpdateAdminGroupRequest {
     pub name: Option<String>,
     pub permissions: Option<Vec<String>>,
+    pub edit_permissions: Option<Vec<String>>,
     pub description: Option<String>,
     pub sort_order: Option<i32>,
 }

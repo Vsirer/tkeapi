@@ -94,5 +94,7 @@
   "client_style_select": "风格选择",
   "client_style_light": "亮色风格",
   "client_style_dark": "暗色风格",
-  "client_github": "GitHub"
+  "client_github": "GitHub",
+  "copy_md": "复制MD",
+  "client_msg_copy_doc_success": "Markdown 文档已复制到剪贴板"
 }

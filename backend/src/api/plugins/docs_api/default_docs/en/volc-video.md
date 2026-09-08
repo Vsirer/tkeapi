@@ -1,76 +1,171 @@
-# Volcengine Seedance Video Generation Example
+# Volcengine Seedance Video Generation
 
-doubao-seedance-2-0 is a flagship video generation model launched by ByteDance's Volcengine. Due to substantial computing overhead, it employs an **asynchronous pattern**. Developers first **submit a generation task** to get a `task_id`, and then **poll the task status** to obtain the final video URL.
+Prefer **Seedance 2.5** (`doubao-seedance-2-5`). OpenAI-compatible: `POST /v1/video/generations`. Official `content` → `/api/v3/contents/generations/tasks`. [Video API](https://www.volcengine.com/docs/82379/1520757)
 
-### 1. Step 1: Submit Video Generation Task (Submit Task)
-* **HTTP Method**: `POST`
-* **Request Path**: `https://{{domain}}/v1/video/generations`
+Duration `4`–`30` or `-1`; resolution `480p`/`720p`/`1080p`; up to 50 refs (30 images + 10 videos + 10 audios).
 
-#### Curl Example
-```bash
-curl -X POST https://{{domain}}/v1/video/generations \
-  -H "Authorization: Bearer sk-your_token_here" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "doubao-seedance-2-0",
-    "prompt": "A gorgeous phoenix soaring up from the burning ruins of an ancient city, slow motion, epic atmospheric visual, 4K details",
-    "duration": 5
-  }'
+| Task | Body | 2.5 constraint |
+| :--- | :--- | :--- |
+| Text | `prompt` only | none |
+| First / last frame | `first_frame` / `last_frame` | `ratio=adaptive` |
+| Reference | `reference_*` + `omni_reference_task_type=auto` | ref video 4–30s |
+| Edit | `reference_video` + `omni_reference_task_type=edit` | `ratio=adaptive`, `duration=-1` |
+| Extend | `reference_video` + `omni_reference_task_type=extend` | `ratio=adaptive`; duration `4`–`30` or `-1` |
+
+```http
+POST https://{{domain}}/v1/video/generations
+Authorization: Bearer sk-your_token
+Content-Type: application/json
 ```
 
-#### Response Example (returns task_id)
+### Text-to-video
 ```json
 {
-  "id": "vtask-volc-882ab381cd84e0",
-  "task_id": "vtask-volc-882ab381cd84e0",
+  "model": "doubao-seedance-2-5",
+  "prompt": "A kitten in a red coat catching snowflakes, cinematic close-up",
+  "resolution": "720p",
+  "ratio": "16:9",
+  "duration": 8,
+  "generate_audio": true
+}
+```
+Use `30` or `-1` (model picks duration).
+
+### Image-to-video (first / last frame)
+```json
+{
+  "model": "doubao-seedance-2-5",
+  "prompt": "Sunrise to storm; the girl says cheese, orbit camera",
+  "images": [
+    {"url": "https://example.com/first.png", "role": "first_frame"},
+    {"url": "https://example.com/last.png", "role": "last_frame"}
+  ],
+  "ratio": "adaptive",
+  "duration": 5,
+  "generate_audio": true
+}
+```
+Drop `last_frame` for first-frame only. Two plain URLs are treated as first + last.
+
+### Reference
+```json
+{
+  "model": "doubao-seedance-2-5",
+  "prompt": "Match the image character, video motion, and audio rhythm",
+  "images": [{"url": "https://example.com/char.png", "role": "reference_image"}],
+  "videos": [{"url": "https://example.com/motion.mp4", "role": "reference_video"}],
+  "audios": [{"url": "https://example.com/bgm.mp3", "role": "reference_audio"}],
+  "ratio": "16:9",
+  "duration": 12,
+  "generate_audio": true,
+  "omni_reference_task_type": "auto"
+}
+```
+Any subset is fine (2.5 allows audio-only). `role` ≡ `type`.
+
+### Edit
+```json
+{
+  "model": "doubao-seedance-2-5",
+  "prompt": "Change the coat to red; keep framing and camera",
+  "videos": [{"url": "https://example.com/edit.mp4", "role": "reference_video"}],
+  "ratio": "adaptive",
+  "duration": -1,
+  "generate_audio": true,
+  "omni_reference_task_type": "edit",
+  "output_format": "mov"
+}
+```
+
+### Extend
+```json
+{
+  "model": "doubao-seedance-2-5",
+  "prompt": "Continue as they walk into the street",
+  "videos": [{"url": "https://example.com/clip.mp4", "role": "reference_video"}],
+  "ratio": "adaptive",
+  "duration": 11,
+  "generate_audio": true,
+  "omni_reference_task_type": "extend",
+  "output_format": "mov"
+}
+```
+
+`omni_reference_task_type`: `auto` (infer from prompt; mismatch fails async) / `edit` / `extend` (validated on submit). Keep the prompt aligned (edit: change/add/remove; extend: extend/continue).
+
+`output_format`: `mp4` (default) / `mov` (recommended for edit/extend).
+
+Optional: `web_search`, `watermark`, `return_last_frame`, `seed`. If `content` is set, it is forwarded as-is.
+
+### Response (OpenAI-compatible)
+
+`POST /v1/video/generations` returns a task id immediately:
+
+```json
+{
+  "id": "cgt-xxxxxxxx",
+  "object": "video.generation",
   "status": "pending",
-  "message": "Task submitted successfully"
+  "created": 1719441600
 }
 ```
 
----
+`GET /v1/video/generations/{id}` when completed:
 
-### 2. Step 2: Poll for Results (Query Task)
-* **HTTP Method**: `GET`
-* **Request Path**: `https://{{domain}}/v1/video/generations/{task_id}`
-
-#### Curl Query Example
-```bash
-curl -X GET https://{{domain}}/v1/video/generations/vtask-volc-882ab381cd84e0 \
-  -H "Authorization: Bearer sk-your_token_here"
-```
-
-#### Response Example (in progress)
 ```json
 {
-  "id": "vtask-volc-882ab381cd84e0",
-  "task_id": "vtask-volc-882ab381cd84e0",
-  "status": "processing",
-  "message": "Task is being processed"
-}
-```
-
-#### Response Example (completed)
-```json
-{
-  "id": "vtask-volc-882ab381cd84e0",
-  "task_id": "vtask-volc-882ab381cd84e0",
+  "id": "cgt-xxxxxxxx",
+  "object": "video.generation",
   "status": "completed",
-  "data": [
-    {
-      "url": "https://example.com/output/volc_phoenix_video.mp4"
-    }
-  ]
+  "created": 1719441600,
+  "data": [{ "url": "https://example.com/output/seedance.mp4" }],
+  "usage": {
+    "prompt_tokens": 128,
+    "completion_tokens": 256,
+    "total_tokens": 384
+  }
 }
 ```
 
+Use `data[0].url` for the video. `usage` is OpenAI token usage (zeros if upstream omitted it). On failure, `status` is `failed` with `error`.
+
+## Parameter reference
+
+| Field | Type | Required | Notes |
+| :--- | :--- | :--- | :--- |
+| `model` | string | yes | Prefer `doubao-seedance-2-5` |
+| `prompt` | string | yes | Scene / edit / extend intent |
+| `images` / `image_urls` | array | no | URL or `{url, role}`: `first_frame` / `last_frame` / `reference_image` |
+| `videos` | array | no | `{url, role: "reference_video"}` |
+| `audios` | array | no | `{url, role: "reference_audio"}`; 2.5 allows audio-only |
+| `resolution` | string | no | 2.5: `480p` / `720p` / `1080p` |
+| `ratio` | string | no | `21:9` `16:9` `4:3` `1:1` `3:4` `9:16` `adaptive` |
+| `duration` | integer | no | 2.5: `4`–`30` or `-1` |
+| `omni_reference_task_type` | string | no | `auto` / `edit` / `extend`. `edit`/`extend` validated on submit |
+| `output_format` | string | no | `mp4` (default) / `mov` (edit/extend) |
+| `generate_audio` | boolean | no | Soundtrack |
+| `watermark` | boolean | no | Watermark |
+| `return_last_frame` | boolean | no | Include last-frame image |
+| `web_search` | boolean | no | Web search |
+| `seed` | integer | no | Random seed |
+| `camera_fixed` | boolean | no | Lock camera |
+| `content` | array | no | Official array, pass-through |
+
+`role` ≡ `type`.
+
 ---
 
-### 3. Request Parameters (Submit Task)
-| Parameter | Type | Required | Default | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `model` | `string` | Yes | - | Name of the model. Use `doubao-seedance-2-0`. |
-| `prompt` | `string` | Yes | - | Motion and scene description prompt. |
-| `duration` | `integer` | No | `5` | Video length in seconds (e.g. `5` or `10`). |
-| `watermark` | `boolean` | No | `false` | Whether to append the official model watermark. |
-| `web_search` | `boolean` | No | `false` | Enable web search. |
+## 2.0 and earlier
+
+`doubao-seedance-2-0` (and fast/mini): swap `model` in the examples above. Duration `4`–`15` or `-1`; resolution up to `4k` (not fast/mini); first-frame need not use `adaptive`; max 15 refs; audio-only is not supported.
+
+```json
+{
+  "model": "doubao-seedance-2-0",
+  "prompt": "A kitten in a red coat catching snowflakes, cinematic close-up",
+  "resolution": "720p",
+  "ratio": "16:9",
+  "duration": 5,
+  "generate_audio": true
+}
+```

@@ -101,8 +101,9 @@ incremental = true
 codegen-units = 256
 
 [profile.release]
-opt-level = 1
-codegen-units = 16
+# opt-level = 's' 大幅压缩二进制与中间 AST，配合 --no-keep-memory 防止链接器 OOM
+opt-level = 's'
+codegen-units = 1
 panic = 'abort'
 strip = true
 lto = false

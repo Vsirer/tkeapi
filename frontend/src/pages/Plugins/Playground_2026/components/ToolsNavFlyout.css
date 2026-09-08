@@ -1,0 +1,405 @@
+/*
+ * tokensbyte opensource
+ * (c) 2026 tokensbyte.ai
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tokensbyte.ai/)
+ */
+
+/* 对齐 imagine.art「Image Tools」：双列 Features / Models 列表行 */
+
+.pg-ig-tools-flyout-anchor {
+  position: relative;
+  width: 100%;
+}
+
+.pg-ig-tools-flyout-anchor > .pg-ig-nav-item {
+  width: 100%;
+}
+
+.pg-ig-tools-flyout {
+  --flyout-surface: #111111;
+  --flyout-border: rgba(255, 255, 255, 0.08);
+  --flyout-muted: #888888;
+  --flyout-icon-bg: #1c1c1e;
+  --flyout-row-hover: rgba(255, 255, 255, 0.06);
+
+  position: fixed;
+  z-index: 3200;
+  width: min(620px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  padding: 22px 20px 18px;
+  border-radius: 22px;
+  background: var(--flyout-surface);
+  border: 1px solid var(--flyout-border);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+    0 24px 64px rgba(0, 0, 0, 0.75);
+  font-family: 'Inter', 'PingFang SC', system-ui, sans-serif;
+  color: #fff;
+  overflow: hidden;
+
+  /* 初始/默认状态（准备弹出） */
+  opacity: 0;
+  transform: scale(0.96) translateX(-8px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+    top 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity, top;
+}
+
+/* 展开态：流畅淡入放大 */
+.pg-ig-tools-flyout.is-open {
+  opacity: 1;
+  transform: scale(1) translateX(0);
+  pointer-events: auto;
+  visibility: visible;
+}
+
+/* 连续切换态（图片与视频之间切换）：容器垂直坐标丝滑滑动，无重新弹出闪烁 */
+.pg-ig-tools-flyout.is-gliding {
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    top 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 内容区域切换淡入过渡 */
+.pg-ig-tools-flyout-content {
+  animation: pg-ig-flyout-crossfade 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes pg-ig-flyout-crossfade {
+  from {
+    opacity: 0.75;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 关闭态：流畅淡出微缩 */
+.pg-ig-tools-flyout.is-closing {
+  opacity: 0;
+  transform: scale(0.96) translateX(-8px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 0.16s cubic-bezier(0.4, 0, 1, 1),
+    transform 0.16s cubic-bezier(0.4, 0, 1, 1),
+    top 0.16s ease,
+    visibility 0.16s cubic-bezier(0.4, 0, 1, 1);
+}
+
+.pg-ig-tools-flyout-title {
+  flex-shrink: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  color: #ffffff;
+  margin: 0 0 10px;
+  padding: 0 4px;
+}
+
+.pg-ig-tools-flyout-columns {
+  height: fit-content;
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 6px 16px;
+  align-items: start;
+  overflow: hidden;
+}
+
+.pg-ig-tools-flyout-col {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: fit-content;
+}
+
+.pg-ig-tools-flyout-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--flyout-muted);
+  margin: 0 0 8px;
+  padding: 0 4px;
+}
+
+.pg-ig-tools-flyout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.pg-ig-tools-flyout-list::-webkit-scrollbar {
+  width: 4px;
+}
+.pg-ig-tools-flyout-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+/* Imagine 风格行：左图标方块 + 右标题/描述 */
+.pg-ig-tools-flyout-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.pg-ig-tools-flyout-row:hover,
+.pg-ig-tools-flyout-row.is-active {
+  background: var(--flyout-row-hover);
+}
+
+.pg-ig-tools-flyout-row-icon-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pg-ig-tools-flyout-row-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--flyout-icon-bg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+}
+
+.pg-ig-tools-flyout-row-icon--logo {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+.pg-ig-tools-flyout-model-img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  display: block;
+}
+
+.pg-ig-tools-flyout-model-fallback {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.85);
+  background: linear-gradient(135deg, #3f3f46, #18181b);
+}
+
+.pg-ig-tools-flyout-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pg-ig-tools-flyout-row-meta strong {
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 17px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pg-ig-tools-flyout-row-meta span {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--flyout-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pg-ig-tools-flyout-model-price {
+  font-size: 11px !important;
+  line-height: 14px !important;
+  color: #9aa0a6 !important;
+  margin-top: 1px;
+}
+
+[data-theme='light'] .pg-ig-tools-flyout-model-price,
+body[data-theme='light'] .pg-ig-tools-flyout-model-price {
+  color: #5f6368 !important;
+}
+
+.pg-ig-tools-flyout-empty {
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--flyout-muted);
+}
+
+.pg-ig-sidebar.is-collapsed .pg-ig-tools-flyout-anchor {
+  display: flex;
+  justify-content: center;
+}
+
+.pg-ig-sidebar.is-collapsed .pg-ig-tools-flyout-anchor > .pg-ig-nav-item {
+  width: auto;
+}
+
+@media (max-width: 720px) {
+  .pg-ig-tools-flyout {
+    width: min(360px, calc(100vw - 16px));
+    padding: 14px 12px 12px;
+  }
+
+  .pg-ig-tools-flyout-columns {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .pg-ig-tools-flyout-col {
+    max-height: none;
+  }
+}
+
+/* 浅色模式适配 */
+[data-theme='light'] .pg-ig-tools-flyout,
+body[data-theme='light'] .pg-ig-tools-flyout {
+  --flyout-surface: #ffffff;
+  --flyout-border: rgba(0, 0, 0, 0.1);
+  --flyout-muted: #71717a;
+  --flyout-icon-bg: #f4f4f5;
+  --flyout-row-hover: rgba(0, 0, 0, 0.05);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.04) inset,
+    0 24px 64px rgba(0, 0, 0, 0.15);
+  color: #09090b;
+}
+[data-theme='light'] .pg-ig-tools-flyout-title,
+body[data-theme='light'] .pg-ig-tools-flyout-title {
+  color: #09090b;
+}
+[data-theme='light'] .pg-ig-tools-flyout-row,
+body[data-theme='light'] .pg-ig-tools-flyout-row {
+  color: #09090b;
+}
+[data-theme='light'] .pg-ig-tools-flyout-row-meta strong,
+body[data-theme='light'] .pg-ig-tools-flyout-row-meta strong {
+  color: #09090b;
+}
+[data-theme='light'] .pg-ig-tools-flyout-row-icon,
+body[data-theme='light'] .pg-ig-tools-flyout-row-icon {
+  background: var(--flyout-icon-bg);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #09090b;
+}
+[data-theme='light'] .pg-ig-tools-flyout-list::-webkit-scrollbar-thumb,
+body[data-theme='light'] .pg-ig-tools-flyout-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* 图钉（Pin）快捷固定按钮 — shadcn 极简现代风格 */
+.pg-ig-tools-flyout-pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--flyout-muted);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin-left: auto;
+  border: 1px solid transparent;
+}
+
+/* 悬停行显示图钉按钮 */
+.pg-ig-tools-flyout-row:hover .pg-ig-tools-flyout-pin-btn,
+.pg-ig-tools-flyout-row:focus-within .pg-ig-tools-flyout-pin-btn {
+  opacity: 0.7;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.pg-ig-tools-flyout-pin-btn:hover {
+  opacity: 1 !important;
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.12);
+  transform: scale(1.08);
+}
+
+/* 已固定态：始终显示并高亮（对齐参考图中白底/发光高亮图钉） */
+.pg-ig-tools-flyout-pin-btn.is-pinned {
+  opacity: 1 !important;
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.22);
+}
+
+.pg-ig-tools-flyout-pin-btn.is-pinned .pg-ig-tools-flyout-pin-icon {
+  fill: #ffffff;
+  color: #ffffff;
+  transform: rotate(45deg);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pg-ig-tools-flyout-pin-icon {
+  transition: transform 0.2s ease, color 0.15s ease, fill 0.15s ease;
+}
+
+/* 浅色模式适配 */
+[data-theme='light'] .pg-ig-tools-flyout-row:hover .pg-ig-tools-flyout-pin-btn,
+[data-theme='light'] .pg-ig-tools-flyout-row:focus-within .pg-ig-tools-flyout-pin-btn {
+  color: rgba(0, 0, 0, 0.55);
+}
+
+[data-theme='light'] .pg-ig-tools-flyout-pin-btn:hover {
+  color: #09090b !important;
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .pg-ig-tools-flyout-pin-btn.is-pinned {
+  color: #09090b !important;
+  background: rgba(0, 0, 0, 0.1);
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .pg-ig-tools-flyout-pin-btn.is-pinned .pg-ig-tools-flyout-pin-icon {
+  fill: #09090b;
+  color: #09090b;
+}
+
+

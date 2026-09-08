@@ -78,6 +78,10 @@ pub struct RequestLog {
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_kid: Option<String>,
+    /// 令牌当前是否开启高可用（JOIN `api_tokens.high_availability`，非请求快照）
+    #[sqlx(default)]
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub token_ha: i32,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_nickname: Option<String>,
@@ -175,6 +179,8 @@ pub struct LogQuery {
     pub token_kid: Option<String>,
     pub task_id: Option<String>,
     pub search_keyword: Option<String>,
+    /// CSV 导出字段（逗号分隔 key）；空则全部。仅 `/logs/export` 使用。
+    pub export_fields: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

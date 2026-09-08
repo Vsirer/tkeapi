@@ -88,5 +88,7 @@
   "client_style_select": "Chọn giao diện",
   "client_style_light": "Sáng",
   "client_style_dark": "Tối",
-  "client_github": "GitHub"
+  "client_github": "GitHub",
+  "copy_md": "Sao chép MD",
+  "client_msg_copy_doc_success": "Đã sao chép tài liệu Markdown vào bảng nhớ tạm"
 }

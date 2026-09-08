@@ -27,7 +27,7 @@ fn started_at() -> DateTime<Utc> {
 }
 
 pub fn process_started_at_utc() -> String {
-    started_at().format("%Y-%m-%d %H:%M:%S").to_string()
+    started_at().format("%Y-%m-%d %H:%M:%S (UTC)").to_string()
 }
 
 pub fn process_uptime_secs() -> i64 {
@@ -148,7 +148,7 @@ pub fn collect(version: &str) -> Value {
         "disk_percent": disk,
         "version": version,
         "platform": platform,
-        "started_at": started_at().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "started_at": started_at().format("%Y-%m-%d %H:%M:%S (UTC)").to_string(),
     })
 }
 
@@ -165,6 +165,6 @@ pub fn fallback(version: &str) -> Value {
         "disk_percent": 0.0,
         "version": version,
         "platform": format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
-        "started_at": started_at().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "started_at": started_at().format("%Y-%m-%d %H:%M:%S (UTC)").to_string(),
     })
 }

@@ -6,22 +6,25 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Card, Typography, Avatar, Space, List, Button, Modal, Form, Input, message, Popconfirm, Select, Grid, Tag, Spin } from 'antd';
-import { UserOutlined, CameraOutlined, LockOutlined, MailOutlined, MobileOutlined, WechatOutlined, GoogleOutlined, SafetyOutlined, IdcardOutlined } from '@ant-design/icons';
+import { Card, Typography, Avatar, Space, List, Button, Modal, Form, Input, message, Popconfirm, Select, Grid, Tag, Spin, Alert } from 'antd';
+import { UserOutlined, CameraOutlined, LockOutlined, MailOutlined, MobileOutlined, WechatOutlined, GoogleOutlined, SafetyOutlined, IdcardOutlined, EyeOutlined, RedoOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
 import { Settings } from 'lucide-react';
 import request from '../../utils/request';
-import type { User, UserKyc, UserKycStatus } from '../../types';
+import type { User, UserKyc, UserKycStatus, UserKycType } from '../../types';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
 import WechatQR from '../../components/WechatQR';
 import UserKycFormFields, {
   kycToFormValues,
+  bothKycToFormValues,
   formValuesToKycPayload,
   KYC_STATUS_META,
 } from '../../components/UserKycFormFields';
+import UserKycDetailViewer from '../../components/UserKycDetailViewer';
 
 const { Title, Text } = Typography;
 
@@ -74,6 +77,8 @@ const formatTimezoneDisplay = (tz: string) => {
   return displayTz;
 };
 
+
+
 const Profile: React.FC = () => {
   const { t, i18n } = useTranslation();
   const isEn = i18n.language === 'en';
@@ -84,7 +89,7 @@ const Profile: React.FC = () => {
   const [form] = Form.useForm();
   const [kycForm] = Form.useForm();
   const { setUser } = useAuthStore();
-  const { settings } = useSettingsStore();
+  const { settings, fetchSettings } = useSettingsStore();
   const { themeMode } = useThemeStore();
   const isLight = themeMode === 'light';
   const cardBg = isLight ? '#fff' : '#141414';
@@ -105,12 +110,19 @@ const Profile: React.FC = () => {
   const [wechatQRKey, setWechatQRKey] = useState(() => Date.now());
   // 服务端 HMAC 签发的绑定/验证 state
   const [wechatBindState, setWechatBindState] = useState('');
-  // 实名认证 KYC
-  const [userKyc, setUserKyc] = useState<UserKyc | null>(null);
+  // 实名认证 KYC 列表与状态（支持个人与企业 2 条记录独立共存，互不覆盖）
+  const [kycList, setKycList] = useState<UserKyc[]>([]);
+  const [activeKycTab, setActiveKycTab] = useState<'personal' | 'enterprise'>('personal');
+  const [modalKycType, setModalKycType] = useState<'personal' | 'enterprise'>('personal');
   const [kycLoading, setKycLoading] = useState(false);
-  const [kycModalOpen, setKycModalOpen] = useState(false);
+  const [kycDetailModalOpen, setKycDetailModalOpen] = useState(false);
+  const [kycFormModalOpen, setKycFormModalOpen] = useState(false);
   const [kycSaving, setKycSaving] = useState(false);
+  const [isReKycMode, setIsReKycMode] = useState(false);
   const kycEnabled = settings?.registration?.enable_user_kyc === true;
+
+  const personalKyc = kycList.find(k => k.kyc_type === 'personal') || null;
+  const enterpriseKyc = kycList.find(k => k.kyc_type === 'enterprise') || null;
 
   const startCountdown = (key: string) => {
     setCountdowns(prev => ({ ...prev, [key]: 60 }));
@@ -128,49 +140,88 @@ const Profile: React.FC = () => {
     finally { setLoading(false); }
   }, [setUser]);
 
-  useEffect(() => { fetchProfile(); }, [fetchProfile]);
+  useEffect(() => {
+    fetchProfile();
+    fetchSettings(true);
+  }, [fetchProfile, fetchSettings]);
 
   const fetchKyc = useCallback(async () => {
-    if (!kycEnabled) {
-      setUserKyc(null);
-      return;
-    }
     setKycLoading(true);
     try {
-      const resp = await (request.get('/user/kyc') as unknown as Promise<UserKyc>);
-      setUserKyc(resp);
+      const resp = await (request.get('/user/kyc/list') as unknown as Promise<UserKyc[]>);
+      const list = Array.isArray(resp) ? resp : [];
+      setKycList(list);
+      // 严格以默认实名主体（is_default === true）为准进行同步！
+      const defaultItem = list.find(k => k.is_default) || list[0];
+      const targetType = (defaultItem?.kyc_type as 'personal' | 'enterprise') || 'personal';
+      setActiveKycTab(targetType);
     } catch (e) {
       console.error(e);
-      setUserKyc(null);
+      setKycList([]);
     } finally {
       setKycLoading(false);
     }
-  }, [kycEnabled]);
+  }, []);
 
-  useEffect(() => { fetchKyc(); }, [fetchKyc]);
+  useEffect(() => {
+    fetchKyc();
+  }, [fetchKyc]);
 
-  const openKycModal = () => {
+  const openKycDetail = (type?: 'personal' | 'enterprise') => {
+    const defaultItem = kycList.find(k => k.is_default) || kycList[0];
+    const targetType = type || (defaultItem?.kyc_type as 'personal' | 'enterprise') || activeKycTab;
+    setModalKycType(targetType);
+    setKycDetailModalOpen(true);
+  };
+
+  const openKycForm = (type?: 'personal' | 'enterprise', reKyc = false) => {
+    const defaultItem = kycList.find(k => k.is_default) || kycList[0];
+    const targetType = type || (defaultItem?.kyc_type as 'personal' | 'enterprise') || activeKycTab;
+    setModalKycType(targetType);
+    setIsReKycMode(reKyc);
     kycForm.resetFields();
-    kycForm.setFieldsValue(kycToFormValues(userKyc));
-    setKycModalOpen(true);
+    kycForm.setFieldsValue(bothKycToFormValues(targetType, personalKyc, enterpriseKyc));
+    setKycFormModalOpen(true);
+  };
+
+  const handleModalTypeChange = (newType: UserKycType) => {
+    setModalKycType(newType);
+    const target = newType === 'enterprise' ? enterpriseKyc : personalKyc;
+    kycForm.setFieldsValue({
+      validity_type: (target?.validity_type as any) || 'long_term',
+      expire_at: target?.expire_at ? dayjs(target.expire_at) : null,
+      is_default: true,
+    });
   };
 
   const handleSubmitKyc = async () => {
     try {
-      const values = await kycForm.validateFields();
+      const validatedValues = await kycForm.validateFields();
       setKycSaving(true);
-      const payload = formValuesToKycPayload(values, false);
-      const res = await (request.put('/user/kyc', payload) as unknown as Promise<UserKyc>);
-      setUserKyc(res);
-      message.success(isEn ? 'KYC submitted' : '实名认证已提交，请等待审核');
-      setKycModalOpen(false);
+      const allFormValues = { ...kycForm.getFieldsValue(true), ...validatedValues };
+      // 用户端选择编辑并提交的主体，自动成为生效主体
+      allFormValues.is_default = true;
+      const payload = formValuesToKycPayload(allFormValues, false);
+      await request.put('/user/kyc', payload);
+      message.success(
+        kycEnabled
+          ? (isEn ? 'Information saved, waiting for review' : (isReKycMode ? '重新实名申请已提交，等待管理员审核' : '实名认证资料已提交，等待审核'))
+          : t('profile.edit_success', '实名信息已成功保存')
+      );
+      setKycFormModalOpen(false);
+      setIsReKycMode(false);
+      const savedType = (allFormValues.kyc_type as 'personal' | 'enterprise') || modalKycType;
+      setActiveKycTab(savedType);
+      await fetchKyc();
     } catch (e: any) {
       if (e?.errorFields) return;
+      message.error(e?.message || '保存实名信息失败');
       console.error(e);
     } finally {
       setKycSaving(false);
     }
   };
+
 
   // 打开微信绑定弹窗或切换步骤时，向后端获取 HMAC state
   useEffect(() => {
@@ -368,6 +419,11 @@ const Profile: React.FC = () => {
   };
 
   const securityItems = buildSecurityItems();
+  const basicInfoItems = [
+    { key: 'username', label: t('profile.account'), value: profile?.username },
+    { key: 'nickname', label: t('profile.nickname'), value: profile?.nickname },
+    { key: 'timezone', label: t('profile.timezone', '时区'), value: formatTimezoneDisplay(profile?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai') },
+  ];
 
   // Modal 内容
   const renderModalContent = () => {
@@ -528,7 +584,7 @@ const Profile: React.FC = () => {
         styles={{ body: { padding: '32px' } }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
-            <Avatar size={80} icon={<UserOutlined />} style={{ background: avatarBg, border: avatarBorder }} />
+            <Avatar size={80} icon={<UserOutlined style={{ color: isLight ? '#71717a' : '#a1a1aa' }} />} style={{ background: avatarBg, border: avatarBorder }} />
             <Button shape="circle" size="small" icon={<CameraOutlined style={{ fontSize: 10 }} />}
               style={{ position: 'absolute', bottom: 0, right: 0, background: isLight ? '#18181b' : '#fafafa', border: 'none', color: isLight ? '#fafafa' : '#18181b' }} />
           </div>
@@ -556,17 +612,22 @@ const Profile: React.FC = () => {
       </Card>
 
       {/* Basic Info */}
-      <Card style={{ marginBottom: 24, borderRadius: 8, background: cardBg, border: cardBorder }}>
+      <Card
+        style={{ marginBottom: 24, borderRadius: 8, background: cardBg, border: cardBorder, overflow: 'hidden' }}
+        styles={{ body: { padding: 0 } }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <UserOutlined style={{ color: mainText }} />
+            <span style={{ fontWeight: 600, color: mainText }}>{t('profile.basic_info', '基本信息')}</span>
+          </div>
+        }
+      >
         <List itemLayout="horizontal"
-          dataSource={[
-            { key: 'username', label: t('profile.account'), value: profile?.username },
-            { key: 'nickname', label: t('profile.nickname'), value: profile?.nickname },
-            { key: 'timezone', label: t('profile.timezone', '时区'), value: formatTimezoneDisplay(profile?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai') },
-          ]}
-          renderItem={(item) => (
+          dataSource={basicInfoItems}
+          renderItem={(item, index) => (
             <List.Item 
               className="hover:bg-zinc-100/30 dark:hover:bg-zinc-800/30 transition-all duration-200"
-              style={{ borderBottom: listBorder, padding: '16px 24px' }}
+              style={{ borderBottom: index === basicInfoItems.length - 1 ? 'none' : listBorder, padding: '16px 24px' }}
               extra={(item.key === 'nickname' || item.key === 'timezone') && (
                 <button
                   onClick={() => handleAction(item.key)}
@@ -583,72 +644,130 @@ const Profile: React.FC = () => {
         />
       </Card>
 
-      {/* 账号实名认证 KYC */}
-      {kycEnabled && (
-        <Card style={{ marginBottom: 24, borderRadius: 8, background: cardBg, border: cardBorder }}>
-          <List
-            itemLayout="horizontal"
-            dataSource={[{
-              key: 'kyc',
-              label: isEn ? 'Identity Verification (KYC)' : '账号实名认证',
-              value: kycLoading
-                ? '...'
-                : (KYC_STATUS_META[(userKyc?.status as UserKycStatus) || 'none']?.label || (isEn ? 'Not verified' : '未认证')),
-            }]}
-            renderItem={(item) => {
-              const status = (userKyc?.status as UserKycStatus) || 'none';
-              const meta = KYC_STATUS_META[status];
-              const approved = status === 'approved';
-              const actionLabel = approved
-                ? (isEn ? 'View' : '查看')
-                : status === 'pending' || status === 'rejected'
-                  ? (isEn ? 'Update' : '修改提交')
-                  : (isEn ? 'Verify' : '去认证');
-              return (
+      {/* 用户详细 */}
+      {(() => {
+        // 严格以默认主体为准（管理后台切换默认实名信息时，客户端完全随默认主体同步）
+        const defaultItem = kycList.find(k => k.is_default) || kycList[0] || null;
+        const currentType = (defaultItem?.kyc_type as 'personal' | 'enterprise') || activeKycTab;
+        const isEnterprise = currentType === 'enterprise';
+        const activeKyc = defaultItem || (isEnterprise ? enterpriseKyc : personalKyc);
+        const hasActiveData = isEnterprise
+          ? !!(enterpriseKyc?.company_name || enterpriseKyc?.company_email)
+          : !!(personalKyc?.real_name || personalKyc?.personal_email);
+        const activeStatus = (activeKyc?.status as UserKycStatus) || 'none';
+        const activeMeta = KYC_STATUS_META[activeStatus] || KYC_STATUS_META.none;
+        const isApproved = kycEnabled && activeStatus === 'approved';
+
+        const items = isEnterprise ? [
+          { key: 'company_name', label: isEn ? 'Company Name' : '企业名称', value: enterpriseKyc?.company_name },
+          { key: 'company_doc_number', label: isEn ? 'Tax ID / Doc No.' : '纳税人识别号/税号', value: enterpriseKyc?.company_doc_number },
+          { key: 'company_email', label: isEn ? 'Contact Email' : '企业联系邮箱', value: enterpriseKyc?.company_email },
+          { key: 'company_phone', label: isEn ? 'Contact Phone' : '企业联系电话', value: enterpriseKyc?.company_phone },
+        ] : [
+          { key: 'real_name', label: isEn ? 'Real Name' : '真实姓名', value: personalKyc?.real_name },
+          { key: 'id_doc_number', label: isEn ? 'ID / Doc No.' : '证件号码', value: personalKyc?.id_doc_number },
+          { key: 'personal_email', label: isEn ? 'Contact Email' : '联系邮箱', value: personalKyc?.personal_email },
+          { key: 'personal_phone', label: isEn ? 'Contact Phone' : '联系电话', value: personalKyc?.personal_phone },
+        ];
+
+        return (
+          <Card
+            style={{ marginBottom: 24, borderRadius: 8, background: cardBg, border: cardBorder, overflow: 'hidden' }}
+            styles={{ body: { padding: 0 } }}
+            title={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <IdcardOutlined style={{ color: mainText }} />
+                <span style={{ fontWeight: 600, color: mainText }}>{isEn ? 'User Details' : '用户详细'}</span>
+                {kycLoading ? (
+                  <Spin size="small" />
+                ) : kycEnabled ? (
+                  <Tag color={activeMeta.color}>
+                    {isEn ? (
+                      activeStatus === 'approved' ? 'Verified' :
+                      activeStatus === 'pending' ? 'Pending Review' :
+                      activeStatus === 'rejected' ? 'Rejected' :
+                      activeStatus === 'expired' ? 'Expired' : 'Not Verified'
+                    ) : activeMeta.label}
+                  </Tag>
+                ) : null}
+              </div>
+            }
+            extra={
+              <Button
+                size="small"
+                type="default"
+                icon={isApproved ? <EyeOutlined style={{ fontSize: 13 }} /> : <Settings className="h-3.5 w-3.5" />}
+                onClick={() => {
+                  if (isApproved) {
+                    openKycDetail(isEnterprise ? 'enterprise' : 'personal');
+                  } else {
+                    openKycForm(isEnterprise ? 'enterprise' : 'personal', false);
+                  }
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  borderRadius: 6,
+                  fontWeight: 500,
+                  fontSize: 12,
+                  background: isLight ? '#f4f4f5' : '#27272a',
+                  color: isLight ? '#18181b' : '#fafafa',
+                  borderColor: isLight ? '#e4e4e7' : '#3f3f46',
+                }}
+              >
+                {isApproved
+                  ? (isEn ? 'View' : '查看')
+                  : (isEn ? 'Complete Info' : '完善信息')}
+              </Button>
+            }
+          >
+            {/* 驳回状态提示 */}
+            {kycEnabled && activeStatus === 'rejected' && (
+              <div style={{ padding: '16px 24px 0' }}>
+                <Alert
+                  type="error"
+                  showIcon
+                  message={isEn ? 'Verification Rejected' : `${isEnterprise ? '企业' : '个人'}实名审核未通过`}
+                  description={activeKyc?.reject_reason || (isEn ? 'Please update and resubmit.' : '请修改后重新提交审核')}
+                />
+              </div>
+            )}
+
+            <List
+              itemLayout="horizontal"
+              loading={kycLoading}
+              dataSource={items}
+              renderItem={(item, index) => (
                 <List.Item
                   className="hover:bg-zinc-100/30 dark:hover:bg-zinc-800/30 transition-all duration-200"
-                  style={{ borderBottom: listBorder, padding: '16px 24px' }}
-                  extra={
-                    <button
-                      onClick={openKycModal}
-                      className="p-1 rounded-md border border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-900 transition-colors cursor-pointer"
-                      title={actionLabel}
-                    >
-                      <Settings className="h-3.5 w-3.5" />
-                    </button>
-                  }
+                  style={{ borderBottom: index === items.length - 1 ? 'none' : listBorder, padding: '16px 24px' }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: 160 }}>
-                    <IdcardOutlined style={{ color: subText }} />
-                    <Text style={{ color: subText }}>{item.label}</Text>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    {kycLoading ? <Spin size="small" /> : (
-                      <Space>
-                        <Tag color={meta.color}>{meta.label}</Tag>
-                        {userKyc?.kyc_type === 'enterprise' && userKyc?.company_name && (
-                          <Text style={{ color: mainText }}>{userKyc.company_name}</Text>
-                        )}
-                        {userKyc?.kyc_type === 'personal' && userKyc?.real_name && (
-                          <Text style={{ color: mainText }}>{userKyc.real_name}</Text>
-                        )}
-                      </Space>
-                    )}
-                  </div>
+                  <div style={{ width: 140 }}><Text style={{ color: subText }}>{item.label}</Text></div>
+                  <div style={{ flex: 1 }}><Text style={{ color: mainText }}>{item.value || t('profile.not_set', '未设置')}</Text></div>
                 </List.Item>
-              );
-            }}
-          />
-        </Card>
-      )}
+              )}
+            />
+          </Card>
+        );
+      })()}
 
       {/* Security */}
-      <Card style={{ borderRadius: 8, background: cardBg, border: cardBorder }}>
+      <Card
+        style={{ borderRadius: 8, background: cardBg, border: cardBorder, overflow: 'hidden' }}
+        styles={{ body: { padding: 0 } }}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <SafetyOutlined style={{ color: mainText }} />
+            <span style={{ fontWeight: 600, color: mainText }}>{t('profile.security_settings', '安全设置')}</span>
+          </div>
+        }
+      >
         <List itemLayout="horizontal" dataSource={securityItems}
-          renderItem={(item) => (
+          renderItem={(item, index) => (
             <List.Item 
               className="hover:bg-zinc-100/30 dark:hover:bg-zinc-800/30 transition-all duration-200"
-              style={{ borderBottom: listBorder, padding: '16px 24px' }}
+              style={{ borderBottom: index === securityItems.length - 1 ? 'none' : listBorder, padding: '16px 24px' }}
               extra={
                 <Space>
                   <button
@@ -700,26 +819,74 @@ const Profile: React.FC = () => {
         )}
       </Modal>
 
+      {/* 1. 独立美化版用户实名详细信息弹窗（纯展示无禁用灰框，支持证件预览与重新实名入口） */}
+      <UserKycDetailViewer
+        open={kycDetailModalOpen}
+        onClose={() => setKycDetailModalOpen(false)}
+        onReKyc={() => {
+          setKycDetailModalOpen(false);
+          openKycForm(modalKycType, true);
+        }}
+        kyc={(modalKycType === 'enterprise' ? enterpriseKyc : personalKyc) || (kycList.find(k => k.kyc_type === modalKycType) || kycList[0] || null)}
+        isEn={isEn}
+      />
+
+      {/* 2. 完整实名认证 / 重新实名表单弹窗（全字段可编辑，支持选择实名主体类型，完整提交流程） */}
       <Modal
-        title={isEn ? 'Identity Verification (KYC)' : '账号实名认证'}
-        open={kycModalOpen}
-        onCancel={() => setKycModalOpen(false)}
-        onOk={userKyc?.status === 'approved' ? () => setKycModalOpen(false) : handleSubmitKyc}
-        okText={userKyc?.status === 'approved' ? t('common.close', '关闭') : (isEn ? 'Submit' : '提交认证')}
-        cancelText={t('common.cancel')}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <IdcardOutlined style={{ color: '#2563eb' }} />
+            <span style={{ fontWeight: 600 }}>
+              {isReKycMode
+                ? (isEn ? 'Re-verify Real-Name' : '重新实名认证')
+                : (isEn ? 'Real-Name Verification' : '实名认证')}
+            </span>
+          </div>
+        }
+        open={kycFormModalOpen}
+        onCancel={() => {
+          setKycFormModalOpen(false);
+          setIsReKycMode(false);
+        }}
         confirmLoading={kycSaving}
-        width={640}
+        width={680}
         destroyOnClose
-        footer={userKyc?.status === 'approved' ? (
-          <Button onClick={() => setKycModalOpen(false)}>{t('common.close', '关闭')}</Button>
-        ) : undefined}
+        footer={
+          <Space>
+            <Button
+              onClick={() => {
+                setKycFormModalOpen(false);
+                setIsReKycMode(false);
+              }}
+              style={{ borderRadius: 6 }}
+            >
+              {t('common.cancel', '取消')}
+            </Button>
+            <Button
+              type="primary"
+              loading={kycSaving}
+              onClick={handleSubmitKyc}
+              style={{ borderRadius: 6 }}
+            >
+              {isReKycMode
+                ? (isEn ? 'Submit Re-verification' : '提交重新实名')
+                : (isEn ? 'Submit Verification' : '提交审核')}
+            </Button>
+          </Space>
+        }
       >
         <Form form={kycForm} layout="vertical">
           <UserKycFormFields
             form={kycForm}
             mode="user"
-            readOnly={userKyc?.status === 'approved'}
-            currentStatus={(userKyc?.status as UserKycStatus) || 'none'}
+            readOnly={false}
+            currentStatus={modalKycType === 'enterprise' ? (enterpriseKyc?.status as UserKycStatus) : (personalKyc?.status as UserKycStatus)}
+            kycEnabled={kycEnabled}
+            personalKyc={personalKyc}
+            enterpriseKyc={enterpriseKyc}
+            onKycTypeChange={handleModalTypeChange}
+            isReKyc={isReKycMode}
+            hideTypeRadio={false}
           />
         </Form>
       </Modal>

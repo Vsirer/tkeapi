@@ -17,6 +17,7 @@ import { useThemeStore } from '../../../../store/theme';
 import useSettingsStore from '../../../../store/settings';
 import RateDisplay from '../../../Models/RateDisplay';
 import SmartSvgIcon from '../../../../components/SmartSvgIcon';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 const { useBreakpoint } = Grid;
 
@@ -57,23 +58,11 @@ const ModelDrawer: React.FC = React.memo(() => {
   };
 
 
-  const handleCopy = (text: string) => {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => {
-        setCopiedId(text);
-        setTimeout(() => setCopiedId(null), 2000);
-      }).catch(() => {});
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      try {
-        document.execCommand('copy');
-        setCopiedId(text);
-        setTimeout(() => setCopiedId(null), 2000);
-      } catch (err) {}
-      document.body.removeChild(textarea);
+  const handleCopy = async (text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedId(text);
+      setTimeout(() => setCopiedId(null), 2000);
     }
   };
 
@@ -193,7 +182,6 @@ const ModelDrawer: React.FC = React.memo(() => {
               const isSelected = activeSelectorNodeId
                 ? String(activeSelectorNodeSelectedMid) === String(model.mid)
                 : selectedMid === model.mid;
-              const isPaid = !!model.billing;
               return (
                 <div
                   key={model.mid}
@@ -283,7 +271,7 @@ const ModelDrawer: React.FC = React.memo(() => {
                         </div>
                       </Tooltip>
                       {model.billing && (
-                        <Tooltip title={isBillingExpanded(model.mid) ? "收起Tokens详情" : "Tokens详情"} placement="bottom" overlayStyle={{ zIndex: 9999 }} overlayInnerStyle={{ fontSize: 11, padding: '3px 6px', minHeight: 'auto' }}>
+                        <Tooltip title={isBillingExpanded(model.mid) ? "收起计费详情" : "计费详情"} placement="bottom" overlayStyle={{ zIndex: 9999 }} overlayInnerStyle={{ fontSize: 11, padding: '3px 6px', minHeight: 'auto' }}>
                           <div className="action-icon-btn" onClick={(e) => { e.stopPropagation(); toggleBillingExpand(model.mid); }}>
                             {isBillingExpanded(model.mid) ? (
                               <UpOutlined style={{ fontSize: 11.5 }} />
@@ -296,7 +284,6 @@ const ModelDrawer: React.FC = React.memo(() => {
                     </div>
                   </div>
 
-                  {/* 详情区：简介 + 价格 */}
                   {model.billing && (
                     <div style={{ 
                       display: 'flex', 
@@ -305,9 +292,9 @@ const ModelDrawer: React.FC = React.memo(() => {
                       color: _isLight ? '#5f6368' : '#9aa0a6', 
                       fontSize: 13,
                       paddingLeft: 8,
-                      maxHeight: isBillingExpanded(model.mid) ? 200 : 0,
+                      maxHeight: isBillingExpanded(model.mid) ? 480 : 0,
                       opacity: isBillingExpanded(model.mid) ? 1 : 0,
-                      overflow: 'hidden',
+                      overflow: isBillingExpanded(model.mid) ? 'auto' : 'hidden',
                       marginTop: isBillingExpanded(model.mid) ? 8 : 0,
                       paddingTop: isBillingExpanded(model.mid) ? 4 : 0,
                       paddingBottom: isBillingExpanded(model.mid) ? 4 : 0,

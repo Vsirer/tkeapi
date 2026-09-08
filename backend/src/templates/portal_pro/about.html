@@ -11,385 +11,520 @@
 
 {% block content %}
 <style>
-/* Reset and base styles for the about page */
-.about-container {
+/* Base Container */
+.about-page-container {
   display: flex;
   flex-direction: column;
   align-items: center;
   width: 100%;
-  padding-bottom: 80px;
+  padding: 0 1.5rem 80px;
+  max-width: 1200px;
+  margin: 0 auto;
 }
 
 /* Hero Section */
-.hero-section {
+.abt-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3rem; /* gap-12 */
-  width: 100%;
-  padding-top: 4rem; /* pt-16 */
-}
-.hero-header {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
   text-align: center;
-  max-width: 56rem; /* max-w-4xl */
   width: 100%;
+  padding-top: 4.5rem;
+  padding-bottom: 2.5rem;
+  position: relative;
 }
-.hero-title {
-  font-size: clamp(2.5rem, 5vw, 4rem);
-  font-weight: 700;
-  margin: 0;
-  width: 100%;
-  line-height: 1.2;
+.abt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  color: var(--brand-primary, #6366f1);
+  margin-bottom: 1.5rem;
+  letter-spacing: 0.02em;
 }
-.hero-subtitle {
-  color: var(--text-secondary, #888);
-  font-size: clamp(1rem, 2vw, 1.25rem);
-  padding-top: 1rem;
+.abt-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+.abt-title {
+  font-size: clamp(2.25rem, 4.5vw, 3.5rem);
+  font-weight: 800;
+  line-height: 1.15;
+  margin: 0 0 1.25rem;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+}
+.abt-title-highlight {
+  background: var(--brand-gradient, linear-gradient(135deg, #4f46e5, #6366f1, #3b82f6));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.abt-subtitle {
+  color: var(--text-secondary);
+  font-size: clamp(1rem, 1.8vw, 1.15rem);
+  line-height: 1.7;
+  max-width: 48rem;
   margin: 0 auto;
-  max-width: 80%;
-  line-height: 1.6;
 }
 
 /* Stats Section */
-.stats-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
+.abt-stats-wrap {
   width: 100%;
+  margin: 2.5rem 0 4rem;
 }
-.stats-grid {
+.abt-stats-grid {
   display: grid;
-  grid-template-columns: repeat(1, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
-  max-width: 72rem; /* max-w-6xl */
-  margin: 0 auto;
-  width: 100%;
-  padding: 0 1.5rem;
-}
-@media (min-width: 640px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 1rem; }
 }
 @media (min-width: 768px) {
-  .stats-grid { grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
+  .abt-stats-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.25rem;
+  }
 }
-.stat-card {
-  background: transparent;
-  border-radius: 0;
-  transition: none;
-  box-shadow: none;
-  border: none;
-}
-.stat-card:hover {
-  transform: none;
-  box-shadow: none;
-}
-.stat-card-inner {
-  padding: 1rem;
+.abt-stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  padding: 1.75rem 1.25rem;
+  text-align: center;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: all var(--transition-normal);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
-  text-align: center;
+  justify-content: center;
 }
-.stat-number {
-  font-size: clamp(2.5rem, 5vw, 3.5rem);
+.abt-stat-card:hover {
+  border-color: var(--brand-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -6px rgba(99, 102, 241, 0.15);
+}
+.abt-stat-val {
+  font-size: clamp(2rem, 3.5vw, 2.75rem);
   font-weight: 800;
-  color: var(--text-primary);
-  margin: 0;
-  letter-spacing: -0.04em;
   line-height: 1.1;
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  margin-bottom: 0.375rem;
 }
-.stat-number.highlight {
+.abt-stat-val.highlight {
   color: var(--brand-primary, #6366f1);
 }
-.stat-label {
-  font-size: 0.875rem;
-  color: var(--text-muted);
-  margin: 0;
+.abt-stat-lbl {
+  font-size: 0.8125rem;
   font-weight: 500;
-  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-/* Article/Press Section */
-.press-section {
+/* Section Header */
+.abt-sec-head {
+  text-align: center;
+  margin-bottom: 2.5rem;
   width: 100%;
-  max-width: 56rem; /* max-w-4xl */
-  margin: 0 auto;
-  padding: 4rem 1.5rem; /* py-16 */
 }
-.press-card {
-  display: block;
-  text-decoration: none;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 0.75rem;
-  padding: 2rem;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-md);
+.abt-sec-tag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--brand-primary, #6366f1);
+  margin-bottom: 0.5rem;
 }
-.press-card:hover {
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 40px rgba(99, 102, 241, 0.08);
-}
-.press-card-content {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-  align-items: flex-start;
-}
-@media (min-width: 768px) {
-  .press-card-content { flex-direction: row; align-items: center; gap: 2rem; }
-}
-.press-icon-box {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #ffffff;
-  border-radius: 0.5rem;
-  width: 5rem;
-  height: 5rem;
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-}
-.press-icon-box img,
-.press-icon-box svg {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-.press-text {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.press-title {
-  font-size: 1.25rem;
+.abt-sec-title {
+  font-size: clamp(1.6rem, 2.8vw, 2.25rem);
   font-weight: 700;
-  line-height: 1.3;
-  margin: 0;
   color: var(--text-primary);
   letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
 }
-@media (min-width: 768px) { .press-title { font-size: 1.6rem; } }
-.press-desc {
+.abt-sec-desc {
   color: var(--text-secondary);
-  font-size: 0.875rem;
-  margin: 0;
-  line-height: 1.6;
-}
-@media (min-width: 768px) { .press-desc { font-size: 1rem; } }
-.press-link {
-  display: inline-flex;
-  align-items: center;
-  color: var(--brand-primary, #6366f1);
-  font-weight: 600;
   font-size: 0.95rem;
-  margin-top: 0.5rem;
-  transition: color var(--transition-fast);
-}
-.press-card:hover .press-link {
-  text-decoration: none;
-  filter: brightness(1.2);
+  line-height: 1.6;
+  max-width: 36rem;
+  margin: 0 auto;
 }
 
-/* Investors Section */
-.investors-section {
-  width: 100%;
-  max-width: 80rem; /* max-w-[1280px] */
-  margin: 0 auto;
-  padding: 4rem 1.5rem;
-}
-.investors-title {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin-bottom: 2rem;
-  text-align: center;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-}
-@media (min-width: 768px) { .investors-title { font-size: 1.875rem; } }
-.investors-grid {
+/* Feature Grid */
+.abt-feat-grid {
   display: grid;
   grid-template-columns: 1fr;
+  gap: 1.25rem;
+  width: 100%;
+  margin-bottom: 4rem;
+}
+@media (min-width: 640px) {
+  .abt-feat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1024px) {
+  .abt-feat-grid { grid-template-columns: repeat(3, 1fr); }
+}
+.abt-feat-card {
+  background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 0.75rem;
+  border-radius: 0.875rem;
+  padding: 1.75rem;
+  transition: all var(--transition-normal);
+  display: flex;
+  flex-direction: column;
+  position: relative;
   overflow: hidden;
 }
-@media (min-width: 768px) {
-  .investors-grid { grid-template-columns: repeat(3, 1fr); }
+.abt-feat-card:hover {
+  border-color: var(--border-hover);
+  transform: translateY(-3px);
+  box-shadow: 0 12px 30px -8px rgba(0, 0, 0, 0.4);
 }
-.investor-card {
+.abt-feat-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.625rem;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-secondary);
-  padding: 2rem;
-  height: 10rem;
-  border-bottom: 1px solid var(--border-color);
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--brand-primary, #6366f1);
+  margin-bottom: 1.25rem;
+  flex-shrink: 0;
 }
-@media (min-width: 768px) {
-  .investor-card {
-    border-bottom: none;
-    border-right: 1px solid var(--border-color);
-  }
-  .investor-card:last-child { border-right: none; }
+.abt-feat-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
 }
-.investor-card h3 {
-  opacity: 0.5;
-  transition: opacity 0.3s ease;
+.abt-feat-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem;
+  letter-spacing: -0.01em;
 }
-.investor-card:hover h3 {
-  opacity: 0.9;
+.abt-feat-desc {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 0;
 }
 
-/* CTA Section */
-.cta-section {
+/* Ecosystem Supported Ribbon */
+.abt-eco-section {
   width: 100%;
-  max-width: 80rem;
-  margin: 0 auto;
-  padding: 5rem 1.5rem;
-}
-.cta-box {
+  margin-bottom: 4rem;
+  padding: 2.5rem 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: 1rem;
-  background: rgba(99, 102, 241, 0.03); /* subtle brand glow background */
-  border: 1px solid rgba(99, 102, 241, 0.15);
-  padding: 4rem 2rem;
   text-align: center;
-  box-shadow: 0 10px 30px -10px rgba(0,0,0,0.7);
 }
-.cta-title {
-  font-size: 1.875rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  margin: 0;
+.abt-eco-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 1.5rem;
+  letter-spacing: 0.02em;
+}
+.abt-eco-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+.abt-eco-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 0.85rem;
+  font-weight: 500;
   color: var(--text-primary);
+  transition: all var(--transition-fast);
 }
-@media (min-width: 1024px) { .cta-title { font-size: 2.5rem; } }
-.cta-desc {
+.abt-eco-chip:hover {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  transform: translateY(-1px);
+}
+
+/* Custom Admin Content Area */
+.abt-custom-content {
+  width: 100%;
+  max-width: 56rem;
+  margin: 0 auto 3rem;
+  line-height: 1.7;
   color: var(--text-secondary);
-  max-width: 32rem;
-  margin: 1.25rem auto 0;
-  font-size: 1.05rem;
+}
+
+/* CTA Banner */
+.abt-cta-box {
+  width: 100%;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.08) 0%, rgba(99, 102, 241, 0.03) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  padding: 3.5rem 2rem;
+  text-align: center;
+  box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.5);
+  margin-top: 1rem;
+}
+.abt-cta-title {
+  font-size: clamp(1.6rem, 3vw, 2.25rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0 0 0.75rem;
+}
+.abt-cta-desc {
+  color: var(--text-secondary);
+  max-width: 36rem;
+  margin: 0 auto 2rem;
+  font-size: 0.95rem;
   line-height: 1.6;
 }
-.cta-button {
+.abt-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+.abt-btn-primary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  white-space: nowrap;
-  font-weight: 600;
-  transition: all 0.2s ease;
-  background: var(--brand-secondary, #4f46e5);
-  color: #fff !important;
-  height: 3rem;
-  border-radius: 0.375rem;
-  margin-top: 2rem;
-  padding: 0 3rem;
+  gap: 8px;
+  font-weight: 700;
+  background: var(--brand-gradient, linear-gradient(135deg, #4f46e5, #6366f1));
+  color: #ffffff !important;
+  padding: 0.75rem 2rem;
+  border-radius: 0.5rem;
   text-decoration: none;
-  font-size: 1rem;
-  border: none;
-  cursor: pointer;
-  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);
+  font-size: 0.9375rem;
+  transition: all var(--transition-fast);
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.35);
 }
-.cta-button:hover {
-  background: var(--brand-primary, #6366f1);
+.abt-btn-primary:hover {
+  filter: brightness(1.1);
   transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 6px 22px rgba(99, 102, 241, 0.45);
+}
+.abt-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color);
+  padding: 0.75rem 2rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-size: 0.9375rem;
+  transition: all var(--transition-fast);
+}
+.abt-btn-secondary:hover {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary) !important;
+  transform: translateY(-1px);
+}
+
+/* 赛博黑客与荧光高亮主题下的高对比度按钮样式 */
+.cyber-chrome-body .abt-btn-primary {
+  background: #00ff66 !important;
+  color: #030504 !important;
+  border: 1px solid #00ff66 !important;
+  font-weight: 800 !important;
+  text-shadow: none !important;
+  box-shadow: 0 0 15px rgba(0, 255, 102, 0.6) !important;
+}
+.cyber-chrome-body .abt-btn-primary:hover {
+  background: #66ffb3 !important;
+  color: #030504 !important;
+  box-shadow: 0 0 25px #00ff66 !important;
+}
+.cyber-chrome-body .abt-btn-secondary {
+  background: rgba(0, 255, 102, 0.05) !important;
+  color: #00ff66 !important;
+  border: 1px solid #00ff66 !important;
+  box-shadow: inset 0 0 8px rgba(0, 255, 102, 0.1) !important;
+}
+.cyber-chrome-body .abt-btn-secondary:hover {
+  background: rgba(0, 255, 102, 0.15) !important;
+  box-shadow: 0 0 18px rgba(0, 255, 102, 0.4) !important;
 }
 </style>
 
-<div class="about-container">
+<div class="about-page-container">
   
-  <div class="hero-section">
-    <div class="hero-header">
-      <div style="display: flex; flex-direction: column; gap: 1rem;">
-        <h1 class="hero-title">
-          <span data-i18n="about_title_prefix">关于</span>
-          <span data-i18n-dynamic="{{ nav.logo_text | default(value="Tkeapi") }}">{{ nav.logo_text | default(value="Tkeapi") }}</span>
-        </h1>
-        <p class="hero-subtitle" data-i18n="about_hero_subtitle">
-          作为业内领先的 AI 模型聚合服务平台，我们消除服务商锁定风险，通过更优的价格、高可用性和企业级的稳定性，为您打通全球最先进大语言模型的访问桥梁。
-        </p>
-      </div>
+  <!-- 1. Hero 区域 -->
+  <section class="abt-hero">
+    <div class="abt-badge">
+      <span class="abt-badge-dot"></span>
+      <span>开源大模型 API 中转系统 · 视频中转 · 完善计费 · 内部审计 · 团队管理</span>
     </div>
     
-    <div class="stats-section">
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-card-inner">
-            <p class="stat-number">10B+</p>
-            <p class="stat-label" data-i18n="about_stat_tokens">月均请求 Token</p>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-inner">
-            <p class="stat-number">10K+</p>
-            <p class="stat-label" data-i18n="about_stat_developers">全球活跃开发者</p>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-inner">
-            <p class="stat-number">40+</p>
-            <p class="stat-label" data-i18n="about_stat_providers">模型供应商</p>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card-inner">
-            <p class="stat-number highlight">200+</p>
-            <p class="stat-label" data-i18n="about_stat_models">集成前沿模型</p>
-          </div>
-        </div>
+    <h1 class="abt-title">
+      关于 <span class="abt-title-highlight">{{ nav.logo_text | default(value="Tkeapi") }}</span>
+    </h1>
+    
+    <p class="abt-subtitle">
+      {{ columns.about.hero_subtitle | default(value="Tkeapi 是一款高性能开源大模型 API 中转与分发调度系统。核心聚焦全场景视频中转、精细完善的计费体系、企业级内部审计风控与多租户团队协同管理，为开发者与企业提供坚固稳健的 AI 接入基座。") }}
+    </p>
+  </section>
+
+  <!-- 2. 运营核心指标 -->
+  <section class="abt-stats-wrap">
+    <div class="abt-stats-grid">
+      <div class="abt-stat-card">
+        <div class="abt-stat-val">{{ columns.about.stat_tokens | default(value="10B+") }}</div>
+        <div class="abt-stat-lbl">月均请求 Token</div>
+      </div>
+      <div class="abt-stat-card">
+        <div class="abt-stat-val highlight">{{ columns.about.stat_developers | default(value="10K+") }}</div>
+        <div class="abt-stat-lbl">全球活跃开发者</div>
+      </div>
+      <div class="abt-stat-card">
+        <div class="abt-stat-val">99.99%</div>
+        <div class="abt-stat-lbl">服务可用性 SLA</div>
+      </div>
+      <div class="abt-stat-card">
+        <div class="abt-stat-val highlight">{{ columns.about.stat_models | default(value="200+") }}</div>
+        <div class="abt-stat-lbl">全场景前沿模型</div>
       </div>
     </div>
+  </section>
+
+  <!-- 3. 核心优势 Bento Grid -->
+  <div class="abt-sec-head">
+    <div class="abt-sec-tag">Core Advantages</div>
+    <h2 class="abt-sec-title">四大核心优势，赋能企业 AI 落地</h2>
+    <p class="abt-sec-desc">围绕视频中转、精准计费、内部审计与团队分权管理，构建全流程自主可控的 API 中转网关。</p>
   </div>
 
-  <section class="press-section">
-    <a href="/home-pro/contact" class="press-card">
-      <div class="press-card-content">
-        <div class="press-icon-box">
-          <span style="font-family: Georgia, serif; font-weight: 800; font-size: 2.2rem; color: #000000; letter-spacing: -2px; line-height: 1; user-select: none;">WSJ</span>
-        </div>
-        <div class="press-text">
-          <h2 class="press-title">
-            <span data-i18n="about_press_title_prefix">统一大模型接口体验，</span>
-            <span data-i18n-dynamic="{{ nav.logo_text | default(value="Tkeapi") }}">{{ nav.logo_text | default(value="Tkeapi") }}</span>
-            <span data-i18n="about_press_title_suffix"> 让接入 AI 零负担</span>
-          </h2>
-          <p class="press-desc" data-i18n="about_press_desc">旨在成为开发者接入、对比、调用不同 AI 模型的首选聚合网关。只需一次接入，即可全量访问数百个前沿模型。</p>
-          <div class="press-link" data-i18n="about_press_link">联系我们洽谈合作 →</div>
-        </div>
+  <section class="abt-feat-grid">
+    <!-- 特性 1: 视频中转 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+        </svg>
       </div>
-    </a>
-  </section>
+      <h3 class="abt-feat-title">前沿多模态与视频中转</h3>
+      <p class="abt-feat-desc">原生支持 Kling 可灵、Runway、Sora/Veo 兼容规范、字节 Seedance、MiniMax 视频生成及音频处理，内置异步任务流控与状态自动轮询。</p>
+    </div>
 
-  <section class="investors-section">
-    <h2 class="investors-title" data-i18n="about_partners_title">受到行业领先团队的信任</h2>
-    <div class="investors-grid">
-      <div class="investor-card">
-        <!-- 占位文案替代 SVG 合作伙伴 Logo -->
-        <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary); letter-spacing: 2px;">INNOVATION<span style="font-weight: 300;"> VENTURES</span></h3>
+    <!-- 特性 2: 计费完善 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
       </div>
-      <div class="investor-card">
-        <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary); letter-spacing: -1px;">GLOBAL<span style="color: var(--brand-primary);">AI</span></h3>
+      <h3 class="abt-feat-title">精细完善的计费系统</h3>
+      <p class="abt-feat-desc">支持 Token 真实消耗计费、固定按次计费、渠道分组独立倍率与阶梯溢价，实时扣费审计无延时，成本消费透明可控。</p>
+    </div>
+
+    <!-- 特性 3: 内部审计 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+        </svg>
       </div>
-      <div class="investor-card">
-        <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--text-primary); font-family: serif; font-style: italic;">NextGen Capital</h3>
+      <h3 class="abt-feat-title">企业级内部审计与追踪</h3>
+      <p class="abt-feat-desc">全链路请求状态追踪、Token 与耗时指标监控、异常状态即时告警与审计日志记录，满足企业级安全风控与合规审查要求。</p>
+    </div>
+
+    <!-- 特性 4: 团队管理 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+        </svg>
       </div>
+      <h3 class="abt-feat-title">多租户与团队分权管理</h3>
+      <p class="abt-feat-desc">支持组织多团队划分、子账号管理、独立配额与共享余额分配，支持多成员协同作业与细粒度权限管控。</p>
+    </div>
+
+    <!-- 特性 5: 高性能 Rust 内核 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+      <h3 class="abt-feat-title">Rust 高性能异步内核</h3>
+      <p class="abt-feat-desc">底层基于 Rust 异步并发引擎构建，转发开销极低，支持万级并发长连接、高并发流式 SSE 传输与智能负载均衡。</p>
+    </div>
+
+    <!-- 特性 6: 开源生态与全协议兼容 -->
+    <div class="abt-feat-card">
+      <div class="abt-feat-icon">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+        </svg>
+      </div>
+      <h3 class="abt-feat-title">全协议兼容与开源生态</h3>
+      <p class="abt-feat-desc">100% 兼容 OpenAI / Claude / Gemini 标准协议，代码完全开源透明，开箱适配各类主流客户端、Agent 及生态框架。</p>
     </div>
   </section>
 
-  <section class="cta-section">
-    <div class="cta-box" style="text-align: left; max-width: 56rem; margin: 0 auto; padding: 0; line-height: 1.6; background: transparent; border: none; box-shadow: none;">
-      {{ columns.about.content | default(value="<p>暂无内容</p>") | safe }}
+  <!-- 4. 支持的主流模型与厂商 -->
+  <section class="abt-eco-section">
+    <div class="abt-eco-title">全量接入与持续支持的全球顶尖 AI 模型厂商</div>
+    <div class="abt-eco-chips">
+      <div class="abt-eco-chip">OpenAI (GPT-4o / o1 / o3)</div>
+      <div class="abt-eco-chip">Anthropic (Claude 3.7 Sonnet)</div>
+      <div class="abt-eco-chip">Google (Gemini 2.5 Flash / Pro)</div>
+      <div class="abt-eco-chip">DeepSeek (V3 / R1)</div>
+      <div class="abt-eco-chip">阿里百炼 (Qwen 2.5 / Max)</div>
+      <div class="abt-eco-chip">智谱 AI (GLM-4 Plus)</div>
+      <div class="abt-eco-chip">月之暗面 (Moonshot / Kimi)</div>
+      <div class="abt-eco-chip">字节火山 (豆包 Doubao)</div>
+      <div class="abt-eco-chip">MiniMax (ABAB 6.5)</div>
+      <div class="abt-eco-chip">Midjourney 绘画</div>
+      <div class="abt-eco-chip">Suno / Udio 音乐</div>
+      <div class="abt-eco-chip">Kling / 可灵 AI 视频</div>
+    </div>
+  </section>
+
+  <!-- 5. 自定义富文本内容插槽（如有） -->
+  {% if columns.about.content and columns.about.content != "" %}
+  <section class="abt-custom-content">
+    {{ columns.about.content | safe }}
+  </section>
+  {% endif %}
+
+  <!-- 6. 底部行动呼吁 CTA -->
+  <section class="abt-cta-box">
+    <h2 class="abt-cta-title">{{ nav.logo_text | default(value="Tkeapi") }} - 大模型 API 中转开源系统</h2>
+    <p class="abt-cta-desc">具备视频中转、完善计费、内部审计与团队管理四大优势。代码开源透明，支持快速私有化部署。</p>
+    <div class="abt-cta-actions">
+      <a href="https://github.com/aiqachat/tkeapi" target="_blank" rel="noopener noreferrer" class="abt-btn-primary">
+        <svg style="width: 1.15rem; height: 1.15rem; fill: currentColor;" viewBox="0 0 24 24">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+        </svg>
+        前往 GitHub 开源仓库
+      </a>
+      <a href="/home-pro/docs" class="abt-btn-secondary">查阅接入开发文档</a>
     </div>
   </section>
 
 </div>
 {% endblock %}
+
+

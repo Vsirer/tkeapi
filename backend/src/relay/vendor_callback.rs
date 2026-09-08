@@ -62,11 +62,13 @@ pub fn infer_base_url(headers: &axum::http::HeaderMap) -> String {
             let scheme = headers
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
-                .unwrap_or(if host.contains("localhost") || host.contains("127.0.0.1") {
-                    "http"
-                } else {
-                    "https"
-                });
+                .unwrap_or(
+                    if host.contains("localhost") || host.contains("127.0.0.1") {
+                        "http"
+                    } else {
+                        "https"
+                    },
+                );
             Some(format!("{}://{}", scheme, host))
         })
         .unwrap_or_else(|| "http://localhost:3000".to_string())
@@ -105,16 +107,12 @@ async fn post_official(state: &AppState, client_url: &str, official: &str) {
         .send()
         .await
     {
-        Ok(resp) => tracing::info!(
+        Ok(resp) => crate::relay_debug!(
             "[VendorCallback] 已转发 url={} status={}",
             client_url,
             resp.status()
         ),
-        Err(e) => tracing::warn!(
-            "[VendorCallback] 转发失败 url={} err={}",
-            client_url,
-            e
-        ),
+        Err(e) => crate::relay_debug!("[VendorCallback] 转发失败 url={} err={}", client_url, e),
     }
 }
 
@@ -158,7 +156,7 @@ pub async fn vendor_callback(
 
     // 级联：S1 上游回调只 ack，用户通知由后台轮询 S2 结案后处理
     if super::cascade::cascade_plugin_tag_present(&plugin_tag) {
-        tracing::info!("[VendorCallback] 级联跳过 id={}", id);
+        crate::relay_debug!("[VendorCallback] 级联跳过 id={}", id);
         return Ok((StatusCode::OK, "ok").into_response());
     }
 

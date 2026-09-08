@@ -70,7 +70,7 @@ const SiteIconsManager: React.FC = () => {
       if (res.data) setIcons(res.data);
       if (res.total != null) setTotal(res.total);
       setPage(res.page || p);
-    } catch { message.error('获取图标列表失败'); }
+    } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }, [searchKeyword, filterCategory, filterSource, page]);
 
@@ -118,7 +118,7 @@ const SiteIconsManager: React.FC = () => {
       pollTimerRef.current = setInterval(pollProgress, 1500);
     } catch (e: any) {
       setSyncing(false);
-      message.error(e?.response?.data?.error?.message || '启动同步失败');
+      console.error(e);
     }
   };
 
@@ -129,7 +129,7 @@ const SiteIconsManager: React.FC = () => {
   // ── CRUD ──
   const handleDelete = async (id: number) => {
     try { await request.delete(`/plugins/site-icons/${id}`); message.success('已删除'); fetchIcons(); }
-    catch { message.error('删除失败'); }
+    catch (e) { console.error(e); }
   };
   const handleOpenAdd = () => { setEditingIcon(null); form.resetFields(); setSvgPreview(''); setAddModalVisible(true); };
   const handleOpenEdit = (icon: SiteIcon) => {
@@ -152,7 +152,7 @@ const SiteIconsManager: React.FC = () => {
         message.success('图标添加成功');
       }
       setAddModalVisible(false); fetchIcons();
-    } catch (e: any) { if (!e?.errorFields) message.error(e?.response?.data?.error?.message || '保存失败'); }
+    } catch (e) { console.error(e); }
     finally { setSaving(false); }
   };
   const handleSvgUpload = (file: File) => {
@@ -162,7 +162,7 @@ const SiteIconsManager: React.FC = () => {
   };
   const fetchSyncLogs = async () => {
     try { setLogsLoading(true); const res = await (request.get('/plugins/site-icons/sync-logs') as any); if (res.data) setSyncLogList(res.data); }
-    catch { message.error('获取日志失败'); } finally { setLogsLoading(false); }
+    catch (e) { console.error(e); } finally { setLogsLoading(false); }
   };
   const getSvgUrl = (icon: SiteIcon) => icon.file_path ? `/assets/${icon.file_path}` : '';
 

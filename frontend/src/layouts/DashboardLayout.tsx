@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { getAnnouncementLabel } from '../utils/announcement';
 import {
   parseNotificationPreferences,
@@ -13,8 +13,14 @@ import {
   maybeShowBrowserPush,
 } from '../utils/notificationPrefs';
 import { Sidebar as SidebarIcon, Terminal } from 'lucide-react';
-import request from '../utils/request';
-import { fetchActivePlugins } from '../utils/activePlugins';
+import { fetchConsoleBootstrap } from '../utils/consoleBootstrap';
+import {
+  fetchAdminPlugins,
+  subscribeAdminPluginsChange,
+  selectAdminSidebarPlugins,
+  adminSidebarPluginLabel,
+  adminSidebarPluginHref,
+} from '../utils/adminPlugins';
 import generateUUID from '../utils/uuid';
 import { persistUserLanguagePreference, LANG_NAME_MAP, toDisplayLocale } from '../utils/language';
 import useSettingsStore from '../store/settings';
@@ -51,18 +57,21 @@ import {
   VideoCameraOutlined,
   SafetyCertificateOutlined,
   RightOutlined,
+  SoundOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Dropdown, Modal, message, Popover, Avatar, Divider, Drawer, List, Badge, Tooltip } from 'antd';
+import { Dropdown, Modal, message, Popover, Avatar, Divider, Drawer, List, Badge, Tooltip, Checkbox } from 'antd';
 import type { MenuProps } from 'antd';
-import type { Announcement } from '../types';
+import type { Announcement, Plugin } from '../types';
 import useAuthStore from '../store/auth';
 import { normalizeTitleHref } from './AuthLayout';
 import { useThemeStore } from '../store/theme';
 import UserAvatarMenu from '../components/UserAvatarMenu';
 import BindPromptModal from '../components/BindPromptModal';
+import AnnouncementPopupModal from '../components/AnnouncementPopupModal';
 import { getAntdThemeTokens, getSiderMenuTokens, softAccent } from '../theme/tokens';
 
 const { Header, Sider, Content } = Layout;
@@ -129,8 +138,22 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
 
   const [announcementsDrawerVisible, setAnnouncementsDrawerVisible] = useState(false);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [popupAnnouncements, setPopupAnnouncements] = useState<Announcement[]>([]);
+  const [popupModalOpen, setPopupModalOpen] = useState(false);
+  const [consolePageReady, setConsolePageReady] = useState(false);
+  const dashboardPopupShownRef = useRef(false);
+  const notifyConsolePageReady = useCallback(() => {
+    setTimeout(() => {
+      setConsolePageReady(true);
+    }, 2000);
+  }, []);
+  const outletContextValue = useMemo(() => ({
+    announcements,
+    notifyConsolePageReady,
+  }), [announcements, notifyConsolePageReady]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [activePlugins, setActivePlugins] = useState<any[]>([]);
+  const [adminPlugins, setAdminPlugins] = useState<Plugin[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -138,33 +161,50 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   }, [location.pathname, location.search]);
 
   useEffect(() => {
-    fetchActivePluginsList();
-    if (isLoggedIn) {
-      fetchCurrentUser();
-    }
+    if (!isLoggedIn) return;
+    let cancelled = false;
+    fetchConsoleBootstrap()
+      .then((data) => {
+        if (cancelled) return;
+        if (data.user?.id) {
+          setUser(data.user, !!sessionStorage.getItem('token'));
+        }
+        if (Array.isArray(data.announcements)) {
+          setAnnouncements(data.announcements);
+        }
+        if (Array.isArray(data.active_plugins)) {
+          setActivePlugins(data.active_plugins);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to fetch console bootstrap', error);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [isLoggedIn]);
 
-  const fetchCurrentUser = async () => {
-    try {
-      const resp: any = await request.get('/user/profile');
-      if (resp && resp.id) {
-        setUser(resp);
-      }
-    } catch (error) {
-      console.error('Failed to fetch user info', error);
-    }
-  };
-
-  const fetchActivePluginsList = async () => {
-    try {
-      const response = await fetchActivePlugins();
-      if (response.active_plugins) {
-        setActivePlugins(response.active_plugins);
-      }
-    } catch (error) {
-      console.error('Failed to fetch active plugins', error);
-    }
-  };
+  useEffect(() => {
+    if (isUserEnd || !isLoggedIn) return;
+    if (import.meta.env.VITE_ENABLE_PLUGINS !== 'true') return;
+    let cancelled = false;
+    const load = () => {
+      fetchAdminPlugins()
+        .then((data) => {
+          if (cancelled) return;
+          if (Array.isArray(data?.plugins)) setAdminPlugins(data.plugins);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch admin plugins', error);
+        });
+    };
+    load();
+    const unsub = subscribeAdminPluginsChange(load);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [isLoggedIn, isUserEnd]);
 
 
   const showSystemAbout = () => {
@@ -186,35 +226,76 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
       onClick: () => changeLanguage(lng),
     }));
 
+  const isDashboardPath = (pathname: string) => {
+    const p = pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
+    return p === '/' || p === '/dashboard' || p.endsWith('/dashboard');
+  };
+
+  const checkAndShowPopup = (dataList: Announcement[]) => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const targetPopups = dataList.filter((item: Announcement) => {
+      if (item.is_popup !== 1) return false;
+      return localStorage.getItem(`popup_notice_dismissed_${item.id}`) !== todayStr;
+    });
+    if (targetPopups.length === 0) return false;
+    setPopupAnnouncements(targetPopups);
+    setPopupModalOpen(true);
+    return true;
+  };
+
+  // 当公告数据、用户偏好或阈值设置更新时，计算未读数与浏览器推送，不再发起多余网络请求
   useEffect(() => {
-    const fetchAnnouncements = async () => {
-      try {
-        const response = await (request.get('/announcements/public') as any);
-        if (response.data) {
-          setAnnouncements(response.data);
-          const prefs = parseNotificationPreferences(
-            user?.notification_preferences,
-            settings?.notification?.low_balance_threshold ?? 100.0,
-          );
-          const showWeb = shouldShowWebNotifications(prefs, settings?.notification);
-          setUnreadCount(showWeb ? response.data.length : 0);
-          if (showWeb && response.data.length > 0) {
-            const first = response.data[0];
-            const seenKey = `notif_push_seen_${first.id}`;
-            if (!sessionStorage.getItem(seenKey)) {
-              sessionStorage.setItem(seenKey, '1');
-              const title = getAnnouncementLabel(first.title || '') || (i18n.language.startsWith('zh') ? '新通知' : 'New notification');
-              const body = getAnnouncementLabel(first.content || '').replace(/<[^>]+>/g, '').slice(0, 120);
-              maybeShowBrowserPush(title, body, prefs, settings?.notification);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch announcements:', error);
+    if (!announcements.length) {
+      setUnreadCount(0);
+      return;
+    }
+    const prefs = parseNotificationPreferences(
+      user?.notification_preferences,
+      settings?.notification?.low_balance_threshold ?? 100.0,
+    );
+    const showWeb = shouldShowWebNotifications(prefs, settings?.notification);
+    setUnreadCount(showWeb ? announcements.length : 0);
+    if (showWeb && announcements.length > 0) {
+      const first = announcements[0];
+      const seenKey = `notif_push_seen_${first.id}`;
+      if (!sessionStorage.getItem(seenKey)) {
+        sessionStorage.setItem(seenKey, '1');
+        const title = getAnnouncementLabel(first.title || '') || (i18n.language.startsWith('zh') ? '新通知' : 'New notification');
+        const body = getAnnouncementLabel(first.content || '').replace(/<[^>]+>/g, '').slice(0, 120);
+        maybeShowBrowserPush(title, body, prefs, settings?.notification);
       }
-    };
-    fetchAnnouncements();
-  }, [user?.notification_preferences, settings?.notification?.low_balance_threshold, i18n.language]);
+    }
+  }, [announcements, user?.notification_preferences, settings?.notification?.low_balance_threshold, settings?.notification, i18n.language]);
+
+  // 离开控制台时关掉弹窗，下次进入再等加载完成后弹
+  useEffect(() => {
+    if (!isDashboardPath(location.pathname)) {
+      dashboardPopupShownRef.current = false;
+      setConsolePageReady(false);
+      setPopupModalOpen(false);
+    }
+  }, [location.pathname]);
+
+  // 控制台首屏加载完成后再弹一次，避免加载过程中反复挂载闪屏
+  useEffect(() => {
+    if (!isDashboardPath(location.pathname) || !consolePageReady) return;
+    if (dashboardPopupShownRef.current || announcements.length === 0) return;
+    if (checkAndShowPopup(announcements)) {
+      dashboardPopupShownRef.current = true;
+    }
+  }, [location.pathname, announcements, consolePageReady]);
+
+  const handleClosePopupModal = (dontShowToday: boolean, noticeIds: number[]) => {
+    if (dontShowToday) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      noticeIds.forEach((id) => {
+        localStorage.setItem(`popup_notice_dismissed_${id}`, todayStr);
+      });
+    }
+    setPopupModalOpen(false);
+  };
 
   // 插件菜单：检查用户等级是否在插件允许范围内
   const isPluginVisibleForUser = (pluginName: string) => {
@@ -232,25 +313,48 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   const isSuperAdmin = !isUserEnd && user?.role === 'admin' && !user.admin_group_id;
 
   const getMenuLabel = (item: any) => {
-    if (item.key === '/playground') {
-      if (i18n.exists('playground:title')) {
+    if (!item) return '';
+    const lang = (i18n.language || 'zh').toLowerCase();
+    if (lang.startsWith('zh')) {
+      if (item.label_zh && item.label_zh.trim()) {
+        return item.label_zh;
+      }
+      if (item.label_en && item.label_en.trim()) {
+        return item.label_en;
+      }
+    } else if (lang.startsWith('en')) {
+      if (item.label_en && item.label_en.trim()) {
+        return item.label_en;
+      }
+      if (item.label_zh && item.label_zh.trim()) {
+        return item.label_zh;
+      }
+    } else {
+      // 其它语种（如 ja, ko, vi 等）优先尝试国际化翻译字典，未匹配再降级到英文/中文
+      if (item.key === '/playground' && i18n.exists('playground:title')) {
         return t('playground:title');
       }
-    }
-    if (item.key === '/playground-2026') {
-      if (i18n.exists('playground_2026:title')) {
+      if (item.key === '/playground-2026' && i18n.exists('playground_2026:title')) {
         return t('playground_2026:title');
       }
+      const i18nKey = `menu.${item.key.substring(1).replace(/-/g, '_')}`;
+      if (i18n.exists(i18nKey)) {
+        return t(i18nKey);
+      }
+      return item.label_en || item.label_zh || item.key;
+    }
+
+    if (item.key === '/playground' && i18n.exists('playground:title')) {
+      return t('playground:title');
+    }
+    if (item.key === '/playground-2026' && i18n.exists('playground_2026:title')) {
+      return t('playground_2026:title');
     }
     const i18nKey = `menu.${item.key.substring(1).replace(/-/g, '_')}`;
     if (i18n.exists(i18nKey)) {
       return t(i18nKey);
     }
-    const lang = i18n.language || 'zh';
-    if (lang.toLowerCase().startsWith('zh')) {
-      return item.label_zh || item.label_en;
-    }
-    return item.label_en || item.label_zh;
+    return item.label_zh || item.label_en || item.key;
   };
 
   const getMenuIcon = (iconName: string) => {
@@ -380,9 +484,23 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
             label: <Link to="/profile/notifications">{t('menu.notifications')}</Link>,
           });
         }
+
+        const isInvoiceEnabled = user?.invoice_enabled === 1 || user?.role === 'admin';
+        if (isInvoiceEnabled) {
+          userSettingsChildren.push({
+            key: '/invoices',
+            icon: <FileTextOutlined style={{ fontSize: '18px' }} />,
+            label: <Link to="/invoices">{t('menu.invoices', '财务发票')}</Link>,
+          });
+        }
+
         userSettingsChildren.sort((a, b) => {
           if (a.key === '/profile') return -1;
           if (b.key === '/profile') return 1;
+          if (a.key === '/wallet') return -1;
+          if (b.key === '/wallet') return 1;
+          if (a.key === '/invoices') return -1;
+          if (b.key === '/invoices') return 1;
           return 0;
         });
         menuItems.push({
@@ -611,6 +729,15 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           label: <Link to="/admin0755/finance/orders">{t('menu.finance_orders')}</Link>,
         });
       }
+      const isChinaInvoiceEnabled =
+        settings?.invoices?.invoice_enabled !== false &&
+        settings?.invoices?.invoice_mode === 'china';
+      if (isChinaInvoiceEnabled && hasChildMenu('finance', 'finance.invoices')) {
+        financeChildren.push({
+          key: '/admin0755/finance/invoices',
+          label: <Link to="/admin0755/finance/invoices">{t('menu.finance_invoices', '发票申请审核')}</Link>,
+        });
+      }
       if (hasChildMenu('finance', 'finance.analysis')) {
         financeChildren.push({
           key: '/admin0755/finance/analysis',
@@ -671,11 +798,38 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
 
     const hasAnyPluginPermission = isSuperAdmin || hasPermission('plugins') || user?.permissions?.some((p: string) => p.startsWith('plugin:'));
     if (hasAnyPluginPermission && import.meta.env.VITE_ENABLE_PLUGINS === 'true') {
-      menuItems.push({
-        key: '/admin0755/plugins',
-        icon: <AppstoreOutlined style={{ fontSize: '18px' }} />,
-        label: <Link to="/admin0755/plugins">{t('menu.plugins')}</Link>,
-      });
+      const hasGlobalPluginPerm = isSuperAdmin || hasPermission('plugins');
+      const canSeePlugin = (pluginName: string) =>
+        hasGlobalPluginPerm || !!user?.permissions?.includes(`plugin:${pluginName}`);
+      const sidebarPlugins = selectAdminSidebarPlugins(adminPlugins, canSeePlugin);
+      if (sidebarPlugins.length === 0) {
+        menuItems.push({
+          key: '/admin0755/plugins',
+          icon: <AppstoreOutlined style={{ fontSize: '18px' }} />,
+          label: <Link to="/admin0755/plugins">{t('menu.plugins')}</Link>,
+        });
+      } else {
+        const pluginChildren = [
+          {
+            key: '/admin0755/plugins',
+            label: <Link to="/admin0755/plugins">{t('menu.plugins_all')}</Link>,
+          },
+          ...sidebarPlugins.map((plugin) => ({
+            key: `/admin0755/plugins/${plugin.name}/config`,
+            label: (
+              <Link to={adminSidebarPluginHref(plugin)}>
+                {adminSidebarPluginLabel(plugin, (name, title) => t(`plugin_titles.${name}`, title))}
+              </Link>
+            ),
+          })),
+        ];
+        menuItems.push({
+          key: 'plugins-group',
+          icon: <AppstoreOutlined style={{ fontSize: '18px' }} />,
+          label: t('menu.plugins'),
+          children: pluginChildren,
+        });
+      }
     }
   }
 
@@ -715,11 +869,63 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
 
   const processedMenuItems = processMenuItems(menuItems);
 
+  const findSelectedKey = (items: any[]): string => {
+    const fullPath = location.pathname + location.search;
+    const path = location.pathname;
+
+    // 1. Exact match with fullPath (search)
+    for (const item of items) {
+      if (item?.children) {
+        for (const child of item.children) {
+          if (child?.key === fullPath) return child.key;
+        }
+      } else if (item?.key === fullPath) {
+        return item.key;
+      }
+    }
+
+    // 2. Exact match with path
+    for (const item of items) {
+      if (item?.children) {
+        for (const child of item.children) {
+          if (child?.key === path) return child.key;
+        }
+      } else if (item?.key === path) {
+        return item.key;
+      }
+    }
+
+    // 3. Prefix match with path
+    for (const item of items) {
+      if (item?.children) {
+        for (const child of item.children) {
+          const baseKey = typeof child?.key === 'string' ? child.key.split('?')[0] : '';
+          if (baseKey && baseKey !== '/' && path.startsWith(baseKey + '/')) {
+            return child.key;
+          }
+        }
+      } else {
+        const baseKey = typeof item?.key === 'string' ? item.key.split('?')[0] : '';
+        if (baseKey && baseKey !== '/' && path.startsWith(baseKey + '/')) {
+          return item.key;
+        }
+      }
+    }
+
+    return fullPath;
+  };
+
   let pageName = '';
-  const findName = (items: any[]): string | undefined => {
+  const findName = (items: any[], checkPrefix = false): string | undefined => {
+    const fullPath = location.pathname + location.search;
+    const path = location.pathname;
     for (const item of items) {
       if (!item) continue;
-      if (item.key === location.pathname || item.key === location.pathname + location.search) {
+      const isMatch = checkPrefix
+        ? (typeof item.key === 'string' && item.key.split('?')[0] !== '/' && (path === item.key.split('?')[0] || path.startsWith(item.key.split('?')[0] + '/')))
+        : (item.key === path || item.key === fullPath);
+
+      if (isMatch) {
         if (typeof item.label === 'string') return item.label;
         if (item.label?.props?.children) {
           if (typeof item.label.props.children === 'string') return item.label.props.children;
@@ -727,7 +933,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
         }
       }
       if (item.children) {
-        const found = findName(item.children);
+        const found = findName(item.children, checkPrefix);
         if (found) return found;
       }
     }
@@ -735,8 +941,14 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   };
 
   const getActiveOpenKeys = () => {
+    const fullPath = location.pathname + location.search;
+    const path = location.pathname;
     const keys = processedMenuItems
-      .filter((item: any) => item?.children?.some((child: any) => child.key === location.pathname + location.search))
+      .filter((item: any) => item?.children?.some((child: any) => {
+        if (child?.key === path || child?.key === fullPath) return true;
+        const baseKey = typeof child?.key === 'string' ? child.key.split('?')[0] : '';
+        return baseKey && baseKey !== '/' && path.startsWith(baseKey + '/');
+      }))
       .map((item: any) => item.key as string);
     
     if (!keys.includes('user-settings-group')) {
@@ -749,9 +961,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
     if (!collapsed) {
       setOpenKeys(getActiveOpenKeys());
     }
-  }, [collapsed, location.pathname, location.search, activePlugins.length]);
+  }, [collapsed, location.pathname, location.search, activePlugins.length, adminPlugins]);
 
-  pageName = findName(processedMenuItems) || '';
+  pageName = findName(processedMenuItems) || findName(processedMenuItems, true) || '';
   if (!pageName) {
     if (location.pathname === '/profile') pageName = t('menu.profile', '个人中心') as string;
     else if (location.pathname === '/wallet') pageName = t('menu.wallet', '我的钱包') as string;
@@ -759,8 +971,14 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
     else if (location.pathname === '/assets-intl') pageName = t('menu.assets_intl', '资产管理') as string;
     else if (location.pathname === '/advanced-marketing') pageName = t('menu.advanced_marketing', '团队营销管理') as string;
 
-    else if (location.pathname === '/playground') pageName = (i18n.exists('playground:title') ? t('playground:title') : t('menu.playground', '创作中心')) as string;
-    else if (location.pathname === '/playground-2026' || location.pathname.startsWith('/playground-2026/')) pageName = (i18n.exists('playground_2026:title') ? t('playground_2026:title') : t('menu.playground_2026', '创作中心2026')) as string;
+    else if (location.pathname === '/playground' || location.pathname.startsWith('/playground/')) {
+      const pgItem = settings?.menu_config?.items?.find((i: any) => i.key === '/playground');
+      pageName = pgItem ? getMenuLabel(pgItem) : (i18n.exists('playground:title') ? t('playground:title') : t('menu.playground', '创作中心')) as string;
+    }
+    else if (location.pathname === '/playground-2026' || location.pathname.startsWith('/playground-2026/')) {
+      const pg2026Item = settings?.menu_config?.items?.find((i: any) => i.key === '/playground-2026');
+      pageName = pg2026Item ? getMenuLabel(pg2026Item) : (i18n.exists('playground_2026:title') ? t('playground_2026:title') : t('menu.playground_2026', '创作中心2026')) as string;
+    }
   }
 
   useEffect(() => {
@@ -1024,7 +1242,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                 <Menu
                   theme={themeMode}
                   mode="inline"
-                  selectedKeys={[location.pathname + location.search]}
+                  selectedKeys={[findSelectedKey(processedMenuItems)]}
                   openKeys={collapsed ? undefined : openKeys}
                   onOpenChange={(keys) => {
                     if (!collapsed) {
@@ -1344,9 +1562,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
             ref={contentRef}
             style={{
             margin: screens.xs ? '0 8px 8px' : '0 12px 12px',
-            // 顶栏浮层 + 原上边距/内边距，滚动时内容穿过毛玻璃
+            // 顶栏浮层 + 10px 间距，滚动时内容穿过毛玻璃
             padding: screens.xs ? 12 : 16,
-            paddingTop: (screens.xs ? 48 : 56) + (screens.xs ? 8 : 12) + (screens.xs ? 12 : 16),
+            paddingTop: (screens.xs ? 48 : 56) + 10,
             minHeight: 280,
             background: 'transparent',
             borderRadius: 8,
@@ -1357,7 +1575,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
             flexDirection: 'column',
           }}>
             <div style={{ flex: '1 0 auto', width: '100%', minWidth: 0 }}>
-              <Outlet context={{ announcements }} />
+              <Outlet context={outletContextValue} />
             </div>
             {site?.copyright && (
               <div
@@ -1392,6 +1610,14 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           )}
         </Layout>
       </Layout>
+
+      {/* 登录控制台弹窗通知 (Shadcn UI Style) */}
+      <AnnouncementPopupModal
+        announcements={popupAnnouncements}
+        open={popupModalOpen}
+        onClose={handleClosePopupModal}
+        themeMode={themeMode === 'light' ? 'light' : 'dark'}
+      />
 
       {isUserEnd && <BindPromptModal />}
     </ConfigProvider>

@@ -11,6 +11,7 @@ import { CopyOutlined, LinkOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
+import { copyWithFeedback } from '../../utils/clipboard';
 
 const { Text } = Typography;
 
@@ -40,7 +41,7 @@ const OAuthSettings: React.FC = () => {
       const res = await (request.post('/settings', { google_oauth: values }) as any);
       message.success(t('settings.save_success'));
       updateStoreSettings(res);
-    } catch { message.error(t('common.error')); }
+    } catch { /* ignore */ }
     finally { setLoading(false); }
   };
 
@@ -51,13 +52,12 @@ const OAuthSettings: React.FC = () => {
       const res = await (request.post('/settings', { wechat_oauth: values }) as any);
       message.success(t('settings.save_success'));
       updateStoreSettings(res);
-    } catch { message.error(t('common.error')); }
+    } catch { /* ignore */ }
     finally { setLoading(false); }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    message.success('已复制到剪贴板');
+  const copyToClipboard = async (text: string) => {
+    await copyWithFeedback(text, '已复制到剪贴板', '复制失败');
   };
 
   const googleCallbackUrl = `${siteUrl}/api/v1/auth/oauth/google/callback`;

@@ -37,6 +37,7 @@ import NodeToolbar from './shared/NodeToolbar';
 import type { AdvancedNodeProps } from './shared/types';
 import { getResultDisplayUrl } from '../../utils/resultExtractor';
 import { getSharedModalStyles } from '../../utils/modalStyles';
+import { downloadFileByUrl } from '../../utils/downloadFile';
 
 const { Text } = Typography;
 import { ResizeHandle } from './ResizeHandle';
@@ -65,7 +66,7 @@ const CanvasNode: React.FC<Props> = React.memo(({
   const [isPropertyModalOpen, setIsPropertyModalOpen] = useState(false);
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const { advancedNodesConfig, saveCanvasState, selectedTokenKey } = usePlayground();
+  const { advancedNodesConfig, saveCanvasState, selectedTokenKey, pageMode } = usePlayground();
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const {
@@ -223,21 +224,18 @@ const CanvasNode: React.FC<Props> = React.memo(({
         toast.warning('暂无可用素材下载');
         return;
       }
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objectUrl;
-      const ext = displayNode.type === 'video' ? 'mp4' : (displayNode.type === 'audio' ? 'mp3' : 'png');
-      a.download = `material-${displayNode.id}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(objectUrl);
+      const mediaType =
+        displayNode.type === 'video' || displayNode.type === 'audio' || displayNode.type === 'image'
+          ? displayNode.type
+          : 'image';
+      await downloadFileByUrl(url, {
+        filename: `material-${displayNode.id}`,
+        mediaType,
+      });
       toast.success('开始下载');
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      toast.error('下载失败，请尝试右键另存为');
+      toast.error(e?.message || '下载失败，请尝试右键另存为');
     }
   };
 
@@ -866,8 +864,8 @@ const CanvasNode: React.FC<Props> = React.memo(({
 
   const isPreviewNode = node.taskData?.node_type === 'preview';
   const isMaterialNode = (node.type === 'image' || node.type === 'video') && !node.taskData?.node_type;
-
-  const showContextMenu = !!advancedNodesConfig?.enabled && !isMobile && (isMaterialNode || isPreviewNode);
+  const showNodeChrome = pageMode === 'node' && !!advancedNodesConfig?.enabled && !isMobile;
+  const showContextMenu = showNodeChrome && (isMaterialNode || isPreviewNode);
 
   // 构建传递给各高级节点组件的共享 Props
   const advancedNodeProps: AdvancedNodeProps = {
@@ -1078,7 +1076,7 @@ const CanvasNode: React.FC<Props> = React.memo(({
       </div>
 
       {/* 高级节点快捷增加把手 */}
-      {advancedNodesConfig?.enabled && isSelected && !isMobile && (isMaterialNode || isPreviewNode) && (
+      {showNodeChrome && isSelected && (isMaterialNode || isPreviewNode) && (
         <Popover
           trigger="click"
           placement="right"
@@ -1130,7 +1128,7 @@ const CanvasNode: React.FC<Props> = React.memo(({
       )}
 
       {/* 节点连接器小圆图标 */}
-      {advancedNodesConfig?.enabled && isSelected && !isMobile && (
+      {showNodeChrome && isSelected && (
         <Tooltip title="拖动此连接器，松开连接到未绑定的预览或增强节点">
           <div
             onMouseDown={(e) => {

@@ -10,14 +10,11 @@ pub mod email;
 pub mod http_client;
 pub mod notification;
 pub mod oauth;
-#[cfg(plugin_payment)]
-pub mod payment;
 pub mod runtime_info;
 pub mod sms;
+pub mod cos;
+pub mod object_store;
+pub mod tencentcloud;
 pub mod tos;
 pub mod upstream_rate_sync;
-#[cfg(feature = "commercial_plugins")]
-pub mod upstream_asset_client;
-#[cfg(feature = "commercial_plugins")]
-pub mod volc_ark_monitor;
 pub mod volcengine;

@@ -470,11 +470,13 @@
       display: flex;
       align-items: center;
       margin-top: 0.35em;
-      min-height: 0.9em;
+      min-height: 1.3em;
+      height: 1.3em;
       font-size: 0.42em;
       letter-spacing: 0.04em;
       font-weight: 700;
-      line-height: 1.15;
+      line-height: 1.3;
+      box-sizing: border-box;
     }
 
     .hero-typewriter-text {
@@ -483,6 +485,16 @@
       white-space: nowrap;
       overflow: hidden;
       max-width: 100%;
+      display: inline-block;
+      line-height: inherit;
+      vertical-align: middle;
+    }
+
+    .hero-typewriter-text::before {
+      content: '\200b';
+      display: inline-block;
+      width: 0;
+      vertical-align: middle;
     }
 
     .hero-brand-mega-title .cursor {
@@ -1220,7 +1232,7 @@
 
               <div class="hero-action-buttons">
                 <a href="/home-pro/docs" class="btn-cyber-hero btn-hero-solid btn-lang-stable" data-i18n-dynamic="快速开始|Quick Start"><span class="btn-lang-label">快速开始</span></a>
-                <a href="https://github.com/aiqachat/tokensbyte" target="_blank" rel="noopener noreferrer" class="btn-cyber-hero btn-hero-outline btn-lang-stable" data-i18n-dynamic="◆ GitHub|◆ GitHub"><span class="btn-lang-label">◆ GitHub</span></a>
+                <a href="https://github.com/aiqachat/tkeapi" target="_blank" rel="noopener noreferrer" class="btn-cyber-hero btn-hero-outline btn-lang-stable" data-i18n-dynamic="◆ GitHub|◆ GitHub"><span class="btn-lang-label">◆ GitHub</span></a>
               </div>
             </div>
           </div>
@@ -1595,7 +1607,7 @@
 
   <script>
     function copyCmd(btn) {
-      navigator.clipboard.writeText('git clone https://github.com/aiqachat/tokensbyte && ./deploy.sh').then(() => {
+      navigator.clipboard.writeText('git clone https://github.com/aiqachat/tkeapi && ./deploy.sh').then(() => {
         const lang = (localStorage.getItem('lang') || 'zh').toLowerCase().startsWith('en') ? 'en' : 'zh';
         btn.innerText = lang === 'en' ? '✓ Copied' : '✓ 已复制';
         setTimeout(() => {

@@ -7,9 +7,8 @@
 
 use crate::error::{AppError, AppResult};
 use crate::models::SmsSettings;
-use crate::services::volcengine::{hmac_sha256, volcengine_sign};
-use chrono::Utc;
-use sha2::{Digest, Sha256};
+use crate::services::tencentcloud::{self, InvokeOpts};
+use crate::services::volcengine::volcengine_sign;
 
 const BALANCE_SMS_TEMPLATE_REQUIRED_MSG: &str =
     "开启短信余额提醒前，请先在「短信通知」中配置余额提醒模板 ID（无变量固定正文模板）";
@@ -232,11 +231,6 @@ impl SmsService {
         template_id: &str,
         params: &[String],
     ) -> AppResult<SmsSendResult> {
-        let host = "sms.tencentcloudapi.com";
-        let service = "sms";
-        let action = "SendSms";
-        let version = "2021-01-11";
-        let region = "ap-guangzhou";
         let phone = normalize_phone(mobile);
 
         let mut payload = serde_json::json!({
@@ -251,57 +245,19 @@ impl SmsService {
         let payload_str = serde_json::to_string(&payload)
             .map_err(|e| AppError::BadRequest(format!("序列化短信请求失败: {e}")))?;
 
-        let now = Utc::now();
-        let timestamp = now.timestamp();
-        let date = now.format("%Y-%m-%d").to_string();
-        let content_type = "application/json; charset=utf-8";
-
-        let hashed_payload = hex::encode(Sha256::digest(payload_str.as_bytes()));
-        let canonical_request = format!(
-            "POST\n/\n\ncontent-type:{content_type}\nhost:{host}\n\ncontent-type;host\n{hashed_payload}"
-        );
-        let credential_scope = format!("{date}/{service}/tc3_request");
-        let hashed_canonical = hex::encode(Sha256::digest(canonical_request.as_bytes()));
-        let string_to_sign =
-            format!("TC3-HMAC-SHA256\n{timestamp}\n{credential_scope}\n{hashed_canonical}");
-
-        let secret_date = hmac_sha256(
-            format!("TC3{}", self.settings.secret_key.trim()).as_bytes(),
-            date.as_bytes(),
-        );
-        let secret_service = hmac_sha256(&secret_date, service.as_bytes());
-        let secret_signing = hmac_sha256(&secret_service, b"tc3_request");
-        let signature = hex::encode(hmac_sha256(&secret_signing, string_to_sign.as_bytes()));
-        let authorization = format!(
-            "TC3-HMAC-SHA256 Credential={}/{}, SignedHeaders=content-type;host, Signature={}",
+        let body = tencentcloud::invoke(
             self.settings.secret_id.trim(),
-            credential_scope,
-            signature
-        );
-
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("https://{host}"))
-            .header("Content-Type", content_type)
-            .header("Host", host)
-            .header("X-TC-Action", action)
-            .header("X-TC-Version", version)
-            .header("X-TC-Timestamp", timestamp.to_string())
-            .header("X-TC-Region", region)
-            .header("Authorization", &authorization)
-            .body(payload_str)
-            .send()
-            .await
-            .map_err(|e| AppError::BadRequest(format!("短信发送请求失败: {e}")))?;
-
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::BadRequest(format!("短信响应解析失败: {e}")))?;
-        if !status.is_success() {
-            return Err(AppError::BadRequest(format!("短信 API 返回错误: {body}")));
-        }
+            self.settings.secret_key.trim(),
+            InvokeOpts {
+                service: "sms",
+                action: "SendSms",
+                version: "2021-01-11",
+                region: "ap-guangzhou",
+                payload: &payload_str,
+            },
+        )
+        .await
+        .map_err(|e| AppError::BadRequest(format!("短信发送失败: {e}")))?;
 
         let result = check_tencent_sms_response(&body)?;
         tracing::info!(

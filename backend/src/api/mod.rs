@@ -5,7 +5,9 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-use crate::middleware::{admin_middleware, api_key_middleware, auth_middleware};
+use crate::middleware::{
+    admin_middleware, admin_write_middleware, api_key_middleware, auth_middleware,
+};
 use crate::AppState;
 use axum::{
     middleware as axum_middleware,
@@ -22,9 +24,11 @@ pub mod billing_rules;
 pub mod channel_categories;
 pub mod channel_configs;
 pub mod channels;
+pub mod console;
 pub mod dashboard;
 pub mod date_helper;
 pub mod forward_rules;
+pub mod invoices;
 pub mod logs;
 pub mod metrics;
 pub mod model_classifications;
@@ -40,6 +44,16 @@ pub mod user_kyc;
 pub mod user_levels;
 pub mod users;
 
+fn with_admin_write(
+    router: Router<Arc<AppState>>,
+    state: Arc<AppState>,
+) -> Router<Arc<AppState>> {
+    router.layer(axum_middleware::from_fn_with_state(
+        state,
+        admin_write_middleware,
+    ))
+}
+
 pub fn build_router(state: Arc<AppState>) -> Router {
     // 1. Management APIs (Admin/User UI)
     let mut admin_routes: Router<Arc<AppState>> = Router::new()
@@ -50,14 +64,27 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/users/{id}",
-            put(users::update_user).delete(users::delete_user),
+            get(users::get_user)
+                .put(users::update_user)
+                .delete(users::delete_user),
         )
         .route("/users/{id}/recharge", post(users::recharge_user))
         .route("/users/{id}/impersonate", post(users::impersonate_user))
         .route("/users/{id}/level-logs", get(users::get_user_level_logs))
         .route(
             "/users/{id}/kyc",
-            get(user_kyc::admin_get_user_kyc).put(user_kyc::admin_upsert_user_kyc),
+            get(user_kyc::admin_get_user_kyc)
+                .post(user_kyc::admin_create_user_kyc)
+                .put(user_kyc::admin_upsert_user_kyc),
+        )
+        .route(
+            "/users/{id}/kyc/{kyc_id}",
+            put(user_kyc::admin_update_user_kyc_item)
+                .delete(user_kyc::admin_delete_user_kyc_item),
+        )
+        .route(
+            "/users/{id}/kyc/{kyc_id}/default",
+            post(user_kyc::admin_set_default_user_kyc),
         )
         .route("/channels", post(channels::create_channel))
         .route(
@@ -196,7 +223,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/settings/notification/test",
             post(settings::test_low_balance_notification),
         )
-        .route("/settings/repair-logs", post(settings::repair_failed_logs))
         .route(
             "/user_levels",
             get(user_levels::list_user_levels).post(user_levels::create_user_level),
@@ -204,6 +230,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/user_levels/{id}",
             put(user_levels::update_user_level).delete(user_levels::delete_user_level),
+        )
+        .route(
+            "/finance/invoices",
+            get(invoices::admin_list_invoice_requests),
+        )
+        .route(
+            "/finance/invoices/{id}",
+            put(invoices::admin_update_invoice_request),
         );
 
     #[cfg(plugin_finance)]
@@ -262,6 +296,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/announcements/{id}",
             put(announcements::update_announcement).delete(announcements::delete_announcement),
         )
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            admin_write_middleware,
+        ))
         .layer(axum_middleware::from_fn(admin_middleware))
         .with_state(state.clone());
 
@@ -269,6 +307,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/dashboard", get(dashboard::get_stats))
         .route("/dashboard/models_30d", get(dashboard::get_model_stats_30d))
         .route("/metrics/live", get(metrics::get_live_metrics))
+        .route("/console/bootstrap", get(console::get_bootstrap))
         .route("/channels", get(channels::list_channels))
         .route("/models", get(models::list_models))
         .route(
@@ -304,6 +343,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/user/wallet", get(user::get_wallet_stats))
         .route("/user/recharge_records", get(user::list_recharge_records))
+        .route("/user/invoices", get(invoices::get_user_invoices))
+        .route(
+            "/user/invoice_requests",
+            get(invoices::list_user_invoice_requests).post(invoices::create_user_invoice_request),
+        )
+        .route(
+            "/user/invoice_requests/{id}/cancel",
+            post(invoices::cancel_user_invoice_request),
+        )
         .route("/user/affiliate/transfer", post(user::transfer_commission))
         .route("/user/bind/mobile", post(user::bind_mobile))
         .route("/user/bind/email", post(user::bind_email))
@@ -314,6 +362,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/user/kyc",
             get(user_kyc::get_my_kyc).put(user_kyc::submit_my_kyc),
+        )
+        .route("/user/kyc/list", get(user_kyc::get_my_kyc_list))
+        .route(
+            "/user/kyc/{kyc_id}/default",
+            post(user_kyc::user_set_default_kyc),
         )
         .route("/user/kyc/upload", post(user_kyc::upload_kyc_document))
         .route("/task_logs", get(task_logs::list_task_logs))
@@ -339,18 +392,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(admin_routes);
 
     {
-        management_routes = management_routes.nest("/plugins", plugins::router());
+        management_routes = management_routes.nest(
+            "/plugins",
+            with_admin_write(plugins::router(), state.clone()),
+        );
     }
     #[cfg(feature = "commercial_plugins")]
     {
-        management_routes = management_routes.nest("/assets", plugins::assets::router());
+        management_routes = management_routes.nest(
+            "/assets",
+            with_admin_write(plugins::assets::router(), state.clone()),
+        );
     }
 
     #[cfg(feature = "commercial_plugins")]
     #[cfg(plugin_team_marketing)]
     {
-        management_routes =
-            management_routes.nest("/team-marketing", plugins::team_marketing::router());
+        management_routes = management_routes.nest(
+            "/team-marketing",
+            with_admin_write(plugins::team_marketing::router(), state.clone()),
+        );
     }
 
     let management_routes = management_routes.nest("/playground", plugins::playground::router());
@@ -359,42 +420,50 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         management_routes.nest("/playground-2026", plugins::playground_2026::router());
 
     #[cfg(feature = "plugin_site_icons")]
-    let management_routes =
-        management_routes.nest("/plugins/site-icons", plugins::site_icons::router());
+    let management_routes = management_routes.nest(
+        "/plugins/site-icons",
+        with_admin_write(plugins::site_icons::router(), state.clone()),
+    );
 
     #[cfg(feature = "plugin_site_portal")]
-    let management_routes =
-        management_routes.nest("/plugins/site-portal", plugins::site_portal::admin_router());
+    let management_routes = management_routes.nest(
+        "/plugins/site-portal",
+        with_admin_write(plugins::site_portal::admin_router(), state.clone()),
+    );
     #[cfg(feature = "commercial_plugins")]
     let management_routes = management_routes.nest(
         "/plugins/site-portal-pro",
-        plugins::site_portal_pro::admin_router(),
-    );
-    #[cfg(feature = "plugin_happyhorse")]
-    let management_routes = management_routes.nest(
-        "/plugins/happyhorse_router",
-        plugins::happyhorse_router::router(),
+        with_admin_write(plugins::site_portal_pro::admin_router(), state.clone()),
     );
     #[cfg(feature = "plugin_comfyui")]
     let management_routes = management_routes.nest(
         "/plugins/comfyui_bridge",
-        plugins::comfyui_bridge::router(),
+        with_admin_write(plugins::comfyui_bridge::router(), state.clone()),
     );
-    let management_routes =
-        management_routes.nest("/plugins/docs-api", plugins::docs_api::router());
+    let management_routes = management_routes.nest(
+        "/plugins/docs-api",
+        with_admin_write(plugins::docs_api::router(), state.clone()),
+    );
+    #[cfg(feature = "plugin_content_security")]
+    let management_routes = management_routes.nest(
+        "/plugins/content_security",
+        with_admin_write(plugins::content_security::router(), state.clone()),
+    );
     #[cfg(feature = "commercial_plugins")]
     let management_routes = management_routes.nest(
         "/plugins/volcengine_ark_monitor",
-        plugins::volc_ark_monitor::router(),
+        with_admin_write(plugins::volc_ark_monitor::router(), state.clone()),
     );
     #[cfg(feature = "commercial_plugins")]
     let management_routes = management_routes.nest(
         "/plugins/upstream_asset_relay",
-        plugins::upstream_asset_relay::router(),
+        with_admin_write(plugins::upstream_asset_relay::router(), state.clone()),
     );
     #[cfg(feature = "plugin_data_sync")]
-    let management_routes =
-        management_routes.nest("/plugins/data_sync", plugins::data_sync::router());
+    let management_routes = management_routes.nest(
+        "/plugins/data_sync",
+        with_admin_write(plugins::data_sync::router(), state.clone()),
+    );
     let management_routes = management_routes.route_layer(axum_middleware::from_fn_with_state(
         state.clone(),
         auth_middleware,
@@ -520,6 +589,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         public_v1_routes =
             public_v1_routes.nest("/plugins/data_sync", plugins::data_sync::public_router());
     }
+    #[cfg(feature = "plugin_content_security")]
+    {
+        public_v1_routes = public_v1_routes.nest(
+            "/plugins/content_security",
+            plugins::content_security::public_router(),
+        );
+    }
     let public_v1_routes = public_v1_routes.with_state(state.clone());
 
     // 3. Relay APIs (OpenAI Compatible + 可灵原生)
@@ -545,9 +621,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/video/generations/{task_id}",
-            get(crate::relay::task::task_status),
+            get(crate::relay::task::task_status).delete(crate::relay::task::task_cancel),
         )
-        .route("/tasks/{task_id}", get(crate::relay::task::task_status))
+        // OpenAI Videos 兼容入口（与 /video/generations 同逻辑；对外文档仍以后者为准）
+        .route("/videos", post(crate::relay::video::video_generations))
+        .route(
+            "/videos/{task_id}",
+            get(crate::relay::task::task_status).delete(crate::relay::task::task_cancel),
+        )
+        .route(
+            "/videos/generations",
+            post(crate::relay::video::video_generations),
+        )
+        .route(
+            "/videos/generations/{task_id}",
+            get(crate::relay::task::task_status).delete(crate::relay::task::task_cancel),
+        )
+        .route(
+            "/tasks/{task_id}",
+            get(crate::relay::task::task_status).delete(crate::relay::task::task_cancel),
+        )
         // 可灵 AI 原生视频路径
         .route(
             "/videos/text2video",
@@ -607,6 +700,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/user/balance", get(crate::relay::balance::user_balance))
         // 语音合成
         .route("/audio/speech", post(crate::relay::audio::audio_speech))
+        // 文本/多模态向量化 (OpenAI 兼容)
+        .route("/embeddings", post(crate::relay::generic::generic_relay))
         // 模型列表
         .route("/models", get(crate::relay::model_list::list_models))
         .route_layer(axum_middleware::from_fn_with_state(
@@ -623,7 +718,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/services/aigc/multimodal-generation/generation",
-            post(crate::relay::image::image_generations),
+            post(crate::relay::native::dashscope_multimodal_generation),
         )
         .route(
             "/api/v1/tasks/{task_id}",
@@ -655,6 +750,26 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/v1beta/models/{model_action}",
             post(crate::relay::native::gemini_proxy),
+        )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            api_key_middleware,
+        ))
+        .with_state(state.clone());
+
+    // 6.5 MiniMax Native Relay（含 Anthropic 兼容 Messages）
+    let minimax_native_routes: Router<Arc<AppState>> = Router::new()
+        .route(
+            "/anthropic/v1/messages",
+            post(crate::relay::chat::chat_completions),
+        )
+        .route(
+            "/v2/video_generation",
+            post(crate::relay::video::video_generations),
+        )
+        .route(
+            "/v2/query/video_generation/{task_id}",
+            get(crate::relay::task::task_status),
         )
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -694,6 +809,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v3/tts/unidirectional",
             post(crate::relay::audio::audio_speech),
+        )
+        // 火山方舟原生多模态向量化路由
+        .route(
+            "/api/v3/embeddings/multimodal",
+            post(crate::relay::generic::generic_relay),
         )
         // 模型列表
         .route("/api/v3/models", get(crate::relay::model_list::list_models))
@@ -749,6 +869,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/v1", relay_routes)
         .merge(dashscope_native_routes)
         .merge(google_native_routes)
+        .merge(minimax_native_routes)
         .merge(volcengine_native_routes)
         .with_state(state)
         // CORS：生产环境必须设置 CORS_ORIGINS；开发环境（APP_ENV=development|dev）未设置时允许所有来源

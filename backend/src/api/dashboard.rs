@@ -7,6 +7,7 @@
 
 use crate::auth;
 use crate::error::AppResult;
+use crate::middleware::live_metrics::MetricsSnapshot;
 use crate::models::{DashboardStats, ModelStat, RequestLog};
 use crate::AppState;
 use axum::{
@@ -70,12 +71,27 @@ pub struct DashboardParams {
     pub end_date: Option<String>,
 }
 
+/// 看板首屏：统计走 SWR 缓存，实时吞吐每次现算（不进缓存）
+#[derive(Debug, serde::Serialize)]
+pub struct DashboardPageResponse {
+    #[serde(flatten)]
+    pub stats: DashboardStats,
+    pub live_metrics: MetricsSnapshot,
+}
+
+fn with_live_metrics(stats: DashboardStats, claims: &auth::Claims) -> DashboardPageResponse {
+    DashboardPageResponse {
+        stats,
+        live_metrics: crate::api::metrics::live_metrics_snapshot(claims),
+    }
+}
+
 pub async fn get_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<DashboardParams>,
     Extension(claims): Extension<auth::Claims>,
-) -> AppResult<Json<DashboardStats>> {
+) -> AppResult<Json<DashboardPageResponse>> {
     let is_admin = claims.role == "admin";
     let user_id = &claims.sub;
 
@@ -108,7 +124,7 @@ pub async fn get_stats(
     if let Some(entry) = state.dashboard_cache.get(&cache_key) {
         let elapsed = entry.timestamp.elapsed();
         if elapsed < std::time::Duration::from_secs(180) {
-            return Ok(Json(entry.stats.clone()));
+            return Ok(Json(with_live_metrics(entry.stats.clone(), &claims)));
         } else {
             // 缓存已过期，释放读锁，尝试通过写锁抢占“重算令牌”以防止并发击穿
             drop(entry);
@@ -149,7 +165,7 @@ pub async fn get_stats(
                                 );
                             }
                             Err(e) => {
-                                tracing::error!(
+                                tracing::warn!(
                                     "❌ [SWR] 后台异步更新控制台仪表盘缓存失败: {:?}, key: {}",
                                     e,
                                     cache_key_clone
@@ -162,7 +178,7 @@ pub async fn get_stats(
 
             // 立即返回缓存中的旧数据，完全消灭等待数据库查询的卡顿
             if let Some(entry) = state.dashboard_cache.get(&cache_key) {
-                return Ok(Json(entry.stats.clone()));
+                return Ok(Json(with_live_metrics(entry.stats.clone(), &claims)));
             }
         }
     }
@@ -177,7 +193,7 @@ pub async fn get_stats(
         },
     );
 
-    Ok(Json(stats))
+    Ok(Json(with_live_metrics(stats, &claims)))
 }
 
 async fn query_aggregated_data_helper(

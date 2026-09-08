@@ -9,20 +9,26 @@
 //! 返回系统模型列表，数据源为模型广场已启用的模型。
 //! 响应格式兼容 OpenAI 标准（火山方舟 /api/v3/models 格式与 OpenAI 一致）。
 
+use crate::api::plugins::{
+    marketplace_viewer_for_user_id, mp_conf_is_candidate, mp_enabled, mp_visible_to,
+    parse_mp_level_ids,
+};
 use crate::models::ApiToken;
 use crate::{error::AppResult, AppState};
 use axum::{
     extract::{Extension, State},
     Json,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// GET /v1/models | /api/v3/models — 获取可用模型列表
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
-    Extension(_token): Extension<ApiToken>,
+    Extension(token): Extension<ApiToken>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let viewer = marketplace_viewer_for_user_id(&state, &token.user_id).await;
+
     // 首先读取模型广场配置，复用 whitelist/blacklist 逻辑筛选可见模型
     let is_mp_enabled: bool = sqlx::query_scalar::<_, i64>(
         &state
@@ -47,15 +53,15 @@ pub async fn list_models(
         .unwrap_or("blacklist");
     let is_blacklist = display_mode == "blacklist";
 
-    // 优化：如果为白名单模式且没有任何配置开启的模型，直接跳过数据库查询
-    let has_enabled_models = is_blacklist
+    // 优化：白名单且没有任何候选模型（展示开启，或关闭但配置了可查看等级）则跳过查询
+    let has_candidate_models = is_blacklist
         || configs.iter().any(|(k, v)| {
             k.starts_with("mp_model_id_")
-                && serde_json::from_str::<serde_json::Value>(v)
-                    .map(|json| json.get("enabled").and_then(|e| e.as_bool()) == Some(true))
+                && serde_json::from_str::<Value>(v)
+                    .map(|json| mp_conf_is_candidate(&json, false))
                     .unwrap_or(false)
         });
-    if !has_enabled_models {
+    if !has_candidate_models {
         return Ok(Json(json!({
             "object": "list",
             "data": []
@@ -90,11 +96,9 @@ pub async fn list_models(
             .get(&config_key)
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(json!({}));
-        let is_enabled = model_conf
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(is_blacklist); // 白名单模式默认隐藏，黑名单模式默认展示
-        if !is_enabled {
+        let is_enabled = mp_enabled(&model_conf, is_blacklist);
+        let level_ids = parse_mp_level_ids(&model_conf);
+        if !mp_visible_to(is_enabled, &level_ids, viewer) {
             continue;
         }
 

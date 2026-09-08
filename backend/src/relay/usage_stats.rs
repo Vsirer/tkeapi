@@ -105,7 +105,7 @@ async fn perform_batch_sync(
                 );
             }
             Err(e) => {
-                tracing::error!("[{}] 同步 {} 失败: {:?}", task_name, current_day, e);
+                tracing::warn!("[{}] 同步 {} 失败: {:?}", task_name, current_day, e);
                 return Err(e.into());
             }
         }
@@ -133,7 +133,7 @@ pub async fn run_daily_stats_loop(
     state: Arc<AppState>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
-    use chrono::{Duration, Timelike};
+    use chrono::Timelike;
 
     loop {
         let _ = sync_daily_stats(&state).await;
@@ -147,16 +147,7 @@ pub async fn run_daily_stats_loop(
         let wait = if retry_in_window {
             std::time::Duration::from_secs(300)
         } else {
-            let next_naive = (local_now.date_naive() + Duration::days(1))
-                .and_hms_opt(0, 0, 0)
-                .unwrap();
-            match next_naive.and_local_timezone(archive_tz).single() {
-                Some(next_local) => (next_local.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                    .to_std()
-                    .unwrap_or(std::time::Duration::from_secs(60))
-                    .max(std::time::Duration::from_secs(1)),
-                None => std::time::Duration::from_secs(3600),
-            }
+            crate::time_system::duration_until_next_local_hms(archive_tz.name(), 0, 0, 0)
         };
 
         tokio::select! {
@@ -198,7 +189,7 @@ pub async fn sync_daily_stats(state: &Arc<AppState>) -> AppResult<()> {
             tracing::info!("[CronDailyStats] 凌晨增量同步成功完成");
             LAST_SYNC_DATE.store(today_date_num, std::sync::atomic::Ordering::Relaxed);
         }
-        Err(e) => tracing::error!("[CronDailyStats] 凌晨增量同步失败: {:?}", e),
+        Err(e) => tracing::warn!("[CronDailyStats] 凌晨增量同步失败: {:?}", e),
     }
     Ok(())
 }

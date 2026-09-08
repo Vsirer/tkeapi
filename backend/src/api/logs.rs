@@ -233,8 +233,9 @@ fn build_log_where(
     if let Some(ref keyword) = query.search_keyword {
         if !keyword.is_empty() {
             sql.push_str(
-                " AND (l.log_id = ? OR l.task_id = ? OR EXISTS (SELECT 1 FROM channels xc WHERE xc.id = l.channel_id AND xc.group_aid = ?))",
+                " AND (l.log_id = ? OR l.task_id = ? OR EXISTS (SELECT 1 FROM channels xc WHERE xc.id = l.channel_id AND xc.group_aid = ?) OR EXISTS (SELECT 1 FROM api_tokens xt WHERE xt.id = l.token_id AND xt.kid = ?))",
             );
+            binds.push(keyword.clone());
             binds.push(keyword.clone());
             binds.push(keyword.clone());
             binds.push(keyword.clone());
@@ -254,15 +255,11 @@ pub(crate) fn push_created_at_bound(
     date_helper::push_timestamptz_bound_default(sql, binds, "l.created_at", raw, is_end);
 }
 
-const LOGS_LIST_JOINS: &str = " LEFT JOIN channels c ON l.channel_id = c.id \
+pub(crate) const LOGS_LIST_JOINS: &str = " LEFT JOIN channels c ON l.channel_id = c.id \
       LEFT JOIN channel_configs cc ON l.channel_config_id = cc.id \
       LEFT JOIN users u ON l.user_id = u.id \
       LEFT JOIN user_levels ul ON u.user_group = ul.group_key \
       LEFT JOIN api_tokens t ON l.token_id = t.id";
-
-const LOGS_EXPORT_JOINS: &str = " LEFT JOIN channels c ON l.channel_id = c.id \
-         LEFT JOIN channel_configs cc ON l.channel_config_id = cc.id \
-         LEFT JOIN users u ON l.user_id = u.id";
 
 /// 任务列表结算态：失败 / 冻结中 / 是否有计费明细（替代传 billing_detail 全文）。
 pub(crate) const SQL_BILLING_SETTLE_FLAGS: &str = "\
@@ -272,7 +269,7 @@ COALESCE(l.billing_detail LIKE '%冻结%', false) AS billing_frozen, \
 
 /// 列表不选大 TEXT（依赖 RequestLog 上 `#[sqlx(default)]` → None）；展开走 get_log_detail。
 /// 计费：布尔标记 + regexp 抽出用量数字，避免传输 billing_detail 全文。
-const LOGS_LIST_SELECT: &str = "SELECT l.id, l.log_id, l.user_id, l.channel_id, l.token_id, l.model, \
+pub(crate) const LOGS_LIST_SELECT: &str = "SELECT l.id, l.log_id, l.user_id, l.channel_id, l.token_id, l.model, \
          l.prompt_tokens, l.completion_tokens, l.cached_tokens, l.cost, l.latency_ms, \
          l.status_code, l.endpoint, l.error_message, l.upstream_url, \
          l.is_stream, \
@@ -289,7 +286,8 @@ const LOGS_LIST_SELECT: &str = "SELECT l.id, l.log_id, l.user_id, l.channel_id, 
          COALESCE(u.nickname, u.username) AS user_nickname, \
          NULLIF(btrim(COALESCE(u.admin_remark, '')), '') AS user_admin_remark, \
          u.user_group, ul.name AS user_level_name, u.uid AS user_uid, \
-         t.name AS token_name, t.kid AS token_kid";
+         t.name AS token_name, t.kid AS token_kid, \
+         COALESCE(t.high_availability, 0) AS token_ha";
 
 fn append_default_stats_window(where_clause: &str, binds: &[String]) -> (String, Vec<String>) {
     let mut sql = where_clause.to_string();
@@ -345,11 +343,10 @@ async fn fetch_logs_count_and_stats(
     binds: &[String],
 ) -> Result<(i64, f64, i64, i64, f64), sqlx::Error> {
     let sql = db.format_query(&format!(
-        "SELECT COUNT(*)::bigint, \
-         COALESCE(SUM(l.cost), 0.0), \
+        "SELECT COUNT(*)::bigint, COALESCE(SUM(l.cost), 0.0), \
          COUNT(CASE WHEN l.status_code >= 200 AND l.status_code < 400 THEN 1 END), \
          COUNT(CASE WHEN l.status_code >= 400 OR l.status_code < 200 THEN 1 END), \
-         COALESCE(SUM(l.pre_deduct_gift), 0.0) \
+         COALESCE(SUM(GREATEST(LEAST(l.cost, l.pre_deduct_gift), 0.0)), 0.0) \
          FROM logs l{}",
         where_clause
     ));
@@ -525,6 +522,7 @@ pub async fn get_log_detail(
         status_code: i32,
         is_completed: i16,
         task_id: Option<String>,
+        model: String,
         request_content: Option<String>,
         response_content: Option<String>,
         post_response: Option<String>,
@@ -537,11 +535,11 @@ pub async fn get_log_detail(
     let is_admin = claims.role == "admin";
     // 普通用户不读上游出参大字段（接口也不返回）；超管保留完整列
     let detail_sql = if is_admin {
-        "SELECT user_id, status_code, is_completed, task_id, request_content, response_content, post_response, \
+        "SELECT user_id, status_code, is_completed, task_id, model, request_content, response_content, post_response, \
              upstream_req_content, billing_detail, plugin_tag \
              FROM logs WHERE id = ?"
     } else {
-        "SELECT user_id, status_code, is_completed, task_id, request_content, response_content, post_response, \
+        "SELECT user_id, status_code, is_completed, task_id, model, request_content, response_content, post_response, \
              billing_detail, plugin_tag \
              FROM logs WHERE id = ?"
     };
@@ -613,7 +611,7 @@ pub async fn get_log_detail(
             raw_plugin_tag.as_deref(),
             row.is_completed == 1,
             row.task_id.as_deref().unwrap_or(""),
-            detail.request_content.as_deref(),
+            &row.model,
             row.status_code,
         );
         if row.status_code != 200 {
@@ -631,6 +629,184 @@ pub async fn get_log_detail(
 
 const EXPORT_LIMIT: i64 = 100_000;
 
+struct ExportCol {
+    key: &'static str,
+    header: &'static str,
+}
+
+/// 与管理端日志列表展示顺序对齐；勾选导出时保持该列序。
+const LOG_EXPORT_COLUMNS: &[ExportCol] = &[
+    ExportCol { key: "created_at", header: "时间" },
+    ExportCol { key: "log_id", header: "日志ID" },
+    ExportCol { key: "task_id", header: "任务ID" },
+    ExportCol { key: "id", header: "ID" },
+    ExportCol { key: "channel_group_aid", header: "渠道AID" },
+    ExportCol { key: "is_ha", header: "渠道HA" },
+    ExportCol { key: "yid", header: "上游YID" },
+    ExportCol { key: "sub_channel_name", header: "实际上游" },
+    ExportCol { key: "user_nickname", header: "用户昵称" },
+    ExportCol { key: "user_uid", header: "UID" },
+    ExportCol { key: "user_id", header: "用户ID" },
+    ExportCol { key: "user_admin_remark", header: "管理员备注" },
+    ExportCol { key: "token_name", header: "令牌" },
+    ExportCol { key: "token_kid", header: "密钥KID" },
+    ExportCol { key: "token_ha", header: "令牌HA" },
+    ExportCol { key: "status_code", header: "状态码" },
+    ExportCol { key: "model", header: "模型" },
+    ExportCol { key: "billing_pid", header: "计费PID" },
+    ExportCol { key: "forward_eid", header: "转发EID" },
+    ExportCol { key: "latency_ms", header: "耗时(ms)" },
+    ExportCol { key: "is_stream", header: "类型" },
+    ExportCol { key: "prompt_tokens", header: "输入Tokens" },
+    ExportCol { key: "completion_tokens", header: "输出Tokens" },
+    ExportCol { key: "cached_tokens", header: "缓存Tokens" },
+    ExportCol { key: "cost", header: "费用" },
+    ExportCol { key: "billing_detail", header: "计费明细" },
+    ExportCol { key: "error_message", header: "错误信息" },
+    ExportCol { key: "action_type", header: "动作类型" },
+    ExportCol { key: "endpoint", header: "请求路径" },
+];
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(['"', ',', '\n', '\r']) {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            if c == '"' {
+                out.push('"');
+            }
+            out.push(c);
+        }
+        out.push('"');
+        out
+    } else {
+        s.to_string()
+    }
+}
+
+fn opt_dash(v: &Option<String>) -> &str {
+    let s = v.as_deref().unwrap_or("");
+    if s.is_empty() {
+        "-"
+    } else {
+        s
+    }
+}
+
+/// 空/缺省 → 全部列（列表顺序）；未知 key 忽略；有效列仍按列表顺序。
+fn resolve_export_keys(raw: Option<&str>) -> Vec<&'static str> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return LOG_EXPORT_COLUMNS.iter().map(|c| c.key).collect();
+    };
+    let requested: std::collections::HashSet<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    LOG_EXPORT_COLUMNS
+        .iter()
+        .filter(|c| requested.contains(c.key))
+        .map(|c| c.key)
+        .collect()
+}
+
+fn export_cell(key: &str, row: &ExportLogRow) -> String {
+    match key {
+        "created_at" => csv_escape(&format_db_time(&row.created_at)),
+        "log_id" => csv_escape(&row.log_id),
+        "task_id" => csv_escape(&row.task_id),
+        "id" => row.id.to_string(),
+        "channel_group_aid" => csv_escape(opt_dash(&row.channel_group_aid)),
+        "is_ha" => row.is_ha.to_string(),
+        "yid" => csv_escape(opt_dash(&row.yid)),
+        "sub_channel_name" => csv_escape(opt_dash(&row.sub_channel_name)),
+        "user_nickname" => csv_escape(opt_dash(&row.user_nickname)),
+        "user_uid" => csv_escape(if row.user_uid.is_empty() {
+            "-"
+        } else {
+            row.user_uid.as_str()
+        }),
+        "user_id" => csv_escape(&row.user_id),
+        "user_admin_remark" => csv_escape(opt_dash(&row.user_admin_remark)),
+        "token_name" => csv_escape(opt_dash(&row.token_name)),
+        "token_kid" => csv_escape(opt_dash(&row.token_kid)),
+        "token_ha" => row.token_ha.to_string(),
+        "status_code" => row.status_code.to_string(),
+        "model" => csv_escape(&row.model),
+        "billing_pid" => csv_escape(opt_dash(&row.billing_pid)),
+        "forward_eid" => csv_escape(opt_dash(&row.forward_eid)),
+        "latency_ms" => row.latency_ms.to_string(),
+        "is_stream" => csv_escape(if row.is_stream == Some(1) { "流" } else { "非流" }),
+        "prompt_tokens" => row.prompt_tokens.to_string(),
+        "completion_tokens" => row.completion_tokens.to_string(),
+        "cached_tokens" => row.cached_tokens.to_string(),
+        "cost" => format!("{:.6}", row.cost),
+        "billing_detail" => csv_escape(row.billing_detail.as_deref().unwrap_or("")),
+        "error_message" => csv_escape(row.error_message.as_deref().unwrap_or("")),
+        "action_type" => csv_escape(opt_dash(&row.action_type)),
+        "endpoint" => csv_escape(&row.endpoint),
+        _ => String::new(),
+    }
+}
+
+fn build_export_csv(rows: &[ExportLogRow], keys: &[&str]) -> String {
+    let mut csv = String::from('\u{FEFF}');
+    let headers: Vec<&str> = keys
+        .iter()
+        .filter_map(|k| {
+            LOG_EXPORT_COLUMNS
+                .iter()
+                .find(|c| c.key == *k)
+                .map(|c| c.header)
+        })
+        .collect();
+    csv.push_str(&headers.join(","));
+    csv.push('\n');
+    for row in rows {
+        let line = keys
+            .iter()
+            .map(|k| export_cell(k, row))
+            .collect::<Vec<_>>()
+            .join(",");
+        csv.push_str(&line);
+        csv.push('\n');
+    }
+    csv
+}
+
+#[derive(sqlx::FromRow)]
+struct ExportLogRow {
+    id: i64,
+    log_id: String,
+    user_id: String,
+    model: String,
+    prompt_tokens: i32,
+    completion_tokens: i32,
+    cached_tokens: i32,
+    cost: f64,
+    latency_ms: i32,
+    status_code: i32,
+    endpoint: String,
+    is_stream: Option<i32>,
+    billing_detail: Option<String>,
+    created_at: crate::time_system::DbTs,
+    user_nickname: Option<String>,
+    user_uid: String,
+    user_admin_remark: Option<String>,
+    task_id: String,
+    channel_group_aid: Option<String>,
+    is_ha: i32,
+    yid: Option<String>,
+    sub_channel_name: Option<String>,
+    token_name: Option<String>,
+    token_kid: Option<String>,
+    token_ha: i32,
+    billing_pid: Option<String>,
+    forward_eid: Option<String>,
+    error_message: Option<String>,
+    action_type: Option<String>,
+}
+
 pub async fn export_logs(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<auth::Claims>,
@@ -638,6 +814,15 @@ pub async fn export_logs(
 ) -> Result<Response, AppError> {
     if claims.role != "admin" {
         return Err(AppError::Forbidden("仅超级管理员可导出数据".to_string()));
+    }
+
+    let keys = resolve_export_keys(query.export_fields.as_deref());
+    if keys.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "未选择有效的导出字段" })),
+        )
+            .into_response());
     }
 
     let mut q = query.clone();
@@ -664,74 +849,26 @@ pub async fn export_logs(
         "SELECT l.id, COALESCE(l.log_id, '') as log_id, l.user_id, l.model, l.prompt_tokens, l.completion_tokens, l.cached_tokens, \
          l.cost, l.latency_ms, l.status_code, l.endpoint, l.is_stream, \
          l.billing_detail, l.created_at, \
-         c.name as channel_name, \
          COALESCE(u.nickname, u.username) as user_nickname, \
          COALESCE(u.uid, '') as user_uid, \
-         cc.name as sub_channel_name, \
-         COALESCE(l.task_id, '') as task_id \
-         FROM logs l{} \
-         {} ORDER BY l.created_at DESC LIMIT {}",
-        LOGS_EXPORT_JOINS, where_clause, EXPORT_LIMIT
+         NULLIF(btrim(COALESCE(u.admin_remark, '')), '') as user_admin_remark, \
+         COALESCE(l.task_id, '') as task_id, \
+         c.group_aid as channel_group_aid, l.is_ha, cc.yid as yid, cc.name as sub_channel_name, \
+         t.name as token_name, t.kid as token_kid, COALESCE(t.high_availability, 0) as token_ha, \
+         l.billing_pid, l.forward_eid, l.error_message, l.action_type \
+         FROM logs l{LOGS_LIST_JOINS} \
+         {where_clause} ORDER BY l.created_at DESC LIMIT {EXPORT_LIMIT}"
     ));
 
-    use sqlx::Row;
-    let raw_rows = {
-        let mut q = sqlx::query(&data_sql);
+    let raw_rows: Vec<ExportLogRow> = {
+        let mut q = sqlx::query_as(&data_sql);
         for v in &binds {
             q = q.bind(v);
         }
         q.fetch_all(&state.db.pool).await?
     };
 
-    let mut csv = String::from("\u{FEFF}日志ID,任务ID,ID,用户ID,用户昵称,UID,模型,输入Tokens,输出Tokens,缓存Tokens,费用,耗时(ms),状态码,类型,渠道,上游子渠道,计费明细,请求路径,时间\n");
-    for row in &raw_rows {
-        let id: i64 = row.get(0);
-        let log_id: String = row.get(1);
-        let user_id: String = row.get(2);
-        let model: String = row.get(3);
-        let prompt_tokens: i32 = row.get(4);
-        let completion_tokens: i32 = row.get(5);
-        let cached_tokens: i32 = row.get(6);
-        let cost: f64 = row.get(7);
-        let latency_ms: i32 = row.get(8);
-        let status_code: i32 = row.get(9);
-        let endpoint: String = row.get(10);
-        let is_stream: Option<i32> = row.get(11);
-        let billing_detail: Option<String> = row.get(12);
-        let created_at: crate::time_system::DbTs = row.get(13);
-        let channel_name: Option<String> = row.get(14);
-        let user_nickname: Option<String> = row.get(15);
-        let user_uid: String = row.get(16);
-        let sub_channel_name: Option<String> = row.get(17);
-        let task_id: String = row.get(18);
-        let stream_label = match is_stream {
-            Some(1) => "流",
-            _ => "非流",
-        };
-        let formatted_time = format_db_time(&created_at);
-        csv.push_str(&format!(
-            "\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},{:.6},{},{},{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\"\n",
-            log_id,
-            task_id,
-            id,
-            user_id,
-            user_nickname.as_deref().unwrap_or("-").replace('"', "\"\""),
-            user_uid,
-            model.replace('"', "\"\""),
-            prompt_tokens,
-            completion_tokens,
-            cached_tokens,
-            cost,
-            latency_ms,
-            status_code,
-            stream_label,
-            channel_name.as_deref().unwrap_or("-").replace('"', "\"\""),
-            sub_channel_name.as_deref().unwrap_or("-").replace('"', "\"\""),
-            billing_detail.as_deref().unwrap_or("").replace('"', "\"\""),
-            endpoint.replace('"', "\"\""),
-            formatted_time,
-        ));
-    }
+    let csv = build_export_csv(&raw_rows, &keys);
 
     let filename = format!(
         "usage_logs_{}.csv",

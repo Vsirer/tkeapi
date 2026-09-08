@@ -21,6 +21,8 @@ Ark のテキストからの画像生成 API と完全に一致しており、�
 * **タスクのキャンセル/削除**: `/api/v3/contents/generations/tasks/{task_id}` (`DELETE`)
 * **タスク履歴の一覧表示**: `/api/v3/contents/generations/tasks` (`GET`)
 
+推奨 `doubao-seedance-2-5`（旧版 `doubao-seedance-2-0` は文末）。`content.role` で first_frame / last_frame / reference_* を指定。[動画生成 API](https://www.volcengine.com/docs/82379/1520757)。Seedance 2.5 は duration `4`–`30` または `-1`、編集は `ratio=adaptive` かつ `duration=-1`。
+
 ### 4. 音声合成 API (TTS)
 * **イベントストリームモード (SSE)**: `/api/v3/tts/unidirectional/sse` (`POST`)
 * **非ストリーミング HTTP モード**: `/api/v3/tts/unidirectional` (`POST`)

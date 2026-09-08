@@ -2,6 +2,8 @@
 
 OpenAI-compatible image APIs. Use the endpoints and parameters below.
 
+> Alibaba Qwen image (`qwen-image-3.0-pro`): see article **`wan-image`**.
+
 ### 1. Image Generations
 * **Path**: `/v1/images/generations`
 * **Method**: `POST`
@@ -9,7 +11,7 @@ OpenAI-compatible image APIs. Use the endpoints and parameters below.
 #### Major Request Parameters
 | Parameter | Type | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | Yes | Image model name, e.g. `dall-e-3`, `wanx-v1`, `seedream-5.0-lite` |
+| `model` | `string` | Yes | Image model name, e.g. `dall-e-3`, `qwen-image-3.0-pro`, `seedream-5.0-lite` |
 | `prompt` | `string` | Yes | Text description of the desired image(s) |
 | `n` | `integer` | No | Number of images (default `1`) |
 | `size` | `string` | No | Resolution, e.g. `1024x1024` |
@@ -17,7 +19,7 @@ OpenAI-compatible image APIs. Use the endpoints and parameters below.
 | `response_format` | `string` | No | `url` (default) or `b64_json` |
 | `output_format` | `string` | No | Image encoding such as `png` / `jpeg` / `webp` |
 | `watermark` | `boolean` | No | Whether to add a watermark |
-| `web_search` | `boolean` | No | Enable web search (default `false`) |
+| `web_search` | `boolean` | No | Enable web search (default `false`; Volcengine/Gemini only) |
 | `ratio` | `string` | No | Aspect ratio, e.g. `16:9`, `3:4` |
 | `image` | `string / array` | No | Reference image URL(s) for image-to-image |
 | `image_urls` | `array` | No | Reference image URL array |
@@ -51,4 +53,31 @@ curl -X POST https://{{domain}}/v1/images/generations \
 * **Path**: `/v1/images/edits`
 * **Method**: `POST`
 
-Supports a base image, optional mask, and prompt for local edits / inpainting.
+Supports base image + optional mask + prompt. JSON URL mode (gateway extension) or OpenAI multipart upload.
+
+#### A. JSON with image URLs
+```bash
+curl -X POST https://{{domain}}/v1/images/edits \
+  -H "Authorization: Bearer sk-your_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "image": "https://example.com/base.png",
+    "mask": "https://example.com/mask.png",
+    "prompt": "Add a red knit hat in the masked area",
+    "size": "1024x1024",
+    "n": 1
+  }'
+```
+
+#### B. OpenAI multipart (local files)
+```bash
+curl -X POST https://{{domain}}/v1/images/edits \
+  -H "Authorization: Bearer sk-your_token" \
+  -F "model=gpt-image-2" \
+  -F "image=@/path/to/base.png" \
+  -F "mask=@/path/to/mask.png" \
+  -F "prompt=Add a red knit hat in the masked area" \
+  -F "size=1024x1024" \
+  -F "n=1"
+```

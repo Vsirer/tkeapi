@@ -48,6 +48,9 @@ pub struct Model {
     #[sqlx(default)]
     #[serde(default)]
     pub is_system: i32,
+    #[sqlx(default)]
+    #[serde(default)]
+    pub sort_order: i32,
     pub created_at: DbTs,
     pub updated_at: DbTs,
     #[sqlx(default)]
@@ -401,6 +404,7 @@ pub struct CreateModelRequest {
     pub remark: Option<String>,
     pub description: Option<String>,
     pub feature_attributes: Option<String>,
+    pub sort_order: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,6 +430,7 @@ pub struct UpdateModelRequest {
     pub remark: Option<String>,
     pub description: Option<String>,
     pub feature_attributes: Option<String>,
+    pub sort_order: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]

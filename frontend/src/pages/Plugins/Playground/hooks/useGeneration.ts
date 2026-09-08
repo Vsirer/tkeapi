@@ -136,19 +136,11 @@ const isRequestAborted = (err: any): boolean => {
   );
 };
 
-/** 判断错误是否为客户端网络层异常（非服务端业务错误） */
-const isNetworkError = (err: any): boolean => {
-  if (!err) return false;
-  const msg = (err.message || '').toLowerCase();
-  return (
-    err.code === 'ERR_NETWORK' ||
-    msg.includes('network error') ||
-    msg.includes('timeout') ||
-    msg.includes('econnreset') ||
-    msg.includes('econnrefused') ||
-    msg.includes('enotfound')
-  );
-};
+/** 轮询：正常间隔 3s；异常重试 30→20→10→5s；连续异常上限 20 */
+const POLL_INTERVAL_MS = 3000;
+const POLL_ERROR_RETRY_DELAYS_MS = [30_000, 20_000, 10_000, 5_000];
+const MAX_CONSECUTIVE_POLL_ERRORS = 20;
+const POLL_FAILED_STATUSES = ['failed', 'fail', 'error'];
 
 /** 创作附件上传到 references/（占容量、不占素材上限） */
 async function prepareAndUploadAssets(attachedAssets: any[], currentProjectId: number | null): Promise<any[]> {
@@ -411,8 +403,7 @@ export const useGlobalTaskPolling = () => {
   /** 轮询异步任务状态（视频/图片） */
   const pollTaskStatus = useCallback((nodeId: string, taskId: string, modelId: string, nodeType: string, pollEndpointTemplate?: string, tokenKey?: string) => {
     let attempts = 0;
-    let consecutiveErrors = 0; // 连续异常计数
-    const pollIntervalMs = 3000;
+    let consecutiveErrors = 0;
     // 按间隔换算软超时墙钟：视频约 60min，图片/其他约 15min
     const maxAttempts = nodeType === 'video' ? 1200 : 300;
 
@@ -527,7 +518,7 @@ export const useGlobalTaskPolling = () => {
           setTaskPollingNodes(prev => prev.filter(id => id !== nodeId));
           activePollingRef.current.delete(nodeId);
           return;
-        } else if (['failed', 'fail', 'error'].includes(taskStatus)) {
+        } else if (POLL_FAILED_STATUSES.includes(taskStatus)) {
           setNodes(prev => {
             const origNode = prev.find(item => item.id === nodeId);
             const errNodes: CanvasNode[] = prev.map(n => {
@@ -552,7 +543,7 @@ export const useGlobalTaskPolling = () => {
           activePollingRef.current.delete(nodeId);
           return;
         }
-        schedulePoll(poll, pollIntervalMs);
+        schedulePoll(poll, POLL_INTERVAL_MS);
       } catch (e: any) {
         // 请求被取消或页面卸载 → 忽略，不计入错误
         if (isUnloadingRef.current || isRequestAborted(e)) return;
@@ -563,7 +554,7 @@ export const useGlobalTaskPolling = () => {
 
         // 服务端明确返回失败状态 → 直接终止
         const respStatus = String(respData?.status || '').toLowerCase();
-        if (['failed', 'fail', 'error'].includes(respStatus)) {
+        if (POLL_FAILED_STATUSES.includes(respStatus)) {
           setNodes(prev => {
             const origNode = prev.find(item => item.id === nodeId);
             const errNodes: CanvasNode[] = prev.map(n => {
@@ -589,63 +580,28 @@ export const useGlobalTaskPolling = () => {
           return;
         }
 
-        // 区分网络层异常与非网络异常，差异化容错
-        const isNetErr = isNetworkError(e);
-        // 网络异常：视频任务生成周期长(常超8分钟)，给予更高容错；非网络异常保持 3 次
-        const maxErrors = isNetErr ? (nodeType === 'video' ? 10 : 6) : 3;
-
-        if (consecutiveErrors >= maxErrors) {
-          if (isNetErr) {
-            // 网络异常达到上限 → 软失败：保持 loading + poll_exhausted 标记
-            // 刷新页面后自动恢复 useEffect 会重新启动轮询
-            pollExhaustedRef.current.add(nodeId);
-            let exhaustedNodes: CanvasNode[] = [];
-            setNodes(prev => {
-              const updated = prev.map(n => n.id === nodeId ? {
-                ...n,
-                taskData: { ...(n.taskData || {}), poll_exhausted: true }
-              } : n);
-              exhaustedNodes = updated;
-              return updated;
-            });
-            saveCanvasRef.current?.(exhaustedNodes);
-          } else {
-            // 非网络类异常达到上限 → 标记为错误
-            setNodes(prev => {
-              const origNode = prev.find(item => item.id === nodeId);
-              const errNodes: CanvasNode[] = prev.map(n => {
-                if (n.id === nodeId) {
-                  return { ...n, status: 'error' as const, resultData: { message: `连续${consecutiveErrors}次轮询异常: ${errMsg}` } };
-                }
-                if (origNode && origNode.parentId && n.id === origNode.parentId && n.taskData?.node_type === 'volc_enhance') {
-                  return {
-                    ...n,
-                    taskData: {
-                      ...(n.taskData || {}),
-                      enhance_status: 'failed'
-                    }
-                  };
-                }
-                return n;
-              });
-              saveCanvasRef.current?.(errNodes);
-              return errNodes;
-            });
-          }
+        if (consecutiveErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+          pollExhaustedRef.current.add(nodeId);
+          let exhaustedNodes: CanvasNode[] = [];
+          setNodes(prev => {
+            const updated = prev.map(n => n.id === nodeId ? {
+              ...n,
+              taskData: { ...(n.taskData || {}), poll_exhausted: true }
+            } : n);
+            exhaustedNodes = updated;
+            return updated;
+          });
+          saveCanvasRef.current?.(exhaustedNodes);
           setTaskPollingNodes(prev => prev.filter(id => id !== nodeId));
           activePollingRef.current.delete(nodeId);
           return;
         }
 
-        // 网络异常指数退避（3s 起，上限 30s），减少无效请求
-        const retryDelay = isNetErr
-          ? Math.min(pollIntervalMs + consecutiveErrors * pollIntervalMs, 30000)
-          : pollIntervalMs;
-        schedulePoll(poll, retryDelay);
+        schedulePoll(poll, POLL_ERROR_RETRY_DELAYS_MS[Math.min(consecutiveErrors - 1, POLL_ERROR_RETRY_DELAYS_MS.length - 1)]);
       }
     };
 
-    // 新建/刚捕获节点：立即首查，之后按 pollIntervalMs 周期
+    // 新建/刚捕获节点：立即首查，之后按 POLL_INTERVAL_MS 周期
     schedulePoll(poll, 100);
   }, [setNodes, setTaskPollingNodes, persistAsset]);
 

@@ -209,11 +209,11 @@ fn default_portal_nav_config() -> serde_json::Value {
         "logo_text": "Tkeapi",
         "logo_link": "/home",
         "items": [
-            {"label": "平台优势|Platform Advantages", "path": "#features", "enabled": true, "key": "features"},
-            {"label": "核心功能|Core Features", "path": "#carousel", "enabled": true, "key": "carousel"},
-            {"label": "模型矩阵|Model Matrix", "path": "#models", "enabled": true, "key": "models"},
-            {"label": "接入指南|Integration Guide", "path": "#integration", "enabled": true, "key": "integration"},
-            {"label": "模型广场|Model Marketplace", "path": "/home/models", "enabled": true, "key": "marketplace"}
+            {"label": "平台优势|Platform Advantages", "path": "#features", "enabled": true, "target_blank": false, "key": "features"},
+            {"label": "核心功能|Core Features", "path": "#carousel", "enabled": true, "target_blank": false, "key": "carousel"},
+            {"label": "模型矩阵|Model Matrix", "path": "#models", "enabled": true, "target_blank": false, "key": "models"},
+            {"label": "接入指南|Integration Guide", "path": "#integration", "enabled": true, "target_blank": false, "key": "integration"},
+            {"label": "模型广场|Model Marketplace", "path": "/home/models", "enabled": true, "target_blank": false, "key": "marketplace"}
         ],
         "cta_text": "登录|Login",
         "cta_link": "/login",
@@ -1148,7 +1148,7 @@ async fn build_portal_data(
     } else {
         let models: Vec<SimpleModel> = sqlx::query_as(
         &state.db.format_query(
-            "SELECT m.id, m.name AS model_name, m.mid, m.model_id, m.original_id, t.name AS type_name, p.name AS provider_name, \
+            "SELECT m.id, m.name AS model_name, m.mid, m.model_id, m.original_id, m.sort_order, t.name AS type_name, p.name AS provider_name, \
              m.global_discount, m.global_discount_enabled, \
              CASE WHEN i.file_path IS NOT NULL THEN '/assets/' || i.file_path \
                   WHEN m.logo IS NOT NULL AND m.logo != '' THEN m.logo \
@@ -1168,7 +1168,7 @@ async fn build_portal_data(
              LEFT JOIN site_icons ti ON ti.name = t.logo \
              LEFT JOIN site_icons pi ON pi.name = p.logo \
              LEFT JOIN billing_rules br ON m.billing_rule_id = br.id \
-             WHERE m.is_active = 1 ORDER BY m.id DESC"
+             WHERE m.is_active = 1 ORDER BY m.sort_order DESC, m.id DESC"
         )
     ).fetch_all(&state.db.pool).await.unwrap_or_default();
 
@@ -1189,10 +1189,14 @@ async fn build_portal_data(
                 continue;
             }
 
-            let sort_order = model_conf
-                .get("sort_order")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let sort_order = if m.sort_order != 0 {
+                m.sort_order
+            } else {
+                model_conf
+                    .get("sort_order")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+            };
             let customized_desc = model_conf
                 .get("description")
                 .and_then(|v| v.as_str())
@@ -1205,7 +1209,7 @@ async fn build_portal_data(
             filtered_models.push(m);
         }
 
-        filtered_models.sort_by(|a, b| b.sort_order.cmp(&a.sort_order));
+        filtered_models.sort_by(|a, b| b.sort_order.cmp(&a.sort_order).then_with(|| b.id.cmp(&a.id)));
 
         let mut grouped_map: std::collections::HashMap<String, Vec<serde_json::Value>> =
             std::collections::HashMap::new();
@@ -1231,9 +1235,22 @@ async fn build_portal_data(
         grouped_order
             .into_iter()
             .filter_map(|group_key| {
-                let variants = grouped_map.remove(&group_key)?;
+                let mut variants = grouped_map.remove(&group_key)?;
+                variants.sort_by(|a, b| {
+                    let sa = a.get("sort_order").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let sb = b.get("sort_order").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let ida = a.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let idb = b.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    sb.cmp(&sa).then_with(|| idb.cmp(&ida))
+                });
                 let primary = &variants[0];
                 let mut group = primary.clone();
+                let max_sort_order = variants
+                    .iter()
+                    .map(|v| v.get("sort_order").and_then(|x| x.as_i64()).unwrap_or(0))
+                    .max()
+                    .unwrap_or(0);
+                group["sort_order"] = json!(max_sort_order);
                 group["variant_count"] = json!(variants.len());
                 group["variants"] = json!(variants);
                 let original_id = primary

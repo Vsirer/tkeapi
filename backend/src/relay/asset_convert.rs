@@ -16,7 +16,7 @@
 //!
 //! 去重：URL 用 Range 元数据指纹（失败降级 URL 串）；base64 用内容 SHA-256。
 
-use crate::services::upstream_asset_client as uac;
+use crate::api::plugins::upstream_asset_relay::client as uac;
 use crate::AppState;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -194,7 +194,7 @@ pub async fn convert_content_urls(
     .unwrap_or(false);
 
     if !plugin_enabled {
-        tracing::info!(
+        crate::relay_debug!(
             "[AssetConvert] 素材资产管理插件({}) 未启用，跳过素材转换",
             plugin_ns
         );
@@ -206,7 +206,7 @@ pub async fn convert_content_urls(
     let mut volc_config = match crate::api::plugins::get_volc_config(state, plugin_ns).await {
         Some(vc) => vc,
         None => {
-            tracing::info!(
+            crate::relay_debug!(
                 "[AssetConvert] 素材资产管理插件({}) 未配置审核凭证，跳过素材转换",
                 plugin_ns
             );
@@ -234,7 +234,7 @@ pub async fn convert_content_urls(
     }
 
     // 预加载 TOS 配置（base64 场景需要）
-    let tos_config = crate::api::plugins::get_tos_config(state, plugin_ns).await;
+    let tos_config = crate::api::plugins::get_object_store(state, plugin_ns).await;
 
     let tasks = collect_content_convert_tasks(content_arr);
     if tasks.is_empty() {
@@ -297,16 +297,18 @@ pub async fn convert_content_urls(
             } else {
                 Err("不支持的格式".to_string())
             };
-            (idx, url_key, asset_type, url_short, asset_result)
+            match asset_result {
+                Ok((aid, cached)) => Ok((idx, url_key, asset_type, url_short, aid, cached)),
+                Err(reason) => Err((asset_type, url_short, reason)),
+            }
         };
         futures.push(fut);
     }
 
-    // 收集并发结果
-    let results = futures::future::join_all(futures).await;
-    for (idx, url_key, asset_type, url_short, asset_result) in results {
-        match asset_result {
-            Ok((aid, cached)) => {
+    // Fail-Fast: 任一素材转换失败立即短路退出并取消其余未完成任务，避免浪费配额与带宽
+    match futures::future::try_join_all(futures).await {
+        Ok(results) => {
+            for (idx, url_key, asset_type, url_short, aid, cached) in results {
                 push_convert_ok(
                     content_arr,
                     &mut logs,
@@ -318,24 +320,23 @@ pub async fn convert_content_urls(
                     cached,
                 );
             }
-            Err(reason) => {
-                // 提取火山引擎错误中的 Message 字段用于日志摘要，完整错误由 errors 传递
-                let brief = reason
-                    .find('{')
-                    .and_then(|i| serde_json::from_str::<serde_json::Value>(&reason[i..]).ok())
-                    .and_then(|j| {
-                        j.pointer("/ResponseMetadata/Error/Message")
-                            .or_else(|| j.pointer("/Error/Message"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_else(|| reason.clone());
-                logs.push(format!(
-                    "[{}] {} ✗ 转换失败: {}",
-                    asset_type, url_short, brief
-                ));
-                errors.push(reason);
-            }
+        }
+        Err((asset_type, url_short, reason)) => {
+            let brief = reason
+                .find('{')
+                .and_then(|i| serde_json::from_str::<serde_json::Value>(&reason[i..]).ok())
+                .and_then(|j| {
+                    j.pointer("/ResponseMetadata/Error/Message")
+                        .or_else(|| j.pointer("/Error/Message"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| reason.clone());
+            logs.push(format!(
+                "[{}] {} ✗ 转换失败: {}",
+                asset_type, url_short, brief
+            ));
+            errors.push(reason);
         }
     }
     (logs, errors)
@@ -358,7 +359,7 @@ async fn convert_url_resource(
         lookup_cached_converted_asset(state, url, plugin_ns, "relay_convert", meta_fp.as_deref())
             .await
     {
-        tracing::info!("[AssetConvert] 命中缓存，复用素材: {} -> {}", url, aid);
+        crate::relay_debug!("[AssetConvert] 命中缓存，复用素材: {} -> {}", url, aid);
         return Ok((aid, true));
     }
 
@@ -386,13 +387,14 @@ async fn convert_url_resource(
                 fp_ref,
                 plugin_ns,
                 "relay_convert",
+                "tos",
             )
             .await;
-            tracing::info!("[AssetConvert] 新素材注册成功: {} -> {}", url, aid);
+            crate::relay_debug!("[AssetConvert] 新素材注册成功: {} -> {}", url, aid);
             Ok((aid, false))
         }
         Err(reason) => {
-            tracing::warn!("[AssetConvert] 素材注册失败: {} - URL: {}", reason, url);
+            crate::relay_debug!("[AssetConvert] 素材注册失败: {} - URL: {}", reason, url);
             Err(reason)
         }
     }
@@ -402,7 +404,7 @@ async fn convert_url_resource(
 /// CreateAsset 回调只收公网 URL，与官方接口约束一致；插件/上游路径共用本函数。
 async fn convert_base64_with_create<F, Fut>(
     state: &AppState,
-    tos_config: &Option<crate::services::tos::TosConfig>,
+    tos_config: &Option<crate::services::object_store::ObjectStore>,
     user_id: &str,
     plugin_ns: &str,
     source: &str,
@@ -420,7 +422,7 @@ where
     let content_hash = hex::encode(Sha256::digest(&bytes));
 
     if let Some(aid) = query_by_hash_with_source(state, &content_hash, plugin_ns, source).await {
-        tracing::info!(
+        crate::relay_debug!(
             "[AssetConvert] base64 哈希命中，复用素材: 哈希={:.16}... -> {}",
             content_hash,
             aid
@@ -435,17 +437,17 @@ where
     let tmp_filename = format!("{}.{}", &content_hash[..16], ext);
     let tmp_object_key = tos_cfg.full_key(&format!("_tmp_asset_convert/{}", tmp_filename));
 
-    let tmp_url = crate::services::tos::upload_file(
-        tos_cfg,
-        &tmp_object_key,
-        bytes,
-        &format!("{}/{}", asset_type.to_lowercase(), ext),
-        None,
-    )
-    .await
-    .map_err(|e| format!("TOS 临时文件上传失败: {}", e))?;
+    let tmp_url = tos_cfg
+        .upload_file(
+            &tmp_object_key,
+            bytes,
+            &format!("{}/{}", asset_type.to_lowercase(), ext),
+            None,
+        )
+        .await
+        .map_err(|e| format!("对象存储临时文件上传失败: {}", e))?;
 
-    tracing::info!("[AssetConvert] base64 临时文件已上传: {}", tmp_url);
+    crate::relay_debug!("[AssetConvert] base64 临时文件已上传: {}", tmp_url);
 
     let create_result = create_from_url(tmp_url.clone()).await;
     schedule_tos_temp_cleanup(tos_cfg.clone(), tmp_object_key);
@@ -461,9 +463,10 @@ where
         None,
         plugin_ns,
         source,
+        tos_cfg.provider(),
     )
     .await;
-    tracing::info!(
+    crate::relay_debug!(
         "[AssetConvert] base64 素材注册成功: base64_{}.{} -> {}",
         &content_hash[..8],
         ext,
@@ -472,12 +475,15 @@ where
     Ok((aid, false))
 }
 
-fn schedule_tos_temp_cleanup(tos_cfg: crate::services::tos::TosConfig, tmp_object_key: String) {
+fn schedule_tos_temp_cleanup(
+    tos_cfg: crate::services::object_store::ObjectStore,
+    tmp_object_key: String,
+) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        match crate::services::tos::delete_file(&tos_cfg, &tmp_object_key).await {
-            Ok(_) => tracing::info!("[AssetConvert] TOS 临时文件已清理: {}", tmp_object_key),
-            Err(e) => tracing::warn!(
+        match tos_cfg.delete_file(&tmp_object_key).await {
+            Ok(_) => crate::relay_debug!("[AssetConvert] TOS 临时文件已清理: {}", tmp_object_key),
+            Err(e) => crate::relay_debug!(
                 "[AssetConvert] TOS 临时文件清理失败(非致命): {} - {}",
                 tmp_object_key,
                 e
@@ -526,7 +532,7 @@ async fn fetch_meta_fingerprint(http_client: &reqwest::Client, url: &str) -> Opt
             } else {
                 "其它错误"
             };
-            tracing::warn!(
+            crate::relay_debug!(
                 "[AssetConvert] Range 元数据请求失败({}): {} - {}",
                 kind,
                 url_short,
@@ -538,7 +544,7 @@ async fn fetch_meta_fingerprint(http_client: &reqwest::Client, url: &str) -> Opt
 
     let status = resp.status();
     if !status.is_success() {
-        tracing::warn!(
+        crate::relay_debug!(
             "[AssetConvert] Range 元数据状态码异常({}), 降级 URL 去重: {}",
             status,
             url_short
@@ -582,14 +588,14 @@ async fn fetch_meta_fingerprint(http_client: &reqwest::Client, url: &str) -> Opt
     let _ = resp.bytes().await;
 
     if full_len.is_empty() && etag.is_empty() && last_modified.is_empty() {
-        tracing::info!(
+        crate::relay_debug!(
             "[AssetConvert] Range 无有效标识字段(Length/ETag/Last-Modified), 降级 URL 去重: {}",
             url_short
         );
         return None;
     }
 
-    tracing::info!(
+    crate::relay_debug!(
         "[AssetConvert] Range 元数据: 长度={}, ETag={}, 修改时间={} | {}",
         if full_len.is_empty() { "-" } else { &full_len },
         if etag.is_empty() { "-" } else { &etag },
@@ -676,7 +682,7 @@ async fn lookup_cached_converted_asset(
         if let Some(aid) = query_by_fingerprint_with_source(state, fp, plugin_ns, source).await {
             return Some(aid);
         }
-        tracing::info!(
+        crate::relay_debug!(
             "[AssetConvert] 元数据指纹未命中(内容可能已变化)，跳过 URL 复用并重新注册: {}",
             shorten_url_for_log(url)
         );
@@ -778,13 +784,14 @@ async fn insert_asset_record_with_source(
     meta_fingerprint: Option<&str>,
     plugin_ns: &str,
     source: &str,
+    storage_provider: &str,
 ) {
     let at_lower = asset_type.to_lowercase();
     let fname = derive_create_asset_name(file_url, asset_type);
     if let Err(e) = sqlx::query(
         &state.db.format_query(
-            "INSERT INTO plugin_assets (user_id, asset_type, source, status, file_name, file_url, asset_id, category, content_hash, meta_fingerprint, plugin_ns) \
-             VALUES (?, ?, ?, 'approved', ?, ?, ?, '转换素材', ?, ?, ?)"
+            "INSERT INTO plugin_assets (user_id, asset_type, source, status, file_name, file_url, asset_id, category, content_hash, meta_fingerprint, plugin_ns, storage_provider) \
+             VALUES (?, ?, ?, 'approved', ?, ?, ?, '转换素材', ?, ?, ?, ?)"
         )
     )
     .bind(user_id)
@@ -796,10 +803,11 @@ async fn insert_asset_record_with_source(
     .bind(content_hash)
     .bind(meta_fingerprint)
     .bind(plugin_ns)
+    .bind(storage_provider)
     .execute(&state.db.pool)
     .await
     {
-        tracing::warn!(
+        crate::relay_debug!(
             "[AssetConvert] 写入 plugin_assets 失败(将导致无法复用缓存): {} | URL={} 素材ID={} 命名空间={} 来源={}",
             e,
             file_url,
@@ -863,12 +871,12 @@ async fn create_asset(
         // 启发式判断：如果错误提示与 group、权限有关，则尝试重置 GroupID
         // 避免因为单纯的图片 URL 无效或网络超时导致滥建素材组
         if e_lower.contains("group") || e_lower.contains("auth") {
-            tracing::warn!("[AssetConvert] CreateAsset 失败，可能由于 AccessKey 变更导致原 GroupID 无效，准备重试。原错误: {}", e);
+            crate::relay_debug!("[AssetConvert] CreateAsset 失败，可能由于 AccessKey 变更导致原 GroupID 无效，准备重试。原错误: {}", e);
 
             // 防止高并发下产生多个冗余 Group，先从数据库重新拉取一次最新配置，判断是否已被其他并发请求刷新
             if let Some(latest_cfg) = crate::api::plugins::get_volc_config(state, plugin_ns).await {
                 if latest_cfg.group_id.is_some() && latest_cfg.group_id != Some(group_id.clone()) {
-                    tracing::info!(
+                    crate::relay_debug!(
                         "[AssetConvert] 发现其他并发请求已更新素材组 ID，直接复用: {:?}",
                         latest_cfg.group_id
                     );
@@ -929,7 +937,7 @@ async fn create_asset(
         {
             Ok(res) => match res.status.as_str() {
                 "Active" => {
-                    tracing::info!(
+                    crate::relay_debug!(
                         "[AssetConvert] 素材就绪: {} (等待 {}s)",
                         asset_id,
                         (attempt + 1) * POLL_INTERVAL_SECS
@@ -955,11 +963,11 @@ async fn create_asset(
                             (true, true) => "审核未通过".to_string(),
                         }
                     };
-                    tracing::error!("[AssetConvert] 素材处理失败: {} - {}", asset_id, reason);
+                    crate::relay_debug!("[AssetConvert] 素材处理失败: {} - {}", asset_id, reason);
                     return Err(format!("素材处理失败({}): {}", asset_id, reason));
                 }
                 status => {
-                    tracing::info!(
+                    crate::relay_debug!(
                         "[AssetConvert] 素材处理中: {} 状态={} (第{}/{}次)",
                         asset_id,
                         status,
@@ -970,7 +978,7 @@ async fn create_asset(
             },
             Err(e) => {
                 let err_str = e.to_string();
-                tracing::warn!(
+                crate::relay_debug!(
                     "[AssetConvert] GetAsset 查询失败: {} - {}",
                     asset_id,
                     err_str
@@ -1029,7 +1037,7 @@ async fn ensure_group_id(
     {
         Ok(res) => {
             let new_sg_id = res.id;
-            tracing::info!("[AssetConvert] 成功自动生成 Ark 素材组 ID: {}", new_sg_id);
+            crate::relay_debug!("[AssetConvert] 成功自动生成 Ark 素材组 ID: {}", new_sg_id);
             volc_config.group_id = Some(new_sg_id.clone());
 
             // 存入数据库
@@ -1055,7 +1063,7 @@ async fn ensure_group_id(
             true
         }
         Err(e) => {
-            tracing::error!(
+            crate::relay_debug!(
                 "[AssetConvert] 自动生成 Ark 素材组失败，未满足必需属性，拦截执行: {}",
                 e
             );
@@ -1082,6 +1090,8 @@ pub async fn convert_content_urls_via_upstream(
         is_active: Option<i32>,
         asset_base_path: Option<String>,
         group_id: Option<String>,
+        #[sqlx(default)]
+        asset_protocol: Option<String>,
         channel_config_id: Option<i64>,
         base_url: Option<String>,
         api_key: Option<String>,
@@ -1092,7 +1102,8 @@ pub async fn convert_content_urls_via_upstream(
     // 以 plugins 为主表一次取出启用状态与绑定/渠道，语义与「先查插件再查绑定」一致
     let row: Option<BindingRow> = sqlx::query_as(&state.db.format_query(
         "SELECT p.is_enabled AS plugin_enabled, b.id AS binding_found, b.is_active, \
-                b.asset_base_path, b.group_id, b.channel_config_id, c.base_url, c.api_key, \
+                b.asset_base_path, b.group_id, COALESCE(b.asset_protocol, 'ark_action') AS asset_protocol, \
+                b.channel_config_id, c.base_url, c.api_key, \
                 c.status AS config_status \
          FROM plugins p \
          LEFT JOIN upstream_asset_bindings b ON b.id = ? \
@@ -1108,7 +1119,7 @@ pub async fn convert_content_urls_via_upstream(
 
     // 插件记录不存在或未启用 → 同样跳过
     let Some(mut row) = row.filter(|r| r.plugin_enabled == 1) else {
-        tracing::info!("[UpstreamAsset] 插件未启用，跳过素材转换");
+        crate::relay_debug!("[UpstreamAsset] 插件未启用，跳过素材转换");
         logs.push("上游素材转换跳过: 插件未启用".to_string());
         return (logs, errors);
     };
@@ -1142,6 +1153,8 @@ pub async fn convert_content_urls_via_upstream(
     }
     let asset_base_path = row.asset_base_path.take().unwrap_or_default();
     let mut group_id_opt = row.group_id.take();
+    let protocol = uac::normalize_asset_protocol(row.asset_protocol.as_deref().unwrap_or(""));
+    let is_portrait = protocol == uac::PROTOCOL_PORTRAIT_REST;
 
     let content_arr = match body.get_mut("content").and_then(|c| c.as_array_mut()) {
         Some(arr) => arr,
@@ -1159,8 +1172,18 @@ pub async fn convert_content_urls_via_upstream(
         api_key: &api_key,
     };
 
-    // 确保 GroupId
-    if group_id_opt
+    // 确保 GroupId / REST 素材库 id
+    if is_portrait {
+        match ensure_portrait_library_id(state, &call_ctx, binding_id, group_id_opt.as_deref())
+            .await
+        {
+            Ok(lid) => group_id_opt = Some(lid),
+            Err(e) => {
+                errors.push(e);
+                return (logs, errors);
+            }
+        }
+    } else if group_id_opt
         .as_ref()
         .map(|s| s.trim().is_empty())
         .unwrap_or(true)
@@ -1180,12 +1203,20 @@ pub async fn convert_content_urls_via_upstream(
     }
 
     // base64 与插件路径相同：依赖系统/插件 TOS（upstream_asset_relay 无独立 TOS 时回退系统配置）
-    let tos_config = crate::api::plugins::get_tos_config(state, uac::PLUGIN_NAME).await;
+    let tos_config = crate::api::plugins::get_object_store(state, uac::PLUGIN_NAME).await;
     let group_id = group_id_opt.unwrap_or_default();
 
     for (idx, url_key, asset_type, url_val, url_short) in tasks {
         let asset_result = if is_http_media_url(&url_val) {
-            convert_url_via_upstream(state, &call_ctx, &group_id, &url_val, &asset_type).await
+            convert_url_via_binding(
+                state,
+                &call_ctx,
+                &group_id,
+                &url_val,
+                &asset_type,
+                is_portrait,
+            )
+            .await
         } else if is_base64_media(&url_val) {
             convert_base64_with_create(
                 state,
@@ -1199,7 +1230,13 @@ pub async fn convert_content_urls_via_upstream(
                     let ctx = &call_ctx;
                     let gid = group_id.as_str();
                     let at = asset_type.as_str();
-                    async move { create_asset_via_upstream(ctx, gid, &tmp_url, at).await }
+                    async move {
+                        if is_portrait {
+                            create_asset_via_portrait(ctx, gid, &tmp_url, at).await
+                        } else {
+                            create_asset_via_upstream(ctx, gid, &tmp_url, at).await
+                        }
+                    }
                 },
             )
             .await
@@ -1223,11 +1260,103 @@ pub async fn convert_content_urls_via_upstream(
             Err(reason) => {
                 logs.push(format!("[{}] {} ✗ {}", asset_type, url_short, reason));
                 errors.push(reason);
+                break;
             }
         }
     }
 
     (logs, errors)
+}
+
+/// REST：确保素材库本地 id；无则创建并回写。
+async fn ensure_portrait_library_id(
+    state: &AppState,
+    ctx: &uac::UpstreamCallCtx<'_>,
+    binding_id: i64,
+    existing: Option<&str>,
+) -> Result<String, String> {
+    if let Some(id) = existing.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(id.to_string());
+    }
+
+    let name = format!("tokensbyte_uar_{}", binding_id);
+    let library_id = uac::portrait_create_virtual_library(ctx, &name).await?;
+    write_binding_group_id(state, binding_id, &library_id).await;
+    crate::relay_debug!(
+        "[UpstreamAsset] 素材库就绪并回写绑定#{}: library_id={}",
+        binding_id,
+        library_id
+    );
+    Ok(library_id)
+}
+
+async fn write_binding_group_id(state: &AppState, binding_id: i64, group_id: &str) {
+    let _ = sqlx::query(
+        &state.db.format_query(
+            "UPDATE upstream_asset_bindings SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        ),
+    )
+    .bind(group_id)
+    .bind(binding_id)
+    .execute(&state.db.pool)
+    .await;
+}
+
+/// URL：缓存命中则复用，否则按协议 Create + 落库。
+async fn convert_url_via_binding(
+    state: &AppState,
+    ctx: &uac::UpstreamCallCtx<'_>,
+    group_id: &str,
+    url: &str,
+    asset_type: &str,
+    is_portrait: bool,
+) -> Result<(String, bool), String> {
+    let meta_fp = fetch_meta_fingerprint(ctx.http, url).await;
+    if let Some(aid) = lookup_cached_converted_asset(
+        state,
+        url,
+        ctx.plugin_name,
+        uac::LOG_SOURCE,
+        meta_fp.as_deref(),
+    )
+    .await
+    {
+        crate::relay_debug!("[UpstreamAsset] 命中缓存，复用素材: {} -> {}", url, aid);
+        return Ok((aid, true));
+    }
+
+    let asset_id = if is_portrait {
+        create_asset_via_portrait(ctx, group_id, url, asset_type).await?
+    } else {
+        create_asset_via_upstream(ctx, group_id, url, asset_type).await?
+    };
+
+    insert_asset_record_with_source(
+        state,
+        ctx.user_id,
+        asset_type,
+        url,
+        &asset_id,
+        None,
+        meta_fp.as_deref(),
+        ctx.plugin_name,
+        uac::LOG_SOURCE,
+        "tos",
+    )
+    .await;
+    Ok((asset_id, false))
+}
+
+async fn create_asset_via_portrait(
+    ctx: &uac::UpstreamCallCtx<'_>,
+    library_id: &str,
+    url: &str,
+    asset_type: &str,
+) -> Result<String, String> {
+    let name = derive_create_asset_name(url, asset_type);
+    let asset_id = uac::portrait_create_asset(ctx, library_id, url, asset_type, &name).await?;
+    uac::portrait_poll_asset_active(ctx, library_id, &asset_id, asset_type).await?;
+    Ok(asset_id)
 }
 
 async fn ensure_upstream_group_id(
@@ -1248,61 +1377,13 @@ async fn ensure_upstream_group_id(
         .ok_or_else(|| "创建上游素材组失败: 响应缺少 Id".to_string())?
         .to_string();
 
-    let _ = sqlx::query(
-        &state.db.format_query(
-            "UPDATE upstream_asset_bindings SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        ),
-    )
-    .bind(&gid)
-    .bind(binding_id)
-    .execute(&state.db.pool)
-    .await;
-
-    tracing::info!(
+    write_binding_group_id(state, binding_id, &gid).await;
+    crate::relay_debug!(
         "[UpstreamAsset] 自动创建素材组并回写绑定#{}: {}",
         binding_id,
         gid
     );
     Ok(gid)
-}
-
-async fn convert_url_via_upstream(
-    state: &AppState,
-    ctx: &uac::UpstreamCallCtx<'_>,
-    group_id: &str,
-    url: &str,
-    asset_type: &str,
-) -> Result<(String, bool), String> {
-    let meta_fp = fetch_meta_fingerprint(ctx.http, url).await;
-    if let Some(aid) = lookup_cached_converted_asset(
-        state,
-        url,
-        ctx.plugin_name,
-        uac::LOG_SOURCE,
-        meta_fp.as_deref(),
-    )
-    .await
-    {
-        tracing::info!("[UpstreamAsset] 命中缓存，复用素材: {} -> {}", url, aid);
-        return Ok((aid, true));
-    }
-
-    let asset_id = create_asset_via_upstream(ctx, group_id, url, asset_type).await?;
-
-    insert_asset_record_with_source(
-        state,
-        ctx.user_id,
-        asset_type,
-        url,
-        &asset_id,
-        None,
-        meta_fp.as_deref(),
-        ctx.plugin_name,
-        uac::LOG_SOURCE,
-    )
-    .await;
-
-    Ok((asset_id, false))
 }
 
 /// 上游 CreateAsset(URL) + 轮询 Active（不含缓存/落库，供 URL 与 base64 共用）
@@ -1341,11 +1422,7 @@ async fn poll_upstream_asset_active(
     asset_id: &str,
     asset_type: &str,
 ) -> Result<(), String> {
-    let max_wait_secs: u64 = match asset_type {
-        "Image" => 60,
-        "Audio" => 120,
-        _ => 180,
-    };
+    let max_wait_secs = uac::asset_type_timeout_secs(asset_type);
     const POLL_INTERVAL_SECS: u64 = 3;
     let max_attempts = max_wait_secs / POLL_INTERVAL_SECS;
     let mut last_err: Option<String> = None;
@@ -1357,7 +1434,7 @@ async fn poll_upstream_asset_active(
             Ok(res) => {
                 let status = uac::extract_result_field(&res, "Status").unwrap_or("");
                 if status.eq_ignore_ascii_case("Active") {
-                    tracing::info!(
+                    crate::relay_debug!(
                         "[UpstreamAsset] 素材就绪: {} ({}s)",
                         asset_id,
                         (attempt + 1) * POLL_INTERVAL_SECS
@@ -1365,13 +1442,11 @@ async fn poll_upstream_asset_active(
                     return Ok(());
                 }
                 if status.eq_ignore_ascii_case("Failed") {
-                    let reason = uac::extract_result_field(&res, "FailReason")
-                        .or_else(|| {
-                            res.pointer("/Result/Error/Message")
-                                .and_then(|v| v.as_str())
-                        })
-                        .unwrap_or("审核未通过");
-                    return Err(format!("素材处理失败({}): {}", asset_id, reason));
+                    return Err(format!(
+                        "素材处理失败({}): {}",
+                        asset_id,
+                        uac::asset_fail_reason(&res)
+                    ));
                 }
             }
             Err(e) => {

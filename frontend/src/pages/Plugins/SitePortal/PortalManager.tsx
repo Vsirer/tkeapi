@@ -6,11 +6,12 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Typography, Input, Switch, Button, Divider, Spin, App, Space, Tag, Alert } from 'antd';
+import { Typography, Input, Switch, Button, Divider, Spin, App, Space, Tag, Alert, Tooltip } from 'antd';
 import { SaveOutlined, EyeOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined, LinkOutlined, CopyOutlined } from '@ant-design/icons';
 import { LayoutDashboard, Code, ShieldCheck, PanelBottom, FileCode } from 'lucide-react';
 import request from '../../../utils/request';
 import { useThemeStore } from '../../../store/theme';
+import { copyWithFeedback } from '../../../utils/clipboard';
 import whatsTokenHomepageHtml from './whats-token-homepage.html?raw';
 
 const { Text, Title } = Typography;
@@ -64,12 +65,29 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 const DEMO_HTML = whatsTokenHomepageHtml;
 
 const DEFAULT_NAV_ITEMS = [
-  { label: '平台优势|Platform Advantages', path: '#features', enabled: true, key: 'features' },
-  { label: '核心功能|Core Features', path: '#carousel', enabled: true, key: 'carousel' },
-  { label: '模型矩阵|Model Matrix', path: '#models', enabled: true, key: 'models' },
-  { label: '接入指南|Integration Guide', path: '#integration', enabled: true, key: 'integration' },
-  { label: '模型广场|Model Marketplace', path: '/home/models', enabled: true, key: 'marketplace' },
+  { label: '平台优势|Platform Advantages', path: '#features', enabled: true, target_blank: false, key: 'features' },
+  { label: '核心功能|Core Features', path: '#carousel', enabled: true, target_blank: false, key: 'carousel' },
+  { label: '模型矩阵|Model Matrix', path: '#models', enabled: true, target_blank: false, key: 'models' },
+  { label: '接入指南|Integration Guide', path: '#integration', enabled: true, target_blank: false, key: 'integration' },
+  { label: '模型广场|Model Marketplace', path: '/home/models', enabled: true, target_blank: false, key: 'marketplace' },
 ];
+
+/** 导航预览：相对路径补 origin，锚点拼到首页 logo_link。 */
+function resolveNavPreviewUrl(path: string | undefined, logoLink?: string): string {
+  const raw = (path || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith('#')) {
+    const base = (logoLink || '/home').trim() || '/home';
+    if (/^https?:\/\//i.test(base)) {
+      return `${base.replace(/\/$/, '')}${raw}`;
+    }
+    const basePath = base.startsWith('/') ? base : `/${base}`;
+    return `${window.location.origin}${basePath}${raw}`;
+  }
+  if (raw.startsWith('/')) return `${window.location.origin}${raw}`;
+  return `${window.location.origin}/${raw}`;
+}
 
 type MenuKey = 'custom_homepage' | 'nav' | 'static_gen' | 'other' | 'footer';
 
@@ -130,8 +148,8 @@ const PortalManager: React.FC = () => {
           setActiveMenu('custom_homepage');
         }
       }
-    } catch {
-      message.error('加载门户配置失败');
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoading(false);
     }
@@ -143,8 +161,8 @@ const PortalManager: React.FC = () => {
       await request.post('/plugins/site-portal/portal-config', { section, data });
       setSaveCooldowns(prev => ({ ...prev, [section]: 3 }));
       message.success('配置已保存');
-    } catch {
-      message.error('保存失败');
+    } catch (e) {
+      console.error(e);
     } finally {
       setSaving(false);
     }
@@ -158,8 +176,8 @@ const PortalManager: React.FC = () => {
       await request.post('/plugins/site-portal/portal-config', { section: 'seo', data: seoConfig });
       setSaveCooldowns(prev => ({ ...prev, 'nav': 3 }));
       message.success('导航配置已保存');
-    } catch {
-      message.error('保存失败');
+    } catch (e) {
+      console.error(e);
     } finally {
       setSaving(false);
     }
@@ -176,10 +194,7 @@ const PortalManager: React.FC = () => {
       }
       fetchConfig();
     } catch (err: any) {
-      const data = err?.response?.data;
-      const detail =
-        data?.error?.message || data?.message || (typeof data?.error === 'string' ? data.error : undefined) || err?.message || '生成失败';
-      message.error(typeof detail === 'string' ? detail : '生成失败');
+      console.error(err);
     } finally {
       setGenerating(false);
     }
@@ -243,7 +258,7 @@ const PortalManager: React.FC = () => {
               setNavConfig({ ...navConfig, items: DEFAULT_NAV_ITEMS.map(item => ({ ...item })) });
             }}>恢复默认五项</Button>
             <Button size="small" icon={<PlusOutlined />} onClick={() => {
-              const items = [...(navConfig.items || []), { label: '新菜单|New Menu', path: '#features', enabled: true, key: `item_${Date.now()}` }];
+              const items = [...(navConfig.items || []), { label: '新菜单|New Menu', path: '#features', enabled: true, target_blank: false, key: `item_${Date.now()}` }];
               setNavConfig({ ...navConfig, items });
             }}>添加栏目</Button>
           </Space>
@@ -251,17 +266,29 @@ const PortalManager: React.FC = () => {
         <div style={{ marginBottom: 16 }}>
           <Text type="secondary" style={{ fontSize: 13 }}>💡 提示：站内锚点（如 #features）会在当前首页平滑滚动；也支持 /home/models 等页面链接。名称填写格式为 <Text code>中文|English</Text>（如 <Text code>帮助中心|Help Center</Text>）。</Text>
         </div>
+        {(navConfig.items || []).length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: '36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, padding: '0 2px', alignItems: 'center' }}>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>启用</Text>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>菜单名称</Text>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>链接 / 路径</Text>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>图标 SVG (可选)</Text>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>新窗口</Text>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', textAlign: 'right' }}>操作</Text>
+          </div>
+        )}
         {(navConfig.items || []).map((item: any, idx: number) => (
-          <div key={idx} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1.2fr auto', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-            <Switch
-              size="small"
-              checked={item.enabled !== false}
-              onChange={v => {
-                const items = [...navConfig.items];
-                items[idx] = { ...item, enabled: v };
-                setNavConfig({ ...navConfig, items });
-              }}
-            />
+          <div key={idx} style={{ display: 'grid', gridTemplateColumns: '36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+            <Tooltip title={item.enabled !== false ? '已启用（点击禁用）' : '已禁用（点击启用）'}>
+              <Switch
+                size="small"
+                checked={item.enabled !== false}
+                onChange={v => {
+                  const items = [...navConfig.items];
+                  items[idx] = { ...item, enabled: v };
+                  setNavConfig({ ...navConfig, items });
+                }}
+              />
+            </Tooltip>
             <Input
               value={item.label}
               onChange={e => {
@@ -289,15 +316,45 @@ const PortalManager: React.FC = () => {
               }}
               placeholder="图标 SVG（风格化页）"
             />
-            <Button
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-              onClick={() => {
-                const items = navConfig.items.filter((_: any, i: number) => i !== idx);
-                setNavConfig({ ...navConfig, items });
-              }}
-            />
+            <Tooltip title="开启后在前台点击该菜单将在新窗口/新标签页中打开">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Switch
+                  size="small"
+                  checked={!!item.target_blank}
+                  onChange={v => {
+                    const items = [...navConfig.items];
+                    items[idx] = { ...item, target_blank: v };
+                    setNavConfig({ ...navConfig, items });
+                  }}
+                />
+                <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', whiteSpace: 'nowrap' }}>新窗口</Text>
+              </div>
+            </Tooltip>
+            <Space size={4} style={{ justifyContent: 'flex-end' }}>
+              <Button
+                size="small"
+                icon={<EyeOutlined />}
+                title="预览"
+                onClick={() => {
+                  const url = resolveNavPreviewUrl(item.path, navConfig.logo_link);
+                  if (!url) {
+                    message.warning('请先填写链接');
+                    return;
+                  }
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
+              />
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                title="删除"
+                onClick={() => {
+                  const items = navConfig.items.filter((_: any, i: number) => i !== idx);
+                  setNavConfig({ ...navConfig, items });
+                }}
+              />
+            </Space>
           </div>
         ))}
         {(!navConfig.items || navConfig.items.length === 0) && (
@@ -407,13 +464,9 @@ const PortalManager: React.FC = () => {
     </div>
   );
 
-  const handleCopyLink = (path: string) => {
+  const handleCopyLink = async (path: string) => {
     const fullUrl = `${window.location.origin}${path}`;
-    navigator.clipboard.writeText(fullUrl).then(() => {
-      message.success('链接已复制到剪贴板');
-    }).catch(() => {
-      message.error('复制失败');
-    });
+    await copyWithFeedback(fullUrl, '链接已复制到剪贴板', '复制失败');
   };
 
   const renderStaticGen = () => (
@@ -440,8 +493,8 @@ const PortalManager: React.FC = () => {
                 await request.post('/plugins/site-portal/portal-config', { section: 'static_gen', data: newConfig });
                 message.success(checked ? '已开启手动静态 HTML 生成模式' : '已关闭手动模式，转为实时自动更新数据');
                 fetchConfig();
-              } catch {
-                message.error('保存设置失败');
+              } catch (e) {
+                console.error(e);
               }
             }}
           />
@@ -638,8 +691,8 @@ const PortalManager: React.FC = () => {
                 setSaving(true);
                 await request.post('/plugins/site-portal/portal-config', { section: 'custom_homepage', data: newCustomHomepage });
                 message.success(v ? '已开启自定义主页' : '已关闭自定义主页');
-              } catch {
-                message.error('设置失败');
+              } catch (e) {
+                console.error(e);
               } finally {
                 setSaving(false);
               }

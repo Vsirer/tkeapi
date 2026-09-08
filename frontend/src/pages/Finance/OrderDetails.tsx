@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Table, Card, Typography, Space, Input, Button, Tag, Select, DatePicker, Grid, List } from 'antd';
 import { SyncOutlined, SearchOutlined, BarChartOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
@@ -65,6 +66,7 @@ const OrderDetails: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.admin_path || 'admin';
   const currencySymbol = settings?.currency?.currency_symbol || '¥';
   const [data, setData] = useState<OrderRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -121,8 +123,20 @@ const OrderDetails: React.FC = () => {
       width: 150,
       render: (_: unknown, record: OrderRecord) => (
         <Space direction="vertical" size={0}>
-          <Text strong>{record.username}</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>UID: {record.uid}</Text>
+          {record.uid ? (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
+              {record.username}
+            </Link>
+          ) : (
+            <Text strong>{record.username}</Text>
+          )}
+          {record.uid ? (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
+              UID: {record.uid}
+            </Link>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
+          )}
         </Space>
       ),
     },
@@ -262,7 +276,15 @@ const OrderDetails: React.FC = () => {
                 <Card 
                   size="small" 
                   style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-                  title={<Text strong>{record.username}</Text>}
+                  title={
+                    record.uid ? (
+                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
+                        {record.username}
+                      </Link>
+                    ) : (
+                      <Text strong>{record.username}</Text>
+                    )
+                  }
                   extra={<Tag color={statusInfo.color}>{statusInfo.label}</Tag>}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -271,7 +293,13 @@ const OrderDetails: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
-                    <Text style={{ fontSize: 12 }}>{record.uid}</Text>
+                    {record.uid ? (
+                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12 }}>
+                        {record.uid}
+                      </Link>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>-</Text>
+                    )}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>支付方式</Text>

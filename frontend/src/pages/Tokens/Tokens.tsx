@@ -22,6 +22,7 @@ import dayjs from 'dayjs';
 import { getPeriodicUsed, getQuotaRefreshText, hasPeriodicLimits } from './quotaUtils';
 import { resolveTimedisplay } from '../../utils/timedisplay';
 import { shouldBlockTokenCreate, tokenBindBlockI18nKey } from '../../utils/bindPolicy';
+import { copyToClipboard } from '../../utils/clipboard';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -187,29 +188,11 @@ const Tokens: React.FC = () => {
   }, []);
 
   const handleCopy = async (key: string, tokenId: number) => {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(key);
-      } else {
-        // Fallback for non-secure contexts (HTTP) or older browsers
-        const textArea = document.createElement("textarea");
-        textArea.value = key;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        try {
-          document.execCommand('copy');
-        } finally {
-          textArea.remove();
-        }
-      }
+    const ok = await copyToClipboard(key);
+    if (ok) {
       setCopiedId(tokenId);
       setTimeout(() => setCopiedId(prev => prev === tokenId ? null : prev), 2000);
-    } catch (err) {
-      console.error('Failed to copy: ', err);
+    } else {
       message.error(t('tokens.copy_failed', '复制失败，请手动选择复制'));
     }
   };
@@ -423,6 +406,7 @@ const Tokens: React.FC = () => {
         const isPlayground = record.only_playground === 1;
         const isPlayground2026 = record.only_playground_2026 === 1;
         const isActive = record.is_active === 1 || record.is_active === true;
+        const isHA = record.high_availability === 1 || (record.high_availability as any) === true;
         const scopeLabel = isPlayground && isPlayground2026
           ? t('tokens.playground_both')
           : isPlayground2026
@@ -438,6 +422,11 @@ const Tokens: React.FC = () => {
               <Tag color={scopeColor} style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
                 {scopeLabel}
               </Tag>
+              {isHA && (
+                <Tag color="blue" style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
+                  HA
+                </Tag>
+              )}
               <Tag color={isActive ? 'success' : 'default'} style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
                 {isActive ? t('common.active', '启用') : t('common.disabled', '禁用')}
               </Tag>
@@ -787,15 +776,22 @@ const Tokens: React.FC = () => {
                         </Space>
                       </CardRow>
                       <CardRow label={t('tokens.usage_scope')} compact={true}>
-                        <Tag color={(record.only_playground === 1 || record.only_playground_2026 === 1) ? 'blue' : 'gray'} style={{ fontSize: 11, margin: 0 }}>
-                          {record.only_playground === 1 && record.only_playground_2026 === 1
-                            ? t('tokens.playground_both')
-                            : record.only_playground_2026 === 1
-                              ? t('tokens.playground_2026_only')
-                              : record.only_playground === 1
-                                ? t('tokens.playground_only')
-                                : t('tokens.general')}
-                        </Tag>
+                        <Space size={4} wrap>
+                          <Tag color={(record.only_playground === 1 || record.only_playground_2026 === 1) ? 'orange' : 'blue'} style={{ fontSize: 11, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+                            {record.only_playground === 1 && record.only_playground_2026 === 1
+                              ? t('tokens.playground_both')
+                              : record.only_playground_2026 === 1
+                                ? t('tokens.playground_2026_only')
+                                : record.only_playground === 1
+                                  ? t('tokens.playground_only')
+                                  : t('tokens.general')}
+                          </Tag>
+                          {(record.high_availability === 1 || (record.high_availability as any) === true) && (
+                            <Tag color="blue" style={{ fontSize: 11, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+                              HA
+                            </Tag>
+                          )}
+                        </Space>
                       </CardRow>
                       <CardRow label={t('tokens.rate_limits')} compact={true}>
                         <Text type="secondary" style={{ fontSize: 12 }}>RPS: {record.rps_limit || '∞'} · RPM: {record.rpm_limit || '∞'}</Text>

@@ -136,6 +136,33 @@ const styles = `
   background-color: var(--ant-color-fill-secondary, #e4e4e7);
   color: var(--ant-color-text-quaternary, #a1a1aa);
 }
+.shadcn-pill-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+  font-size: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.2;
+}
+.shadcn-pill-p {
+  background-color: rgba(22, 119, 255, 0.12);
+  color: #1677ff;
+  padding: 0px 3px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.shadcn-pill-w {
+  background-color: rgba(19, 194, 194, 0.15);
+  color: #13c2c2;
+  padding: 0px 3px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.shadcn-pill.disabled .shadcn-pill-p,
+.shadcn-pill.disabled .shadcn-pill-w {
+  opacity: 0.6;
+}
 
 .shadcn-pill .shadcn-pill-close {
   display: inline-flex;
@@ -255,7 +282,13 @@ const ModelChannelsDisplay: React.FC = () => {
         return {
           model,
           modelName: modelNameMap[model] || model,
-          channels: modelMap[model].sort((a, b) => a.name.localeCompare(b.name)),
+          channels: modelMap[model].sort((a, b) => {
+            const pDiff = (b.priority ?? 0) - (a.priority ?? 0);
+            if (pDiff !== 0) return pDiff;
+            const wDiff = (b.weight ?? 1) - (a.weight ?? 1);
+            if (wDiff !== 0) return wDiff;
+            return a.name.localeCompare(b.name, 'zh-CN');
+          }),
           typeId: typeInfo?.id,
           typeName: typeInfo?.name,
           typeLogo: typeInfo?.logo
@@ -297,7 +330,6 @@ const ModelChannelsDisplay: React.FC = () => {
       await fetchData();
     } catch (e) {
       console.error(e);
-      message.error('操作失败');
       setLoading(false);
     }
   };
@@ -315,7 +347,6 @@ const ModelChannelsDisplay: React.FC = () => {
       await fetchData();
     } catch (e) {
       console.error(e);
-      message.error('操作失败');
       setLoading(false);
     }
   };
@@ -482,45 +513,37 @@ const ModelChannelsDisplay: React.FC = () => {
                       const isActive = channel.status === 1;
                       const isHa = channel.provider_type === 'high_availability_group';
                       return (
-                        <Tooltip 
+                        <span 
                           key={channel.id} 
-                          title={
-                            isHa 
-                              ? (isActive 
-                                  ? (item.channels.length > 1 ? '高可用虚拟渠道组 (悬浮点击移除该模型)' : '高可用虚拟渠道组 (必须至一个渠道)')
-                                  : '高可用虚拟渠道组已禁用')
-                              : (isActive 
-                                  ? (item.channels.length > 1 ? '渠道已启用 (悬浮点击移除该模型)' : '渠道启用 (必须至一个渠道)')
-                                  : '渠道已禁用')
-                          }
+                          className={`shadcn-pill ${isActive ? 'active' : 'disabled'}`}
+                          onClick={() => navigate(`/${adminPath}/channels?edit=${channel.id}`, { state: { from: 'model-display' } })}
                         >
-                          <span 
-                            className={`shadcn-pill ${isActive ? 'active' : 'disabled'}`}
-                            onClick={() => navigate(`/${adminPath}/channels?edit=${channel.id}`, { state: { from: 'model-display' } })}
-                          >
-                            {isActive && <div className="shadcn-pill-dot" />}
-                            <ApiOutlined style={{ fontSize: 9, opacity: 0.6 }} />
-                            {channel.name}
-                            {isHa && <span className="shadcn-ha-badge">HA</span>}
-                            
-                            {/* Close button to remove the model (only if there are multiple channels) */}
-                            {item.channels.length > 1 && (
-                              <Popconfirm
-                                title={`确定从渠道 [${channel.name}] 中移除模型吗？`}
-                                onConfirm={() => handleRemoveModelFromChannel(channel, item.model)}
-                                okText="确定"
-                                cancelText="取消"
-                              >
-                                <span 
-                                  className="shadcn-pill-close"
-                                  onClick={e => e.stopPropagation()}
-                                >
-                                  <CloseOutlined style={{ fontSize: 8 }} />
-                                </span>
-                              </Popconfirm>
-                            )}
+                          {isActive && <div className="shadcn-pill-dot" />}
+                          <ApiOutlined style={{ fontSize: 9, opacity: 0.6 }} />
+                          {channel.name}
+                          {isHa && <span className="shadcn-ha-badge">HA</span>}
+                          <span className="shadcn-pill-meta">
+                            <span className="shadcn-pill-p" title={`优先级: ${channel.priority ?? 0}`}>P{channel.priority ?? 0}</span>
+                            <span className="shadcn-pill-w" title={`权重: ${channel.weight ?? 1}`}>W{channel.weight ?? 1}</span>
                           </span>
-                        </Tooltip>
+                          
+                          {/* Close button to remove the model (only if there are multiple channels) */}
+                          {item.channels.length > 1 && (
+                            <Popconfirm
+                              title={`确定从渠道 [${channel.name}] 中移除模型吗？`}
+                              onConfirm={() => handleRemoveModelFromChannel(channel, item.model)}
+                              okText="确定"
+                              cancelText="取消"
+                            >
+                              <span 
+                                className="shadcn-pill-close"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                <CloseOutlined style={{ fontSize: 8 }} />
+                              </span>
+                            </Popconfirm>
+                          )}
+                        </span>
                       );
                     })}
 
@@ -530,7 +553,14 @@ const ModelChannelsDisplay: React.FC = () => {
                         menu={{
                           items: unassociated.map(c => ({
                             key: c.id,
-                            label: c.name,
+                            label: (
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                                <span>{c.name}</span>
+                                <span style={{ fontSize: 10, fontFamily: 'monospace', opacity: 0.7 }}>
+                                  P{c.priority ?? 0} W{c.weight ?? 1}
+                                </span>
+                              </div>
+                            ),
                             onClick: () => handleAddModelToChannel(c, item.model)
                           }))
                         }}

@@ -10,13 +10,38 @@
 //! 兼容 OpenAI 标准格式和各厂商原生格式（可灵、火山方舟、阿里百炼、Gemini 等）。
 //! 供 image.rs、video.rs、task.rs 共同调用。
 
-use crate::services::tos::{self, TosConfig};
+use crate::services::object_store::{ObjectStore, StoreKind};
 use crate::time_system::DbTs;
 use crate::AppState;
 use sha2::Digest;
 
-/// 从系统存储设置加载 TosConfig（供所有需要系统级 TOS 的模块复用）
-pub async fn load_system_tos_config(state: &AppState) -> Option<TosConfig> {
+/// 从系统存储设置加载 ObjectStore。
+/// `prefer` 为渠道指定厂商（tos/cos）；空则用站点默认；指定未配置时回退默认。
+pub async fn load_object_store(state: &AppState, prefer: Option<&str>) -> Option<ObjectStore> {
+    let s = load_storage_settings(state).await?;
+    if let Some(p) = prefer.map(str::trim).filter(|p| !p.is_empty()) {
+        let kind = StoreKind::parse(p);
+        if let Some(store) = ObjectStore::from_settings_for(&s, kind) {
+            return Some(store);
+        }
+        let default_kind = StoreKind::parse(&s.default_provider);
+        if kind != default_kind {
+            crate::relay_debug!(
+                "[TosPersist] 渠道指定存储 {} 未配置，回退站点默认 {}",
+                p,
+                default_kind.as_str()
+            );
+        }
+    }
+    ObjectStore::from_settings(&s)
+}
+
+/// 从系统存储设置加载当前默认 ObjectStore
+pub async fn load_system_object_store(state: &AppState) -> Option<ObjectStore> {
+    load_object_store(state, None).await
+}
+
+pub(crate) async fn load_storage_settings(state: &AppState) -> Option<crate::models::StorageSettings> {
     let val: String = sqlx::query_scalar(
         &state
             .db
@@ -25,43 +50,95 @@ pub async fn load_system_tos_config(state: &AppState) -> Option<TosConfig> {
     .fetch_optional(&state.db.pool)
     .await
     .ok()??;
+    serde_json::from_str(&val).ok()
+}
 
-    let s: crate::models::StorageSettings = serde_json::from_str(&val).ok()?;
-    if s.tos_access_key.is_empty() || s.tos_endpoint.is_empty() || s.tos_bucket.is_empty() {
-        return None;
-    }
-    Some(TosConfig {
-        access_key: s.tos_access_key,
-        secret_key: s.tos_secret_key,
-        endpoint: s.tos_endpoint,
-        region: s.tos_region,
-        bucket: s.tos_bucket,
-        path_prefix: s.tos_path_prefix,
-        custom_domain: s.tos_custom_domain,
-    })
+pub(crate) fn response_format_from_request(request_content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(request_content)
+        .ok()?
+        .get("response_format")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// 渠道已开启转存时上传媒体并替换 URL；未开启或 b64_json 则原样返回。
+pub async fn persist_for_channel(
+    state: &AppState,
+    channel: &crate::models::Channel,
+    response_str: &str,
+    request_content: &str,
+    category: &str,
+) -> String {
+    let Some((channel_id, days, provider)) = channel.storage_persist() else {
+        return response_str.to_string();
+    };
+    let kind = if category.contains("视频") {
+        "video"
+    } else {
+        "image"
+    };
+    persist_response_resources(
+        state,
+        response_str,
+        channel_id,
+        days,
+        response_format_from_request(request_content).as_deref(),
+        Some(kind),
+        provider.as_deref(),
+    )
+    .await
+}
+
+/// 单 URL 落桶（包装为 OpenAI `data[0].url`），成功返回新 URL。
+pub async fn persist_url_for_storage(
+    state: &AppState,
+    url: &str,
+    (channel_id, days, provider): (i64, i32, Option<String>),
+    media_kind: &str,
+) -> Option<String> {
+    let mini = serde_json::json!({ "data": [{ "url": url }] }).to_string();
+    let out = persist_response_resources(
+        state,
+        &mini,
+        channel_id,
+        days,
+        None,
+        Some(media_kind),
+        provider.as_deref(),
+    )
+    .await;
+    serde_json::from_str::<serde_json::Value>(&out)
+        .ok()?
+        .pointer("/data/0/url")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// 将响应中的媒体 URL 和 base64 上传到 TOS 并替换为 TOS URL。
 /// - b64_json 模式：不存 TOS，直接返回原始响应
 /// - 非 b64_json / 无 response_format：base64 和 URL 均存 TOS 返回 URL
 /// 兼容 OpenAI 标准格式和各厂商原生格式。
-pub async fn persist_response_resources(
+pub(crate) async fn persist_response_resources(
     state: &AppState,
     response_str: &str,
     channel_id: i64,
     storage_days: i32,
     response_format: Option<&str>,
     fallback_type: Option<&str>,
+    storage_provider: Option<&str>,
 ) -> String {
     // b64_json 模式：不存 TOS，由调用方在 apply_format 后做 URL→base64 转换
     if response_format == Some("b64_json") {
         return response_str.to_string();
     }
 
-    let tos_config = match load_system_tos_config(state).await {
+    let store = match load_object_store(state, storage_provider).await {
         Some(c) => c,
         None => {
-            tracing::warn!("[TosPersist] 系统存储设置未配置，跳过渠道 TOS 存储");
+            crate::relay_debug!("[TosPersist] 系统存储设置未配置，跳过渠道对象存储");
             return response_str.to_string();
         }
     };
@@ -78,7 +155,7 @@ pub async fn persist_response_resources(
         for item in items.iter_mut() {
             if persist_openai_item(
                 state,
-                &tos_config,
+                &store,
                 item,
                 channel_id,
                 storage_days,
@@ -109,7 +186,7 @@ pub async fn persist_response_resources(
                     let ext = detect_image_ext(&file_data);
                     if let Some(tos_url) = upload_and_record(
                         state,
-                        &tos_config,
+                        &store,
                         &file_data,
                         &ext,
                         channel_id,
@@ -121,19 +198,19 @@ pub async fn persist_response_resources(
                         url_map.insert(raw_b64.to_string(), tos_url);
                     }
                 } else if found.starts_with("http://") || found.starts_with("https://") {
-                    if tos_config.extract_object_key(found).is_some() {
+                    if store.extract_object_key(found).is_some() {
                         continue;
                     }
                     let (file_data, ext) = match download_url(&state.http_client, found).await {
                         Ok(data) => (data, guess_ext(found, fallback_type.unwrap_or("image"))),
                         Err(e) => {
-                            tracing::warn!("[TosPersist] 下载失败 url={}: {}", found, e);
+                            crate::relay_debug!("[TosPersist] 下载失败 url={}: {}", found, e);
                             continue;
                         }
                     };
                     if let Some(tos_url) = upload_and_record(
                         state,
-                        &tos_config,
+                        &store,
                         &file_data,
                         &ext,
                         channel_id,
@@ -195,7 +272,7 @@ pub async fn align_response_format(
                     let data = match download_url(&state.http_client, &url).await {
                         Ok(d) => d,
                         Err(e) => {
-                            tracing::warn!("[TosPersist] url 转换为 base64 失败: {}", e);
+                            crate::relay_debug!("[TosPersist] url 转换为 base64 失败: {}", e);
                             continue;
                         }
                     };
@@ -242,7 +319,7 @@ pub async fn align_response_format(
 /// 将 OpenAI data[] item 的 base64/URL 资源上传到 TOS，替换为 TOS URL
 async fn persist_openai_item(
     state: &AppState,
-    tos_config: &TosConfig,
+    store: &ObjectStore,
     item: &mut serde_json::Value,
     channel_id: i64,
     storage_days: i32,
@@ -265,7 +342,7 @@ async fn persist_openai_item(
     if b64 == "base64数据" {
         return false;
     }
-    if !url.is_empty() && tos_config.extract_object_key(&url).is_some() {
+    if !url.is_empty() && store.extract_object_key(&url).is_some() {
         return false;
     }
 
@@ -276,7 +353,7 @@ async fn persist_openai_item(
                 (data, ext)
             }
             Err(e) => {
-                tracing::warn!("[TosPersist] base64 解码失败: {}", e);
+                crate::relay_debug!("[TosPersist] base64 解码失败: {}", e);
                 return false;
             }
         }
@@ -287,7 +364,7 @@ async fn persist_openai_item(
                 (data, ext)
             }
             Err(e) => {
-                tracing::warn!("[TosPersist] url base64 解码失败: {}", e);
+                crate::relay_debug!("[TosPersist] url base64 解码失败: {}", e);
                 return false;
             }
         }
@@ -295,7 +372,7 @@ async fn persist_openai_item(
         match download_url(&state.http_client, &url).await {
             Ok(data) => (data, guess_ext(&url, fallback_type.unwrap_or("image"))),
             Err(e) => {
-                tracing::warn!("[TosPersist] 下载失败 url={}: {}", url, e);
+                crate::relay_debug!("[TosPersist] 下载失败 url={}: {}", url, e);
                 return false;
             }
         }
@@ -309,7 +386,7 @@ async fn persist_openai_item(
     };
     let tos_url = match upload_and_record(
         state,
-        tos_config,
+        store,
         &file_data,
         &ext,
         channel_id,
@@ -331,7 +408,7 @@ async fn persist_openai_item(
 /// source_url: 原始资源地址，用于日志输出追溯（base64 来源传 "base64_data"）
 async fn upload_and_record(
     state: &AppState,
-    tos_config: &TosConfig,
+    store: &ObjectStore,
     file_data: &[u8],
     ext: &str,
     channel_id: i64,
@@ -342,21 +419,16 @@ async fn upload_and_record(
     let timestamp = chrono::Utc::now().timestamp();
     let filename = format!("{}_{}.{}", timestamp, hash, ext);
     let relative_path = format!("_channel_cache/{}/{}", channel_id, filename);
-    let object_key = tos_config.full_key(&relative_path);
+    let object_key = store.full_key(&relative_path);
     let content_type = ext_to_mime(ext);
 
-    let tos_url = match tos::upload_file(
-        tos_config,
-        &object_key,
-        file_data.to_vec(),
-        content_type,
-        None,
-    )
-    .await
+    let tos_url = match store
+        .upload_file(&object_key, file_data.to_vec(), content_type, None)
+        .await
     {
         Ok(url) => url,
         Err(e) => {
-            tracing::warn!("[TosPersist] TOS 上传失败 key={}: {}", object_key, e);
+            crate::relay_debug!("[TosPersist] 对象存储上传失败 key={}: {}", object_key, e);
             return None;
         }
     };
@@ -365,17 +437,17 @@ async fn upload_and_record(
         let expire_at =
             DbTs::from_utc(chrono::Utc::now() + chrono::Duration::days(storage_days as i64));
         let _ = sqlx::query(
-            "INSERT INTO tos_temp_files (object_key, channel_id, source, expire_at) VALUES ($1, $2, 'channel', $3)"
+            "INSERT INTO tos_temp_files (object_key, channel_id, source, expire_at, storage_provider) VALUES ($1, $2, 'channel', $3, $4)"
         )
         .bind(&object_key)
         .bind(channel_id)
         .bind(&expire_at)
+        .bind(store.provider())
         .execute(&state.db.pool)
         .await;
     }
 
-    // 输出完整映射：原始地址 => TOS 地址，方便开发者追溯
-    tracing::info!(
+    crate::relay_debug!(
         "[TosPersist] {} => {}",
         source_url.unwrap_or("unknown"),
         tos_url
@@ -395,29 +467,33 @@ fn ext_to_mime(ext: &str) -> &'static str {
     }
 }
 
-/// 清理过期的 TOS 临时文件（循环批处理，每批 100 条，直到全部清完）
+/// 清理过期的临时对象（循环批处理，每批 100 条，直到全部清完）
 pub async fn cleanup_expired_files(state: &AppState) {
-    let tos_config = match load_system_tos_config(state).await {
-        Some(c) => c,
-        None => {
-            tracing::info!("[TosCleanup] 系统存储设置未配置，跳过过期文件清理");
-            return;
-        }
+    let (tos_store, cos_store) = match load_storage_settings(state).await {
+        Some(s) => (
+            ObjectStore::from_settings_for(&s, StoreKind::Tos),
+            ObjectStore::from_settings_for(&s, StoreKind::Cos),
+        ),
+        None => (None, None),
     };
+    if tos_store.is_none() && cos_store.is_none() {
+        tracing::info!("[TosCleanup] 系统存储设置未配置，跳过过期文件清理");
+        return;
+    }
 
     let mut total_cleaned: u64 = 0;
     let mut total_failed: u64 = 0;
 
     loop {
-        let rows: Vec<(i64, String)> = match sqlx::query_as(
-            "SELECT id, object_key FROM tos_temp_files WHERE expire_at <= NOW() LIMIT 100",
+        let rows: Vec<(i64, String, String)> = match sqlx::query_as(
+            "SELECT id, object_key, COALESCE(storage_provider, 'tos') FROM tos_temp_files WHERE expire_at <= NOW() LIMIT 100",
         )
         .fetch_all(&state.db.pool)
         .await
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!("[TosCleanup] 查询过期文件失败: {}", e);
+                tracing::warn!("[TosCleanup] 查询过期文件失败: {}", e);
                 return;
             }
         };
@@ -427,21 +503,33 @@ pub async fn cleanup_expired_files(state: &AppState) {
         }
 
         let batch_size = rows.len();
-        for (id, object_key) in &rows {
-            if let Err(e) = tos::delete_file(&tos_config, object_key).await {
+        for (id, object_key, provider) in &rows {
+            let store = match StoreKind::parse(provider) {
+                StoreKind::Tos => tos_store.as_ref(),
+                StoreKind::Cos => cos_store.as_ref(),
+            };
+            let Some(store) = store else {
+                tracing::warn!(
+                    "[TosCleanup] {} 未配置，跳过 key={}",
+                    provider,
+                    object_key
+                );
+                total_failed += 1;
+                continue;
+            };
+            if let Err(e) = store.delete_file(object_key).await {
                 let err_lower = e.to_lowercase();
                 let is_not_found = err_lower.contains("404")
                     || err_lower.contains("nosuchkey")
                     || err_lower.contains("not found")
                     || err_lower.contains("no such key");
                 if !is_not_found {
-                    tracing::warn!("[TosCleanup] TOS 删除失败 key={}: {}", object_key, e);
+                    tracing::warn!("[TosCleanup] 删除失败 key={}: {}", object_key, e);
                     total_failed += 1;
                     continue;
                 }
-                // 对象已不存在（404），视为已清理，继续删除数据库记录
                 tracing::info!(
-                    "[TosCleanup] TOS 对象已不存在 key={}，清理数据库记录",
+                    "[TosCleanup] 对象已不存在 key={}，清理数据库记录",
                     object_key
                 );
             }
@@ -452,7 +540,6 @@ pub async fn cleanup_expired_files(state: &AppState) {
             total_cleaned += 1;
         }
 
-        // 本批不足 100 条说明已全部处理完毕
         if batch_size < 100 {
             break;
         }

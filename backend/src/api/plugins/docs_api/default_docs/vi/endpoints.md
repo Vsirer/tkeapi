@@ -11,6 +11,7 @@ Hệ thống đã đóng gói toàn diện các giao diện xử lý đa phươn
 | Chỉnh sửa Hình ảnh (Image Edit) | `/v1/images/edits` | `POST` | Tương thích OpenAI |
 | Gửi Nhiệm vụ Video Bất đồng bộ | `/v1/video/generations` | `POST` | Tương thích OpenAI |
 | Tra cứu Trạng thái Nhiệm vụ Video Bất đồng bộ | `/v1/video/generations/{task_id}` | `GET` | Tương thích OpenAI |
+| Hủy Nhiệm vụ Video Bất đồng bộ | `/v1/video/generations/{task_id}` | `DELETE` | Tương thích OpenAI |
 | Tổng hợp Giọng nói từ Văn bản (Text-to-Speech) | `/v1/audio/speech` | `POST` | Tương thích OpenAI |
 | Tra cứu Hạn mức Khả dụng của Token | `/v1/balance` | `GET` | Thông tin Tài khoản |
 | Tra cứu Tổng Số dư Tài khoản | `/v1/user/balance` | `GET` | Thông tin Tài khoản |
@@ -41,9 +42,11 @@ Hệ thống đã đóng gói toàn diện các giao diện xử lý đa phươn
 | Alibaba Bailian | Tra cứu Nhiệm vụ Bất đồng bộ (Chung) | `/api/v1/tasks/{task_id}` | `GET` |
 | Alibaba Bailian | Nhúng Văn bản (Embeddings) | `/compatible-mode/v1/embeddings` | `POST` |
 | Alibaba Bailian | Sắp xếp lại Tài liệu (Rerank) | `/compatible-api/v1/reranks` | `POST` |
+| Alibaba Bailian | Sắp xếp lại Tài liệu (Native) | `/api/v1/services/rerank/text-rerank/text-rerank` | `POST` |
 | Kling AI | Văn bản sang Video (Kling) | `/v1/videos/text2video` | `POST` |
 | Kling AI | Hình ảnh sang Video (Kling) | `/v1/videos/image2video` | `POST` |
 | Kling AI | Tra cứu Trạng thái Nhiệm vụ (Video/Hình ảnh) | `/v1/videos/{endpoint}/{task_id}` | `GET` |
 | Google | Tạo Văn bản Gemini | `/v1beta/models/{model}:generateContent` | `POST` |
 | Google | Tạo Văn bản Luồng Gemini | `/v1beta/models/{model}:streamGenerateContent` | `POST` |
 | Anthropic | Tin nhắn Gốc Claude | `/v1/messages` | `POST` |
+| MiniMax | Messages tương thích Anthropic | `/anthropic/v1/messages` | `POST` |

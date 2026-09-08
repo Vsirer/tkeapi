@@ -11,6 +11,7 @@ import MobileCardList, { MobileCard, CardRow, CardActions } from '../../componen
 import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, KeyOutlined, ApiOutlined, ProfileOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
+import useSettingsStore from '../../store/settings';
 import type { Upstream } from '../../types';
 
 const { Title, Text } = Typography;
@@ -24,6 +25,8 @@ const UPSTREAM_TYPES = [
 
 const Upstreams: React.FC = () => {
   const { t } = useTranslation();
+  const { settings } = useSettingsStore();
+  const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [upstreams, setUpstreams] = useState<Upstream[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -134,11 +137,10 @@ const Upstreams: React.FC = () => {
         if (resp.message) {
              message.info(resp.message);
         } else {
-             message.success(`余额同步成功: ¥${resp.balance}`);
+             message.success(`余额同步成功: ${currencySymbol}${resp.balance}`);
         }
     } catch (e) {
         console.error(e);
-        message.error("余额同步失败");
     } finally {
         setSyncingId(null);
     }
@@ -170,7 +172,7 @@ const Upstreams: React.FC = () => {
       render: (_: unknown, record: Upstream) => (
           <Space>
               <Text strong style={{ color: '#52c41a' }}>
-                  {record.balance !== undefined ? `¥ ${record.balance}` : '-'}
+                  {record.balance !== undefined ? `${currencySymbol} ${record.balance}` : '-'}
               </Text>
               <Button 
                 type="link" 
@@ -235,7 +237,7 @@ const Upstreams: React.FC = () => {
               <CardRow label="类型"><Text>{record.upstream_type}</Text></CardRow>
               <CardRow label="余额">
                 <Space>
-                  <Text strong style={{ color: '#52c41a' }}>{record.balance !== undefined ? `¥ ${record.balance}` : '-'}</Text>
+                  <Text strong style={{ color: '#52c41a' }}>{record.balance !== undefined ? `${currencySymbol} ${record.balance}` : '-'}</Text>
                   <Button type="link" size="small" icon={<SyncOutlined spin={syncingId === record.id} />} onClick={() => handleSyncBalance(record.id)} disabled={syncingId === record.id}>同步</Button>
                 </Space>
               </CardRow>

@@ -1,0 +1,19 @@
+/*
+ * tokensbyte opensource
+ * (c) 2026 tokensbyte.ai
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tokensbyte.ai/)
+ */
+
+/* 暗色风格（默认）下纯黑色模型图标转为白色显示 */
+.pg-model-logo-dark-invert {
+  filter: brightness(0) invert(1);
+}
+
+/* 亮色风格下保持原本的黑色，不反色 */
+[data-theme='light'] .pg-model-logo-dark-invert,
+body[data-theme='light'] .pg-model-logo-dark-invert,
+html.light .pg-model-logo-dark-invert,
+.light .pg-model-logo-dark-invert {
+  filter: none !important;
+}

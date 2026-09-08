@@ -43,12 +43,14 @@ import { SunOutlined, MoonOutlined, FireOutlined } from '@ant-design/icons';
 import { formatApiDateTime, parseApiTimeAsUtc } from '../../../utils/timedisplay';
 import { resolveFreeImageCount } from '../../../utils/billingFreeImages';
 import TrendingPage from './TrendingPage';
+import { copyToClipboard } from '../../../utils/clipboard';
 
 interface Announcement {
   id: number;
   title: string;
   content: string;
   is_pinned: number;
+  sort_order?: number;
   created_at: string;
 }
 
@@ -252,13 +254,15 @@ const CopyModelIdButton: React.FC<CopyModelIdButtonProps> = ({ modelId, isLight,
   const { t: tp } = useTranslation('model_marketplace');
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = (e: React.MouseEvent) => {
+  const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(modelId);
-    setCopied(true);
-    setTimeout(() => {
-      setCopied(false);
-    }, 1500);
+    const ok = await copyToClipboard(modelId);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => {
+        setCopied(false);
+      }, 1500);
+    }
   };
 
   return (
@@ -688,7 +692,7 @@ const ModelMarketplace: React.FC = () => {
 
     // 排序
     if (sortBy === 'popular') {
-      result.sort((a, b) => (b.sort_order || 0) - (a.sort_order || 0));
+      result.sort((a, b) => ((b.sort_order || 0) - (a.sort_order || 0)) || ((b.id || 0) - (a.id || 0)));
     } else if (sortBy === 'name') {
       result.sort((a, b) => (a.original_id || a.name).localeCompare(b.original_id || b.name));
     } else if (sortBy === 'newest') {
@@ -1038,6 +1042,9 @@ const ModelMarketplace: React.FC = () => {
       if (billing_rule === 'image_resolution' && Array.isArray(tiers) && tiers.length > 0) {
         pushMinPrice(tiers.filter(t => t.enabled !== false).map(t => t.rate), tp('unit_per_image'));
       }
+      else if (billing_rule === 'image_resolution_io' && Array.isArray(tiers) && tiers.length > 0) {
+        pushMinPrice(tiers.filter(t => t.enabled !== false).flatMap(t => [t.input_rate, t.rate]), tp('unit_per_image'));
+      }
       else if (billing_rule === 'image_size_pixel' && Array.isArray(tiers) && tiers.length > 0) {
         const rates: number[] = [];
         tiers.filter(t => t.enabled !== false).forEach(t => {
@@ -1046,7 +1053,7 @@ const ModelMarketplace: React.FC = () => {
         pushMinPrice(rates, tp('unit_per_image'));
       }
       else if (billing_rule === 'volc_seedream_pro' && Array.isArray(tiers) && tiers.length > 0) {
-        const rates = tiers.filter(t => t.enabled !== false).map(t => Number(t.rate)).filter(r => !isNaN(r) && r > 0);
+        const rates = tiers.filter(t => t.enabled !== false).flatMap(t => [Number(t.rate), Number(t.layer_rate)]).filter(r => !isNaN(r) && r > 0);
         pushMinPrice(rates, tp('unit_per_image'));
       }
       else if (billing_rule === 'vidu_image') {
@@ -1064,6 +1071,9 @@ const ModelMarketplace: React.FC = () => {
       if ((billing_rule === 'video_resolution' || billing_rule === 'minimax_h3') && Array.isArray(tiers) && tiers.length > 0) {
         pushMinPrice(tiers.filter(t => t.enabled !== false).map(t => t.rate), tp('unit_per_second'));
       }
+      else if (billing_rule === 'video_seconds_io' && Array.isArray(tiers) && tiers.length > 0) {
+        pushMinPrice(tiers.filter(t => t.enabled !== false).flatMap(t => [t.input_rate, t.rate]), tp('unit_per_second'));
+      }
       else if (billing_rule === 'kling_video') {
         const pt = ext.price_table || {};
         const disabledKeys: string[] = Array.isArray(ext.price_table_disabled) ? ext.price_table_disabled : [];
@@ -1078,6 +1088,12 @@ const ModelMarketplace: React.FC = () => {
       }
       else if (billing_rule === 'video_quality' && Array.isArray(tiers) && tiers.length > 0) {
         pushMinPrice(tiers.filter(t => t.enabled !== false).map(t => t.rate), tp('unit_per_second'));
+      }
+      else if (billing_rule === 'fal_ref_video') {
+        const dRate = duration_rate !== undefined && duration_rate !== null ? Number(duration_rate) : 0;
+        if (dRate > 0) {
+          priceItems.push(<><span style={{ fontWeight: 600 }}>{formatPrice(dRate, model)}</span>{tp('unit_per_second')}</>);
+        }
       }
     }
 
@@ -1199,7 +1215,7 @@ const ModelMarketplace: React.FC = () => {
       const items: any[] = [];
       const unit = isDuration ? tp('unit_per_second') : (isRequests ? tp('unit_per_image') : tp('unit_per_request'));
       let freeImageLine: React.ReactNode = null;
-      if ((br === 'volc_seedream_pro' || br === 'minimax_h3') && Number(billing.prompt_rate) > 0) {
+      if ((br === 'volc_seedream_pro' || br === 'minimax_h3' || br === 'video_seconds_io') && Number(billing.prompt_rate) > 0) {
         const freeCount = resolveFreeImageCount(ext.free_image_count, br);
         freeImageLine = (
           <>
@@ -1224,8 +1240,17 @@ const ModelMarketplace: React.FC = () => {
           items.push({ label: `${label} (${tp('quality_low')})`, price: tier.rate_low, unit });
           items.push({ label: `${label} (${tp('quality_medium')})`, price: tier.rate_medium, unit });
           items.push({ label: `${label} (${tp('quality_high')})`, price: tier.rate_high, unit });
+        } else if (br === 'image_resolution_io') {
+          items.push({ label: `${label} ${tp('image_input')}`, price: tier.input_rate, unit });
+          items.push({ label: `${label} ${tp('image_generation')}`, price: tier.rate, unit });
+        } else if (br === 'video_seconds_io') {
+          items.push({ label: `${label} ${tp('video_input')}`, price: tier.input_rate, unit });
+          items.push({ label: `${label} ${tp('video_generation')}`, price: tier.rate, unit });
         } else {
           items.push({ label, price: tier.rate, unit });
+          if (br === 'volc_seedream_pro' && Number(tier.layer_rate) > 0) {
+            items.push({ label: `${label} (图层)`, price: tier.layer_rate, unit });
+          }
         }
       });
       if (freeImageLine || items.length > 0) {
@@ -1234,7 +1259,7 @@ const ModelMarketplace: React.FC = () => {
             {freeImageLine && (
               <div style={{ fontSize: 11, color: c.text1, whiteSpace: 'normal', lineHeight: 1.5 }}>{freeImageLine}</div>
             )}
-            {renderPriceGridTable('', items, variant, undefined, undefined, subRate)}
+            {renderPriceGridTable(isDuration ? tp('duration_by_resolution') : '', items, variant, undefined, undefined, subRate)}
             {imgRefStr && <div style={{ fontSize: 11, color: c.text3, marginTop: 2 }}>{imgRefStr}</div>}
           </div>
         );

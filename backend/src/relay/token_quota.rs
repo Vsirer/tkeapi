@@ -68,11 +68,9 @@ pub async fn consume_async_or_sync(
         return Ok(0.0);
     }
 
-    let limits = super::quota_memory::limits_from_token(token);
     let incr = match state
         .quota_memory
-        .check_and_incr_quota(&state.db, token.id, amount, timedisplay, &limits)
-        .await
+        .check_and_incr_quota(token, amount, timedisplay)
     {
         Ok(v) => v,
         Err(e) => {
@@ -83,24 +81,7 @@ pub async fn consume_async_or_sync(
                 amount,
                 e
             );
-            match state
-                .quota_memory
-                .force_incr_ensured(&state.db, token.id, amount, timedisplay, &limits)
-                .await
-            {
-                Ok(v) => v,
-                Err(e2) => {
-                    tracing::error!(
-                        "[TokenQuota] 强制落账失败 令牌ID={}: {}，回退同步写库",
-                        token.id,
-                        e2
-                    );
-                    let (day, week, month) = crate::models::quota_period_keys(timedisplay);
-                    consume_db_with_keys(&state.db, tx, token.id, amount, &day, &week, &month)
-                        .await?;
-                    return Ok(amount);
-                }
-            }
+            state.quota_memory.force_incr(token, amount, timedisplay)
         }
     };
     if incr.amount <= 0.0 {
@@ -249,8 +230,7 @@ pub async fn apply_delta_with_memory(
     if delta > 0.0 {
         let added = consume(&state.db, tx, token_id, delta, tz_name).await?;
         if added > 0.0 {
-            let day = crate::time_system::local_period_keys(tz_name).day;
-            state.quota_memory.apply_incr(token_id, &day, added);
+            state.quota_memory.apply_incr(token_id, added);
             return Ok(added);
         }
         // 限额已满仍强制写库；丢弃内存 slot，下次请求从 DB hydrate，避免漏加或双加
@@ -265,10 +245,7 @@ pub async fn apply_delta_with_memory(
     } else if delta < 0.0 {
         let amount = -delta;
         refund(&state.db, tx, token_id, amount, tz_name).await?;
-        state
-            .quota_memory
-            .apply_refund_ensured(&state.db, token_id, tz_name, amount)
-            .await;
+        state.quota_memory.apply_refund(token_id, amount);
         Ok(delta)
     } else {
         Ok(0.0)

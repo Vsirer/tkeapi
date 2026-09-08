@@ -80,6 +80,20 @@ static MINIMAX_VID_EN: LazyLock<String> = LazyLock::new(|| {
         include_str!("en/common-errors.md")
     )
 });
+static WAN_IMG_EN: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\n\n{}",
+        include_str!("en/wan-image.md"),
+        include_str!("en/common-errors.md")
+    )
+});
+static WAN_VID_EN: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\n\n{}",
+        include_str!("en/wan-video.md"),
+        include_str!("en/common-errors.md")
+    )
+});
 
 pub struct ArticleTranslation {
     pub lang: &'static str,
@@ -116,7 +130,7 @@ pub fn get_category_translations(slug: &str) -> Vec<(&'static str, &'static str)
         "ali-kling" => vec![
             ("en", "5. Ali DashScope & Kling Protocol"),
             ("ja", "5. Ali DashScope & Kling プロトコル"),
-            ("ko", "4. 알리 DashScope & Kling 프로토콜"),
+            ("ko", "5. 알리 DashScope & Kling 프로토콜"),
             ("vi", "5. Giao thức Ali DashScope & Kling"),
         ],
         "google-anthropic" => vec![
@@ -594,6 +608,16 @@ pub fn get_article_translations(slug: &str) -> Vec<ArticleTranslation> {
             lang: "en",
             title: "MiniMax Video Generation",
             content: &*MINIMAX_VID_EN,
+        }],
+        "wan-image" => vec![ArticleTranslation {
+            lang: "en",
+            title: "Alibaba Qwen Image Generation",
+            content: &*WAN_IMG_EN,
+        }],
+        "wan-video" => vec![ArticleTranslation {
+            lang: "en",
+            title: "Alibaba Wan Video Generation",
+            content: &*WAN_VID_EN,
         }],
         _ => vec![],
     }

@@ -34,7 +34,7 @@ pub async fn trigger_stats_sync(
             crate::relay::usage_stats::manual_sync_usage_stats(&state_clone, start_date, end_date)
                 .await
         {
-            tracing::error!("❌ [AdminManualSync] 手动触发同步失败: {:?}", e);
+            tracing::warn!("❌ [AdminManualSync] 手动触发同步失败: {:?}", e);
         }
     });
 

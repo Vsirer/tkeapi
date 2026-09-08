@@ -7,12 +7,6 @@
 
 use crate::error::{AppError, AppResult};
 use crate::models::order::Order;
-use crate::services::payment::alipay::AlipayClient;
-use crate::services::payment::allinpay::AllinpayClient;
-use crate::services::payment::bonuspay::BonuspayClient;
-use crate::services::payment::hyperbc::HyperbcClient;
-use crate::services::payment::stripe::StripeClient;
-use crate::services::payment::wechat::WechatClient;
 use crate::time_system::DbTs;
 use crate::AppState;
 use axum::{
@@ -21,6 +15,15 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+
+mod payment;
+
+use payment::alipay::AlipayClient;
+use payment::allinpay::AllinpayClient;
+use payment::bonuspay::BonuspayClient;
+use payment::hyperbc::HyperbcClient;
+use payment::stripe::StripeClient;
+use payment::wechat::WechatClient;
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
@@ -591,7 +594,7 @@ pub async fn check_status(
                                                 order.status = "paid".to_string();
                                             }
                                             Err(e) => {
-                                                tracing::error!(
+                                                tracing::warn!(
                                                     "[支付状态查询] 自动入账失败: {:?}",
                                                     e
                                                 );
@@ -607,7 +610,7 @@ pub async fn check_status(
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::error!(
+                                    tracing::warn!(
                                         "[支付状态查询] 主动查询 HyperBC 订单 {} 失败: {:?}",
                                         out_trade_no,
                                         e
@@ -656,7 +659,7 @@ pub async fn check_status(
                                             order.status = "paid".to_string();
                                         }
                                         Err(e) => {
-                                            tracing::error!(
+                                            tracing::warn!(
                                                 "[支付状态查询] 通联自动入账失败: {:?}",
                                                 e
                                             );
@@ -665,7 +668,7 @@ pub async fn check_status(
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(
+                                tracing::warn!(
                                     "[支付状态查询] 主动查询通联订单 {} 失败: {:?}",
                                     out_trade_no,
                                     e
@@ -707,7 +710,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[微信回调] 读取配置失败: {:?}", e);
+            tracing::warn!("[微信回调] 读取配置失败: {:?}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
         }
     };
@@ -716,7 +719,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
         match serde_json::from_str::<PaymentWechatSettings>(&wechat_setting.unwrap_or_default()) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("[微信回调] 解析配置失败: {:?}", e);
+                tracing::warn!("[微信回调] 解析配置失败: {:?}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
             }
         };
@@ -727,7 +730,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     let payload: serde_json::Value = match serde_json::from_str(&body) {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!("[微信回调] JSON解析失败: {:?}", e);
+            tracing::warn!("[微信回调] JSON解析失败: {:?}", e);
             return (StatusCode::BAD_REQUEST, Json(resp_fail));
         }
     };
@@ -749,7 +752,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     let decrypted = match client.decrypt_callback_resource(nonce, associated_data, ciphertext) {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("[微信回调] AES解密失败: {:?}", e);
+            tracing::warn!("[微信回调] AES解密失败: {:?}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
         }
     };
@@ -759,7 +762,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     let data: serde_json::Value = match serde_json::from_str(&decrypted) {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("[微信回调] 解密数据JSON解析失败: {:?}", e);
+            tracing::warn!("[微信回调] 解密数据JSON解析失败: {:?}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
         }
     };
@@ -806,7 +809,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     let mut tx = match state.db.pool.begin().await {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("[微信回调] 开启事务失败: {:?}", e);
+            tracing::warn!("[微信回调] 开启事务失败: {:?}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
         }
     };
@@ -828,7 +831,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
             return (StatusCode::OK, Json(resp_success));
         }
         Err(e) => {
-            tracing::error!("[微信回调] 更新订单状态失败: {:?}", e);
+            tracing::warn!("[微信回调] 更新订单状态失败: {:?}", e);
             let _ = tx.rollback().await;
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
         }
@@ -845,7 +848,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[微信回调] 更新用户余额失败: {:?}", e);
+        tracing::warn!("[微信回调] 更新用户余额失败: {:?}", e);
         let _ = tx.rollback().await;
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
     }
@@ -853,13 +856,13 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
     if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'wechat', ?)"))
         .bind(&order.user_id).bind(amount).bind(format!("微信支付充值 订单号:{}", out_trade_no))
         .execute(&mut *tx).await {
-        tracing::error!("[微信回调] 写充值记录失败: {:?}", e);
+        tracing::warn!("[微信回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
     }
 
     if let Err(e) = tx.commit().await {
-        tracing::error!("[微信回调] 事务提交失败: {:?}", e);
+        tracing::warn!("[微信回调] 事务提交失败: {:?}", e);
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
     }
 
@@ -917,7 +920,7 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
     ) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("[支付宝回调] 解析配置失败: {:?}", e);
+            tracing::warn!("[支付宝回调] 解析配置失败: {:?}", e);
             return "fail".to_string();
         }
     };
@@ -926,11 +929,11 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
     match client.verify_signature(&params, &sign) {
         Ok(true) => tracing::info!("[支付宝回调] 签名验证通过"),
         Ok(false) => {
-            tracing::error!("[支付宝回调] 签名验证失败");
+            tracing::warn!("[支付宝回调] 签名验证失败");
             return "fail".to_string();
         }
         Err(e) => {
-            tracing::error!("[支付宝回调] 签名验证异常: {:?}", e);
+            tracing::warn!("[支付宝回调] 签名验证异常: {:?}", e);
             return "fail".to_string();
         }
     }
@@ -961,7 +964,7 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
     let mut tx = match state.db.pool.begin().await {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("[支付宝回调] 开启事务失败: {:?}", e);
+            tracing::warn!("[支付宝回调] 开启事务失败: {:?}", e);
             return "fail".to_string();
         }
     };
@@ -983,7 +986,7 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
             return "success".to_string();
         }
         Err(e) => {
-            tracing::error!("[支付宝回调] 更新订单失败: {:?}", e);
+            tracing::warn!("[支付宝回调] 更新订单失败: {:?}", e);
             let _ = tx.rollback().await;
             return "fail".to_string();
         }
@@ -1000,7 +1003,7 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[支付宝回调] 更新余额失败: {:?}", e);
+        tracing::warn!("[支付宝回调] 更新余额失败: {:?}", e);
         let _ = tx.rollback().await;
         return "fail".to_string();
     }
@@ -1008,13 +1011,13 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
     if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'alipay', ?)"))
         .bind(&order.user_id).bind(amount).bind(format!("支付宝充值 订单号:{}", out_trade_no))
         .execute(&mut *tx).await {
-        tracing::error!("[支付宝回调] 写充值记录失败: {:?}", e);
+        tracing::warn!("[支付宝回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return "fail".to_string();
     }
 
     if let Err(e) = tx.commit().await {
-        tracing::error!("[支付宝回调] 事务提交失败: {:?}", e);
+        tracing::warn!("[支付宝回调] 事务提交失败: {:?}", e);
         return "fail".to_string();
     }
 
@@ -1055,7 +1058,7 @@ pub async fn stripe_notify(
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[Stripe回调] 读取配置失败: {:?}", e);
+            tracing::warn!("[Stripe回调] 读取配置失败: {:?}", e);
             return resp_fail;
         }
     };
@@ -1065,7 +1068,7 @@ pub async fn stripe_notify(
     ) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("[Stripe回调] 解析配置失败: {:?}", e);
+            tracing::warn!("[Stripe回调] 解析配置失败: {:?}", e);
             return resp_fail;
         }
     };
@@ -1081,11 +1084,11 @@ pub async fn stripe_notify(
         match client.verify_webhook_signature(&body, sig_header) {
             Ok(true) => tracing::info!("[Stripe回调] 签名验证通过"),
             Ok(false) => {
-                tracing::error!("[Stripe回调] 签名验证失败");
+                tracing::warn!("[Stripe回调] 签名验证失败");
                 return resp_fail;
             }
             Err(e) => {
-                tracing::error!("[Stripe回调] 签名验证异常: {:?}", e);
+                tracing::warn!("[Stripe回调] 签名验证异常: {:?}", e);
                 return resp_fail;
             }
         }
@@ -1097,7 +1100,7 @@ pub async fn stripe_notify(
     let event: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[Stripe回调] JSON 解析失败: {:?}", e);
+            tracing::warn!("[Stripe回调] JSON 解析失败: {:?}", e);
             return resp_fail;
         }
     };
@@ -1153,7 +1156,7 @@ pub async fn stripe_notify(
     let mut tx = match state.db.pool.begin().await {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("[Stripe回调] 开启事务失败: {:?}", e);
+            tracing::warn!("[Stripe回调] 开启事务失败: {:?}", e);
             return resp_fail;
         }
     };
@@ -1175,7 +1178,7 @@ pub async fn stripe_notify(
             return resp_ok;
         }
         Err(e) => {
-            tracing::error!("[Stripe回调] 更新订单状态失败: {:?}", e);
+            tracing::warn!("[Stripe回调] 更新订单状态失败: {:?}", e);
             let _ = tx.rollback().await;
             return resp_fail;
         }
@@ -1192,7 +1195,7 @@ pub async fn stripe_notify(
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[Stripe回调] 更新用户余额失败: {:?}", e);
+        tracing::warn!("[Stripe回调] 更新用户余额失败: {:?}", e);
         let _ = tx.rollback().await;
         return resp_fail;
     }
@@ -1200,13 +1203,13 @@ pub async fn stripe_notify(
     if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'stripe', ?)"))
         .bind(&order.user_id).bind(amount).bind(format!("Stripe 充值 订单号:{}", out_trade_no))
         .execute(&mut *tx).await {
-        tracing::error!("[Stripe回调] 写充值记录失败: {:?}", e);
+        tracing::warn!("[Stripe回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return resp_fail;
     }
 
     if let Err(e) = tx.commit().await {
-        tracing::error!("[Stripe回调] 事务提交失败: {:?}", e);
+        tracing::warn!("[Stripe回调] 事务提交失败: {:?}", e);
         return resp_fail;
     }
 
@@ -1255,7 +1258,7 @@ pub async fn bonuspay_notify(
     let data: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[BonusPay回调] JSON 解析失败: {:?}", e);
+            tracing::warn!("[BonusPay回调] JSON 解析失败: {:?}", e);
             return "FAIL".to_string();
         }
     };
@@ -1292,7 +1295,7 @@ pub async fn bonuspay_notify(
     }
 
     if customer_id.is_empty() || settled_amount <= 0.0 {
-        tracing::error!("[BonusPay回调] customerId 或 settledAmount 无效");
+        tracing::warn!("[BonusPay回调] customerId 或 settledAmount 无效");
         return "FAIL".to_string();
     }
 
@@ -1311,7 +1314,7 @@ pub async fn bonuspay_notify(
     ) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("[BonusPay回调] 解析配置失败: {:?}", e);
+            tracing::warn!("[BonusPay回调] 解析配置失败: {:?}", e);
             return "FAIL".to_string();
         }
     };
@@ -1319,7 +1322,7 @@ pub async fn bonuspay_notify(
     // 用 BonusPay 公钥验证签名 (安全加固)
     if !config.bonuspay_public_key.is_empty() {
         if sign.is_empty() {
-            tracing::error!("[BonusPay回调] 签名为空，拒绝请求");
+            tracing::warn!("[BonusPay回调] 签名为空，拒绝请求");
             return "FAIL".to_string();
         }
         match BonuspayClient::verify_signature(&config.bonuspay_public_key, &body, sign) {
@@ -1327,11 +1330,11 @@ pub async fn bonuspay_notify(
                 tracing::info!("[BonusPay回调] RSA 签名验证通过");
             }
             Ok(false) => {
-                tracing::error!("[BonusPay回调] RSA 签名验证失败");
+                tracing::warn!("[BonusPay回调] RSA 签名验证失败");
                 return "FAIL".to_string();
             }
             Err(e) => {
-                tracing::error!("[BonusPay回调] 签名验证异常: {:?}", e);
+                tracing::warn!("[BonusPay回调] 签名验证异常: {:?}", e);
                 return "FAIL".to_string();
             }
         }
@@ -1353,7 +1356,7 @@ pub async fn bonuspay_notify(
             .unwrap_or(None);
 
     if user_exists.is_none() {
-        tracing::error!("[BonusPay回调] 用户不存在: {}", user_id);
+        tracing::warn!("[BonusPay回调] 用户不存在: {}", user_id);
         return "FAIL".to_string();
     }
 
@@ -1397,7 +1400,7 @@ pub async fn bonuspay_notify(
     let mut tx = match state.db.pool.begin().await {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("[BonusPay回调] 开启事务失败: {:?}", e);
+            tracing::warn!("[BonusPay回调] 开启事务失败: {:?}", e);
             return "FAIL".to_string();
         }
     };
@@ -1424,7 +1427,7 @@ pub async fn bonuspay_notify(
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[BonusPay回调] 创建订单记录失败: {:?}", e);
+        tracing::warn!("[BonusPay回调] 创建订单记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return "FAIL".to_string();
     }
@@ -1440,7 +1443,7 @@ pub async fn bonuspay_notify(
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[BonusPay回调] 更新余额失败: {:?}", e);
+        tracing::warn!("[BonusPay回调] 更新余额失败: {:?}", e);
         let _ = tx.rollback().await;
         return "FAIL".to_string();
     }
@@ -1458,13 +1461,13 @@ pub async fn bonuspay_notify(
     .execute(&mut *tx)
     .await
     {
-        tracing::error!("[BonusPay回调] 写充值记录失败: {:?}", e);
+        tracing::warn!("[BonusPay回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return "FAIL".to_string();
     }
 
     if let Err(e) = tx.commit().await {
-        tracing::error!("[BonusPay回调] 事务提交失败: {:?}", e);
+        tracing::warn!("[BonusPay回调] 事务提交失败: {:?}", e);
         return "FAIL".to_string();
     }
 
@@ -1490,7 +1493,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let body_val: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[HyperBC回调] JSON 解析失败: {:?}", e);
+            tracing::warn!("[HyperBC回调] JSON 解析失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1499,7 +1502,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let sign = match body_val.get("sign").and_then(|v| v.as_str()) {
         Some(s) => s.to_string(),
         None => {
-            tracing::error!("[HyperBC回调] 回调报文中缺少签名字段 sign");
+            tracing::warn!("[HyperBC回调] 回调报文中缺少签名字段 sign");
             return "fail".into_response();
         }
     };
@@ -1522,7 +1525,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("[HyperBC回调] 查询数据库配置失败: {:?}", e);
+            tracing::warn!("[HyperBC回调] 查询数据库配置失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1531,7 +1534,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
         match serde_json::from_str(&hyperbc_setting.unwrap_or_default()) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("[HyperBC回调] 解析 HyperBC 配置失败: {:?}", e);
+                tracing::warn!("[HyperBC回调] 解析 HyperBC 配置失败: {:?}", e);
                 return "fail".into_response();
             }
         };
@@ -1555,11 +1558,11 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
                 tracing::info!("[HyperBC回调] RSA 签名验证通过");
             }
             Ok(false) => {
-                tracing::error!("[HyperBC回调] RSA 签名验证失败，签名不匹配");
+                tracing::warn!("[HyperBC回调] RSA 签名验证失败，签名不匹配");
                 return "fail".into_response();
             }
             Err(e) => {
-                tracing::error!("[HyperBC回调] 签名验证异常: {:?}", e);
+                tracing::warn!("[HyperBC回调] 签名验证异常: {:?}", e);
                 return "fail".into_response();
             }
         }
@@ -1571,7 +1574,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let data = match body_val.get("data") {
         Some(d) => d,
         None => {
-            tracing::error!("[HyperBC回调] 回调报文中缺少 data 数据节点");
+            tracing::warn!("[HyperBC回调] 回调报文中缺少 data 数据节点");
             return "fail".into_response();
         }
     };
@@ -1579,7 +1582,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let merchant_order_id = match data.get("merchant_order_id").and_then(|v| v.as_str()) {
         Some(id) => id,
         None => {
-            tracing::error!("[HyperBC回调] data 节点中缺少 merchant_order_id");
+            tracing::warn!("[HyperBC回调] data 节点中缺少 merchant_order_id");
             return "fail".into_response();
         }
     };
@@ -1587,7 +1590,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let status = match data.get("status").and_then(|v| v.as_i64()) {
         Some(s) => s,
         None => {
-            tracing::error!("[HyperBC回调] data 节点中缺少 status 状态");
+            tracing::warn!("[HyperBC回调] data 节点中缺少 status 状态");
             return "fail".into_response();
         }
     };
@@ -1654,7 +1657,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     {
         Ok(o) => o,
         Err(e) => {
-            tracing::error!("[HyperBC回调] 查询订单失败: {:?}", e);
+            tracing::warn!("[HyperBC回调] 查询订单失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1662,7 +1665,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let order = match order {
         Some(o) => o,
         None => {
-            tracing::error!("[HyperBC回调] 订单不存在: {}", merchant_order_id);
+            tracing::warn!("[HyperBC回调] 订单不存在: {}", merchant_order_id);
             return "fail".into_response();
         }
     };
@@ -1680,7 +1683,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     match complete_hyperbc_payment(&state, merchant_order_id, order.amount, &order.user_id).await {
         Ok(_) => "success".into_response(),
         Err(e) => {
-            tracing::error!("[HyperBC回调] 处理订单支付更新失败: {:?}", e);
+            tracing::warn!("[HyperBC回调] 处理订单支付更新失败: {:?}", e);
             "fail".into_response()
         }
     }
@@ -1732,7 +1735,7 @@ pub async fn allinpay_notify(
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[通联回调] 读取配置失败: {:?}", e);
+            tracing::warn!("[通联回调] 读取配置失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1742,7 +1745,7 @@ pub async fn allinpay_notify(
     ) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("[通联回调] 解析配置失败: {:?}", e);
+            tracing::warn!("[通联回调] 解析配置失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1752,11 +1755,11 @@ pub async fn allinpay_notify(
     match client.verify_signature(&params, &sign) {
         Ok(true) => tracing::info!("[通联回调] 签名验证通过"),
         Ok(false) => {
-            tracing::error!("[通联回调] 签名验证失败");
+            tracing::warn!("[通联回调] 签名验证失败");
             return "fail".into_response();
         }
         Err(e) => {
-            tracing::error!("[通联回调] 签名验证过程中出现异常: {:?}", e);
+            tracing::warn!("[通联回调] 签名验证过程中出现异常: {:?}", e);
             return "fail".into_response();
         }
     }
@@ -1773,7 +1776,7 @@ pub async fn allinpay_notify(
     {
         Ok(o) => o,
         Err(e) => {
-            tracing::error!("[通联回调] 查询订单失败: {:?}", e);
+            tracing::warn!("[通联回调] 查询订单失败: {:?}", e);
             return "fail".into_response();
         }
     };
@@ -1781,7 +1784,7 @@ pub async fn allinpay_notify(
     let order = match order {
         Some(o) => o,
         None => {
-            tracing::error!("[通联回调] 订单不存在: {}", out_trade_no);
+            tracing::warn!("[通联回调] 订单不存在: {}", out_trade_no);
             return "fail".into_response();
         }
     };
@@ -1807,7 +1810,7 @@ pub async fn allinpay_notify(
     {
         Ok(_) => "success".into_response(),
         Err(e) => {
-            tracing::error!("[通联回调] 处理加额更新失败: {:?}", e);
+            tracing::warn!("[通联回调] 处理加额更新失败: {:?}", e);
             "fail".into_response()
         }
     }

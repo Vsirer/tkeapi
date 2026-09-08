@@ -14,6 +14,7 @@ import toast from '../PlaygroundToast';
 import generateUUID from '../../../../../utils/uuid';
 import { LoadingOutlined } from '@ant-design/icons';
 import axios from 'axios';
+import { copyToClipboard } from '../../../../../utils/clipboard';
 import type { AdvancedNodeProps } from './shared/types';
 import NodeShell from './shared/NodeShell';
 import {
@@ -568,9 +569,10 @@ const VolcEnhanceNode: React.FC<AdvancedNodeProps> = ({
                     <span style={{ fontSize: 12, fontFamily: 'monospace', color: isLight ? '#1f1f1f' : '#e3e3e3', fontWeight: 500 }}>{node.taskData.sys_log_id}</span>
                     <span
                       style={{ cursor: 'pointer', color: '#1677ff', fontSize: 11 }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(node.taskData.sys_log_id);
-                        toast.success('日志 ID 已复制');
+                      onClick={async () => {
+                        const ok = await copyToClipboard(node.taskData.sys_log_id);
+                        if (ok) toast.success('日志 ID 已复制');
+                        else toast.error('复制失败');
                       }}
                     >
                       复制
@@ -596,9 +598,10 @@ const VolcEnhanceNode: React.FC<AdvancedNodeProps> = ({
                     </span>
                     <span
                       style={{ cursor: 'pointer', color: '#1677ff' }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(curlText);
-                        toast.success('curl 命令已复制到剪贴板');
+                      onClick={async () => {
+                        const ok = await copyToClipboard(curlText);
+                        if (ok) toast.success('curl 命令已复制到剪贴板');
+                        else toast.error('复制失败');
                       }}
                     >
                       复制
@@ -626,9 +629,10 @@ const VolcEnhanceNode: React.FC<AdvancedNodeProps> = ({
                   {submitResponse && (
                     <span
                       style={{ cursor: 'pointer', color: '#1677ff' }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(JSON.stringify(submitResponse, null, 2));
-                        toast.success('提交响应结果已复制');
+                      onClick={async () => {
+                        const ok = await copyToClipboard(JSON.stringify(submitResponse, null, 2));
+                        if (ok) toast.success('提交响应结果已复制');
+                        else toast.error('复制失败');
                       }}
                     >
                       复制
@@ -652,9 +656,10 @@ const VolcEnhanceNode: React.FC<AdvancedNodeProps> = ({
                   {finalResultData && (
                     <span
                       style={{ cursor: 'pointer', color: '#1677ff' }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(JSON.stringify(finalResultData, null, 2));
-                        toast.success('最终数据已复制');
+                      onClick={async () => {
+                        const ok = await copyToClipboard(JSON.stringify(finalResultData, null, 2));
+                        if (ok) toast.success('最终数据已复制');
+                        else toast.error('复制失败');
                       }}
                     >
                       复制

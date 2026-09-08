@@ -12,6 +12,31 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title></title>
+    <script>
+      // 自动捕获 Vite 开发环境下预编译依赖版本更新时的 504 (Outdated Optimize Dep) 并自动重载恢复
+      window.addEventListener('error', function (e) {
+        var isViteDepError = false;
+        if (e && e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
+          var src = e.target.src || e.target.href || '';
+          if (src.indexOf('/node_modules/.vite/') !== -1) {
+            isViteDepError = true;
+          }
+        }
+        var msg = (e && (e.message || (e.error && e.error.message))) || '';
+        if (typeof msg === 'string' && (msg.indexOf('Failed to fetch dynamically imported module') !== -1 || msg.indexOf('Outdated Optimize Dep') !== -1)) {
+          isViteDepError = true;
+        }
+        if (isViteDepError) {
+          var key = '__tb_vite_dep_reload__';
+          var last = sessionStorage.getItem(key);
+          var now = Date.now();
+          if (!last || now - parseInt(last, 10) > 3000) {
+            sessionStorage.setItem(key, String(now));
+            window.location.reload();
+          }
+        }
+      }, true);
+    </script>
   </head>
   <body>
     <div id="root"></div>

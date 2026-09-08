@@ -32,6 +32,12 @@ pub struct UserLevel {
     pub max_token_count: i64,
     #[sqlx(default)]
     pub allow_view_log_details: Option<i32>,
+    #[sqlx(default)]
+    pub invoice_enabled: Option<i32>,
+    #[sqlx(default)]
+    pub invoice_mode: Option<String>,
+    #[sqlx(default)]
+    pub invoice_config: Option<String>,
     pub description: String,
     #[sqlx(default)]
     pub sort_order: i32,
@@ -55,6 +61,9 @@ pub struct CreateUserLevelRequest {
     pub is_default: Option<i64>,
     pub max_token_count: Option<i64>,
     pub allow_view_log_details: Option<i32>,
+    pub invoice_enabled: Option<i32>,
+    pub invoice_mode: Option<String>,
+    pub invoice_config: Option<String>,
     pub description: Option<String>,
     pub sort_order: Option<i32>,
 }
@@ -73,6 +82,9 @@ pub struct UpdateUserLevelRequest {
     pub is_default: Option<i64>,
     pub max_token_count: Option<i64>,
     pub allow_view_log_details: Option<i32>,
+    pub invoice_enabled: Option<i32>,
+    pub invoice_mode: Option<String>,
+    pub invoice_config: Option<String>,
     pub description: Option<String>,
     pub sort_order: Option<i32>,
 }

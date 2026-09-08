@@ -8,7 +8,7 @@
 import axios from 'axios';
 import useAuthStore from '../store/auth';
 
-export const AWAITING_SETUP_KEY = 'tokensbyte_awaiting_setup';
+const AWAITING_SETUP_KEY = 'tokensbyte_awaiting_setup';
 export const DEFAULT_ADMIN_PATH = 'admin1688';
 
 export function isAwaitingFreshSetup(): boolean {

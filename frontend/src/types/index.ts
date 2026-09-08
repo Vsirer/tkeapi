@@ -24,6 +24,7 @@ export interface User {
   user_group: string;
   admin_group_id?: number;
   permissions?: string[];
+  edit_permissions?: string[];
   is_active: boolean;
   level_name?: string;
   level_id?: number;
@@ -47,6 +48,9 @@ export interface User {
   avatar?: string;
   /** 用户通知订阅偏好(JSON) */
   notification_preferences?: string;
+  invoice_enabled?: number;
+  invoice_mode?: string;
+  invoice_config?: string;
 }
 
 export interface UserLevel {
@@ -64,10 +68,113 @@ export interface UserLevel {
   is_default: number;
   max_token_count: number;
   allow_view_log_details: number;
+  invoice_enabled?: number;
+  invoice_mode?: string;
+  invoice_config?: string;
   description: string;
   sort_order?: number;
   created_at: string;
   user_count?: number;
+}
+
+export interface SellerInvoiceSubject {
+  id: string;
+  company_name: string;
+  tax_id: string;
+  contact_email?: string;
+  company_address?: string;
+  company_phone?: string;
+  company_website?: string;
+  website?: string;
+  bank_name?: string;
+  bank_account?: string;
+  support_normal: boolean; // 支持增值税普通发票
+  support_special: boolean; // 支持增值税专用发票
+  is_default?: boolean;
+  enabled?: boolean;
+}
+
+export interface InvoiceConfig {
+  company_name?: string;
+  company_address?: string;
+  tax_id?: string;
+  contact_email?: string;
+  company_phone?: string;
+  company_website?: string;
+  website?: string;
+  currency_symbol?: string;
+  invoice_prefix?: string;
+  receipt_prefix?: string;
+  notes?: string;
+  show_invoices?: boolean;
+  show_receipts?: boolean;
+  china_min_amount?: number;
+  china_invoice_content?: string;
+  china_tax_rate?: number;
+  china_invoice_notice?: string;
+  sellers?: SellerInvoiceSubject[];
+}
+
+export interface FundTypeStats {
+  total_real_paid: number;
+  total_gift_recharged: number;
+  total_real_consumed: number;
+  total_gift_consumed: number;
+  current_balance: number;
+  current_gift_balance: number;
+  current_credit_limit: number;
+  total_invoiced_amount: number;
+  remaining_invoiceable_amount: number;
+}
+
+export interface InvoiceItem {
+  id: string;
+  order_id?: number;
+  date: string;
+  raw_date: string;
+  payment: string;
+  amount: number;
+  currency: string;
+  payment_method: string;
+  description: string;
+  fund_type?: string;
+  fund_type_label?: string;
+  is_invoiceable?: boolean;
+}
+
+export interface ReceiptItem {
+  id: string;
+  order_id?: number;
+  date: string;
+  raw_date: string;
+  amount: number;
+  currency: string;
+  payment_method: string;
+  transaction_id?: string;
+  fund_type?: string;
+  fund_type_label?: string;
+}
+
+export interface InvoiceRequestRecord {
+  id: number;
+  request_no?: string;
+  user_id: string;
+  invoice_type: string;
+  title_type: string;
+  title: string;
+  tax_number?: string;
+  company_address?: string;
+  company_phone?: string;
+  bank_name?: string;
+  bank_account?: string;
+  amount: number;
+  email: string;
+  remark?: string;
+  status: string;
+  reject_reason?: string;
+  invoice_file_url?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 
@@ -107,6 +214,7 @@ export interface ModelModel {
   description?: string;
   feature_attributes?: string;
   is_system?: number;
+  sort_order?: number;
   created_at: string;
   updated_at?: string;
 }
@@ -322,6 +430,8 @@ export interface RequestLog {
   user_level_name?: string;
   token_name?: string;
   token_kid?: string;
+  /** 令牌当前是否开启高可用（JOIN 令牌表，非 logs.is_ha 渠道快照） */
+  token_ha?: number;
   request_content?: string;
   response_content?: string;
   post_response?: string;
@@ -378,6 +488,8 @@ export interface DashboardStats {
     requests: number;
     cost: number;
   }[];
+  /** 看板首屏随统计一并返回，不走 180s SWR */
+  live_metrics?: LiveMetricsSnapshot;
 }
 
 /** 实时吞吐：QPS / RPM / TPM / Task */
@@ -489,7 +601,8 @@ export interface RegistrationSettings {
 
 export type UserKycType = 'personal' | 'enterprise';
 export type UserKycStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'expired';
-export type KycIdDocType = 'id_card' | 'passport' | 'driver_license';
+export type KycIdDocType = 'id_card' | 'passport' | 'driver_license' | 'other';
+export type KycCompanyDocType = 'unified_social_credit_code' | 'business_license' | 'organization_code' | 'other';
 export type KycValidityType = 'long_term' | 'expire_date';
 
 export interface UserKyc {
@@ -499,9 +612,16 @@ export interface UserKyc {
   status: UserKycStatus | string;
   real_name?: string | null;
   id_doc_type?: KycIdDocType | string | null;
+  id_doc_number?: string | null;
+  personal_email?: string | null;
+  personal_phone?: string | null;
   id_doc_front_url?: string | null;
   id_doc_back_url?: string | null;
   company_name?: string | null;
+  company_doc_type?: KycCompanyDocType | string | null;
+  company_doc_number?: string | null;
+  company_email?: string | null;
+  company_phone?: string | null;
   business_license_url?: string | null;
   tax_registration_url?: string | null;
   legal_notarization_url?: string | null;
@@ -509,6 +629,7 @@ export interface UserKyc {
   expire_at?: string | null;
   reject_reason?: string | null;
   admin_remark?: string | null;
+  is_default?: boolean;
   reviewed_by?: string | null;
   reviewed_at?: string | null;
   submitted_at?: string | null;
@@ -551,6 +672,7 @@ interface AgreementSettings {
  */
 export interface AllSettings {
   is_open_source?: boolean;
+  admin_path?: string;
   site: SiteSettings;
   currency: CurrencySettings;
   login: LoginSettings;
@@ -608,6 +730,25 @@ export interface AllSettings {
   };
   database?: any;
   storage?: any;
+  invoices?: {
+    invoice_enabled?: boolean;
+    invoice_mode?: string;
+    invoice_company_name?: string;
+    invoice_company_address?: string;
+    invoice_tax_id?: string;
+    invoice_contact_email?: string;
+    invoice_currency_symbol?: string;
+    invoice_prefix?: string;
+    receipt_prefix?: string;
+    invoice_notes?: string;
+    invoice_show_invoices?: boolean;
+    invoice_show_receipts?: boolean;
+    china_min_amount?: number;
+    china_invoice_content?: string;
+    china_tax_rate?: number;
+    china_invoice_notice?: string;
+  };
+  log_cleanup?: any;
   payment_wechat?: any;
   payment_alipay?: any;
   payment_stripe?: any;
@@ -636,12 +777,15 @@ export interface AllSettings {
     manual_poll_upstream?: boolean;
     /** 后台 TaskPoller 周期（秒）；默认 30，范围 5–300 */
     poll_tick_secs?: number;
-    /** 低余额限制未完成视频；默认 false */
-    video_inflight_enabled?: boolean;
-    video_inflight_tiers?: {
-      max_available?: number | null;
-      max_inflight?: number;
-    }[];
+    /** 模型调用调试日志；默认关 */
+    enable_debug_log?: boolean;
+    /** 按类别的低余额在途限制（视频/图片/聊天/其它） */
+    inflight_limits?: {
+      video?: { enabled?: boolean; tiers?: { max_available?: number | null; max_inflight?: number }[] };
+      image?: { enabled?: boolean; tiers?: { max_available?: number | null; max_inflight?: number }[] };
+      chat?: { enabled?: boolean; tiers?: { max_available?: number | null; max_inflight?: number }[] };
+      other?: { enabled?: boolean; tiers?: { max_available?: number | null; max_inflight?: number }[] };
+    };
   };
 }
 
@@ -679,7 +823,7 @@ export interface ChannelConfig {
   status?: number;
   /** 上游分类（channel_categories.id） */
   category_id?: number | null;
-  /** 上游系统：兼容 / 官方 / newapi / akeapi / 火山引擎 / 阿里云 */
+  /** 上游系统：兼容 / 官方 / newapi / Tkeapi / 火山引擎 / 阿里云 */
   upstream_system?: string;
   /** NewAPI 已选同步分组 */
   upstream_group?: string;
@@ -687,9 +831,28 @@ export interface ChannelConfig {
   upstream_sync_interval_minutes?: number;
   /** 同步时叠加到分组倍率的增量 */
   upstream_sync_rate_add?: number;
+  /** 上游计价货币单位，如 CNY/USD，空=同本站 */
+  upstream_currency?: string;
+  /** 本站计价货币单位，如 USD/CNY，空=同系统 */
+  site_currency?: string;
+  /** 货币换算汇率(例如 1 USD = 7.2 CNY 时填 7.2) */
+  upstream_currency_rate?: number;
   upstream_synced_at?: string | null;
+  /** 绑定的模型渠道分组总数 */
+  bound_channel_count?: number;
+  /** 绑定的模型渠道分组摘要列表 */
+  bound_channels?: BoundChannelSummary[];
   created_at: string;
   updated_at: string;
+}
+
+interface BoundChannelSummary {
+  id: number;
+  name: string;
+  group_aid?: string | null;
+  is_ha?: boolean;
+  /** 1=启用, 0=禁用 */
+  status?: number;
 }
 
 export interface Upstream {
@@ -714,6 +877,10 @@ export interface Plugin {
   is_enabled: number;
   allowed_levels: string;
   category: string;   // user=用户增强插件, system=系统增强插件, system_builtin=系统内置
+  show_in_admin_menu?: number;
+  admin_menu_sort?: number;
+  admin_menu_title?: string;
+  admin_menu_default_tab?: string;
   created_at: string;
   updated_at: string;
 }
@@ -744,6 +911,7 @@ export interface MarketingTeam {
   invite_code: string;
   max_members: number;
   leader_can_remove_members?: number;
+  members_can_apply_invoice?: number;
   allowed_level_ids?: number[];
   allowed_member_level_ids?: number[];
   leaders: TeamMember[];
@@ -798,7 +966,9 @@ export interface Announcement {
   title: string;
   content: string;
   is_pinned: number;
+  is_popup?: number;
   is_active: number;
+  sort_order?: number;
   created_at: string;
   updated_at: string;
 }

@@ -1,0 +1,3289 @@
+/*
+ * tokensbyte opensource
+ * (c) 2026 tokensbyte.ai
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tokensbyte.ai/)
+ */
+
+/**
+ * 工作流编辑器 — 对齐 Imagine Flow 画布壳
+ */
+
+.pg-flow-editor {
+  --flow-canvas-bg: #141414;
+  --flow-dot: rgba(255, 255, 255, 0.09);
+  --flow-rail-bg: #0f0f0f;
+  --flow-rail-w: 57px;
+  --flow-resource-panel-w: 420px;
+  --flow-pill-bg: #171717;
+  --flow-pill-ring: rgba(255, 255, 255, 0.1);
+  --flow-surface: #212121;
+  --flow-border: rgba(255, 255, 255, 0.1);
+  position: relative;
+  width: 100vw;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--flow-canvas-bg);
+  color: #fff;
+  font-family: var(--ig-font, 'Inter', system-ui, sans-serif);
+  /* 拖动画布/节点时不要把标题文案拖成蓝选 */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pg-flow-editor input,
+.pg-flow-editor textarea,
+.pg-flow-editor select,
+.pg-flow-editor [contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.pg-flow-main {
+  position: absolute;
+  inset: 0 0 0 var(--flow-rail-w);
+  overflow: hidden;
+}
+
+/* 资源侧栏打开时：只挤浮层，不挤画布 */
+.pg-flow-editor.has-resource-panel .pg-flow-top-left {
+  left: calc(26px + var(--flow-resource-panel-w));
+}
+
+.pg-flow-editor.has-resource-panel .pg-flow-bottom-left {
+  left: calc(22px + var(--flow-resource-panel-w));
+}
+
+/* —— 左侧资源面板 —— */
+.pg-flow-resource-panel {
+  position: fixed;
+  top: 0;
+  left: var(--flow-rail-w);
+  z-index: 2095;
+  width: var(--flow-resource-panel-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #121212;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
+  pointer-events: auto;
+}
+
+.pg-flow-resource-panel.is-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 420px;
+  height: 100%;
+  z-index: 80;
+  box-shadow: 8px 0 32px rgba(0, 0, 0, 0.45);
+}
+
+.pg-flow-resource-panel-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.pg-flow-resource-panel-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 10px;
+  flex-shrink: 0;
+}
+
+.pg-flow-resource-panel-hd h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.pg-flow-resource-panel-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-resource-panel-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.pg-flow-resource-panel-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 10px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.pg-flow-resource-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 40;
+  overflow: visible;
+}
+
+.pg-flow-resource-panel-tools .pg-flow-assets-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.pg-flow-resource-panel-upload {
+  padding: 0 14px 12px;
+  flex-shrink: 0;
+}
+
+.pg-flow-resource-upload-btn {
+  width: 100%;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.82);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pg-flow-resource-upload-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.pg-flow-resource-upload-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.pg-flow-resource-panel-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 14px 16px;
+  position: relative;
+}
+
+.pg-flow-resource-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pg-flow-resource-card {
+  position: relative;
+  aspect-ratio: 1;
+  border: none;
+  border-radius: 5px;
+  overflow: hidden;
+  padding: 0;
+  background: #1a1a1a;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+.pg-flow-resource-card img,
+.pg-flow-resource-card video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 5px;
+}
+
+.pg-flow-resource-card:hover {
+  outline: 1px solid rgba(255, 255, 255, 0.28);
+  outline-offset: -1px;
+}
+
+.pg-flow-resource-card.is-selected {
+  outline: 2px solid #8a3ffc;
+  outline-offset: -2px;
+}
+
+.pg-flow-resource-card:active {
+  transform: scale(0.98);
+}
+
+.pg-flow-resource-card .pg-ig-badge {
+  left: 6px;
+  top: 6px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.pg-flow-resource-card-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  padding: 22px 8px 8px 36px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: #fafafa;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.72) 50%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pg-flow-resource-card .hf-works-card-actions-tr {
+  top: 6px;
+  right: 6px;
+}
+
+.pg-flow-resource-card .hf-works-card-fav {
+  left: 6px !important;
+  bottom: 6px !important;
+  width: 26px !important;
+  height: 26px !important;
+}
+
+.pg-flow-canvas-bg {
+  background-color: var(--flow-canvas-bg) !important;
+  background-image: radial-gradient(circle, var(--flow-dot) 1px, transparent 1px) !important;
+  background-size: 24px 24px;
+  /* 不锁死 background-position：由 JS 随平移更新，否则点阵静止会像「撞边界」 */
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+/* —— 左侧 57px 图标栏 —— */
+.pg-flow-rail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2100;
+  width: var(--flow-rail-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--flow-rail-bg);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-top-right-radius: 12px;
+  border-bottom-right-radius: 12px;
+  padding: 6px 0 12px;
+}
+
+.pg-flow-rail-logo {
+  width: 40px;
+  height: 40px;
+  margin: 0 0 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.pg-flow-rail-logo img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.pg-flow-rail-logo span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pg-flow-rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  width: 100%;
+}
+
+.pg-flow-rail-item {
+  width: 44px;
+  height: 54px;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 10px;
+  padding: 4px 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pg-flow-rail-item:hover,
+.pg-flow-rail-item.is-active {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.pg-flow-rail-item span {
+  font-size: 10px;
+  line-height: 12px;
+  letter-spacing: 0.02em;
+  font-weight: 500;
+}
+
+.pg-flow-rail-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: auto;
+}
+
+.pg-flow-rail-icon-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-rail-icon-btn:hover,
+.pg-flow-rail-icon-btn.is-active {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+/* —— 顶栏 —— */
+.pg-flow-pill {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  min-width: 214px;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--flow-pill-bg);
+  border: 1px solid var(--flow-pill-ring);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.pg-flow-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.pg-flow-pill-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pg-flow-pill-name {
+  flex: 1;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.pg-flow-pill-name-input {
+  flex: 1;
+  max-width: 180px;
+  height: 32px;
+  min-width: 80px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  outline: none;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.pg-flow-pill-name-input:focus {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-node-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: text;
+  text-align: left;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pg-flow-node-title-input {
+  max-width: 160px;
+  height: 20px;
+  padding: 0 6px;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  box-sizing: border-box;
+  text-align: left;
+  /* 父级常有 pointer-events:none，必须显式可点，否则再点会穿透失焦又重新全选 */
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.pg-flow-node-title-input:focus {
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.pg-flow-add-node-pop {
+  position: fixed;
+  z-index: 6400;
+  width: 260px;
+  background: #212121;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  /* 不用 overflow:hidden，避免末项 hover 圆角被裁切 */
+  overflow: visible;
+  color: #fff;
+  animation: pg-flow-pop-in 0.12s ease-out;
+}
+
+@keyframes pg-flow-pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.pg-flow-add-node-pop-title {
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.pg-flow-add-node-pop-list {
+  padding: 0 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(60vh, 440px);
+  overflow-y: auto;
+}
+
+.pg-flow-add-node-pop-group + .pg-flow-add-node-pop-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pg-flow-add-node-pop-group-title {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.pg-flow-add-node-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pg-flow-add-node-pop-item:hover,
+.pg-flow-add-node-pop-item:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-add-node-pop-item.is-soon {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.pg-flow-add-node-pop-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.75);
+  flex-shrink: 0;
+}
+
+.pg-flow-add-node-pop-logo {
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  object-fit: contain;
+  display: block;
+  background: transparent !important;
+}
+
+.pg-flow-add-node-pop-logo-fallback {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.12);
+  text-transform: uppercase;
+}
+
+.pg-flow-add-node-pop-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.pg-flow-add-node-pop-scheme {
+  position: relative;
+}
+
+.pg-flow-add-node-pop-item.is-scheme {
+  padding-right: 8px;
+}
+
+.pg-flow-add-node-pop-item.is-scheme.is-open,
+.pg-flow-add-node-pop-scheme.is-open > .pg-flow-add-node-pop-item {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-add-node-pop-chevron {
+  width: 14px !important;
+  height: 14px !important;
+  margin-left: 4px;
+  flex-shrink: 0;
+  opacity: 0.45;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.pg-flow-add-node-pop-scheme.is-open .pg-flow-add-node-pop-chevron,
+.pg-flow-add-node-pop-item.is-scheme:hover .pg-flow-add-node-pop-chevron {
+  opacity: 0.85;
+}
+
+.pg-flow-add-node-pop-submenu {
+  position: fixed;
+  z-index: 6401;
+  width: 248px;
+  padding: 6px 8px;
+  background: #212121;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: #fff;
+  animation: pg-flow-pop-in 0.12s ease-out;
+}
+
+.pg-flow-pill-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+.pg-flow-top-left {
+  position: absolute;
+  top: 22px;
+  left: 26px;
+  z-index: 2005;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pg-flow-top-right {
+  position: absolute;
+  top: 22px;
+  right: 26px;
+  z-index: 2005;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-flow-chip {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--flow-pill-bg);
+  border: 1px solid var(--flow-pill-ring);
+  cursor: pointer;
+  padding: 0;
+  color: #fff;
+}
+
+.pg-flow-bottom-left {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pg-flow-bottom-left .pg-flow-tool-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--flow-pill-bg);
+  border: 1px solid var(--flow-pill-ring);
+}
+
+.pg-flow-tool-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-tool-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.pg-flow-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.pg-flow-zoom-btn {
+  min-width: 72px;
+  height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* —— 底部中央操作栏 —— */
+.pg-flow-opbar {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 52px;
+  padding: 8px;
+  border-radius: 18px;
+  background: var(--flow-pill-bg);
+  border: 1px solid var(--flow-pill-ring);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pg-flow-opbar-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pg-flow-opbar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-opbar-btn:focus {
+  outline: none;
+}
+
+.pg-flow-opbar-btn:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.55);
+  outline-offset: 1px;
+}
+
+.pg-flow-opbar-btn.is-active {
+  background: #fff;
+  color: #171717;
+  box-shadow: none;
+  border-radius: 50%;
+}
+
+.pg-flow-opbar-btn.is-active:hover {
+  background: #f4f4f5;
+  color: #0a0a0a;
+}
+
+.pg-flow-opbar-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.12);
+  margin: 0 2px;
+}
+
+/* —— Logo + 进度条加载（对齐 flow-loading-fill / wave） —— */
+.pg-flow-splash {
+  position: absolute;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  background: #0f0f0f;
+}
+
+.pg-flow-splash.is-leaving {
+  animation: pg-flow-splash-fade-out 0.3s ease-in forwards;
+}
+
+.pg-flow-splash-logo {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+}
+
+.pg-flow-splash-logo-fallback {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: #e5e5e5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #000;
+}
+
+.pg-flow-splash-track {
+  position: relative;
+  width: 160px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.pg-flow-splash-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: #e5e5e5;
+  animation: flow-loading-fill 3s ease-out forwards;
+}
+
+.pg-flow-splash-wave {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.35),
+    transparent
+  );
+  animation: flow-loading-wave 1.4s ease-in-out infinite;
+}
+
+/* —— 空态：仅 + 与「点击添加节点」 —— */
+.pg-flow-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.pg-flow-empty-inner {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.pg-flow-empty-plus {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #292929;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease, background 0.15s ease;
+}
+
+.pg-flow-empty-plus:hover {
+  transform: scale(1.05);
+  background: #323232;
+}
+
+.pg-flow-empty-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 500;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+/* —— 素材节点 —— */
+.pg-flow-asset-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  color: #fff;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+}
+
+.pg-flow-asset-node-chrome {
+  position: absolute;
+  top: -28px;
+  left: 4px;
+  right: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+}
+
+.pg-flow-asset-node-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 400;
+  min-width: 0;
+  pointer-events: auto;
+}
+
+.pg-flow-asset-node-chrome .pg-flow-node-more {
+  pointer-events: auto;
+}
+
+.pg-flow-asset-body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border-radius: 22px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.pg-flow-asset-body.has-media {
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  background: #212121;
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+.pg-flow-asset-body.is-dragover {
+  outline: 1px dashed rgba(255, 255, 255, 0.4);
+  outline-offset: -6px;
+  border-radius: 22px;
+}
+
+.pg-flow-asset-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  padding: 28px 20px 32px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.pg-flow-asset-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pg-flow-asset-drop-icon {
+  display: inline-flex;
+  color: rgba(255, 255, 255, 0.92);
+  margin-bottom: 2px;
+}
+
+.pg-flow-asset-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.pg-flow-asset-empty-sub {
+  margin: 0;
+  max-width: 240px;
+  font-size: 12px;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.pg-flow-asset-empty-sub em {
+  font-style: italic;
+  font-weight: 400;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+
+.pg-flow-asset-or {
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.38);
+  line-height: 1;
+}
+
+.pg-flow-asset-library-btn {
+  border: none;
+  background: #2a2a2c;
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.pg-flow-asset-library-btn:hover {
+  background: #343438;
+}
+
+/* —— 已选素材（单图预览铺满节点高度 + 底部添加更多） —— */
+.pg-flow-asset-filled {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.pg-flow-asset-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 8px 8px 0;
+  flex: 1;
+  min-height: 0;
+}
+
+.pg-flow-asset-media {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0a0a0a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-asset-media img,
+.pg-flow-asset-media video {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  object-fit: cover;
+  display: block;
+  background: #0a0a0a;
+}
+
+.pg-flow-asset-play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 56px;
+  height: 56px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.pg-flow-asset-play:hover {
+  transform: scale(1.06);
+}
+
+.pg-flow-asset-play.is-playing {
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+
+.pg-flow-asset-media-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 8px;
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.pg-flow-asset-media:hover .pg-flow-asset-media-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-flow-asset-media-actions button {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(28, 28, 30, 0.72);
+  color: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.pg-flow-asset-media-actions button:hover {
+  background: rgba(48, 48, 52, 0.9);
+  transform: scale(1.05);
+}
+
+.pg-flow-asset-doc {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 16px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+}
+
+.pg-flow-asset-doc a {
+  color: #93c5fd;
+}
+
+.pg-flow-asset-add-more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  flex-shrink: 0;
+  padding: 14px 18px 16px;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pg-flow-asset-add-more:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: #fff;
+}
+
+.pg-flow-asset-add-more svg {
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+/* 预览节点媒体区：cover 铺满，无类型标签 */
+.pg-flow-preview-panel {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  background: #121214;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.pg-flow-preview-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.pg-flow-preview-badge.is-lost {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+.pg-flow-preview-media {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0a;
+}
+
+.pg-flow-preview-media-el {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #0a0a0a;
+  pointer-events: none;
+}
+
+.pg-flow-preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 18px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* 多素材底部切换条（节点卡片外） */
+.pg-flow-asset-switcher {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 6;
+  pointer-events: auto;
+}
+
+.pg-flow-asset-switcher-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.pg-flow-asset-switcher-nav {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.pg-flow-asset-switcher-nav:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-asset-switcher-thumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(100%, 280px);
+  overflow-x: auto;
+  padding: 2px;
+  scrollbar-width: none;
+}
+
+.pg-flow-asset-switcher-thumbs::-webkit-scrollbar {
+  display: none;
+}
+
+.pg-flow-asset-switcher-thumb {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1a1a1a;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.pg-flow-asset-switcher-thumb img,
+.pg-flow-asset-switcher-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.pg-flow-asset-switcher-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  background: #2a2a2c;
+}
+
+.pg-flow-asset-switcher-thumb.is-active {
+  border-color: #fff;
+  transform: scale(1.04);
+}
+
+.pg-flow-asset-switcher-thumb:hover:not(.is-active) {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.pg-flow-asset-switcher-meta {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1;
+  user-select: none;
+}
+
+.pg-flow-asset-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.pg-flow-asset-picker-item {
+  aspect-ratio: 1;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 0;
+  background: #111;
+  cursor: pointer;
+}
+
+.pg-flow-asset-picker-item img,
+.pg-flow-asset-picker-item video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pg-flow-asset-picker-item:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+
+/* —— 我的资源弹窗（Imagine My Assets） —— */
+.pg-flow-assets-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 11000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-assets-modal-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pg-flow-assets-modal {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, calc(100vw - 40px));
+  height: min(900px, calc(100vh - 48px));
+  max-height: min(900px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  background: #171717;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  color: #fff;
+  overflow: hidden;
+}
+
+.pg-flow-assets-modal-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px 12px;
+  flex-shrink: 0;
+}
+
+.pg-flow-assets-modal-hd h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.pg-flow-assets-modal-close {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.pg-flow-assets-modal-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.pg-flow-assets-upload {
+  margin: 4px 22px 16px;
+  padding: 28px 16px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.pg-flow-assets-upload:hover,
+.pg-flow-assets-upload.is-dragover {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.pg-flow-assets-upload.is-busy {
+  cursor: default;
+  pointer-events: none;
+}
+
+.pg-flow-assets-upload-icon {
+  color: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  margin-bottom: 2px;
+}
+
+.pg-flow-assets-upload-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.pg-flow-assets-upload-sub {
+  margin: 0;
+  font-size: 12px;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.42);
+  line-height: 1.4;
+}
+
+.pg-flow-assets-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 22px 14px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 40;
+  overflow: visible;
+}
+
+.pg-flow-assets-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.pg-flow-assets-tab {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.pg-flow-assets-tab:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pg-flow-assets-tab.is-active {
+  background: #2a2a2c;
+  color: #fff;
+}
+
+.pg-flow-assets-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 41;
+  overflow: visible;
+}
+
+.pg-flow-assets-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.pg-flow-assets-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+}
+
+.pg-flow-assets-search input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.pg-flow-assets-filter {
+  position: relative;
+  z-index: 42;
+}
+
+.pg-flow-assets-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pg-flow-assets-filter-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pg-flow-assets-filter-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 120px;
+  padding: 6px;
+  border-radius: 12px;
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: auto;
+}
+
+.pg-flow-assets-filter-menu.is-portal {
+  position: fixed;
+  right: auto;
+  z-index: 12050;
+  min-width: 128px;
+}
+
+.pg-flow-assets-filter-menu button {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.8);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pg-flow-assets-filter-menu button:hover,
+.pg-flow-assets-filter-menu button.is-active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.pg-flow-assets-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 22px 24px;
+  position: relative;
+}
+
+.pg-flow-assets-grid-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(23, 23, 23, 0.45);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pg-flow-assets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 12px;
+}
+
+.pg-flow-assets-card {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a0a0a;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.pg-flow-assets-card:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.pg-flow-assets-card img,
+.pg-flow-assets-card video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 8px;
+}
+
+.pg-flow-assets-card.is-selected {
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.pg-flow-assets-card .pg-ig-badge {
+  left: 6px;
+  top: 6px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  z-index: 4;
+}
+
+.pg-flow-assets-card-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 6;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+  padding: 0;
+  font-size: 13px;
+}
+
+.pg-flow-assets-card:hover .pg-flow-assets-card-del {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.pg-flow-assets-card-del:hover {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.pg-flow-assets-card-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.25) 60%, transparent 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 3;
+}
+
+.pg-flow-assets-card:hover .pg-flow-assets-card-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-flow-assets-card-select-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transform: translateY(4px);
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.pg-flow-assets-card:hover .pg-flow-assets-card-select-btn {
+  transform: translateY(0);
+}
+
+.pg-flow-assets-card-select-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+}
+
+.pg-flow-assets-card-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.35));
+}
+
+.pg-flow-assets-empty {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 13px;
+}
+
+/* —— 统一节点连接器（贴边 + 吸附） —— */
+.pg-flow-connectors-bridge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 19;
+}
+
+.pg-flow-connectors-bridge.is-left {
+  right: 100%;
+  width: 96px;
+}
+
+.pg-flow-connectors-bridge.is-right {
+  left: 100%;
+  width: 96px;
+}
+
+.pg-flow-connectors {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  transition: opacity 0.15s ease;
+}
+
+.pg-flow-connectors.is-left {
+  right: calc(100% + 6px);
+  align-items: flex-end;
+}
+
+.pg-flow-connectors.is-right {
+  left: calc(100% + 6px);
+  align-items: flex-start;
+}
+
+.pg-flow-connectors.is-center-y {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.pg-flow-connectors.is-magnet-ready .pg-flow-connector-dot.is-magnet-target {
+  opacity: 1 !important;
+  transform: scale(1.15);
+}
+
+.pg-flow-connector-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  box-sizing: border-box;
+}
+
+.pg-flow-connector-label {
+  position: relative;
+  z-index: 2;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1;
+  transition: opacity 0.15s ease;
+  user-select: none;
+  /* 衬底：连线从文字下方穿过时仍可读 */
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 4px;
+  background: rgba(18, 18, 20, 0.88);
+  box-shadow: 0 0 0 1px rgba(18, 18, 20, 0.5);
+}
+
+.pg-flow-connector-dot {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  margin: 0;
+  border-radius: 50%;
+  border: 2px solid;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* 扩大命中区，便于靠近吸附 */
+.pg-flow-connector-dot::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+}
+
+.pg-flow-connector-dot.is-hover,
+.pg-flow-connector-row.is-hover .pg-flow-connector-dot {
+  transform: scale(1.45);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dot-color, #38bdf8) 28%, transparent),
+    0 0 12px color-mix(in srgb, var(--dot-color, #38bdf8) 55%, transparent);
+}
+
+.pg-flow-connector-dot.is-filled {
+  box-shadow: 0 0 8px var(--dot-color, #38bdf8);
+}
+
+.pg-flow-connector-dot.is-magnet-snap {
+  transform: scale(1.7) !important;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--dot-color, #38bdf8) 35%, transparent),
+    0 0 16px color-mix(in srgb, var(--dot-color, #38bdf8) 70%, transparent) !important;
+  z-index: 2;
+}
+
+.pg-flow-connector-add {
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.pg-flow-connector-add:hover {
+  color: #fff;
+}
+
+.pg-flow-add-node-pop-empty {
+  padding: 12px 14px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+@keyframes flow-loading-fill {
+  0% { width: 0; }
+  18% { width: 38%; }
+  30% { width: 42%; }
+  48% { width: 64%; }
+  62% { width: 67%; }
+  80% { width: 86%; }
+  100% { width: 95%; }
+}
+
+@keyframes flow-loading-wave {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@keyframes pg-flow-splash-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; visibility: hidden; }
+}
+
+
+/* —— Imagine 节点外框基组件 —— */
+.pg-flow-node-frame {
+  overflow: visible;
+  cursor: grab;
+  transition: opacity 0.15s ease;
+  /* 独立层叠：手柄 z=0 在 panel z=1 下方，圆角外弧才可见 */
+  isolation: isolate;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pg-flow-node-frame.is-dragging {
+  cursor: grabbing;
+}
+
+/* 拖出连接线时：不可连接的节点面板变淡 */
+.pg-flow-node-frame.is-connect-incompatible,
+.pg-flow-section-frame.is-connect-incompatible {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.pg-flow-node-frame.is-connect-incompatible .pg-flow-connectors {
+  opacity: 0.4;
+}
+
+/* 操作栏与节点面板之间的透明桥接，避免鼠标上移时落入空隙触发 leave */
+.pg-flow-node-frame.is-tb-open::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -75px;
+  height: 75px;
+  z-index: 999;
+  pointer-events: auto;
+}
+
+.pg-flow-node-frame.is-transparent {
+  background: transparent;
+  box-shadow: none;
+}
+
+.pg-flow-node-panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  background: #171717;
+  border-radius: 24px;
+  border: 2px solid #212121;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  overflow: visible;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pg-flow-node-frame.is-auto-height .pg-flow-node-panel {
+  height: auto;
+}
+
+.pg-flow-node-frame.is-selected .pg-flow-node-panel {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.pg-flow-node-frame.is-dragging .pg-flow-node-panel {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.pg-flow-node-frame.is-transparent .pg-flow-node-panel {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* —— Imagine 四角缩放手柄：弧线在面板外侧，命中区抬到面板之上 —— */
+.pg-flow-resize-handle {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  z-index: 4;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: auto;
+  border: none;
+  padding: 0;
+  background: #575757;
+  border-radius: 1px;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  /* 扩大可点区域，不只靠外露弧线 */
+  touch-action: none;
+}
+
+/* 去除扩大的命中区，缩小缩放抓手的影响范围 */
+.pg-flow-resize-handle::before {
+  display: none;
+}
+
+.pg-flow-resize-handle:hover,
+.pg-flow-node-frame.is-selected.is-resizing > .pg-flow-resize-handle,
+.pg-flow-node-frame.is-selected:hover > .pg-flow-resize-handle,
+/* Section / 多选框等未用 Frame 时 */
+.is-selected:hover > .pg-flow-resize-handle,
+.is-selected.is-resizing > .pg-flow-resize-handle,
+.is-selected:hover > * > .pg-flow-resize-handle {
+  opacity: 1;
+}
+
+.pg-flow-resize-handle.dir-nw {
+  top: 0;
+  left: 0;
+  transform: translate(-20px, -20px);
+  cursor: nwse-resize;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M12 29 A34 34 0 0 1 29 12' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M12 29 A34 34 0 0 1 29 12' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.pg-flow-resize-handle.dir-ne {
+  top: 0;
+  left: 100%;
+  transform: translate(-36px, -20px);
+  cursor: nesw-resize;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M27 12 A34 34 0 0 1 44 29' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M27 12 A34 34 0 0 1 44 29' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.pg-flow-resize-handle.dir-se {
+  top: 100%;
+  left: 100%;
+  transform: translate(-36px, -36px);
+  cursor: nwse-resize;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M44 27 A34 34 0 0 1 27 44' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M44 27 A34 34 0 0 1 27 44' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+.pg-flow-resize-handle.dir-sw {
+  top: 100%;
+  left: 0;
+  transform: translate(-20px, -36px);
+  cursor: nesw-resize;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M29 44 A34 34 0 0 1 12 27' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56' viewBox='0 0 56 56' fill='none'%3E%3Cpath d='M29 44 A34 34 0 0 1 12 27' stroke='black' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+/* —— AI 图片 / 视频节点（Imagine 对齐；外框由 FlowNodeFrame 提供） —— */
+.pg-flow-ai-body {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 22px;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* 预览区：宽度随节点，高度由比例决定（图 1:1 / 视频 16:9） */
+.pg-flow-ai-preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  height: auto;
+  background: #212121;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pg-flow-ai-preview.is-video {
+  aspect-ratio: 16 / 9;
+}
+
+.pg-flow-ai-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.pg-flow-ai-footer {
+  width: 100%;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  background: transparent;
+}
+
+.pg-flow-ai-prompt {
+  width: 100%;
+  background: transparent;
+  border: none;
+  resize: none;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.28px;
+  outline: none;
+  padding: 4px;
+  min-height: 32px;
+  max-height: 192px;
+  line-height: 1.45;
+}
+
+.pg-flow-ai-footer .hf-mpf-root {
+  width: 100%;
+}
+
+.pg-flow-prompt-mention {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.pg-flow-prompt-mention .hf-mpf-root,
+.pg-flow-prompt-mention .prompt-contenteditable {
+  height: 100%;
+  min-height: 0;
+}
+
+.pg-flow-prompt-mention .prompt-contenteditable {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 15px;
+  outline: none;
+  line-height: 1.5;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.pg-flow-ai-prompt::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.pg-flow-ai-prompt-hint {
+  font-size: 10px;
+  color: #38bdf8;
+  opacity: 0.85;
+}
+
+.pg-flow-ai-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.pg-flow-ai-ref-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(41, 41, 41, 0.7);
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.pg-flow-ai-ref-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: transparent;
+}
+
+.pg-flow-ai-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.pg-flow-ai-icon-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(189, 189, 189, 0.55);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.pg-flow-ai-icon-btn:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pg-flow-ai-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pg-flow-ai-run-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  color: #0f0f0f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.pg-flow-ai-run-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+
+.pg-flow-ai-run-btn.is-busy,
+.pg-flow-ai-run-btn:disabled {
+  background: rgba(33, 33, 33, 0.3);
+  color: rgba(255, 255, 255, 0.3);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* —— 选中节点上方操作栏（Imagine：位于标题/模型名行之上；31×31 / 14px 圆角） —— */
+.pg-flow-node-tb {
+  position: absolute;
+  /* 标题行约 top:-28；工具栏高度约 39；间距约 8 → 整体抬到标题上方 */
+  top: -75px;
+  right: 0;
+  left: auto;
+  transform: none;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: #171717;
+  border: 1px solid #212121;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  animation: pg-flow-node-tb-in 0.16s ease-out;
+}
+
+@keyframes pg-flow-node-tb-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.pg-flow-node-tb-btn {
+  width: 31px;
+  height: 31px;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pg-flow-node-tb-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-node-tb-btn.is-danger {
+  color: #f87171;
+}
+
+.pg-flow-node-tb-btn.is-danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.pg-flow-node-tb-btn svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+/* 节点框右上角三点 */
+.pg-flow-node-more {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pg-flow-node-more:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.pg-flow-section-header .pg-flow-node-title {
+  color: inherit;
+  font-weight: 600;
+}
+
+.pg-flow-section-header .pg-flow-node-more {
+  color: inherit;
+  opacity: 0.75;
+}
+
+.pg-flow-section-header .pg-flow-node-more:hover {
+  color: inherit;
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* —— Imagine Section：浮顶标题 + 16px 圆角底板 —— */
+.pg-flow-section-frame {
+  overflow: visible;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pg-flow-section-frame.is-drop-target .pg-flow-section-body {
+  border-color: rgba(59, 130, 246, 0.95) !important;
+  border-width: 2px !important;
+  border-style: solid !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28), 0 8px 20px rgba(0, 0, 0, 0.32) !important;
+}
+
+.pg-flow-section-frame.is-light.is-drop-target .pg-flow-section-body {
+  border-color: rgba(37, 99, 235, 0.9) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22), 0 8px 20px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 新建区块随动预览（对齐 Imagine：无描边半透明底板 + 左上角橙色锚点） */
+.pg-flow-section-preview {
+  position: absolute;
+  border-radius: 16px;
+  background: #1a1a1a;
+  border: none;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  z-index: 10;
+  box-sizing: border-box;
+  opacity: 0.92;
+}
+
+.pg-flow-section-preview-label {
+  position: absolute;
+  top: -36px;
+  left: 0;
+  height: 32px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  user-select: none;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.pg-flow-section-preview-anchor {
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #f5a524;
+  border-radius: 1px;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+html[data-theme='light'] .pg-flow-section-preview,
+.pg-ui-root[data-theme='light'] .pg-flow-section-preview {
+  background: #f4f4f5;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
+}
+
+html[data-theme='light'] .pg-flow-section-preview-label,
+.pg-ui-root[data-theme='light'] .pg-flow-section-preview-label {
+  color: #18181b;
+}
+
+/* 标题与操作栏同一顶栏：打开操作栏时铺满空隙，避免 mouseLeave */
+.pg-flow-section-chrome {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -36px;
+  height: 36px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pg-flow-section-chrome.is-tb-open {
+  top: -75px;
+  height: 75px;
+  pointer-events: auto;
+}
+
+.pg-flow-section-title-bar {
+  position: absolute;
+  left: 0;
+  bottom: 4px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  z-index: 2;
+  user-select: none;
+}
+
+.pg-flow-section-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 180px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.pg-flow-section-title-wrap .pg-flow-node-title,
+.pg-flow-section-title-wrap input {
+  color: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  border: none;
+  outline: none;
+  max-width: 164px;
+}
+
+/* 区块操作栏：贴顶栏右上 */
+.pg-flow-section-tb {
+  top: 0;
+  right: 0;
+  left: auto;
+}
+
+.pg-flow-section-body {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  border-style: solid;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.pg-flow-section-frame.is-dragging .pg-flow-section-body {
+  transition: none;
+}
+
+.pg-flow-section-color-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.pg-flow-section-color-dot.is-active {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor;
+  transform: scale(1.08);
+}
+
+.pg-flow-section-frame.is-selected > .pg-flow-resize-handle,
+.pg-flow-section-frame.is-selected:hover > .pg-flow-resize-handle,
+.pg-flow-section-frame.is-selected > * > .pg-flow-resize-handle {
+  opacity: 1;
+}
+
+/* —— 右侧属性面板（Imagine Properties） —— */
+.pg-flow-props {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 2050;
+  width: 291px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #171717;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.25);
+}
+
+.pg-flow-props-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 56px 16px 8px;
+  flex-shrink: 0;
+}
+
+.pg-flow-props-head-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: #fff;
+}
+
+.pg-flow-props-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pg-flow-props-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.pg-flow-props-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 16px 12px;
+  flex-shrink: 0;
+}
+
+.pg-flow-props-node-icon {
+  display: inline-flex;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.pg-flow-props-node-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-flow-props-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pg-flow-props-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pg-flow-props-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #bdbdbd;
+}
+
+.pg-flow-props-readonly {
+  width: 100%;
+  min-height: 32px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #212121;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-all;
+  box-sizing: border-box;
+}
+
+.pg-flow-props-readonly.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.pg-flow-props-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #212121;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pg-flow-props-select:hover {
+  background: #292929;
+}
+
+.pg-flow-props-select-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg-flow-props-select-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-flow-props-model-logo {
+  width: 18px;
+  height: 18px;
+  border-radius: 0;
+  object-fit: contain;
+  flex-shrink: 0;
+  background: transparent !important;
+}
+
+.pg-flow-props-model-fallback {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.pg-flow-props-params {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pg-flow-props-empty {
+  padding: 12px 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
+  text-align: center;
+}
+
+.pg-flow-props-select.is-open {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: #292929;
+}
+
+.pg-flow-props-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.4;
+}
+
+.pg-flow-param-shape-wrap {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pg-flow-param-shape {
+  display: block;
+  border: 1.5px solid currentColor;
+  opacity: 0.85;
+  box-sizing: border-box;
+}
+
+.pg-flow-param-pop {
+  position: fixed;
+  z-index: 6200;
+  max-height: min(360px, calc(100vh - 24px));
+  display: flex;
+  flex-direction: column;
+  background: #212121;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  color: #fff;
+}
+
+.pg-flow-param-pop-title {
+  flex-shrink: 0;
+  padding: 12px 14px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.pg-flow-param-pop-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px 8px;
+}
+
+.pg-flow-param-pop-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.pg-flow-param-pop-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pg-flow-param-pop-item.is-selected {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pg-flow-param-pop-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— 属性面板模型弹出层（Imagine 左侧弹出） —— */
+.pg-flow-model-pop {
+  position: fixed;
+  z-index: 2300;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: #171717;
+  box-shadow:
+    0 0 0 1px #212121,
+    0 18px 48px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: pg-flow-model-pop-in 0.16s ease-out;
+}
+
+@keyframes pg-flow-model-pop-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pg-flow-model-pop-search {
+  position: relative;
+  flex-shrink: 0;
+  padding: 16px 16px 12px;
+}
+
+.pg-flow-model-pop-search-icon {
+  position: absolute;
+  left: 28px;
+  top: 25px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.pg-flow-model-pop-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 36px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #212121;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.pg-flow-model-pop-search input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.pg-flow-model-pop-search input:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.pg-flow-model-pop-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px 10px;
+  flex-shrink: 0;
+}
+
+.pg-flow-model-pop-tab {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+  display: inline-flex;
+  align-items: center;
+}
+
+.pg-flow-model-pop-tab.is-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pg-flow-model-pop-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-flow-model-pop-item {
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.pg-flow-model-pop-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.pg-flow-model-pop-item.is-selected {
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.pg-flow-model-pop-logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  overflow: visible;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pg-flow-model-pop-logo img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  background: transparent !important;
+}
+
+.pg-flow-model-pop-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-flow-model-pop-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pg-flow-model-pop-name {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-flow-model-pop-check {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  flex-shrink: 0;
+}
+
+.pg-flow-model-pop-desc {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-flow-model-pop-empty {
+  padding: 28px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* 浅色模式适配 */
+[data-theme='light'] .pg-flow-editor,
+.pg-flow-editor[data-theme='light'],
+body[data-theme='light'] .pg-flow-editor {
+  --flow-canvas-bg: #f8f9fa;
+  --flow-dot: rgba(0, 0, 0, 0.1);
+  --flow-rail-bg: #ffffff;
+  --flow-pill-bg: #ffffff;
+  --flow-pill-ring: rgba(0, 0, 0, 0.1);
+  --flow-surface: #f4f4f5;
+  --flow-border: rgba(0, 0, 0, 0.1);
+  color: #09090b;
+}
+
+[data-theme='light'] .pg-flow-rail,
+body[data-theme='light'] .pg-flow-rail {
+  background: #ffffff;
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .pg-flow-rail-logo,
+body[data-theme='light'] .pg-flow-rail-logo {
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-rail-item,
+body[data-theme='light'] .pg-flow-rail-item {
+  color: rgba(0, 0, 0, 0.65);
+}
+[data-theme='light'] .pg-flow-rail-item:hover,
+body[data-theme='light'] .pg-flow-rail-item:hover,
+[data-theme='light'] .pg-flow-rail-item.is-active,
+body[data-theme='light'] .pg-flow-rail-item.is-active {
+  background: rgba(0, 0, 0, 0.06);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-rail-icon-btn,
+body[data-theme='light'] .pg-flow-rail-icon-btn {
+  color: rgba(0, 0, 0, 0.65);
+}
+[data-theme='light'] .pg-flow-rail-icon-btn:hover,
+body[data-theme='light'] .pg-flow-rail-icon-btn:hover,
+[data-theme='light'] .pg-flow-rail-icon-btn.is-active,
+body[data-theme='light'] .pg-flow-rail-icon-btn.is-active {
+  background: rgba(0, 0, 0, 0.06);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-pill,
+body[data-theme='light'] .pg-flow-pill {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+[data-theme='light'] .pg-flow-pill-btn,
+body[data-theme='light'] .pg-flow-pill-btn {
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-pill-btn:hover:not(:disabled),
+body[data-theme='light'] .pg-flow-pill-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+}
+[data-theme='light'] .pg-flow-pill-name-input,
+body[data-theme='light'] .pg-flow-pill-name-input {
+  color: #09090b;
+  border-color: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.03);
+}
+[data-theme='light'] .pg-flow-pill-divider,
+body[data-theme='light'] .pg-flow-pill-divider {
+  background: rgba(0, 0, 0, 0.1);
+}
+[data-theme='light'] .pg-flow-chip,
+body[data-theme='light'] .pg-flow-chip {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-tool-btn,
+body[data-theme='light'] .pg-flow-tool-btn {
+  color: rgba(0, 0, 0, 0.75);
+}
+[data-theme='light'] .pg-flow-tool-btn:hover:not(:disabled),
+body[data-theme='light'] .pg-flow-tool-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-zoom-btn,
+body[data-theme='light'] .pg-flow-zoom-btn {
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-opbar,
+body[data-theme='light'] .pg-flow-opbar {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+[data-theme='light'] .pg-flow-opbar-btn,
+body[data-theme='light'] .pg-flow-opbar-btn {
+  color: rgba(0, 0, 0, 0.8);
+}
+[data-theme='light'] .pg-flow-opbar-btn:hover,
+body[data-theme='light'] .pg-flow-opbar-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+[data-theme='light'] .pg-flow-opbar-btn.is-active,
+body[data-theme='light'] .pg-flow-opbar-btn.is-active {
+  background: #18181b;
+  color: #ffffff;
+}
+[data-theme='light'] .pg-flow-resource-panel,
+body[data-theme='light'] .pg-flow-resource-panel {
+  background: #ffffff;
+  border-right-color: rgba(0, 0, 0, 0.08);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-resource-panel-close,
+body[data-theme='light'] .pg-flow-resource-panel-close {
+  color: #71717a;
+}
+[data-theme='light'] .pg-flow-resource-panel-close:hover,
+body[data-theme='light'] .pg-flow-resource-panel-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-resource-card,
+body[data-theme='light'] .pg-flow-resource-card {
+  background: #f4f4f5;
+}
+[data-theme='light'] .pg-flow-resource-upload-btn,
+body[data-theme='light'] .pg-flow-resource-upload-btn {
+  border-color: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.02);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-add-node-pop,
+body[data-theme='light'] .pg-flow-add-node-pop,
+[data-theme='light'] .pg-flow-add-node-pop-submenu,
+body[data-theme='light'] .pg-flow-add-node-pop-submenu {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.15);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-add-node-pop-title,
+body[data-theme='light'] .pg-flow-add-node-pop-title,
+[data-theme='light'] .pg-flow-add-node-pop-group-title,
+body[data-theme='light'] .pg-flow-add-node-pop-group-title {
+  color: #71717a;
+}
+[data-theme='light'] .pg-flow-add-node-pop-item,
+body[data-theme='light'] .pg-flow-add-node-pop-item {
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-add-node-pop-item:hover,
+body[data-theme='light'] .pg-flow-add-node-pop-item:hover,
+[data-theme='light'] .pg-flow-add-node-pop-item:focus-visible,
+body[data-theme='light'] .pg-flow-add-node-pop-item:focus-visible {
+  background: rgba(0, 0, 0, 0.05);
+}
+[data-theme='light'] .pg-flow-add-node-pop-icon,
+body[data-theme='light'] .pg-flow-add-node-pop-icon {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+[data-theme='light'] .pg-flow-props-select,
+body[data-theme='light'] .pg-flow-props-select {
+  background: #f4f4f5;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-props-select:hover,
+body[data-theme='light'] .pg-flow-props-select:hover {
+  background: #e4e4e7;
+}
+[data-theme='light'] .pg-flow-props-select.is-open,
+body[data-theme='light'] .pg-flow-props-select.is-open {
+  background: #e4e4e7;
+  border-color: rgba(0, 0, 0, 0.25);
+}
+[data-theme='light'] .pg-flow-param-pop,
+body[data-theme='light'] .pg-flow-param-pop {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-param-pop-title,
+body[data-theme='light'] .pg-flow-param-pop-title {
+  color: #71717a;
+}
+[data-theme='light'] .pg-flow-param-pop-item,
+body[data-theme='light'] .pg-flow-param-pop-item {
+  color: #27272a;
+}
+[data-theme='light'] .pg-flow-param-pop-item:hover,
+body[data-theme='light'] .pg-flow-param-pop-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: #09090b;
+}
+[data-theme='light'] .pg-flow-param-pop-item.is-selected,
+body[data-theme='light'] .pg-flow-param-pop-item.is-selected {
+  background: rgba(0, 0, 0, 0.08);
+  color: #09090b;
+  font-weight: 600;
+}
+
+
+

@@ -43,13 +43,16 @@ const RegistrationGifts: React.FC = () => {
         max_amount: 0,
       };
 
-      setGiftMode(marketing.gift_mode);
+      setGiftMode(marketing.gift_mode || 'fixed');
       form.setFieldsValue({
-        ...marketing,
+        enable_registration_gift: !!marketing.enable_registration_gift,
+        gift_mode: marketing.gift_mode || 'fixed',
+        fixed_amount: marketing.fixed_amount,
+        min_amount: marketing.min_amount,
+        max_amount: marketing.max_amount,
       });
     } catch (error) {
       console.error('Failed to load settings:', error);
-      message.error(t('common.error'));
     } finally {
       setLoading(false);
     }
@@ -63,7 +66,6 @@ const RegistrationGifts: React.FC = () => {
       fetchSettings(); // Refresh global state if needed
     } catch (error) {
       console.error('Failed to save settings:', error);
-      message.error(t('common.error'));
     } finally {
       setSaving(false);
     }

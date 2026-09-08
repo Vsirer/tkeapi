@@ -6,7 +6,7 @@
  */
 
 use super::proxy;
-use super::task::{normalize_task_status, poll_task_result, PollTaskOpts};
+use super::task::{normalize_task_status, poll_task_result, PollOutcome, PollTaskOpts};
 use crate::error::{AppError, AppResult};
 use crate::models::{BillingRule, Channel};
 use crate::relay::{forward, response_formatter};
@@ -237,9 +237,9 @@ pub(crate) fn cascade_resolve_base(
         .unwrap_or_else(|| allowed.first().copied().unwrap_or("720p"))
 }
 
-/// MediaKit 共用上下文（http + 增强渠道鉴权），避免裁剪/抽帧重复传参。
+/// MediaKit 共用上下文（state + 增强渠道鉴权），避免裁剪/抽帧重复传参。
 struct CascadeMk<'a> {
-    http: &'a reqwest::Client,
+    state: &'a AppState,
     ch: &'a Channel,
     auth_type: &'a str,
 }
@@ -266,7 +266,8 @@ async fn cascade_mk_url(
         let mut body = payload.clone();
         let builder =
             crate::services::http_client::with_upstream_timeout(forward::apply_request_auth(
-                mk.http
+                mk.state
+                    .http_client
                     .post(&url)
                     .header("Content-Type", "application/json"),
                 &resolved,
@@ -300,11 +301,11 @@ async fn cascade_mk_url(
         return None;
     };
 
-    let (body, status) =
-        poll_task_result(mk.http, mk.ch, &resolved, &task_id, PollTaskOpts::default()).await?;
-    if status != "succeeded" {
+    let PollOutcome::Succeeded(body) =
+        poll_task_result(mk.state, mk.ch, &resolved, &task_id, PollTaskOpts::default()).await
+    else {
         return None;
-    }
+    };
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
     v.pointer(out_ptr)
         .and_then(|u| u.as_str())
@@ -363,24 +364,31 @@ async fn cascade_ensure_standard_480p_video(
 
 /// S2 成功落库前：stage1 usage×res_mul；S1 有尾帧则对 S2 视频抽帧写入 `s2.last_frame_url`（不改 stage1）。
 pub(crate) async fn cascade_on_s2_succeeded(
-    http: &reqwest::Client,
+    state: &AppState,
     ch: &Channel,
     auth_type: &str,
-    s1: &mut serde_json::Value,
+    s1_raw: &mut String,
     s2_raw: &mut String,
     res_mul: &HashMap<String, f64>,
     plugin_tag: &str,
 ) {
     let mk = CascadeMk {
-        http,
+        state,
         ch,
         auth_type,
     };
-    // stage1 usage × 目标分辨率倍率（落库 stage1；对外展示另走 cascade_s1_with_s2_url）
+    let mut s1: serde_json::Value =
+        serde_json::from_str(s1_raw).unwrap_or(serde_json::json!({}));
     let res = cascade_resolve_target_resolution(plugin_tag, "");
-    forward::scale_usage_in_json(s1, forward::lookup_res_mul(res_mul, &res));
+    let mul = forward::lookup_res_mul(res_mul, &res);
+    if (mul - 1.0).abs() > 1e-9 {
+        forward::scale_usage_in_json(&mut s1, mul);
+        if let Some(u) = s1.get("usage") {
+            response_formatter::json_root_set(s1_raw, "usage", &u.to_string());
+        }
+    }
 
-    if response_formatter::find_last_frame_url(s1).is_none() {
+    if response_formatter::find_last_frame_url(&s1).is_none() {
         return;
     }
     let mut s2: serde_json::Value = serde_json::from_str(s2_raw).unwrap_or(serde_json::json!({}));
@@ -403,7 +411,7 @@ pub(crate) async fn cascade_on_s2_succeeded(
     )
     .await
     else {
-        tracing::warn!("[Cascade S2] 尾帧跳过");
+        crate::relay_debug!("[Cascade S2] 尾帧跳过");
         return;
     };
     if let Some(obj) = s2.as_object_mut() {
@@ -518,105 +526,43 @@ fn cascade_s2_fps(s2: &serde_json::Value) -> Option<i64> {
         .filter(|&f| f > 0)
 }
 
-/// 递归覆写已存在的同名 string / number 字段（不凭空插入）
-fn patch_json_fields_by_key(
-    value: &mut serde_json::Value,
-    str_patches: &[(&str, &str)],
-    num_patches: &[(&str, i64)],
-) {
-    match value {
-        serde_json::Value::Object(map) => {
-            for &(key, val) in str_patches {
-                if map.get(key).is_some_and(|v| v.is_string()) {
-                    map.insert(key.to_string(), serde_json::json!(val));
-                }
-            }
-            for &(key, val) in num_patches {
-                if map.get(key).is_some_and(|v| v.is_number()) {
-                    map.insert(key.to_string(), serde_json::json!(val));
-                }
-            }
-            for (_, child) in map.iter_mut() {
-                patch_json_fields_by_key(child, str_patches, num_patches);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for child in arr.iter_mut() {
-                patch_json_fields_by_key(child, str_patches, num_patches);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// 级联成功对外：S1 官方骨架对齐 S2 产物（视频 URL / 目标分辨率 / 帧率 / 抽帧尾图；ratio·duration·usage 保持）
-/// 无增强产物 URL 时不改元数据，避免分辨率/帧率与底座视频不一致
-fn cascade_s1_with_s2_url(
-    s1: &serde_json::Value,
-    s2: &serde_json::Value,
-    plugin_tag: &str,
-) -> serde_json::Value {
-    let old_url = response_formatter::find_urls(s1)
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+/// 级联成功对外：S1 原文骨架叠 S2 产物 URL / 分辨率 / 帧率 / 尾帧；原位改字符串
+fn cascade_s1_with_s2_url(s1_raw: &str, s2: &serde_json::Value, plugin_tag: &str) -> String {
+    let s1: serde_json::Value = serde_json::from_str(s1_raw).unwrap_or(serde_json::json!({}));
     let new_url = response_formatter::find_urls(s2)
         .into_iter()
         .next()
         .unwrap_or_default();
-    let mut out = s1.clone();
+    let mut out = s1_raw.to_string();
     if new_url.is_empty() {
         return out;
     }
-
+    let old_url = response_formatter::find_urls(&s1)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let res_lit = serde_json::json!(cascade_resolve_target_resolution(plugin_tag, "")).to_string();
+    let fps_lit = cascade_s2_fps(s2).unwrap_or(24).to_string();
+    let url_lit = serde_json::json!(new_url).to_string();
     if !old_url.is_empty() {
-        replace_exact_url_in_json(&mut out, &old_url, &new_url);
-    } else {
-        // S1 未解析到旧链时，直接覆写已有 video_url（如 content.video_url）
-        patch_json_fields_by_key(&mut out, &[("video_url", new_url.as_str())], &[]);
+        response_formatter::json_replace_str(&mut out, &old_url, &new_url);
     }
-
-    let target_res = cascade_resolve_target_resolution(plugin_tag, "");
-    // 与 S2 提交 payload 默认 fps:24 对齐；有回包字段则用回包
-    let fps = cascade_s2_fps(s2).unwrap_or(24);
-    patch_json_fields_by_key(
+    response_formatter::json_replace_fields(
         &mut out,
-        &[("resolution", target_res.as_str())],
-        &[("framespersecond", fps), ("fps", fps)],
+        &[
+            ("video_url", url_lit.as_str()),
+            ("resolution", res_lit.as_str()),
+            ("framespersecond", fps_lit.as_str()),
+            ("fps", fps_lit.as_str()),
+        ],
     );
-
-    // 对外/用户端展示：用 S2 抽帧尾图覆盖 S1 原尾帧（落库 stage1 仍为原图）
     if let (Some(old_frame), Some(new_frame)) = (
-        response_formatter::find_last_frame_url(s1),
+        response_formatter::find_last_frame_url(&s1),
         response_formatter::find_last_frame_url(s2),
     ) {
-        replace_exact_url_in_json(&mut out, old_frame, new_frame);
+        response_formatter::json_replace_str(&mut out, old_frame, new_frame);
     }
     out
-}
-
-fn replace_exact_url_in_json(value: &mut serde_json::Value, old_url: &str, new_url: &str) {
-    if old_url.is_empty() || new_url.is_empty() {
-        return;
-    }
-    match value {
-        serde_json::Value::Object(map) => {
-            for (_, val) in map.iter_mut() {
-                replace_exact_url_in_json(val, old_url, new_url);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for val in arr.iter_mut() {
-                replace_exact_url_in_json(val, old_url, new_url);
-            }
-        }
-        serde_json::Value::String(s) => {
-            if s == old_url {
-                *s = new_url.to_string();
-            }
-        }
-        _ => {}
-    }
 }
 
 /// 列表/仪表盘/终态落库：去掉 plugin_tag.cascade 中的密钥与上游渠道细节。
@@ -654,82 +600,47 @@ pub(crate) fn cascade_sanitize_for_user(
     plugin_tag: Option<&str>,
     is_completed: bool,
     task_id: &str,
-    request_content: Option<&str>,
+    log_model: &str,
     status_code: i32,
 ) {
-    fn parse_cascade(s: &str) -> Option<(serde_json::Value, serde_json::Value)> {
-        let v: serde_json::Value = serde_json::from_str(s).ok()?;
-        Some((v.get("stage1")?.clone(), v.get("stage2")?.clone()))
+    fn fold_post(raw: String) -> String {
+        response_formatter::json_root_raw_value(&raw, "stage1")
+            .map(str::to_string)
+            .unwrap_or(raw)
     }
-
-    fn s2_resolution(s2: &serde_json::Value) -> Option<String> {
-        s2.get("resolution")
-            .or_else(|| s2.pointer("/result/resolution"))
-            .and_then(|r| r.as_str())
-            .map(|s| s.to_string())
-    }
-
-    fn apply_resolution(s: &str, res: &str) -> String {
-        serde_json::from_str::<serde_json::Value>(s)
-            .map(|mut v| {
-                patch_json_fields_by_key(&mut v, &[("resolution", res)], &[]);
-                v.to_string()
-            })
-            .unwrap_or_else(|_| s.to_string())
-    }
-
     fn take_map(slot: &mut Option<String>, f: impl FnOnce(String) -> String) {
         if let Some(raw) = slot.take() {
             *slot = Some(f(raw));
         }
     }
 
-    fn fold_post(raw: String) -> String {
-        parse_cascade(&raw)
-            .map(|(s1, _)| s1.to_string())
-            .unwrap_or(raw)
-    }
-
     let has_cascade = plugin_tag
         .map(|t| t.contains("\"cascade\""))
         .unwrap_or(false);
-    // 仅真实级联配置才取目标分辨率，避免无 cascade 的 plugin_tag 被默认成 720p
-    let target_res: Option<String> = has_cascade
-        .then(|| cascade_resolve_target_resolution(plugin_tag.unwrap_or(""), ""))
-        .filter(|r| !r.is_empty());
-
+    let combined = |s: &str| response_formatter::json_root_raw_value(s, "stage1").is_some();
     let cascade_inflight = !is_completed
         && (has_cascade
-            || post_resp.as_deref().and_then(parse_cascade).is_some()
-            || response.as_deref().and_then(parse_cascade).is_some());
+            || post_resp.as_deref().is_some_and(combined)
+            || response.as_deref().is_some_and(combined));
 
     if cascade_inflight {
-        // 优先 response（含轮询元数据），否则 post；有 stage1 用 stage1
         let s1_ack = [response.as_deref(), post_resp.as_deref()]
             .into_iter()
             .flatten()
-            .find_map(|s| {
-                let v: serde_json::Value = serde_json::from_str(s).ok()?;
-                let s1 = v
-                    .get("stage1")
-                    .filter(|x| x.as_object().is_some_and(|m| !m.is_empty()))
-                    .cloned()
-                    .unwrap_or(v);
-                s1.as_object()
-                    .is_some_and(|m| !m.is_empty())
-                    .then_some(s1)
-            })
-            .unwrap_or_else(|| serde_json::json!({}));
-        let tid = if !task_id.is_empty() {
-            task_id
-        } else {
-            s1_ack.get("id").and_then(|v| v.as_str()).unwrap_or("")
-        };
+            .map(cascade_s1_raw_from_log)
+            .find(|s| s.contains('"'))
+            .unwrap_or("{}");
+        let tid_buf = task_id.is_empty().then(|| {
+            response_formatter::json_root_raw_value(s1_ack, "id")
+                .and_then(|v| serde_json::from_str::<String>(v).ok())
+                .unwrap_or_default()
+        });
+        let tid = tid_buf.as_deref().unwrap_or(task_id);
         *response = Some(cascade_user_processing_response(
-            &s1_ack,
+            s1_ack,
             tid,
-            request_content,
-            target_res.as_deref(),
+            plugin_tag.unwrap_or(""),
+            log_model,
         ));
         take_map(post_resp, |raw| {
             let mut folded = fold_post(raw);
@@ -741,8 +652,12 @@ pub(crate) fn cascade_sanitize_for_user(
 
     if is_completed {
         take_map(response, |raw| {
-            let mut out = if let Some((s1, s2)) = parse_cascade(&raw) {
-                // S2 无产物/失败：勿回退 S1 成片
+            let mut out = if let (Some(s1), Some(s2_raw)) = (
+                response_formatter::json_root_raw_value(&raw, "stage1"),
+                response_formatter::json_root_raw_value(&raw, "stage2"),
+            ) {
+                let s2: serde_json::Value =
+                    serde_json::from_str(s2_raw).unwrap_or(serde_json::json!({}));
                 if status_code != 200 || response_formatter::find_urls(&s2).is_empty() {
                     let err = cascade_stage2_err_text(&s2, "增强失败");
                     serde_json::json!({
@@ -752,22 +667,25 @@ pub(crate) fn cascade_sanitize_for_user(
                     })
                     .to_string()
                 } else {
-                    let mut merged = cascade_s1_with_s2_url(&s1, &s2, plugin_tag.unwrap_or(""));
-                    if let Some(ref res) = s2_resolution(&s2).or_else(|| target_res.clone()) {
-                        patch_json_fields_by_key(&mut merged, &[("resolution", res)], &[]);
-                    }
-                    merged.to_string()
+                    let mut merged = cascade_s1_with_s2_url(s1, &s2, plugin_tag.unwrap_or(""));
+                    cascade_overlay_client_identity(
+                        &mut merged,
+                        plugin_tag.unwrap_or(""),
+                        log_model,
+                    );
+                    merged
                 }
             } else if status_code != 200 && has_cascade {
-                // 非 combined 失败：不露底座 URL
                 serde_json::json!({
                     "id": task_id,
                     "status": "failed",
                     "error": { "message": "增强失败" }
                 })
                 .to_string()
-            } else if let Some(ref res) = target_res {
-                apply_resolution(&raw, res)
+            } else if has_cascade {
+                let mut out = raw;
+                cascade_overlay_client_identity(&mut out, plugin_tag.unwrap_or(""), log_model);
+                out
             } else {
                 raw
             };
@@ -857,7 +775,7 @@ fn cascade_stage2_poll_target(
         .unwrap_or("vve-sd")
         .to_string();
 
-    tracing::info!(
+    crate::relay_debug!(
         "[Cascade S2] 轮询目标: 阶段2任务ID={}, 渠道={}, 模型ID={:?}, 最终模型={}",
         stage2_task_id,
         ch.name,
@@ -867,86 +785,101 @@ fn cascade_stage2_poll_target(
     (ch, res, final_model)
 }
 
-/// 用户端处理中：POST ack + model/resolution；剥产物字段
+/// 官方路径：S1 已有字段才替换（不追加）。model=logs.model，resolution=级联目标
+pub(crate) fn cascade_overlay_client_identity(s: &mut String, plugin_tag: &str, log_model: &str) {
+    response_formatter::json_root_set(s, "model", &serde_json::json!(log_model).to_string());
+    response_formatter::json_root_set(
+        s,
+        "resolution",
+        &serde_json::json!(cascade_resolve_target_resolution(plugin_tag, "")).to_string(),
+    );
+}
+
+/// 用户端处理中：剥产物后盖请求 model / 目标分辨率
 fn cascade_user_processing_response(
-    stage1_submit: &serde_json::Value,
+    stage1_raw: &str,
     task_id: &str,
-    request_content: Option<&str>,
-    target_res: Option<&str>,
+    plugin_tag: &str,
+    log_model: &str,
 ) -> String {
-    let mut s = stage1_submit
-        .as_object()
-        .map(|_| stage1_submit.to_string())
-        .unwrap_or_default();
+    let mut s = stage1_raw.to_string();
     cascade_apply_processing_status(&mut s, task_id, false);
-    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&s) {
-        if let Some(obj) = v.as_object_mut() {
-            if let Some(model) = request_content
-                .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
-                .and_then(|r| r.get("model")?.as_str().map(|m| m.to_string()))
-            {
-                obj.insert("model".to_string(), serde_json::json!(model));
-            }
-            if let Some(res) = target_res.filter(|r| !r.is_empty()) {
-                obj.insert("resolution".to_string(), serde_json::json!(res));
-            }
-            s = serde_json::to_string(&v).unwrap_or(s);
-        }
-    }
+    cascade_overlay_client_identity(&mut s, plugin_tag, log_model);
     s
 }
 
-/// 写入对外任务号，终态/空 status→处理中；去掉产物字段（防 S1 成片）。
+/// 写入对外任务号，进行中统一为 in_progress/running；无成片则去掉 content/usage
 fn cascade_apply_processing_status(s: &mut String, task_id: &str, openai_compatible: bool) {
     response_formatter::force_json_task_id(s, task_id);
-    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(s) else {
-        return;
+    let st = response_formatter::json_root_raw_value(s, "status")
+        .and_then(|raw| serde_json::from_str::<String>(raw).ok())
+        .unwrap_or_default();
+    let norm = normalize_task_status(&st);
+    let processing = if openai_compatible {
+        "in_progress"
+    } else {
+        "running"
     };
-    let Some(obj) = v.as_object_mut() else {
-        return;
-    };
-    let st = obj.get("status").and_then(|x| x.as_str()).unwrap_or("");
-    if st.is_empty() || matches!(normalize_task_status(st), "succeeded" | "failed") {
-        obj.insert(
-            "status".to_string(),
-            serde_json::json!(if openai_compatible {
-                "in_progress"
-            } else {
-                "running"
-            }),
-        );
+    if st.is_empty()
+        || matches!(norm, "succeeded" | "failed")
+        || norm == "pending"
+    {
+        response_formatter::json_root_set(s, "status", &serde_json::json!(processing).to_string());
     }
-    for k in ["content", "data", "usage"] {
-        obj.remove(k);
-    }
-    if let Ok(out) = serde_json::to_string(&v) {
-        *s = out;
+    response_formatter::json_root_remove(s, "content");
+    response_formatter::json_root_remove(s, "usage");
+    if openai_compatible {
+        response_formatter::json_root_remove(s, "data");
     }
 }
 
-/// S2 进行中：对外 S1 态（apply_format 区分 OpenAI/官方）；剥产物，禁成片
+/// 级联处理中对外：OpenAI 只保留进度字段；官方路径覆盖 logs.model 与目标分辨率
 pub(crate) fn cascade_s2_client_processing(
     raw_path: &str,
     category: &str,
-    stage1_submit: &serde_json::Value,
+    stage1_raw: &str,
     task_id: &str,
+    plugin_tag: &str,
+    log_model: &str,
 ) -> String {
     let openai = response_formatter::is_openai_compatible_path(raw_path);
     let mut s = response_formatter::apply_format(
         raw_path,
         category,
-        &stage1_submit.to_string(),
-        false,
+        stage1_raw,
+        openai,
         Some(task_id),
     );
     cascade_apply_processing_status(&mut s, task_id, openai);
+    if !openai {
+        cascade_overlay_client_identity(&mut s, plugin_tag, log_model);
+    }
     s
 }
 
-/// 级联落库：stage1 + stage2 原始串 → combined JSON
-pub(crate) fn cascade_combine_stages(s1: &serde_json::Value, s2_raw: &str) -> String {
-    let s2: serde_json::Value = serde_json::from_str(s2_raw).unwrap_or(serde_json::json!(s2_raw));
-    serde_json::json!({ "stage1": s1, "stage2": s2 }).to_string()
+/// 级联落库：stage1 + stage2 原始串直接拼进 combined，不经 Value 重排
+pub(crate) fn cascade_combine_stages(s1_raw: &str, s2_raw: &str) -> String {
+    let s1 = if s1_raw.trim().is_empty() {
+        "{}"
+    } else {
+        s1_raw
+    };
+    let s2 = match serde_json::from_str::<serde_json::Value>(s2_raw) {
+        Ok(_) => s2_raw.to_string(),
+        Err(_) => serde_json::json!(s2_raw).to_string(),
+    };
+    format!(r#"{{"stage1":{s1},"stage2":{s2}}}"#)
+}
+
+/// S2 时从 response_content 取 stage1 原文（无 stage1 或空对象则整包即扁平 S1）
+pub(crate) fn cascade_s1_raw_from_log(content: &str) -> &str {
+    if content.is_empty() {
+        return "{}";
+    }
+    match response_formatter::json_root_raw_value(content, "stage1") {
+        Some(s1) if s1.trim_start().starts_with('{') && s1.contains('"') => s1,
+        _ => content,
+    }
 }
 
 /// 级联阶段二提交结果：Submitted=已提交超分；InProgress=他处正在裁剪/提交
@@ -1057,19 +990,23 @@ pub(crate) fn cascade_format_s2_succeeded(
     raw_path: &str,
     category: &str,
     plugin_tag: &str,
-    s1: &serde_json::Value,
+    s1_raw: &str,
     s2: &serde_json::Value,
     task_id: &str,
+    log_model: &str,
 ) -> String {
-    let new_stage1 = cascade_s1_with_s2_url(s1, s2, plugin_tag);
+    let new_stage1 = cascade_s1_with_s2_url(s1_raw, s2, plugin_tag);
     let mut formatted = response_formatter::apply_format(
         raw_path,
         category,
-        &new_stage1.to_string(),
+        &new_stage1,
         true,
         Some(task_id),
     );
     response_formatter::force_json_task_id(&mut formatted, task_id);
+    if !response_formatter::is_openai_compatible_path(raw_path) {
+        cascade_overlay_client_identity(&mut formatted, plugin_tag, log_model);
+    }
     formatted
 }
 
@@ -1116,7 +1053,7 @@ pub(crate) async fn cascade_stage2_submit(
 ) -> Result<CascadeS2SubmitOutcome, (String, u16)> {
     let Some(_guard) = CascadeS2InflightGuard::try_acquire(&state.cascade_s2_inflight, ctx.log_id)
     else {
-        tracing::info!("[Cascade S2] 跳过 log_id={}（忙）", ctx.log_id);
+        crate::relay_debug!("[Cascade S2] 跳过 log_id={}（忙）", ctx.log_id);
         return Ok(CascadeS2SubmitOutcome::InProgress);
     };
 
@@ -1142,16 +1079,14 @@ pub(crate) async fn cascade_stage2_submit(
     let write_error = |state: &Arc<AppState>,
                        err_msg: &str,
                        post_resp_json: &serde_json::Value,
-                       s1: &serde_json::Value,
+                       s1_raw: &str,
                        s2_raw: &str,
                        tag: &Option<String>,
                        upstream: Option<String>| {
         let state = state.clone();
         let err = err_msg.to_string();
         let updated = serde_json::json!({"stage1": post_resp_json, "stage2": s2_raw}).to_string();
-        let s2_json: serde_json::Value =
-            serde_json::from_str(s2_raw).unwrap_or(serde_json::json!(s2_raw));
-        let resp_content = serde_json::json!({"stage1": s1, "stage2": s2_json}).to_string();
+        let resp_content = cascade_combine_stages(s1_raw, s2_raw);
         let tag = tag.clone();
         let db_id = ctx.log_id;
         async move {
@@ -1168,7 +1103,7 @@ pub(crate) async fn cascade_stage2_submit(
             state,
             err_msg,
             &post_resp,
-            &s1_json,
+            &s1_body,
             err_msg,
             &updated_tag_opt,
             None,
@@ -1197,7 +1132,7 @@ pub(crate) async fn cascade_stage2_submit(
         let up_hint: serde_json::Value =
             serde_json::from_str(ctx.upstream_req).unwrap_or(serde_json::json!({}));
         let mk = CascadeMk {
-            http: &state.http_client,
+            state,
             ch: &enhance_ch,
             auth_type: &volc_resolved.auth_type,
         };
@@ -1276,7 +1211,7 @@ pub(crate) async fn cascade_stage2_submit(
                         }
                         Err(CascadeS2Post200Fail::MissingTaskId) => {
                             let snippet: String = text.chars().take(240).collect();
-                            tracing::warn!(
+                            crate::relay_debug!(
                                 "[Cascade S2 POST] HTTP200 无任务ID log_id={} url={} body={}",
                                 ctx.log_id,
                                 volc_url,
@@ -1332,7 +1267,7 @@ pub(crate) async fn cascade_stage2_submit(
 
         if should_retry && attempt < max_attempts {
             let delay_secs = (10u64 << (attempt - 1).min(3)).min(60);
-            tracing::warn!(
+            crate::relay_debug!(
                 "[Cascade S2 POST] 临时错误 {}/{}，{}s 后重试: {}",
                 attempt,
                 max_attempts,
@@ -1342,7 +1277,7 @@ pub(crate) async fn cascade_stage2_submit(
             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
         } else {
             let err_status = proxy::normalize_error_http_status(err_status);
-            tracing::error!(
+            crate::relay_debug!(
                 "[Cascade S2 POST] 失败 ({}/{}) log_id={} status={} err={}",
                 attempt,
                 max_attempts,
@@ -1354,7 +1289,7 @@ pub(crate) async fn cascade_stage2_submit(
                 state,
                 &err_msg,
                 &post_resp,
-                &s1_json,
+                &s1_body,
                 &raw_text,
                 &updated_tag_opt,
                 cascade_upstream_req_combined(ctx.upstream_req, &volc_payload),
@@ -1369,7 +1304,7 @@ pub(crate) async fn cascade_stage2_submit(
     let _ = sqlx::query(&state.db.format_query("UPDATE logs SET post_response = ?, response_content = ?, upstream_req_content = COALESCE(?, upstream_req_content) WHERE id = ?"))
         .bind(&updated).bind(&s1_body).bind(&upstream_combined).bind(ctx.log_id).execute(&state.db.pool).await;
 
-    tracing::info!(
+    crate::relay_debug!(
         "[Cascade S2] 级联提交成功 日志ID={} 阶段1={} 阶段2={} MID={} 分辨率={} 渠道={}",
         ctx.log_id,
         ctx.task_id,

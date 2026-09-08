@@ -33,7 +33,7 @@ export function getAntdThemeTokens(mode: ThemeMode) {
       colorPrimaryHover: SHADCN.zinc800,
       colorPrimaryActive: SHADCN.zinc950,
       colorLink: SHADCN.zinc900,
-      colorInfo: SHADCN.zinc900,
+      colorInfo: '#1677ff',
       /** 深色实心底上的浅色字（Tooltip / Tag 等）；勿改成深色 */
       colorTextLightSolid: SHADCN.zinc50,
       borderRadius: 8,

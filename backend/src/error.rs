@@ -27,7 +27,7 @@ pub enum AppError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    #[error("Bad request: {0}")]
+    #[error("{0}")]
     BadRequest(String),
 
     #[error("Conflict: {0}")]
@@ -60,6 +60,24 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// 给客户端/队列的原文，不含 Display 英文前缀。
+    pub fn message(&self) -> String {
+        match self {
+            Self::Unauthorized => "Authentication required".into(),
+            Self::AuthFailed(m)
+            | Self::PaymentRequired(m)
+            | Self::Forbidden(m)
+            | Self::NotFound(m)
+            | Self::BadRequest(m)
+            | Self::Conflict(m)
+            | Self::TooManyRequests(m)
+            | Self::UpstreamError(m)
+            | Self::Internal(m) => m.clone(),
+            Self::UpstreamHttpError(_, m, _) => m.clone(),
+            other => other.to_string(),
+        }
+    }
+
     /// 供 HA failover 等逻辑读取对外/上游关联状态码；未知则按网关错误 502
     pub fn http_status(&self) -> u16 {
         match self {
@@ -100,7 +118,7 @@ impl IntoResponse for AppError {
                 (status_code, msg, headers, true)
             }
             AppError::Internal(msg) => {
-                tracing::error!("Internal error: {}", msg);
+                tracing::warn!("Internal error: {}", msg);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),
@@ -109,7 +127,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Database(e) => {
-                tracing::error!("Database error: {}", e);
+                tracing::warn!("Database error: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal database error".to_string(),
@@ -118,7 +136,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Reqwest(e) => {
-                tracing::error!("HTTP client error: {}", e);
+                tracing::warn!("HTTP client error: {}", e);
                 (
                     StatusCode::BAD_GATEWAY,
                     "Upstream request failed".to_string(),
@@ -127,7 +145,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Anyhow(e) => {
-                tracing::error!("Error: {}", e);
+                tracing::warn!("Error: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),
@@ -136,7 +154,7 @@ impl IntoResponse for AppError {
                 )
             }
             AppError::Json(e) => {
-                tracing::error!("JSON error: {}", e);
+                tracing::warn!("JSON error: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Serialization error".to_string(),

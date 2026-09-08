@@ -45,20 +45,13 @@ export function coalesceAsync<T>(
   return promise;
 }
 
-/**
- * 主动使指定 key 的短时缓存失效。
- * 应在写操作（删除/新建/上传）成功后调用，确保下次读取能获得最新数据而非旧缓存。
- * @example invalidateAsync('pg2026:storage-stats');
- */
-export function invalidateAsync(...keys: string[]): void {
-  for (const key of keys) {
-    recent.delete(key);
-    inflight.delete(key);
-  }
-}
-
 /** 清除指定 key 的短时缓存与进行中 Promise（后台改配置后强制刷新） */
 export function invalidateCoalesce(key: string): void {
   recent.delete(key);
   inflight.delete(key);
+}
+
+/** 写入短时缓存，供后续 coalesce 命中（如 bootstrap 预热 /plugins/active） */
+export function primeCoalesce<T>(key: string, value: T): void {
+  recent.set(key, { at: Date.now(), value });
 }

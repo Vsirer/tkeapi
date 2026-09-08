@@ -6,7 +6,6 @@
  */
 
 import axios from 'axios';
-import { createElement } from 'react';
 import { message } from 'antd';
 import i18n from '../i18n';
 import { resolveTimedisplay } from './timedisplay';
@@ -15,21 +14,7 @@ import { isAwaitingFreshSetup } from './freshSetup';
 // 全局限制同时最多显示 3 条消息
 message.config({ maxCount: 3 });
 
-const bilingualNotice = (zh: string, en: string) =>
-  createElement(
-    'span',
-    {
-      style: {
-        display: 'inline-flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        lineHeight: 1.55,
-        whiteSpace: 'normal',
-      },
-    },
-    createElement('span', { style: { display: 'block' } }, zh),
-    createElement('span', { style: { display: 'block', opacity: 0.75 } }, en),
-  );
+const bilingualNotice = (zh: string, en: string) => `${zh}\n${en}`;
 
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || '/api/v1',
@@ -117,6 +102,10 @@ request.interceptors.response.use(
       // Translate specific backend error messages
       if (serverMsg === 'Account disabled') {
         serverMsg = i18n.t('login.account_disabled');
+      } else if (serverMsg === '无编辑权限') {
+        serverMsg = i18n.t('admin_perm.no_edit');
+      } else if (serverMsg === '仅超级管理员可执行此操作') {
+        serverMsg = i18n.t('admin_perm.super_only');
       } else if (serverMsg === 'Invalid or already used redemption code') {
         serverMsg = i18n.language?.startsWith('zh')
           ? '兑换码无效或已被使用'

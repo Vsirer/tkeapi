@@ -21,6 +21,8 @@
 * **작업 취소/삭제**: `/api/v3/contents/generations/tasks/{task_id}` (`DELETE`)
 * **작업 이력 조회**: `/api/v3/contents/generations/tasks` (`GET`)
 
+권장 `doubao-seedance-2-5` (구버전 `doubao-seedance-2-0`은 해당 문서 하단). `content.role`로 first_frame / last_frame / reference_* 지정. [영상 생성 API](https://www.volcengine.com/docs/82379/1520757). Seedance 2.5 duration은 `4`–`30` 또는 `-1`, 편집은 `ratio=adaptive` 및 `duration=-1`.
+
 ### 4. 음성 합성 API (TTS)
 * **이벤트 스트림 모드 (SSE)**: `/api/v3/tts/unidirectional/sse` (`POST`)
 * **비스트리밍 HTTP 모드**: `/api/v3/tts/unidirectional` (`POST`)

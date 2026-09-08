@@ -5,9 +5,9 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ModelSelector from '../../components/ModelSelector';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Segmented, Tooltip, Divider, Alert, List, Progress, Drawer, Checkbox, Spin } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Segmented, Tooltip, Divider, Alert, List, Progress, Drawer, Checkbox, Spin, Radio } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, UnorderedListOutlined, AppstoreOutlined, PlayCircleOutlined, SearchOutlined, ApartmentOutlined, CloudServerOutlined, SettingOutlined, ThunderboltOutlined, ReloadOutlined, GlobalOutlined, ClearOutlined, StopOutlined, ExperimentOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -17,17 +17,26 @@ import useSettingsStore from '../../store/settings';
 import type { Channel, ChannelCategory } from '../../types';
 import { useThemeStore } from '../../store/theme';
 import ChannelCategoryManager from '../../components/Channels/ChannelCategoryManager';
+import { getStorageProvider, STORAGE_PROVIDERS } from '../../components/Storage';
 import {
   parseQuotaLimitInput,
   formatQuotaLimitDisplay,
-  getEffectiveChannelPeriodUsed,
   validateQuotaHierarchy,
   isFiniteQuotaLimit,
+  quotaPeriodItems,
+  quotaRingPercent,
+  QUOTA_RING_BLUE,
 } from '../../utils/quotaPeriod';
 
-// ── 插件动态加载（各插件均可独立移除，删除对应目录后自动降级，不影响主功能） ──
-type HHPluginModule = any;
-
+/** 站点已配齐凭证的对象存储（按 STORAGE_PROVIDERS 扩展；字段与后端 from_settings_for 一致） */
+function siteConfiguredProviders(storage: Record<string, any> | null | undefined) {
+  if (!storage) return [];
+  return STORAGE_PROVIDERS.filter((p) => {
+    const f = p.fieldKeys;
+    return [f.keyId, f.keySecret, f.endpoint, f.region, f.bucket]
+      .every((k) => String(storage[k] || '').trim());
+  });
+}
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -52,10 +61,7 @@ const countFilled = (obj?: Record<string, unknown> | null) =>
 
 const COMFYUI_DISPATCH_DEFAULT = 'priority_weight';
 
-function parseComfyuiServerIds(
-  cfg: Record<string, any> | undefined,
-  workflows: { id: number; server_id?: number }[] = [],
-): number[] {
+function parseComfyuiServerIds(cfg: Record<string, any> | undefined): number[] {
   const raw = Array.isArray(cfg?.comfyui_server_ids) ? cfg!.comfyui_server_ids : [];
   const ids: number[] = [];
   for (const v of raw) {
@@ -63,9 +69,7 @@ function parseComfyuiServerIds(
     if (id > 0 && !ids.includes(id)) ids.push(id);
   }
   if (ids.length) return ids;
-  const sid = cfg?.comfyui_server_id
-    ?? workflows.find((w) => w.id === cfg?.comfyui_workflow_id)?.server_id;
-  const n = Number(sid);
+  const n = Number(cfg?.comfyui_server_id);
   return n > 0 ? [n] : [];
 }
 
@@ -188,13 +192,13 @@ const Channels: React.FC = () => {
   const [enableQuota, setEnableQuota] = useState(false);
   const [upstreamTab, setUpstreamTab] = useState<'preset' | 'volcengine_enhance' | 'comfyui'>('preset');
   const [volcengineEnhanceKeys, setVolcengineEnhanceKeys] = useState<any[]>([]);
-  const [comfyuiWorkflows, setComfyuiWorkflows] = useState<any[]>([]);
   const [comfyuiServers, setComfyuiServers] = useState<any[]>([]);
   const [comfyuiDispatchRules, setComfyuiDispatchRules] = useState<any[]>([]);
   /** 模型选择的桥接状态，同步 form store 与 ModelSelector 双向数据 */
   const [channelModelMids, setChannelModelMids] = useState<string[]>([]);
   const [selectedSubChannelAids, setSelectedSubChannelAids] = useState<any[]>([]);
-  const [haMaxRetries, setHaMaxRetries] = useState<number>(3);
+  const [haRules, setHaRules] = useState<{ id: string; name: string; retries: number }[]>([]);
+  const [haDef, setHaDef] = useState('');
   // 熔断状态 Map: { channelId: { channel_meltdown, sub_channels } }
   const [meltdownMap, setMeltdownMap] = useState<Record<number, any>>({});
   const [meltdownLoading, setMeltdownLoading] = useState<Record<number, boolean>>({});
@@ -203,18 +207,18 @@ const Channels: React.FC = () => {
   // (form store gets corrupted when model_mapping Form.Items are registered)
   const modelsRef = useRef<string[]>([]);
   const levelsRef = useRef<string[]>([]);
-  // Plugin: happyhorse_router 状态（插件可移除，移除后这些状态保持默认值，所有条件渲染自动跳过）
-  const [isHappyHorseRouting, setIsHappyHorseRouting] = useState<boolean>(false);
-  const [happyHorseConfigs, setHappyHorseConfigs] = useState<any[]>([]);
-  const [selectedRoutingNode, setSelectedRoutingNode] = useState<string | null>(null);
-  const [happyHorseEnabled, setHappyHorseEnabled] = useState<boolean>(false);
-  const [hhModule, setHhModule] = useState<HHPluginModule | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<number | 'all'>(1);
   const [categoryFilter, setCategoryFilter] = useState<number | 'all' | 'unclassified'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'default' | 'volcengine' | 'ha' | 'comfyui'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [configObj, setConfigObj] = useState<Record<string, any>>({});
+  /** 站点存储设置（仅用于渠道 TOS 厂商选择；无密钥展示需求） */
+  const [siteStorage, setSiteStorage] = useState<Record<string, any> | null>(null);
+  const siteStorageProviders = useMemo(() => siteConfiguredProviders(siteStorage), [siteStorage]);
+  const siteDefaultProvider = String(siteStorage?.default_provider || 'tos');
+  const multiSiteStorage = siteStorageProviders.length > 1;
+  const haMaxRetries = haRules.find(r => r.id === (configObj.rule || haDef))?.retries || 3;
   const [categories, setCategories] = useState<ChannelCategory[]>([]);
   const [isCategoryManagerVisible, setIsCategoryManagerVisible] = useState(false);
 
@@ -304,12 +308,12 @@ const Channels: React.FC = () => {
     }
   };
 
-  const fetchHaMaxRetries = async () => {
+  const fetchHaRules = async () => {
     try {
       const res = await (request.get('/plugins/high_availability_channel/ha-config') as Promise<any>);
-      if (res && res.ha_max_retries) {
-        setHaMaxRetries(res.ha_max_retries);
-      }
+      const rules = Array.isArray(res?.rules) ? res.rules : [];
+      setHaRules(rules.map((r: any) => ({ id: r.id, name: r.name, retries: r.retries || 3 })));
+      setHaDef(res?.def || rules[0]?.id || '');
     } catch (e) {
       console.error('加载高可用插件配置失败:', e);
     }
@@ -362,21 +366,7 @@ const Channels: React.FC = () => {
           activeMap[p.name] = true;
           if (p.name === 'volcengine_enhance') hasVolcengineEnhance = true;
           if (p.name === 'comfyui_bridge') hasComfyui = true;
-          // Plugin: happyhorse_router 数据加载（插件可移除）
-          if (p.name === 'happyhorse_router') {
-            setHappyHorseEnabled(true);
-            request.get('/plugins/happyhorse_router/configs').then((r: any) => {
-              const data = r?.data ?? r;
-              const list = data?.configs ?? [];
-              setHappyHorseConfigs(list);
-            }).catch(() => {});
-            // 动态加载插件 UI 模块
-            const modGlob = import.meta.glob('../Plugins/HappyHorse/HappyHorseChannelPlugin.tsx');
-            if (modGlob['../Plugins/HappyHorse/HappyHorseChannelPlugin.tsx']) {
-              modGlob['../Plugins/HappyHorse/HappyHorseChannelPlugin.tsx']().then((mod: any) => setHhModule(mod)).catch(() => {});
-            }
-            }
-          }
+        }
       });
       setActivePlugins(activeMap);
 
@@ -390,9 +380,6 @@ const Channels: React.FC = () => {
       if (hasComfyui) {
         request.get('/plugins/comfyui_bridge/servers').then((r: any) => {
           setComfyuiServers(r?.servers || []);
-        }).catch(() => {});
-        request.get('/plugins/comfyui_bridge/workflows').then((r: any) => {
-          setComfyuiWorkflows(r?.workflows || []);
         }).catch(() => {});
         request.get('/plugins/comfyui_bridge/dispatch-rules').then((r: any) => {
           setComfyuiDispatchRules(r?.rules || []);
@@ -432,8 +419,8 @@ const Channels: React.FC = () => {
         const updated = await request.get(`/channels/${channelId}/meltdown`) as any;
         setMeltdownMap(prev => ({ ...prev, [channelId]: updated }));
       } catch { /* ignore */ }
-    } catch {
-      message.error('重置熔断状态失败');
+    } catch (e) {
+      console.error(e);
     } finally {
       setMeltdownLoading(prev => ({ ...prev, [channelId]: false }));
     }
@@ -445,8 +432,8 @@ const Channels: React.FC = () => {
       await request.post(`/channels/${channelId}/quota/reset`);
       message.success('已清零渠道已用额度');
       fetchChannels();
-    } catch {
-      message.error('清零额度失败');
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -457,7 +444,7 @@ const Channels: React.FC = () => {
     fetchPresets();
     fetchCategories();
     fetchPluginsAndPools();
-    fetchHaMaxRetries();
+    fetchHaRules();
   }, []);
 
   // 渠道列表加载后自动获取 HA 渠道熔断状态
@@ -487,6 +474,15 @@ const Channels: React.FC = () => {
     }
   }, [channels, availableModels]);
 
+  const loadSiteStorage = async () => {
+    try {
+      const res: any = await request.get('/settings/full');
+      setSiteStorage(res?.storage && typeof res.storage === 'object' ? res.storage : null);
+    } catch {
+      setSiteStorage(null);
+    }
+  };
+
   const handleAdd = () => {
     setEditingChannel(null);
     setEnableQuota(false);
@@ -504,13 +500,36 @@ const Channels: React.FC = () => {
     setPresetSearchText('');
     setUpstreamStatusFilter('all');
     setUpstreamTab('preset');
-    setConfigObj({});
-    setSelectedSubChannelAids([]);
     modelsRef.current = [];
     levelsRef.current = [];
-    setIsHappyHorseRouting(false);
-    setSelectedRoutingNode(null);
+    void loadSiteStorage();
     setIsModalVisible(true);
+
+    const defaultCategoryId = typeof categoryFilter === 'number' ? categoryFilter : null;
+    setTimeout(() => {
+      form.setFieldsValue({
+        name: '',
+        provider_type: 'custom',
+        base_url: '',
+        api_key: '',
+        sort_order: 0,
+        category_id: defaultCategoryId,
+        priority: 0,
+        status: 1,
+        weight: 1,
+        rate: 1.0,
+        max_rps: 0,
+        quota_limit: -1,
+        quota_used: 0,
+        daily_quota_limit: -1,
+        weekly_quota_limit: -1,
+        monthly_quota_limit: -1,
+        preset_id: null,
+        model_mapping: {},
+        models: [],
+        level_select: [],
+      });
+    }, 0);
   };
 
   const handleEdit = (record: Channel) => {
@@ -536,15 +555,6 @@ const Channels: React.FC = () => {
     modelsRef.current = modelsForForm;
     levelsRef.current = levelIds;
     setChannelModelMids(modelsForForm);
-
-    const hasHappyHorse = rawModels.some((m: string) => m.startsWith('ephh-'));
-    setIsHappyHorseRouting(hasHappyHorse);
-    if (hasHappyHorse) {
-      const node = rawModels.find((m: string) => m.startsWith('ephh-')) || '';
-      setSelectedRoutingNode(node);
-    } else {
-      setSelectedRoutingNode(null);
-    }
 
     const hasMapping = Object.values(mapping).some(v => v && String(v).trim());
     setShowMapping(hasMapping);
@@ -580,6 +590,7 @@ const Channels: React.FC = () => {
     setConfigObj(parsedConfig);
     const subAids = parsedConfig.sub_channels || [];
     setSelectedSubChannelAids(subAids);
+    void loadSiteStorage();
 
     // 恢复高可用子渠道独立映射（必须在 parsedConfig 解析之后）
     const haMapping = parsedConfig?.ha_model_mapping || {};
@@ -654,7 +665,6 @@ const Channels: React.FC = () => {
       message.success(newStatus === 1 ? '已启用渠道' : '已禁用渠道');
     } catch (e) {
       console.error(e);
-      message.error('状态更新失败');
     }
   };
 
@@ -739,20 +749,13 @@ const Channels: React.FC = () => {
       return;
     }
 
-    const comfyServerIds = parseComfyuiServerIds(configObj, comfyuiWorkflows);
+    const comfyServerIds = parseComfyuiServerIds(configObj);
     if (values.provider_type === 'comfyui' && comfyServerIds.length === 0) {
       message.error('请至少选择一个 ComfyUI 服务节点');
       setSubmitting(false);
       return;
     }
     const comfyServerId = comfyServerIds[0];
-    const comfyLegacyWf = comfyuiWorkflows.find((w) => w.id === configObj.comfyui_workflow_id);
-    const wfNodeIds: number[] = Array.isArray(comfyLegacyWf?.server_ids)
-      ? comfyLegacyWf.server_ids.map(Number).filter((id: number) => id > 0)
-      : (comfyLegacyWf?.server_id ? [Number(comfyLegacyWf.server_id)] : []);
-    const keepComfyWorkflowId = comfyLegacyWf && wfNodeIds.some((id: number) => comfyServerIds.includes(id))
-      ? comfyLegacyWf.id
-      : undefined;
 
     // Ensure only one upstream is used and others are explicitly cleared
     let { preset_id } = values;
@@ -793,9 +796,15 @@ const Channels: React.FC = () => {
       }
     }
 
+    const tosProvider =
+      configObj.tos_storage_enabled && multiSiteStorage && configObj.tos_storage_provider
+        ? String(configObj.tos_storage_provider)
+        : undefined;
+
     const finalConfig = isHaGroup 
       ? {
           ...configObj,
+          tos_storage_provider: tosProvider,
           sub_channels: selectedSubChannelAids,
           ...(finalHaModelMapping ? { ha_model_mapping: finalHaModelMapping } : { ha_model_mapping: undefined }),
           ...(finalResModelMapping ? { res_model_mapping: finalResModelMapping } : { res_model_mapping: undefined }),
@@ -803,6 +812,7 @@ const Channels: React.FC = () => {
       : {
           tos_storage_enabled: configObj.tos_storage_enabled,
           tos_storage_days: configObj.tos_storage_days,
+          ...(tosProvider ? { tos_storage_provider: tosProvider } : {}),
           // 画质增强凭证关联：通过凭证 ID 实时查询最新密钥，保证数据一致性
           ...(values.provider_type === 'volcengine' && configObj.volcengine_enhance_credential_id
             ? { volcengine_enhance_credential_id: configObj.volcengine_enhance_credential_id }
@@ -812,7 +822,6 @@ const Channels: React.FC = () => {
                 comfyui_server_id: comfyServerId,
                 comfyui_server_ids: comfyServerIds,
                 comfyui_dispatch: configObj.comfyui_dispatch || COMFYUI_DISPATCH_DEFAULT,
-                ...(keepComfyWorkflowId ? { comfyui_workflow_id: keepComfyWorkflowId } : {}),
               }
             : {}),
           ...(finalResModelMapping ? { res_model_mapping: finalResModelMapping } : {}),
@@ -882,7 +891,6 @@ const Channels: React.FC = () => {
       message.success('排序已更新');
     } catch (e) {
       console.error(e);
-      message.error('排序更新失败');
     }
   };
 
@@ -910,7 +918,7 @@ const Channels: React.FC = () => {
 
   const resolveComfyuiUpstream = (record: Channel) => {
     const cfg = parseChannelConfig(record);
-    const ids = parseComfyuiServerIds(cfg, comfyuiWorkflows);
+    const ids = parseComfyuiServerIds(cfg);
     if (ids.length > 1) {
       const names = ids.map((id) => comfyuiServers.find((s) => s.id === id)?.name || `#${id}`);
       const dispatch = comfyuiDispatchRules.find((r) => r.code === cfg.comfyui_dispatch)?.name
@@ -1015,25 +1023,7 @@ const Channels: React.FC = () => {
       title: '消耗 / 额度',
       key: 'quota',
       width: 140,
-      render: (_: any, record: Channel) => {
-        const used = record.quota_used || 0;
-        const limit = record.quota_limit ?? -1;
-        const dailyLimit = record.daily_quota_limit ?? -1;
-        const weeklyLimit = record.weekly_quota_limit ?? -1;
-        const monthlyLimit = record.monthly_quota_limit ?? -1;
-        const { dailyUsed, weeklyUsed, monthlyUsed } = getEffectiveChannelPeriodUsed(record, quotaTz);
-        return renderQuotaRings({
-          used,
-          limit,
-          dailyUsed,
-          dailyLimit,
-          weeklyUsed,
-          weeklyLimit,
-          monthlyUsed,
-          monthlyLimit,
-          compact: true,
-        });
-      }
+      render: (_: any, record: Channel) => renderQuotaRings(record, true),
     },
     {
       title: '使用上游',
@@ -1110,6 +1100,7 @@ const Channels: React.FC = () => {
       title: '渠道分类',
       dataIndex: 'category_id',
       key: 'category_id',
+      sorter: (a: Channel, b: Channel) => (a.category_id || 0) - (b.category_id || 0),
       render: (categoryId: number | null) => {
         const name = resolveCategoryName(categoryId);
         return name ? (
@@ -1200,39 +1191,9 @@ const Channels: React.FC = () => {
     },
   ];
 
-  /** 额度圆环：与上游渠道配置预设一致（总/月/周/日固定位、蓝阶、100% 红） */
-  const quotaRingPercent = (used: number, limit: number) => {
-    if (limit < 0) return 0;
-    if (limit === 0) return used > 0 ? 100 : 0;
-    return Math.min(100, Math.round((used / limit) * 100));
-  };
-
-  const quotaRingBlue: Record<string, string> = {
-    total: '#1d4ed8',
-    month: '#2563eb',
-    week: '#3b82f6',
-    day: '#60a5fa',
-  };
-
-  const renderQuotaRings = (opts: {
-    used: number;
-    limit: number;
-    dailyUsed: number;
-    dailyLimit: number;
-    weeklyUsed: number;
-    weeklyLimit: number;
-    monthlyUsed: number;
-    monthlyLimit: number;
-    compact?: boolean;
-  }) => {
-    const compact = opts.compact ?? false;
+  const renderQuotaRings = (record: Channel, compact = false) => {
     const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(6));
-    const items = [
-      { key: 'total', label: '总', used: opts.used, limit: opts.limit },
-      { key: 'month', label: '月', used: opts.monthlyUsed, limit: opts.monthlyLimit },
-      { key: 'week', label: '周', used: opts.weeklyUsed, limit: opts.weeklyLimit },
-      { key: 'day', label: '日', used: opts.dailyUsed, limit: opts.dailyLimit },
-    ];
+    const items = quotaPeriodItems(record, quotaTz);
     const hasAnyConfigured = items.some((item) => item.limit >= 0);
 
     const slotWidth = compact ? 28 : 40;
@@ -1285,7 +1246,7 @@ const Channels: React.FC = () => {
             : `${item.label}额度：${currencySymbol}${fmt(item.used)} / ${currencySymbol}${fmt(Number(item.limit))}（${pct}%）`;
           const stroke = showUnlimited
             ? (isLight ? '#a1a1aa' : 'rgba(255,255,255,0.28)')
-            : (pct >= 100 ? '#ef4444' : (quotaRingBlue[item.key] || '#3b82f6'));
+            : (pct >= 100 ? '#ef4444' : QUOTA_RING_BLUE[item.key]);
 
           return (
             <Tooltip key={item.key} title={tip}>
@@ -1633,12 +1594,6 @@ const Channels: React.FC = () => {
               rowKey="id"
               pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'], showTotal: (total) => `共 ${total} 条` }}
               renderCard={(record: any) => {
-                const used = record.quota_used || 0;
-                const limit = record.quota_limit ?? -1;
-                const dailyLimit = record.daily_quota_limit ?? -1;
-                const weeklyLimit = record.weekly_quota_limit ?? -1;
-                const monthlyLimit = record.monthly_quota_limit ?? -1;
-                const { dailyUsed, weeklyUsed, monthlyUsed } = getEffectiveChannelPeriodUsed(record, quotaTz);
                 const groups = record.user_groups;
                 const excludeGroups = record.exclude_user_groups;
                 return (
@@ -1673,16 +1628,7 @@ const Channels: React.FC = () => {
                       )}
                     </CardRow>
                     <CardRow label="已用/额度">
-                      {renderQuotaRings({
-                        used,
-                        limit,
-                        dailyUsed,
-                        dailyLimit,
-                        weeklyUsed,
-                        weeklyLimit,
-                        monthlyUsed,
-                        monthlyLimit,
-                      })}
+                      {renderQuotaRings(record)}
                     </CardRow>
                     <CardRow label="使用上游">
                       {record.provider_type === 'high_availability_group' ? (
@@ -1885,13 +1831,6 @@ const Channels: React.FC = () => {
                 size: 'small',
               }}
               renderItem={(record: Channel) => {
-                const used = record.quota_used || 0;
-                const limit = record.quota_limit ?? -1;
-                const dailyLimit = record.daily_quota_limit ?? -1;
-                const weeklyLimit = record.weekly_quota_limit ?? -1;
-                const monthlyLimit = record.monthly_quota_limit ?? -1;
-                const { dailyUsed, weeklyUsed, monthlyUsed } = getEffectiveChannelPeriodUsed(record, quotaTz);
-
                 const groups = record.user_groups || [];
                 const excludeGroups = record.exclude_user_groups || [];
                 const resolveName = (idStr: string) => {
@@ -2104,16 +2043,7 @@ const Channels: React.FC = () => {
 
                       {/* 额度环图（仅已配置） */}
                       <div style={{ marginTop: 'auto' }}>
-                        {renderQuotaRings({
-                          used,
-                          limit,
-                          dailyUsed,
-                          dailyLimit,
-                          weeklyUsed,
-                          weeklyLimit,
-                          monthlyUsed,
-                          monthlyLimit,
-                        })}
+                        {renderQuotaRings(record)}
                       </div>
 
                       {/* 底栏：AID + 操作 */}
@@ -2234,7 +2164,9 @@ const Channels: React.FC = () => {
                           <Select
                             allowClear
                             placeholder="选择分类"
-                            options={activeCategories.map(c => ({ label: c.name, value: c.id }))}
+                            options={categories
+                              .filter(c => !!c.is_active || c.id === form.getFieldValue('category_id') || c.id === editingChannel?.category_id)
+                              .map(c => ({ label: c.name, value: c.id }))}
                             dropdownRender={(menu) => (
                               <>
                                 {menu}
@@ -2306,7 +2238,7 @@ const Channels: React.FC = () => {
                           displayDetail = cred ? `基址: ${cred.base_url || '-'}` : '';
                         } else if (providerType === 'comfyui') {
                           displayType = 'ComfyUI';
-                          const comfyIds = parseComfyuiServerIds(configObj, comfyuiWorkflows);
+                          const comfyIds = parseComfyuiServerIds(configObj);
                           const dispatchName = comfyuiDispatchRules.find((r) => r.code === (configObj.comfyui_dispatch || COMFYUI_DISPATCH_DEFAULT))?.name
                             || '权重优先';
                           if (comfyIds.length > 1) {
@@ -2442,9 +2374,9 @@ const Channels: React.FC = () => {
                                     }
                                   </div>
                                 )}
-                                {providerType === 'comfyui' && parseComfyuiServerIds(configObj, comfyuiWorkflows).length > 0 && (
+                                {providerType === 'comfyui' && parseComfyuiServerIds(configObj).length > 0 && (
                                   <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                                    {parseComfyuiServerIds(configObj, comfyuiWorkflows).map((id) => {
+                                    {parseComfyuiServerIds(configObj).map((id) => {
                                       const s = comfyuiServers.find((x) => x.id === id);
                                       return (
                                         <div
@@ -2475,7 +2407,7 @@ const Channels: React.FC = () => {
                                                 style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  const next = parseComfyuiServerIds(configObj, comfyuiWorkflows).filter((x) => x !== id);
+                                                  const next = parseComfyuiServerIds(configObj).filter((x) => x !== id);
                                                   form.setFieldsValue({
                                                     preset_id: null,
                                                     provider_type: next.length ? 'comfyui' : 'custom',
@@ -2508,52 +2440,11 @@ const Channels: React.FC = () => {
 
                     <Form.Item label={<Text strong>路由与范围配置</Text>} style={{ marginBottom: 0 }}>
                       <Space direction="vertical" style={{ width: '100%' }} size={12}>
-                        {/* Plugin: happyhorse_router 路由切换+节点选择（插件可移除） */}
-                        {happyHorseEnabled && hhModule && (
-                          <hhModule.HappyHorseRouteConfig
-                            enabled={happyHorseEnabled}
-                            isRouting={isHappyHorseRouting}
-                            configs={happyHorseConfigs}
-                            selectedNode={selectedRoutingNode}
-                            onSwitchMode={(val: any) => {
-                              const isHH = val === 'happyhorse';
-                              setIsHappyHorseRouting(isHH);
-                              if (isHH) {
-                                const activeConfigs = happyHorseConfigs.filter((c: any) => c.is_active === 1);
-                                const defaultNode = activeConfigs[0]?.routing_node || '';
-                                setSelectedRoutingNode(defaultNode);
-                                if (defaultNode) handleModelsChange([defaultNode]);
-                              } else {
-                                setSelectedRoutingNode(null);
-                                handleModelsChange([]);
-                              }
-                            }}
-                            onSelectNode={(nodeVal: any) => {
-                              setSelectedRoutingNode(nodeVal);
-                              handleModelsChange([nodeVal]);
-                            }}
-                            isLight={isLight}
-                          />
-                        )}
-
                         {/* Models */}
                         <Form.Item shouldUpdate={(prev, curr) => prev.models !== curr.models} noStyle>
                            {() => {
                             const m = form.getFieldValue('models') || [];
                             const isActive = activeRightPanel === 'models';
-
-                            /* Plugin: happyhorse_router 左侧信息卡（插件可移除） */
-                            if (isHappyHorseRouting && hhModule) {
-                              const activeConfig = happyHorseConfigs.find((c: any) => c.routing_node === selectedRoutingNode);
-                              return (
-                                <hhModule.HappyHorseStatusCard
-                                  activeConfig={activeConfig || null}
-                                  selectedNode={selectedRoutingNode}
-                                  isLight={isLight}
-                                  onClick={() => setActiveRightPanel('models')}
-                                />
-                              );
-                            }
 
                             return (
                               <div onClick={() => setActiveRightPanel('models')} style={{ padding: '12px 16px', borderRadius: 8, border: isActive ? '1px solid var(--text)' : (isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)'), background: isActive ? (isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)') : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), cursor: 'pointer', transition: 'all 0.2s' }}>
@@ -2888,19 +2779,26 @@ const Channels: React.FC = () => {
                       <Divider style={{ margin: '12px 0 8px' }}>存储设置</Divider>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                         <div>
-                          <Text strong style={{ fontSize: 13 }}>开启 TOS 资源存储</Text>
+                          <Text strong style={{ fontSize: 13 }}>开启对象存储转存</Text>
                           <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                            开启后，图片/视频响应资源自动上传到 TOS 并返回永久 URL
+                            开启后，图片/视频响应资源自动上传到对象存储并返回永久 URL
                           </div>
                         </div>
                         <Switch
                           checked={configObj.tos_storage_enabled || false}
-                          onChange={(v) => setConfigObj({ ...configObj, tos_storage_enabled: v, tos_storage_days: configObj.tos_storage_days ?? 1 })}
+                          onChange={(v) => setConfigObj({
+                            ...configObj,
+                            tos_storage_enabled: v,
+                            tos_storage_days: configObj.tos_storage_days ?? 1,
+                            tos_storage_provider: v && multiSiteStorage
+                              ? (configObj.tos_storage_provider || siteDefaultProvider)
+                              : undefined,
+                          })}
                         />
                       </div>
                       {configObj.tos_storage_enabled && (
                         <div style={{ marginTop: 8 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                             <Text style={{ fontSize: 13, whiteSpace: 'nowrap' }}>存储有效期</Text>
                             <InputNumber
                               min={0} max={365}
@@ -2911,11 +2809,38 @@ const Channels: React.FC = () => {
                             />
                             <Text type="secondary" style={{ fontSize: 11 }}>0 = 永久保留</Text>
                           </div>
+                          {multiSiteStorage && (
+                            <div style={{ marginBottom: 8 }}>
+                              <Text style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>存储方式</Text>
+                              <Radio.Group
+                                value={
+                                  siteStorageProviders.some((p) => p.key === configObj.tos_storage_provider)
+                                    ? configObj.tos_storage_provider
+                                    : siteDefaultProvider
+                                }
+                                onChange={(e) => setConfigObj({ ...configObj, tos_storage_provider: e.target.value })}
+                                style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px' }}
+                              >
+                                {siteStorageProviders.map((p) => (
+                                  <Radio key={p.key} value={p.key} style={{ marginInlineEnd: 0 }}>
+                                    {p.name}
+                                    {p.key === siteDefaultProvider ? '（默认）' : ''}
+                                  </Radio>
+                                ))}
+                              </Radio.Group>
+                            </div>
+                          )}
                           <Alert
                             type="info"
                             showIcon
                             style={{ fontSize: 12, padding: '6px 12px' }}
-                            message="使用站点「系统设置 → 存储设置」中配置的 TOS 信息。请确保已正确配置。"
+                            message={
+                              multiSiteStorage
+                                ? `凭证来自「系统设置 → 存储设置」；默认「${getStorageProvider(siteDefaultProvider).name}」，可切换。`
+                                : siteStorageProviders.length === 1
+                                  ? `使用站点已配置的「${siteStorageProviders[0].name}」（系统设置 → 存储设置）。`
+                                  : '请先在「系统设置 → 存储设置」完成对象存储配置后再开启转存。'
+                            }
                           />
                         </div>
                       )}
@@ -2928,18 +2853,6 @@ const Channels: React.FC = () => {
                   <div style={{ padding: 24, background: isLight ? '#fff' : 'rgba(255,255,255,0.02)', border: isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)', borderRadius: 8, minHeight: 600 }}>
                     
                     <div style={{ display: activeRightPanel === 'models' ? 'block' : 'none', animation: 'fadeIn 0.2s' }}>
-                      {/* Plugin: happyhorse_router 右侧详情面板（插件可移除） */}
-                      {isHappyHorseRouting && hhModule ? (() => {
-                        const activeConfig = happyHorseConfigs.find((c: any) => c.routing_node === selectedRoutingNode);
-                        return (
-                          <hhModule.HappyHorseDetailPanel
-                            activeConfig={activeConfig || null}
-                            selectedNode={selectedRoutingNode}
-                            isLight={isLight}
-                          />
-                        );
-                      })() : (
-                        <>
                           <Form.Item name="models" rules={[{ required: true, message: '请选择至少一个模型' }]} style={{ marginBottom: 0 }} hidden>
                             <Select mode="multiple" />
                           </Form.Item>
@@ -2951,8 +2864,6 @@ const Channels: React.FC = () => {
                             isLightTheme={isLight}
                             title="选择模型"
                           />
-                        </>
-                      )}
                     </div>
 
                     <div style={{ display: activeRightPanel === 'presets' ? 'block' : 'none', animation: 'fadeIn 0.2s' }}>
@@ -3100,6 +3011,24 @@ const Channels: React.FC = () => {
                                 </div>
 
                                 <div style={{ marginBottom: 8 }}>
+                                  <Text strong style={{ display: 'block', marginBottom: 6 }}>高可用策略模板</Text>
+                                  <Select
+                                    style={{ width: '100%', marginBottom: 10 }}
+                                    value={configObj.rule || ''}
+                                    onChange={(v: string) => {
+                                      setConfigObj(prev => {
+                                        const next = { ...prev };
+                                        if (v) next.rule = v; else delete next.rule;
+                                        return next;
+                                      });
+                                      const retries = haRules.find(r => r.id === (v || haDef))?.retries || 3;
+                                      setSelectedSubChannelAids(prev => prev.slice(0, retries));
+                                    }}
+                                    options={[
+                                      { value: '', label: `使用默认（${haRules.find(r => r.id === haDef)?.name || '默认'}）` },
+                                      ...haRules.map(r => ({ value: r.id, label: `${r.name}（切换 ${r.retries} 次）` })),
+                                    ]}
+                                  />
                                   <Alert
                                     message="高可用上游多选绑定"
                                     description={`您可以选择最多 ${haMaxRetries} 个上游配置绑定到该虚拟组（禁用渠道也可选，绑定后运行时不可用）。系统优先使用「优先级priority」最高的一组渠道；若最高优先级渠道有多个，则按它们各自的「权重weight」比例随机分流。选满 ${haMaxRetries} 个后，其余配置将被置灰。`}
@@ -3300,7 +3229,8 @@ const Channels: React.FC = () => {
                                     placeholder="选择调用规则"
                                   />
                                   <Text type="secondary" style={{ fontSize: 12 }}>
-                                    可多选节点；每次请求按规则选一台
+                                    {comfyuiDispatchRules.find((r) => r.code === (configObj.comfyui_dispatch || COMFYUI_DISPATCH_DEFAULT))?.remark
+                                      || '可多选节点；每次请求按规则选一台'}
                                   </Text>
                                 </div>
                               )}
@@ -3344,7 +3274,7 @@ const Channels: React.FC = () => {
                                         cardSubtitle = `基址: ${item.base_url || '-'}`;
                                         extraTag = <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>火山凭证</Tag>;
                                       } else if (upstreamTab === 'comfyui') {
-                                        const selectedIds = parseComfyuiServerIds(configObj, comfyuiWorkflows);
+                                        const selectedIds = parseComfyuiServerIds(configObj);
                                         isSelected = selectedIds.includes(item.id);
                                         cardSubtitle = item.base_url ? `基址: ${item.base_url}` : '';
                                         extraTag = (
@@ -3366,10 +3296,12 @@ const Channels: React.FC = () => {
                                                 if (!isHa) {
                                                   setSelectedSubChannelAids([]);
                                                 }
+                                                const currentCat = form.getFieldValue('category_id');
                                                 form.setFieldsValue({
                                                   preset_id: item.id,
                                                   rate: item.rate ?? 1.0,
-                                                  provider_type: item.provider_type || 'custom'
+                                                  provider_type: item.provider_type || 'custom',
+                                                  category_id: (currentCat !== undefined && currentCat !== null) ? currentCat : (item.category_id || null),
                                                 });
                                               } else {
                                                 setSelectedSubChannelAids([]);
@@ -3383,7 +3315,7 @@ const Channels: React.FC = () => {
                                                     return { ...rest, volcengine_enhance_credential_id: item.id };
                                                   });
                                                 } else if (upstreamTab === 'comfyui') {
-                                                  const selectedIds = parseComfyuiServerIds(configObj, comfyuiWorkflows);
+                                                  const selectedIds = parseComfyuiServerIds(configObj);
                                                   const next = selectedIds.includes(item.id)
                                                     ? selectedIds.filter((id: number) => id !== item.id)
                                                     : [...selectedIds, item.id];
@@ -3539,16 +3471,9 @@ const Channels: React.FC = () => {
                             {() => {
                               const providerType = form.getFieldValue('provider_type');
                               const isHaMode = providerType === 'high_availability_group';
-                              // Plugin: happyhorse_router 模型别名映射适配（插件可移除）
-                              // 快乐小马模式下基于4个视频模型生成映射列表，而非 routing_node
-                              let selectedModels = form.getFieldValue('models') || [];
-                              if (isHappyHorseRouting && hhModule) {
-                                const activeConfig = happyHorseConfigs.find((c: any) => c.routing_node === selectedRoutingNode);
-                                const hhModels = hhModule.getHappyHorseMappingModels(activeConfig || null);
-                                selectedModels = hhModels.map((m: any) => m.modelId);
-                              }
+                              const selectedModels = form.getFieldValue('models') || [];
                               if (selectedModels.length === 0) {
-                                return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text)', background: isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)', borderRadius: 8 }}>{isHappyHorseRouting ? '请先选择推理节点' : '请先在左侧选择模型'}</div>;
+                                return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text)', background: isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)', borderRadius: 8 }}>请先在左侧选择模型</div>;
                               }
 
                               // HA 模式下获取已绑定的子渠道信息

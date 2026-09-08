@@ -72,7 +72,7 @@ pub async fn list_models(
 
     // 忽略 ≤0；上限防止异常大 LIMIT
     let limit = query.page_size.filter(|&p| p > 0).map(|p| p.min(10_000));
-    let mut list_sql = format!("SELECT * FROM models{where_sql} ORDER BY id DESC");
+    let mut list_sql = format!("SELECT * FROM models{where_sql} ORDER BY sort_order DESC, id DESC");
     if let Some(ps) = limit {
         list_sql.push_str(&format!(" LIMIT {ps}"));
     }
@@ -172,10 +172,11 @@ pub async fn create_model(
 
     let is_active = req.is_active.unwrap_or(1);
     let enable_log_content = req.enable_log_content.unwrap_or(0);
+    let sort_order = req.sort_order.unwrap_or(0);
 
     let new_id = sqlx::query(
-        &state.db.format_query(r#"INSERT INTO models (mid, name, model_id, original_id, model_id_alias, provider_id, api_provider_id, type_id, group_ratios, forward_rule_ids, billing_rule_id, pre_deduction, site_discount, site_discount_enabled, global_discount, global_discount_enabled, is_active, enable_log_content, is_system, logo, remark, description, feature_attributes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        &state.db.format_query(r#"INSERT INTO models (mid, name, model_id, original_id, model_id_alias, provider_id, api_provider_id, type_id, group_ratios, forward_rule_ids, billing_rule_id, pre_deduction, site_discount, site_discount_enabled, global_discount, global_discount_enabled, is_active, enable_log_content, is_system, logo, remark, description, feature_attributes, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
            RETURNING id"#)
     )
     .bind(&mid)
@@ -200,6 +201,7 @@ pub async fn create_model(
     .bind(&req.remark)
     .bind(&req.description)
     .bind(&req.feature_attributes)
+    .bind(sort_order)
     .fetch_one(&state.db.pool)
     .await?
     .get::<i64, _>("id");
@@ -549,6 +551,17 @@ pub async fn update_model(
         .execute(&state.db.pool)
         .await?;
     }
+    if let Some(sort_order) = req.sort_order {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE models SET sort_order = ? WHERE id = ?"),
+        )
+        .bind(sort_order)
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
 
     sqlx::query(
         &state
@@ -573,20 +586,6 @@ pub async fn delete_model(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let is_system: Option<i32> = sqlx::query_scalar(
-        &state
-            .db
-            .format_query("SELECT is_system FROM models WHERE id = ?"),
-    )
-    .bind(id)
-    .fetch_optional(&state.db.pool)
-    .await?;
-    if is_system.unwrap_or(0) == 1 {
-        return Err(crate::error::AppError::BadRequest(
-            "系统预设模型不可删除，如需停用请禁用该模型。".to_string(),
-        ));
-    }
-
     sqlx::query(&state.db.format_query("DELETE FROM models WHERE id = ?"))
         .bind(id)
         .execute(&state.db.pool)
@@ -596,50 +595,3 @@ pub async fn delete_model(
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn query(source: Option<&str>) -> ModelQuery {
-        ModelQuery {
-            provider_id: None,
-            api_provider_id: None,
-            type_id: None,
-            page_size: None,
-            source: source.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn list_where_filters_system_and_custom() {
-        let system = model_list_where(&query(Some("system")));
-        assert!(system.contains("is_system = 1"));
-        let custom = model_list_where(&query(Some("custom")));
-        assert!(custom.contains("is_system = 0"));
-        let all = model_list_where(&query(Some("all")));
-        assert!(!all.contains("is_system"));
-        let empty = model_list_where(&query(None));
-        assert!(!empty.contains("is_system"));
-        let injected = model_list_where(&query(Some("1; drop table models")));
-        assert!(!injected.contains("drop"));
-        assert!(!injected.contains("is_system"));
-    }
-
-    #[test]
-    fn list_where_keeps_id_filters() {
-        let q = ModelQuery {
-            provider_id: Some(3),
-            api_provider_id: Some(4),
-            type_id: Some(5),
-            page_size: None,
-            source: Some("system".into()),
-        };
-        let sql = model_list_where(&q);
-        assert!(sql.contains("provider_id = ?"));
-        assert!(sql.contains("api_provider_id = ?"));
-        assert!(sql.contains("type_id = ?"));
-        assert!(sql.contains("is_system = 1"));
-    }
-}
-

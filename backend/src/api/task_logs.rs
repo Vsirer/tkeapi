@@ -41,7 +41,9 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
         match at.as_str() {
             "chat" => where_clause.push_str(" AND l.action_type = '聊天'"),
             "image" => where_clause.push_str(" AND l.action_type = '图片'"),
-            "video" => where_clause.push_str(" AND l.action_type = '视频'"),
+            "video" | "视频" => {
+                where_clause.push_str(" AND l.action_type = ANY(ARRAY['视频','视频增强'])")
+            }
             "vision" | "视觉模型" | "视觉" => where_clause.push_str(SQL_VISION_ACTION_FILTER),
             "other" => where_clause.push_str(" AND l.action_type = '其它'"),
             v if !v.is_empty() => {
@@ -79,11 +81,21 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
         }
     }
 
+    if let Some(ref token_kid) = query.token_kid {
+        if !token_kid.is_empty() {
+            where_clause.push_str(
+                " AND EXISTS (SELECT 1 FROM api_tokens xt WHERE xt.id = l.token_id AND xt.kid = ?)",
+            );
+            binds.push(token_kid.clone());
+        }
+    }
+
     if let Some(ref keyword) = query.search_keyword {
         if !keyword.is_empty() {
             where_clause.push_str(
-                " AND (l.log_id = ? OR l.task_id = ? OR EXISTS (SELECT 1 FROM channels xc WHERE xc.id = l.channel_id AND xc.group_aid = ?))",
+                " AND (l.log_id = ? OR l.task_id = ? OR EXISTS (SELECT 1 FROM channels xc WHERE xc.id = l.channel_id AND xc.group_aid = ?) OR EXISTS (SELECT 1 FROM api_tokens xt WHERE xt.id = l.token_id AND xt.kid = ?))",
             );
+            binds.push(keyword.clone());
             binds.push(keyword.clone());
             binds.push(keyword.clone());
             binds.push(keyword.clone());
@@ -95,9 +107,6 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
 
 const TASK_LIST_JOINS: &str = " LEFT JOIN channels c ON l.channel_id = c.id \
          LEFT JOIN channel_configs cc ON l.channel_config_id = cc.id \
-         LEFT JOIN users u ON l.user_id = u.id";
-
-const TASK_EXPORT_JOINS: &str = " LEFT JOIN channels c ON l.channel_id = c.id \
          LEFT JOIN users u ON l.user_id = u.id";
 
 /// 列表可预览类型（与前端预览按钮一致）；仅这些行读 response_content。
@@ -254,8 +263,6 @@ struct ExportRow {
     task_id: Option<String>,
     billing_detail: Option<String>,
     created_at: DbTs,
-    channel_name: Option<String>,
-    channel_group_aid: Option<String>,
     user_nickname: Option<String>,
     user_uid: Option<String>,
 }
@@ -291,9 +298,8 @@ pub async fn export_task_logs(
         "SELECT l.id, l.user_id, l.model, l.prompt_tokens, l.completion_tokens, l.cached_tokens, \
          l.cost, l.latency_ms, l.status_code, l.action_type, l.task_id, \
          l.billing_detail, l.created_at, \
-         c.name as channel_name, c.group_aid as channel_group_aid, \
          COALESCE(u.nickname, u.username) as user_nickname, u.uid as user_uid \
-         FROM logs l{TASK_EXPORT_JOINS} \
+         FROM logs l LEFT JOIN users u ON l.user_id = u.id \
          {where_clause} ORDER BY l.created_at DESC LIMIT {TASK_EXPORT_LIMIT}"
     ));
 
@@ -305,11 +311,11 @@ pub async fn export_task_logs(
         q.fetch_all(&state.db.pool).await?
     };
 
-    let mut csv = String::from("\u{FEFF}ID,用户ID,用户UID,用户昵称,模型,类型,任务ID,输入Tokens,输出Tokens,缓存Tokens,费用,耗时(ms),状态码,渠道,渠道AID,计费明细,时间\n");
+    let mut csv = String::from("\u{FEFF}ID,用户ID,用户UID,用户昵称,模型,类型,任务ID,输入Tokens,输出Tokens,缓存Tokens,费用,耗时(ms),状态码,计费明细,时间\n");
     for r in &rows {
         let formatted_time = crate::api::logs::format_db_time(&r.created_at);
         csv.push_str(&format!(
-            "{},{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},{:.6},{},{},\"{}\",\"{}\",\"{}\",\"{}\"\n",
+            "{},{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},{:.6},{},{},\"{}\",\"{}\"\n",
             r.id,
             r.user_id,
             r.user_uid.as_deref().unwrap_or("-"),
@@ -323,8 +329,6 @@ pub async fn export_task_logs(
             r.cost,
             r.latency_ms,
             r.status_code,
-            r.channel_name.as_deref().unwrap_or("-").replace('"', "\"\""),
-            r.channel_group_aid.as_deref().unwrap_or("-"),
             r.billing_detail.as_deref().unwrap_or("").replace('"', "\"\""),
             formatted_time,
         ));
@@ -345,7 +349,7 @@ pub async fn export_task_logs(
         .unwrap())
 }
 
-/// 取消火山方舟视频任务（管理端接口，JWT 鉴权）
+/// 取消未完成的异步视频任务（JWT：本站 ComfyUI 或火山方舟）
 pub async fn cancel_task_log(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<auth::Claims>,
@@ -372,9 +376,18 @@ pub async fn cancel_task_log(
         ));
     }
 
+    #[cfg(feature = "plugin_comfyui")]
+    {
+        if crate::api::plugins::comfyui_bridge::cancel_video(&state, &task_id, id).await? {
+            return Ok(Json(serde_json::json!({
+                "message": "任务已取消，预扣费已退回"
+            })));
+        }
+    }
+
     if !upstream_url.contains("contents/generations") {
         return Err(AppError::BadRequest(
-            "仅火山方舟视频任务支持取消操作".to_string(),
+            "此任务不支持取消操作".to_string(),
         ));
     }
 

@@ -6,8 +6,8 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Table, Tag, Card, Typography, Space, Input, Button, Row, Col, Descriptions, theme, Grid, Tooltip, DatePicker, message, Modal, Spin, Select } from 'antd';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Table, Tag, Card, Typography, Space, Input, Button, Row, Col, Descriptions, theme, Grid, Tooltip, message, Modal, Spin, Select, Checkbox } from 'antd';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
 import { RefreshCw, Search, Download, Image as ImageIcon, MessageSquare, Wrench, LayoutGrid, Copy, Cuboid, ListOrdered, Mic, MoreHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -20,20 +20,56 @@ import type { RequestLog } from '../../types';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import { formatApiDateTime } from '../../utils/timedisplay';
-import { toDateRangeParams } from '../../utils/dateRangeParams';
+import { defaultLogDayRange, toDateRangeParams } from '../../utils/dateRangeParams';
+import LogDateTimeRangePicker from '../../components/LogDateTimeRangePicker';
 import { useLogDetailLoader } from '../../hooks/useLogDetailLoader';
+import { useDragScroll } from '../../hooks/useDragScroll';
 import { parsePluginTagMeta } from '../../utils/pluginTagMeta';
+import { copyToClipboard } from '../../utils/clipboard';
+import { LOG_ERROR_STATUS_CODES } from '../../constants/relayStatusCodes';
 dayjs.extend(utc);
-
-const { RangePicker } = DatePicker;
 
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
 
-/** 筛选栏常用状态码（含上游常见 422） */
-const STATUS_CODE_FILTER_VALUES = [
-  '0', '400', '401', '402', '403', '404', '408', '409', '422', '429', '500', '502', '503', '504',
-] as const;
+const STATUS_CODE_FILTER_VALUES = LOG_ERROR_STATUS_CODES;
+
+const LOG_EXPORT_LIMIT = 100_000;
+
+/** 与后端 `LOG_EXPORT_COLUMNS` 及列表列序对齐 */
+const LOG_EXPORT_FIELDS: { key: string; label: string }[] = [
+  { key: 'created_at', label: '时间' },
+  { key: 'log_id', label: '日志ID' },
+  { key: 'task_id', label: '任务ID' },
+  { key: 'id', label: 'ID' },
+  { key: 'channel_group_aid', label: '渠道AID' },
+  { key: 'is_ha', label: '渠道HA' },
+  { key: 'yid', label: '上游YID' },
+  { key: 'sub_channel_name', label: '实际上游' },
+  { key: 'user_nickname', label: '用户昵称' },
+  { key: 'user_uid', label: 'UID' },
+  { key: 'user_id', label: '用户ID' },
+  { key: 'user_admin_remark', label: '管理员备注' },
+  { key: 'token_name', label: '令牌' },
+  { key: 'token_kid', label: '密钥KID' },
+  { key: 'token_ha', label: '令牌HA' },
+  { key: 'status_code', label: '状态码' },
+  { key: 'model', label: '模型' },
+  { key: 'billing_pid', label: '计费PID' },
+  { key: 'forward_eid', label: '转发EID' },
+  { key: 'latency_ms', label: '耗时(ms)' },
+  { key: 'is_stream', label: '类型' },
+  { key: 'prompt_tokens', label: '输入Tokens' },
+  { key: 'completion_tokens', label: '输出Tokens' },
+  { key: 'cached_tokens', label: '缓存Tokens' },
+  { key: 'cost', label: '费用' },
+  { key: 'billing_detail', label: '计费明细' },
+  { key: 'error_message', label: '错误信息' },
+  { key: 'action_type', label: '动作类型' },
+  { key: 'endpoint', label: '请求路径' },
+];
+
+const LOG_EXPORT_ALL_KEYS = LOG_EXPORT_FIELDS.map((f) => f.key);
 
 /** 筛选栏错误码 → 请求参数；仅非负整数，否则不传 */
 function parseStatusCodeFilter(raw?: string): number | undefined {
@@ -93,11 +129,12 @@ const CopyButton: React.FC<{ text: string, color?: string }> = ({ text, color })
         size="small" 
         type="text" 
         icon={<Copy size={14} />} 
-        onClick={() => {
-          navigator.clipboard.writeText(text).then(() => {
+        onClick={async () => {
+          const ok = await copyToClipboard(text);
+          if (ok) {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
-          });
+          }
         }} 
         style={{ color: color, height: 22, padding: '0 8px' }}
       >
@@ -177,6 +214,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   const { t } = useTranslation();
   const { token: themeToken } = theme.useToken();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.admin_path || 'admin';
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
@@ -198,17 +236,21 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   const [userGroupFilter, setUserGroupFilter] = useState<string | undefined>(undefined);
   const [userLevels, setUserLevels] = useState<any[]>([]);
   const [allowDetails, setAllowDetails] = useState(true);
-  const [dateRange, setDateRange] = useState<[any, any] | null>(() => [dayjs().startOf('day'), dayjs().endOf('day')]);
+  const [dateRange, setDateRange] = useState<[any, any] | null>(() => defaultLogDayRange());
   const [exporting, setExporting] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportFieldKeys, setExportFieldKeys] = useState<string[]>(LOG_EXPORT_ALL_KEYS);
   const [stats, setStats] = useState<{ total_cost: number; success_count: number; fail_count: number }>({ total_cost: 0, success_count: 0, fail_count: 0 });
   const { user } = useAuthStore();
-  const isSuperAdmin = user?.role === 'admin' && !user?.admin_group_id;
+  const isAdmin = user?.role === 'admin';
+  const isSuperAdmin = isAdmin && !user?.admin_group_id;
   const screens = useBreakpoint();
   const [actionTypeFilter, setActionTypeFilter] = useState<string>(localStorage.getItem('default_log_type') || '视觉');
   const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false);
   const [tempDefaultType, setTempDefaultType] = useState<string>('视觉');
   const queryGuardRef = useRef(new QueryGuard());
   const skipNextEffectFetchRef = useRef(false);
+  const dragScrollRef = useDragScroll<HTMLDivElement>();
   const rowIds = useMemo(() => logs.map((l) => l.id), [logs]);
   const {
     detailCache,
@@ -306,10 +348,22 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
 
 
 
+  const openExportModal = () => {
+    setExportFieldKeys(LOG_EXPORT_ALL_KEYS);
+    setExportModalOpen(true);
+  };
+
   const handleExport = async () => {
+    if (exportFieldKeys.length === 0) {
+      message.warning(t('logs.export_need_field', '请至少选择一个字段'));
+      return;
+    }
     setExporting(true);
     try {
       const params = buildParams();
+      if (exportFieldKeys.length !== LOG_EXPORT_FIELDS.length) {
+        params.export_fields = exportFieldKeys.join(',');
+      }
       const resp = await request.get('/logs/export', {
         params,
         responseType: 'blob',
@@ -330,6 +384,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       a.click();
       URL.revokeObjectURL(url);
       message.success(t('logs.export_success', '导出成功'));
+      setExportModalOpen(false);
     } catch (e: any) {
       // 尝试从 axios 错误响应中提取后端消息
       if (e?.response?.data) {
@@ -361,7 +416,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       title: t('logs.time'),
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: 190,
       render: (text: string, record: RequestLog) => (
         <Space direction="vertical" size={0}>
           <Text style={{ fontSize: 12 }}>{formatApiDateTime(text)}</Text>
@@ -392,13 +447,21 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       title: t('logs.channel_aid', '渠道信息'),
       dataIndex: 'channel_group_aid',
       key: 'channel_group_aid',
-      width: 120,
+      width: 140,
       render: (text: string, record: RequestLog) => (
-        <Space size={4} direction="vertical" style={{ alignItems: 'flex-start' }}>
+        <Space size={2} direction="vertical" style={{ alignItems: 'flex-start' }}>
           <Space size={4}>
             <Text type="secondary" style={{ fontSize: 12 }}>{text ? `AID: ${text}` : '-'}</Text>
             {record.is_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
           </Space>
+          {record.sub_channel_name && (
+            <Text
+              style={{ fontSize: 12, maxWidth: 130 }}
+              ellipsis={{ tooltip: `${t('logs.sub_channel_name', '实际调用上游')}: ${record.sub_channel_name}` }}
+            >
+              {record.sub_channel_name}
+            </Text>
+          )}
           {record.yid && (
             <Tag color="cyan" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
               {t('logs.sub_channel', '上游')}: {record.yid}
@@ -412,15 +475,25 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       key: 'user',
       width: 180,
       render: (_: any, record: RequestLog) => {
-        const name = record.user_nickname || record.user_id?.slice(0, 8) || '-';
+        const name = record.user_nickname || record.user_uid || record.user_id?.slice(0, 8) || '-';
         const remark = record.user_admin_remark?.trim();
         return (
           <Space direction="vertical" size={0}>
             <Text style={{ fontSize: 12 }}>
-              {name}
+              {record.user_uid ? (
+                <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
+                  {name}
+                </Link>
+              ) : (
+                name
+              )}
               {remark ? <Text type="secondary" style={{ fontSize: 12 }}> {remark}</Text> : null}
             </Text>
-            {record.user_uid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>UID: {record.user_uid}</Text>}
+            {record.user_uid && (
+              <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                UID: {record.user_uid}
+              </Link>
+            )}
           </Space>
         );
       },
@@ -431,7 +504,10 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       width: 120,
       render: (_: any, record: RequestLog) => (
         <Space direction="vertical" size={0}>
-          <Text style={{ fontSize: 12 }}>{record.token_name || '-'}</Text>
+          <Space size={4}>
+            <Text style={{ fontSize: 12 }}>{record.token_name || '-'}</Text>
+            {record.token_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
+          </Space>
           {record.token_kid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>KID: {record.token_kid}</Text>}
         </Space>
       ),
@@ -515,7 +591,8 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       title: t('logs.cost'),
       dataIndex: 'cost',
       key: 'cost',
-      width: 90,
+      width: 100,
+      fixed: 'right' as const,
       render: (val: number, record: RequestLog) => (
         <Space direction="vertical" size={0}>
           {val === 0 || record.billing_refunded || record.billing_failed
@@ -621,19 +698,6 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             <Space size={16} wrap>
               <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.billing_rule', '计费规则 (PID)')}: {record.billing_pid ? <Typography.Text keyboard>{record.billing_pid}</Typography.Text> : '-'}</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.forward_rule', '转发规则 (EID)')}: {record.forward_eid ? <Typography.Text keyboard>{record.forward_eid}</Typography.Text> : '-'}</Text>
-              {merged.plugin_tag && (() => {
-                try {
-                  const tag = JSON.parse(merged.plugin_tag);
-                  if (tag && tag.name === 'happyhorse' && (tag.custom_model || tag.actual_model)) {
-                    return (
-                      <Tag color="purple" style={{ fontSize: 11 }}>
-                        {tag.title || tag.name}: {tag.custom_model} → {tag.actual_model} ({tag.media_type})
-                      </Tag>
-                    );
-                  }
-                  return null;
-                } catch { return null; }
-              })()}
             </Space>
           </Descriptions.Item>
           )}
@@ -736,9 +800,11 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       style={{ 
         background: screens.xs ? 'transparent' : (_isLight ? '#fff' : 'rgba(255,255,255,0.02)'), 
         borderRadius: 12,
-        boxShadow: screens.xs ? 'none' : undefined
+        boxShadow: screens.xs ? 'none' : undefined,
+        maxWidth: '100%',
+        overflow: 'hidden'
       }} 
-      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px' } }}
+      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px', maxWidth: '100%', overflowX: 'hidden' } }}
     >
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
@@ -834,12 +900,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             />
           )}
           <Input
-            placeholder={t('logs.search_keyword', '搜索日志 ID / 任务 ID / 渠道 AID')}
+            placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID')}
             prefix={<Search size={16} />}
             value={searchKeyword}
             onChange={e => setSearchKeyword(e.target.value)}
             onPressEnter={() => fetchLogs()}
-            style={{ width: screens.xs ? '100%' : 260, fontSize: 12, height: 32 }}
+            style={{ width: screens.xs ? '100%' : 270, fontSize: 12, height: 32 }}
             allowClear
           />
           <Input
@@ -860,19 +926,23 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             showSearch
             optionFilterProp="label"
           />
-          <RangePicker
+          <LogDateTimeRangePicker
             value={dateRange}
-            placeholder={[t('logs.start_date', '开始日期'), t('logs.end_date', '结束日期')]}
-            onChange={(vals) => setDateRange(vals as [any, any] | null)}
+            onChange={setDateRange}
+            isAdmin={isAdmin}
             className="font-size-12"
-            style={{ width: screens.xs ? '100%' : undefined, fontSize: 12, height: 32 }}
           />
+          {!isAdmin && (
+            <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
+              {t('logs.user_date_range_hint', '近1年可查，单次最长1个月，支持精确到秒')}
+            </Text>
+          )}
           <Space size={8} style={{ marginLeft: screens.xs ? 0 : 'auto' }}>
             <Button type="primary" icon={<Search size={14} />} onClick={() => fetchLogs()} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('logs.query', '查询')}</Button>
             <Button icon={<RefreshCw size={14} />} onClick={() => fetchLogs()} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('common.refresh', '刷新')}</Button>
             {user?.role === 'admin' && (
-              <Tooltip title={t('logs.export_tooltip', '根据当前筛选条件导出 CSV（上限10万条）')}>
-                <Button icon={<Download size={14} />} loading={exporting} disabled={loading} onClick={handleExport} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('logs.export', '导出')}</Button>
+              <Tooltip title={t('logs.export_tooltip', '按当前筛选与列表顺序导出 CSV，可勾选字段（上限10万条）')}>
+                <Button icon={<Download size={14} />} loading={exporting} disabled={loading} onClick={openExportModal} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('logs.export', '导出')}</Button>
               </Tooltip>
             )}
           </Space>
@@ -893,7 +963,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             showQuickJumper: true,
           }}
           renderCard={(record: any) => {
-            const userName = record.user_nickname || record.user_id?.slice(0, 8) || '-';
+            const userName = record.user_nickname || record.user_uid || record.user_id?.slice(0, 8) || '-';
             return (
               <MobileCard
                 compact={true}
@@ -923,10 +993,20 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                   <CardRow label={t('logs.user', '用户')}>
                     <Space direction="vertical" size={0}>
                       <Text style={{ fontSize: 12 }}>
-                        {userName}
+                        {record.user_uid ? (
+                          <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
+                            {userName}
+                          </Link>
+                        ) : (
+                          userName
+                        )}
                         {record.user_admin_remark?.trim() ? <Text type="secondary" style={{ fontSize: 12 }}> {record.user_admin_remark.trim()}</Text> : null}
                       </Text>
-                      {record.user_uid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>UID: {record.user_uid}</Text>}
+                      {record.user_uid && (
+                        <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                          UID: {record.user_uid}
+                        </Link>
+                      )}
                     </Space>
                   </CardRow>
                 )}
@@ -936,9 +1016,14 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                     {record.is_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
                   </Space>
                 </CardRow>}
-                {user?.role === 'admin' && record.yid && <CardRow label={t('logs.sub_channel_name', '实际调用上游')}>
-                  <Tag color="cyan" style={{ fontSize: 11 }}>{record.yid}</Tag>
-                </CardRow>}
+                {user?.role === 'admin' && (record.sub_channel_name || record.yid) && (
+                  <CardRow label={t('logs.sub_channel_name', '实际调用上游')}>
+                    <Space size={4} align="center" wrap>
+                      {record.sub_channel_name && <Text style={{ fontSize: 11 }}>{record.sub_channel_name}</Text>}
+                      {record.yid && <Tag color="cyan" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>{record.yid}</Tag>}
+                    </Space>
+                  </CardRow>
+                )}
                 {user?.role === 'admin' && (record.yid || record.billing_pid || record.forward_eid) && (
                   <CardRow label={t('logs.match_rule', '匹配规则')}>
                     <Space size={8}>
@@ -951,6 +1036,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 <CardRow label={t('logs.token', '令牌')}>
                   <Space size={6} align="center" style={{ justifyContent: 'flex-end', width: '100%' }}>
                     <Tag color="cyan" style={{ fontSize: 11, margin: 0 }}>{record.token_name || '-'}</Tag>
+                    {record.token_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
                     {record.token_kid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>KID: {record.token_kid}</Text>}
                   </Space>
                 </CardRow>
@@ -989,44 +1075,47 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
           }}
         />
       ) : (
-        <Table
-          dataSource={logs}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          expandable={
-            allowDetails ? {
-              expandedRowKeys,
-              expandedRowRender,
-              onExpand: handleExpand,
-              expandRowByClick: false
-            } : undefined
-          }
-          pagination={{
-            total,
-            current: page,
-            pageSize,
-            onChange: (p, s) => { setPage(p); setPageSize(s); },
-            showSizeChanger: true,
-            showQuickJumper: true,
-          }}
-          onChange={(pagination, filters: any) => {
-            let shouldResetPage = false;
-            
-            const stFilter = filters.status_code ? filters.status_code[0] as string : undefined;
-            if (stFilter !== statusFilter) {
-              setStatusFilter(stFilter);
-              shouldResetPage = true;
+        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+          <Table
+            dataSource={logs}
+            columns={columns}
+            rowKey="id"
+            loading={loading}
+            expandable={
+              allowDetails ? {
+                expandedRowKeys,
+                expandedRowRender,
+                onExpand: handleExpand,
+                expandRowByClick: false
+              } : undefined
             }
+            pagination={{
+              total,
+              current: page,
+              pageSize,
+              onChange: (p, s) => { setPage(p); setPageSize(s); },
+              showSizeChanger: true,
+              showQuickJumper: true,
+            }}
+            onChange={(pagination, filters: any) => {
+              let shouldResetPage = false;
+              
+              const stFilter = filters.status_code ? filters.status_code[0] as string : undefined;
+              if (stFilter !== statusFilter) {
+                setStatusFilter(stFilter);
+                shouldResetPage = true;
+              }
 
-            if (shouldResetPage) {
-              setPage(1);
-            }
-          }}
-          size="middle"
-          locale={{ emptyText: t('dashboard.no_data') }}
-          scroll={{ x: 'max-content' }}
-        />
+              if (shouldResetPage) {
+                setPage(1);
+              }
+            }}
+            size="middle"
+            locale={{ emptyText: t('dashboard.no_data') }}
+            scroll={{ x: 1200 }}
+            sticky={{ offsetHeader: 0 }}
+          />
+        </div>
       )}
 
       <Modal
@@ -1142,6 +1231,74 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             }}
           >
             {t('common.confirm', '确认')}
+          </Button>
+        </div>
+      </Modal>
+      <Modal
+        title={t('logs.export_modal_title', '导出日志')}
+        open={exportModalOpen}
+        onCancel={() => !exporting && setExportModalOpen(false)}
+        footer={null}
+        width={screens.xs ? '100%' : 640}
+      >
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+          {t('logs.export_modal_hint', '默认导出当前列表全部数据，共 {{total}} 条，按列表时间倒序。可取消勾选不需要的字段。', { total })}
+        </Text>
+        {total === 0 && (
+          <Text type="warning" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+            {t('logs.export_empty', '当前没有可导出的数据')}
+          </Text>
+        )}
+        {total > LOG_EXPORT_LIMIT && (
+          <Text type="danger" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+            {t('logs.export_limit_warn', '当前筛选超过 10 万条，请缩小时间范围或增加筛选后再导出')}
+          </Text>
+        )}
+        <Space size={8} style={{ marginBottom: 12 }}>
+          <Button size="small" onClick={() => setExportFieldKeys(LOG_EXPORT_ALL_KEYS)}>{t('logs.export_select_all', '全选')}</Button>
+          <Button
+            size="small"
+            onClick={() => {
+              const selected = new Set(exportFieldKeys);
+              setExportFieldKeys(LOG_EXPORT_ALL_KEYS.filter((k) => !selected.has(k)));
+            }}
+          >
+            {t('logs.export_invert', '反选')}
+          </Button>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('logs.export_selected_count', '已选 {{count}} / {{total}} 个字段', { count: exportFieldKeys.length, total: LOG_EXPORT_FIELDS.length })}
+          </Text>
+        </Space>
+        <Checkbox.Group
+          value={exportFieldKeys}
+          onChange={(v) => setExportFieldKeys(v as string[])}
+          style={{ width: '100%' }}
+        >
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: screens.xs ? '1fr 1fr' : '1fr 1fr 1fr',
+            gap: '8px 12px',
+            maxHeight: 360,
+            overflowY: 'auto',
+            padding: '4px 0',
+          }}>
+            {LOG_EXPORT_FIELDS.map((f) => (
+              <Checkbox key={f.key} value={f.key}>{f.label}</Checkbox>
+            ))}
+          </div>
+        </Checkbox.Group>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+          <Button onClick={() => setExportModalOpen(false)} disabled={exporting}>
+            {t('common.cancel', '取消')}
+          </Button>
+          <Button
+            type="primary"
+            icon={<Download size={14} />}
+            loading={exporting}
+            disabled={total === 0 || total > LOG_EXPORT_LIMIT || exportFieldKeys.length === 0}
+            onClick={handleExport}
+          >
+            {t('logs.export_confirm', '导出 CSV')}
           </Button>
         </div>
       </Modal>

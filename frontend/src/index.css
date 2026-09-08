@@ -23,6 +23,11 @@
   --color-accent-foreground: var(--accent-custom-foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   /* 控制台内容区灰底（与 DashboardLayout 一致） */
@@ -81,6 +86,11 @@
   --input: hsl(240, 5.9%, 90%);
   --ring: hsl(240, 5.9%, 10%);
   --radius: 0.5rem;
+  --chart-1: hsl(12, 76%, 61%);
+  --chart-2: hsl(173, 58%, 39%);
+  --chart-3: hsl(197, 37%, 24%);
+  --chart-4: hsl(43, 74%, 66%);
+  --chart-5: hsl(27, 87%, 67%);
 }
 
 @media (max-width: 1024px) {
@@ -121,6 +131,11 @@
   --border-custom: hsl(240, 3.7%, 15.9%);
   --input: hsl(240, 3.7%, 15.9%);
   --ring: hsl(240, 4.9%, 83.9%);
+  --chart-1: hsl(220, 70%, 50%);
+  --chart-2: hsl(160, 60%, 45%);
+  --chart-3: hsl(30, 80%, 55%);
+  --chart-4: hsl(280, 65%, 60%);
+  --chart-5: hsl(340, 75%, 55%);
 }
 
 [data-theme='dark'] #social .button-icon {
@@ -230,6 +245,47 @@ code {
 
 [data-theme='dark'] *::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
+}
+
+/* Ant Design 表格横向滚动条强化与吸底滚动条支持 */
+.ant-table-wrapper {
+  max-width: 100%;
+}
+.ant-table-content, .ant-table-body {
+  scrollbar-width: thin;
+}
+.ant-table-content::-webkit-scrollbar,
+.ant-table-body::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+.ant-table-content::-webkit-scrollbar-thumb,
+.ant-table-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+}
+.ant-table-content::-webkit-scrollbar-thumb:hover,
+.ant-table-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.45);
+}
+[data-theme='dark'] .ant-table-content::-webkit-scrollbar-thumb,
+[data-theme='dark'] .ant-table-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+[data-theme='dark'] .ant-table-content::-webkit-scrollbar-thumb:hover,
+[data-theme='dark'] .ant-table-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+.ant-table-sticky-scroll {
+  opacity: 0.95 !important;
+  z-index: 100 !important;
+}
+.ant-table-sticky-scroll-bar {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border-radius: 8px !important;
+}
+[data-theme='dark'] .ant-table-sticky-scroll-bar {
+  background: rgba(255, 255, 255, 0.35) !important;
 }
 
 /* 修复 Ant Design Sider 内部 children 容器不撑满高度导致底部空白 */
@@ -428,14 +484,28 @@ body[data-theme='dark'] .ant-tooltip:not(.ant-tooltip-blue):not(.ant-tooltip-gre
   color: #ffffff !important;
 }
 
-/* 主按钮：暗色下近白底 + 深色字（与 shadcn primary 一致） */
-body[data-theme='dark'] .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous) {
+/* 主按钮：暗色下近白底 + 深色字（与 shadcn primary 一致，排除 ghost 幽灵按钮） */
+body[data-theme='dark'] .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous):not(.ant-btn-background-ghost) {
   color: #18181b !important;
 }
 
-body[data-theme='dark'] .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous):hover {
+body[data-theme='dark'] .ant-btn-primary:not(:disabled):not(.ant-btn-dangerous):not(.ant-btn-background-ghost):hover {
   color: #18181b !important;
 }
+
+/* 幽灵主按钮：暗色下透明底 + 近白字与边框（修复 ghost 在暗黑模式下文本发黑不可见的问题） */
+body[data-theme='dark'] .ant-btn-primary.ant-btn-background-ghost:not(:disabled):not(.ant-btn-dangerous) {
+  color: #fafafa !important;
+  border-color: #52525b !important;
+  background-color: transparent !important;
+}
+
+body[data-theme='dark'] .ant-btn-primary.ant-btn-background-ghost:not(:disabled):not(.ant-btn-dangerous):hover {
+  color: #ffffff !important;
+  border-color: #a1a1aa !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
 
 /*
  * Checkbox — Ant Design 6：方框在 .ant-checkbox，勾在 .ant-checkbox::after
@@ -529,13 +599,29 @@ body[data-theme='dark'] .ant-radio-checked .ant-radio-inner::after {
   background-color: #fafafa !important;
 }
 
-/* 权限勾选网格：多行文字时勾选框与首行文字顶对齐 */
+/* 权限勾选网格与条目行样式 */
+.admin-perm-item-row:hover {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+body[data-theme='dark'] .admin-perm-item-row:hover {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+
 .admin-perm-check-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   column-gap: 8px;
   row-gap: 6px;
   align-items: start;
+}
+
+.admin-perm-check-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
 }
 
 .admin-perm-check-grid .admin-perm-check-item.ant-checkbox-wrapper {
@@ -650,52 +736,37 @@ body[data-theme='light'] .ant-switch.ant-switch-checked .ant-switch-handle::befo
   background-color: #ffffff !important;
 }
 
-/* 自定义深色删除确认弹窗 */
-.dark-confirm-modal .ant-modal-content,
-.dark-confirm-modal.ant-modal-content,
-.ant-modal.dark-confirm-modal .ant-modal-content,
-.ant-modal-wrap.dark-confirm-modal .ant-modal-content {
+/* 暗色主题 Modal.confirm（antd 6 .ant-modal-container） */
+[data-theme='dark'] .ant-modal-confirm .ant-modal-container,
+[data-theme='dark'] .ant-modal-confirm .ant-modal-content {
   background: #1e1f20 !important;
   border: 1px solid #444746 !important;
   border-radius: 16px !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
 }
 
-.dark-confirm-modal .ant-modal-confirm-title {
+[data-theme='dark'] .ant-modal-confirm .ant-modal-body {
+  background: #1e1f20 !important;
+}
+
+[data-theme='dark'] .ant-modal-confirm-title {
   color: #e3e3e3 !important;
 }
 
-.dark-confirm-modal .ant-modal-confirm-content {
+[data-theme='dark'] .ant-modal-confirm-content {
   color: #c4c7c5 !important;
 }
 
-.dark-confirm-modal .ant-btn-default {
+[data-theme='dark'] .ant-modal-confirm .ant-btn-default {
   background: transparent !important;
   border: 1px solid #444746 !important;
   color: #e3e3e3 !important;
-  border-radius: 8px !important;
-  outline: none !important;
-  box-shadow: none !important;
 }
 
-.dark-confirm-modal .ant-btn-default:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
-  border-color: #8ab4f8 !important;
-  color: #8ab4f8 !important;
-}
-
-.dark-confirm-modal .ant-btn-primary.ant-btn-dangerous {
+[data-theme='dark'] .ant-modal-confirm .ant-btn-primary.ant-btn-dangerous {
   background: rgba(255, 77, 79, 0.15) !important;
   border: 1px solid rgba(255, 77, 79, 0.3) !important;
   color: #ff4d4f !important;
-  border-radius: 8px !important;
-  box-shadow: none !important;
-  outline: none !important;
-}
-
-.dark-confirm-modal .ant-btn-primary.ant-btn-dangerous:hover {
-  background: rgba(255, 77, 79, 0.25) !important;
-  border-color: rgba(255, 77, 79, 0.5) !important;
 }
 
 /* Typography Inline Edit Smooth Transition */
@@ -792,16 +863,20 @@ tr.ant-table-measure-row .ant-table-cell {
 
 .shadcn-auth-grid {
   position: relative;
-  background-color: #09090b;
+  background-color: #0b0d14;
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.18) 0px, transparent 55%),
+    radial-gradient(at 100% 100%, rgba(56, 189, 248, 0.15) 0px, transparent 55%),
+    radial-gradient(at 50% 50%, rgba(139, 92, 246, 0.10) 0px, transparent 70%);
 }
 
 .shadcn-auth-grid::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 50% 50%, rgba(24, 24, 27, 0.2) 0%, #09090b 100%);
+  background: radial-gradient(circle at 50% 50%, rgba(15, 23, 42, 0.15) 0%, rgba(11, 13, 20, 0.75) 100%);
   pointer-events: none;
-  z-index: 5;
+  z-index: 1;
 }
 
 /* Interactive DOM Grid styles */
@@ -814,33 +889,35 @@ tr.ant-table-measure-row .ant-table-cell {
   overflow: hidden;
   user-select: none;
   pointer-events: auto;
-  mask-image: radial-gradient(circle at 50% 50%, black 35%, transparent 95%);
-  -webkit-mask-image: radial-gradient(circle at 50% 50%, black 35%, transparent 95%);
+  mask-image: radial-gradient(circle at 50% 50%, black 50%, rgba(0, 0, 0, 0.5) 85%, transparent 100%);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, black 50%, rgba(0, 0, 0, 0.5) 85%, transparent 100%);
 }
 
 .grid-cell {
   position: relative;
   width: 32px;
   height: 32px;
-  border-right: 1px solid rgba(255, 255, 255, 0.02);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   box-sizing: border-box;
-  transition: background-color 4.5s cubic-bezier(0.1, 0.9, 0.1, 1), 
-              box-shadow 4.5s cubic-bezier(0.1, 0.9, 0.1, 1);
+  transition: background-color 3.5s cubic-bezier(0.1, 0.9, 0.1, 1), 
+              box-shadow 3.5s cubic-bezier(0.1, 0.9, 0.1, 1),
+              border-color 3.5s cubic-bezier(0.1, 0.9, 0.1, 1);
 }
 
 /* Light up instantly on hover and when in the spotlight */
 .grid-cell:hover,
 .grid-cell.is-spotlight {
-  background-color: rgba(99, 102, 241, 0.18);
-  box-shadow: inset 0 0 12px rgba(99, 102, 241, 0.30);
-  transition: background-color 0.25s ease-out, box-shadow 0.25s ease-out !important;
+  background-color: rgba(99, 102, 241, 0.35);
+  border-color: rgba(165, 180, 252, 0.5) !important;
+  box-shadow: 0 0 16px rgba(99, 102, 241, 0.5), inset 0 0 12px rgba(129, 140, 248, 0.6);
+  transition: background-color 0.15s ease-out, box-shadow 0.15s ease-out, border-color 0.15s ease-out !important;
   z-index: 10;
 }
 
 /* Twinkling state using CSS transitions */
 .grid-cell.is-twinkling {
-  transition: background-color 1.2s ease-out, box-shadow 1.2s ease-out !important;
+  transition: background-color 0.8s ease-out, box-shadow 0.8s ease-out, border-color 0.8s ease-out !important;
 }
 
 /* 表单校验错误抖动动画 */
@@ -957,16 +1034,208 @@ tr.ant-table-measure-row .ant-table-cell {
   background: transparent !important;
 }
 
+/*
+ * 控制台通知弹窗：iOS & shadcn 高级质感面板与平滑遮罩（无背景虚化）
+ */
+.custom-premium-announcement-modal-root .ant-modal-mask {
+  background: rgba(0, 0, 0, 0.28) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+[data-theme='dark'] .custom-premium-announcement-modal-root .ant-modal-mask {
+  background: rgba(0, 0, 0, 0.45) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+@keyframes announcement-mask-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes announcement-mask-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-enter,
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-appear {
+  opacity: 0;
+  animation-duration: 0.32s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+  animation-play-state: paused;
+}
+
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-leave {
+  animation-duration: 0.22s;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  animation-fill-mode: both;
+  animation-play-state: paused;
+}
+
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-enter-active,
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-appear-active {
+  animation-name: announcement-mask-fade-in;
+  animation-play-state: running;
+}
+
+.custom-premium-announcement-modal-root .ant-modal-mask.announcement-mask-fade-leave-active {
+  animation-name: announcement-mask-fade-out;
+  animation-play-state: running;
+}
+
+.custom-premium-announcement-modal-root .ant-modal {
+  top: -20vh !important;
+  padding: 0 !important;
+  border-radius: 20px !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
+  backdrop-filter: blur(28px) saturate(190%) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.8),
+    0 24px 50px -12px rgba(0, 0, 0, 0.16),
+    0 4px 12px rgba(0, 0, 0, 0.05) !important;
+  overflow: hidden !important;
+  filter: none !important;
+  /* 覆盖 antd 按点击坐标写入的 inline origin，避免从侧栏点击时往左侧缩放 */
+  transform-origin: 50% 50% !important;
+  -webkit-backface-visibility: hidden !important;
+  backface-visibility: hidden !important;
+  will-change: transform, opacity !important;
+  transform: translate3d(0, 0, 0) !important;
+}
+
+@media (max-height: 800px) {
+  .custom-premium-announcement-modal-root .ant-modal {
+    top: -12vh !important;
+  }
+}
+
+@media (max-height: 680px), (max-width: 640px) {
+  .custom-premium-announcement-modal-root .ant-modal {
+    top: -4vh !important;
+  }
+}
+
+[data-theme='dark'] .custom-premium-announcement-modal-root .ant-modal {
+  background: rgba(24, 24, 28, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.12),
+    0 28px 60px -12px rgba(0, 0, 0, 0.7),
+    0 4px 16px rgba(0, 0, 0, 0.4) !important;
+}
+
+.custom-premium-announcement-modal-root .custom-premium-announcement-modal-shell,
+.custom-premium-announcement-modal-root .ant-modal-container,
+.custom-premium-announcement-modal-root .ant-modal-content,
+.custom-premium-announcement-modal-root .ant-modal-body {
+  padding: 0 !important;
+  border-radius: 20px !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  overflow: visible !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  transform: none !important;
+}
+
+@keyframes announcement-zoom-in {
+  0% {
+    transform: scale3d(0.95, 0.95, 1) translateY(6px);
+    opacity: 0;
+  }
+  100% {
+    transform: scale3d(1, 1, 1) translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes announcement-zoom-out {
+  0% {
+    transform: scale3d(1, 1, 1) translateY(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale3d(0.96, 0.96, 1) translateY(4px);
+    opacity: 0;
+  }
+}
+
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-enter,
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-appear,
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-leave {
+  transform-origin: 50% 50% !important;
+}
+
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-enter,
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-appear {
+  animation-duration: 0.32s;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  animation-fill-mode: both;
+  animation-play-state: paused;
+}
+
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-leave {
+  animation-duration: 0.22s;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  animation-fill-mode: both;
+  animation-play-state: paused;
+}
+
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-enter-active,
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-appear-active {
+  animation-name: announcement-zoom-in;
+  animation-play-state: running;
+}
+
+.custom-premium-announcement-modal-root .ant-modal.announcement-zoom-leave-active {
+  animation-name: announcement-zoom-out;
+  animation-play-state: running;
+}
+
+/* 通知内容切换淡入位移动效 */
+@keyframes announcement-content-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.announcement-content-switch {
+  animation: announcement-content-fade 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
+}
+
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .custom-premium-bind-modal-shell .ant-modal-container,
   .custom-premium-bind-modal .ant-modal-container,
-  .custom-premium-bind-modal .ant-modal-content {
-    background: rgba(255, 255, 255, 0.88) !important;
+  .custom-premium-bind-modal .ant-modal-content,
+  .custom-premium-announcement-modal-root .ant-modal {
+    background: rgba(255, 255, 255, 0.95) !important;
   }
   [data-theme='dark'] .custom-premium-bind-modal-shell .ant-modal-container,
   [data-theme='dark'] .custom-premium-bind-modal .ant-modal-container,
-  [data-theme='dark'] .custom-premium-bind-modal .ant-modal-content {
-    background: rgba(30, 30, 32, 0.88) !important;
+  [data-theme='dark'] .custom-premium-bind-modal .ant-modal-content,
+  [data-theme='dark'] .custom-premium-announcement-modal-root .ant-modal {
+    background: rgba(30, 30, 32, 0.95) !important;
   }
 }
 
@@ -986,4 +1255,36 @@ tr.ant-table-measure-row .ant-table-cell {
 .ant-picker.font-size-12 .ant-picker-separator,
 .ant-picker.font-size-12 .ant-picker-range-separator {
   font-size: 12px !important;
+}
+
+/* 任务产物预览 Modal：清除 Antd 容器的任何默认外边距与背景外框 */
+.task-preview-modal.ant-modal,
+.task-preview-modal-root .ant-modal {
+  padding: 0 !important;
+  max-width: 100vw !important;
+}
+.task-preview-modal .ant-modal-content,
+.task-preview-modal-root .ant-modal-content,
+.task-preview-modal .ant-modal-container,
+.task-preview-modal-root .ant-modal-container {
+  background: transparent !important;
+  background-color: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+.task-preview-modal .ant-modal-body,
+.task-preview-modal-root .ant-modal-body {
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+.task-preview-modal .ant-modal-close,
+.task-preview-modal-root .ant-modal-close,
+.task-preview-modal .ant-modal-header,
+.task-preview-modal-root .ant-modal-header {
+  display: none !important;
 }

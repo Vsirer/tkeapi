@@ -23,10 +23,11 @@ const PLUGIN_GATED_SYSTEM_RULES: &[(&str, &str)] = &[
     ("火山方舟 视频素材转换", "asset_manager"),
     ("火山方舟 视频素材转换(国际版)", "asset_manager_intl"),
     ("火山方舟 视频素材免审核转换(国际版)", "asset_manager_intl"),
+    ("ComfyUI", "comfyui_bridge"),
 ];
 
 const PLUGIN_GATED_PLUGIN_NAMES: &[&str] =
-    &["volcengine_enhance", "asset_manager", "asset_manager_intl"];
+    &["volcengine_enhance", "asset_manager", "asset_manager_intl", "comfyui_bridge"];
 
 /// 解析规则依赖的插件名；无依赖返回 `None`。
 pub(crate) fn required_plugin_for_forward_rule(

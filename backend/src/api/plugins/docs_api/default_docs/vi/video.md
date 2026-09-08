@@ -1,6 +1,6 @@
 # Giao diện Tạo Video
 
-Cùng với sự bùng nổ của các mô hình video lớn trong lĩnh vực AIGC, Gateway đã mở rộng giao diện `/v1/video/generations` dưới khung giao thức OpenAI tiêu chuẩn, cung cấp một đường dẫn gọi thống nhất dùng được ngay (out-of-the-box) cho các công cụ tạo video phổ biến như Volcengine, Bailian Wanxiang, Kling AI, Jimeng AI, Bytefor, v.v. Hầu hết các mô hình video đều thuộc chế độ tính toán bất đồng bộ, vì vậy quá trình gọi được chia thành hai bước: **Gửi nhiệm vụ** và **Vòng lặp truy vấn kết quả (Polling)**.
+API video bất đồng bộ tương thích OpenAI. Video Wan (`wan3.0-video`, `files`/`links`): xem **`wan-video`**.
 
 ### 1. Gửi Nhiệm vụ Video
 * **Đường dẫn**: `/v1/video/generations`
@@ -9,18 +9,20 @@ Cùng với sự bùng nổ của các mô hình video lớn trong lĩnh vực A
 #### Giải thích các tham số cốt lõi
 | Tên tham số | Kiểu dữ liệu | Bắt buộc | Mô tả |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | Có | Tên mô hình tạo video, ví dụ `doubao-seedance-2-0`, `kling-v3-omni`, `wanx-v1` |
+| `model` | `string` | Có | Tên mô hình tạo video, ví dụ `doubao-seedance-2-5`, `kling-v3-omni`, `wan3.0-video` |
 | `prompt` | `string` | Có | Văn bản câu lệnh gợi ý (prompt) mô tả chuyển động và hình ảnh của video |
 | `negative_prompt` | `string` | Không | Câu lệnh gợi ý phủ định (negative prompt) để loại bỏ các yếu tố hình ảnh không mong muốn |
 | `images` / `image_urls` | `array` | Không | Mảng chứa liên kết hoặc dữ liệu base64 của hình ảnh tham chiếu (`image_urls` có hiệu lực hoàn toàn giống `images`). Một ảnh làm khung hình đầu, hai ảnh làm khung hình đầu/cuối, ba ảnh trở lên làm tham chiếu nhiều ảnh (như Kling, Volcengine) |
 | `videos` | `array` | Không | Mảng liên kết video tham chiếu cho chế độ video-to-video hoặc điều khiển video (ví dụ: Kling Omni, Bytefor) |
-| `audios` | `array` | Không | Mảng liên kết âm thanh tham chiếu để cung cấp nhạc nền hoặc âm thanh tham chiếu (ví dụ: Volcengine, Bytefor) |
-| `resolution` | `string` | Không | Độ phân giải mục tiêu (ví dụ `1080p`, `720p`, `480p`). Hệ thống tự động chuyển đổi sang chuẩn của nhà cung cấp (ví dụ: Kling `1080p` ánh xạ sang `pro`, `720p` sang `std`) |
+| `audios` | `array` | Không | URL audio tham chiếu |
+| `files` | `array` | Không | URL file tham chiếu (Wan; role mặc định `file`) |
+| `links` | `array` | Không | URL trang web tham chiếu (Wan; role mặc định `link`) |
+| `resolution` | `string` | Không | Độ phân giải (vd. `1080p`, `720p`) |
 | `ratio` | `string` | Không | Tùy chọn tỷ lệ khung hình (ví dụ `16:9`, `9:16`, `4:3`, `3:4`, `1:1`) |
 | `duration` | `integer` | Không | Thời lượng video được tạo (giây), ví dụ `5` hoặc `10`. Với Jimeng AI, thời lượng được tự động chuyển đổi thành số khung hình `121` or `241` |
 | `generate_audio` | `boolean` | Không | Đồng bộ tạo hiệu ứng âm thanh nền/lồng tiếng (mặc định là `false`) |
 | `watermark` | `boolean` | Không | Có thêm hình mờ (watermark) vào video hay không (hỗ trợ bởi Volcengine, Alibaba, v.v.) |
-| `web_search` | `boolean` | Không | Bật tìm kiếm web (boolean kiểu thích OpenAI, mặc định `false`). Gateway sẽ tự chuyển đổi cho Volcengine Seedance, v.v. |
+| `web_search` | `boolean` | Không | Tìm kiếm web (mặc định `false`; Volcengine/Gemini; Wan bỏ qua) |
 | `seed` | `integer` | Không | Hạt giống ngẫu nhiên (dùng để kiểm soát tính nhất quán của video được tạo) |
 
 #### Ví dụ gửi nhiệm vụ
@@ -63,3 +65,14 @@ curl -X POST https://{{domain}}/v1/video/generations \
   ]
 }
 ```
+
+### 3. Hủy nhiệm vụ video
+* **Đường dẫn**: `/v1/video/generations/{task_id}` hoặc `/v1/tasks/{task_id}`
+* **Phương thức Yêu cầu**: `DELETE`
+* **Ghi chú**: Hủy nhiệm vụ chưa hoàn thành. Hàng đợi ComfyUI trên nền tảng sẽ ngắt đúng nhiệm vụ trên node và hoàn tiền tạm khóa. Với Volcengine, dùng `DELETE /api/v3/contents/generations/tasks/{task_id}`.
+
+```bash
+curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
+  -H "Authorization: Bearer sk-your_token"
+```
+

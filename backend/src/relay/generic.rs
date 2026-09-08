@@ -60,9 +60,12 @@ pub async fn generic_relay(
 
     // ── 3. 渠道选择 + HA failover ──
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
+    let mut billing_rule_cache = None;
+    let mut access_cache = None;
 
     while ha.cont() {
         let start_time = std::time::Instant::now();
+        let mut ha_pool = None;
         let channel = match proxy::select_channel_for_model(
             &state,
             &token,
@@ -73,27 +76,41 @@ pub async fn generic_relay(
             &ha.exclude_aids,
             !ha.had_upstream,
             Some(category),
+            &mut ha_pool,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                ha.note_pool(ha_pool);
+                ha.on_channel(&c);
+                c
+            }
             Err(e) => {
+                ha.note_pool(ha_pool);
                 ha.on_select_err(e);
                 break;
             }
         };
 
         // ── 4. 预扣费检查 ──
-        let (pre_deduction, db_model, resolved_cat) =
-            match proxy::check_access(&state, &token, model, &ctx, Some(category), Some(&channel))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    ha.on_access_err(e);
-                    break;
-                }
-            };
+        let (pre_deduction, db_model, resolved_cat) = match proxy::check_access_with_model(
+            &state,
+            &token,
+            model,
+            &ctx,
+            Some(category),
+            &channel,
+            None,
+            &mut access_cache,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                ha.on_access_err(e);
+                break;
+            }
+        };
 
         // ── 5. 转发规则解析 ──
         let mut resolved = match forward::resolve_forward_rule(
@@ -128,9 +145,15 @@ pub async fn generic_relay(
         let (final_resolved_model, mapping_source) =
             router::resolve_model(&channel, model, db_model.as_ref(), None);
 
-        // 查询计费规则（供计费阶段使用）
-        let mut db_rule =
-            proxy::get_model_billing_rule(&state, model, Some(&channel), db_model.as_ref()).await;
+        // 查询计费规则（同 billing_rule_id 复用，供计费阶段使用）
+        let mut db_rule = proxy::get_model_billing_rule(
+            &state,
+            model,
+            Some(&channel),
+            db_model.as_ref(),
+            &mut billing_rule_cache,
+        )
+        .await;
 
         // ── 6. 请求体透传（仅替换 model 字段） ──
         let mut upstream_body = body.clone();
@@ -152,7 +175,7 @@ pub async fn generic_relay(
                 .replace("${model}", &final_resolved_model)
         );
 
-        tracing::info!(
+        crate::relay_debug!(
             "[Generic] 模型={} 类别={} 目标类型={} URL={}",
             model,
             category,
@@ -172,7 +195,6 @@ pub async fn generic_relay(
                     request_content: Some(&request_content_str),
                     upstream_url: Some(&url),
                     channel: &channel,
-                    billing_model_hint: None,
                     plugin_tag: None,
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
@@ -299,11 +321,10 @@ pub async fn generic_relay(
                 let mut usage = usage_extractor::parse_usage(&resp_text);
                 // 差额修正：部分 rerank 模型（如阿里 qwen3-vl-rerank）返回的 total_tokens 大于 input_tokens，
                 // 或部分模型仅返回 total_tokens。为确保以 total_tokens 作为总消耗准确计费，
-                // 当 total 大于 prompt、completion 与 image_tokens 之和时，将差额统一补入 prompt 用量中。
-                if usage.total > 0
-                    && usage.total > usage.prompt + usage.completion + usage.image_tokens
-                {
-                    usage.prompt = usage.total - usage.completion - usage.image_tokens;
+                // 当 total 大于已知输入输出之和时，将差额统一补入 prompt 用量中。
+                let known_sum = (usage.prompt + usage.completion).max(usage.image_tokens + usage.completion);
+                if usage.total > known_sum {
+                    usage.prompt = (usage.total - usage.completion).max(usage.prompt);
                 }
 
                 // ── 计费结算 ──
@@ -325,71 +346,50 @@ pub async fn generic_relay(
                 .await;
 
                 proxy::record_and_bill_inner(proxy::BillRecord {
-                    state: &state,
-                    token: &token,
+                    ctx: crate::relay::ha::HaBillCtx::new(&state, &token, &model, &ep)
+                        .category(resolved_cat.as_str())
+                        .db(db_model.as_ref()),
                     channel: &channel,
-                    model: &model,
-                    prompt_tokens: usage.prompt,
-                    completion_tokens: usage.completion,
-                    cached_tokens: usage.cached,
-                    cost: cost,
+                    log_id: pending_log_id,
+                    usage,
+                    cost,
                     pre_deducted: pre_deduction,
-                    pre_deduct_gift: pre_deduct_gift,
-                    status_code: 200,
-                    endpoint: &ep,
-                    error_msg: None,
-                    latency_ms: latency_ms,
+                    pre_deduct_gift,
+                    latency_ms,
                     is_stream: 0,
-                    request_content: Some(request_content_str),
-                    response_content: Some(resp_text.clone()),
-                    upstream_req_content: Some(upstream_body.to_string()),
-                    billing_detail: Some(billing_detail),
-                    hint_category: Some(resolved_cat.as_str()),
-                    pending_log_id: pending_log_id,
-                    billing_model_hint: None,
-                    plugin_tag: None,
-                    db_model: db_model.as_ref(),
+                    status_code: 200,
+                    error_msg: None,
+                    request: Some(request_content_str),
+                    response: Some(resp_text.clone()),
+                    upstream_req: Some(upstream_body.to_string()),
+                    detail: Some(billing_detail),
+                    features: Some(features),
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                    plugin_tag: None,
                 })
                 .await;
 
-                // 直接透传上游 JSON 响应（含诊断响应头）
-                Ok(upstream_headers::json_with_upstream_headers(
-                    &upstream_hdrs,
-                    resp_text,
-                ))
+                Ok(super::UpstreamRaw::new(upstream_hdrs, resp_text))
             }
         });
 
-        match result_rx.await {
-            Ok(result) => match result {
-                Ok(resp) => {
-                    let ms = start_time.elapsed().as_millis() as u32;
-                    ha.ok(&state, &channel, &url, ms).await;
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    if ha
-                        .fail(
-                            &crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
-                                .category(resolved_cat.as_str())
-                                .db(db_model.as_ref()),
-                            &channel,
-                            e,
-                            Some(&url),
-                        )
-                        .await
-                    {
-                        ha.bump();
-                        continue;
-                    }
-                    break;
-                }
-            },
-            Err(_) => {
-                ha.last_err = AppError::Internal("请求处理任务异常终止".into());
-                break;
+        let bill_ctx = crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
+            .category(resolved_cat.as_str())
+            .db(db_model.as_ref());
+        match super::join_protected(&mut ha, result_rx, &bill_ctx, &channel, Some(&url)).await {
+            super::ProtectJoin::Ok(raw) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &url, ms).await;
+                return Ok(upstream_headers::json_with_upstream_headers(
+                    &raw.headers,
+                    raw.body,
+                ));
             }
+            super::ProtectJoin::Retry => {
+                ha.bump();
+                continue;
+            }
+            super::ProtectJoin::Stop => break,
         }
     } // end while
 

@@ -426,7 +426,7 @@ pub async fn upload_file(
         &[],
         &extra_refs,
         Some(&data),
-        Duration::from_secs(60),
+        Duration::from_secs(300),
     )
     .await?;
 
@@ -566,35 +566,6 @@ async fn purge_prefix(
         }
     }
     report
-}
-
-/// 从 object_key / file_url 收集待删 key（去重）
-pub fn collect_object_keys(
-    config: &TosConfig,
-    keys_and_urls: impl IntoIterator<Item = (String, String)>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (key, url) in keys_and_urls {
-        for candidate in [key, url] {
-            let k = candidate.trim().trim_start_matches('/');
-            if k.is_empty() {
-                continue;
-            }
-            let resolved = if k.contains("://") {
-                let Some(r) = config.extract_object_key(k).filter(|s| !s.is_empty()) else {
-                    continue;
-                };
-                r
-            } else {
-                k.to_string()
-            };
-            if seen.insert(resolved.clone()) {
-                out.push(resolved);
-            }
-        }
-    }
-    out
 }
 
 /// 后台清理并打真实成功/失败日志（创作中心项目/工作流共用）。

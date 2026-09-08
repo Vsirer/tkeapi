@@ -9,7 +9,7 @@
 //! Each plugin lives in its own folder (code + i18n/docs resources).
 //!
 //! Layout (aligned with frontend):
-//! - `manager/`              → PluginConfig / PluginsList / ModelMarketplace
+//! - `manager/`              → PluginConfig / PluginsList / ModelMarketplace（扩展规范见 manager/mod.rs 模块注释）
 //! - `docs_api/`             → DocsApi (+ `default_docs/` markdown)
 //! - `playground/`           → Playground
 //! - `playground_2026/`      → Playground_2026
@@ -19,14 +19,14 @@
 //! - `team_marketing/`       → TeamMarketing
 //! - `upstream_asset_relay/` → UpstreamAssetRelay
 //! - `volc_ark_monitor/`     → VolcengineArkMonitor
-//! - `happyhorse_router/`    → HappyHorse
 //! - `comfyui_bridge/`       → ComfyUiBridge
+//! - `content_security/`     → ContentSecurity
 //! - `site_icons/`           → SiteIcons
 //! - `data_sync/`            → DataSync
-//! - `finance/` / `pay/` / `redemptions/` → backend-only optional plugins
+//! - `finance/` / `pay/`（含 `pay/payment/` 渠道客户端）/ `redemptions/` → 可选插件（目录存在即编译）
 
 // Plugin manager (marketplace / config / TOS / Volc)
-mod manager;
+pub(crate) mod manager;
 pub use manager::*;
 
 // Always-on plugins
@@ -42,19 +42,20 @@ pub mod playground_2026;
 pub mod site_portal_pro;
 #[cfg(feature = "commercial_plugins")]
 pub use site_portal_pro::docs as site_portal_pro_docs;
-#[cfg(feature = "commercial_plugins")]
+#[cfg(all(feature = "commercial_plugins", plugin_team_marketing))]
 pub mod team_marketing;
 #[cfg(feature = "commercial_plugins")]
 pub mod upstream_asset_relay;
 #[cfg(feature = "commercial_plugins")]
 pub mod volc_ark_monitor;
 
-#[cfg(feature = "plugin_data_sync")]
-pub mod data_sync;
-#[cfg(feature = "plugin_happyhorse")]
-pub mod happyhorse_router;
+#[cfg(feature = "plugin_content_security")]
+pub mod content_security;
+
 #[cfg(feature = "plugin_comfyui")]
 pub mod comfyui_bridge;
+#[cfg(feature = "plugin_data_sync")]
+pub mod data_sync;
 #[cfg(feature = "plugin_site_icons")]
 pub mod site_icons;
 #[cfg(feature = "plugin_site_portal")]

@@ -36,10 +36,19 @@ pub struct User {
     #[sqlx(default)]
     pub allow_view_log_details: Option<i32>,
     #[sqlx(default)]
+    pub invoice_enabled: Option<i32>,
+    #[sqlx(default)]
+    pub invoice_mode: Option<String>,
+    #[sqlx(default)]
+    pub invoice_config: Option<String>,
+    #[sqlx(default)]
     pub admin_group_id: Option<i64>,
     #[serde(skip_deserializing)]
     #[sqlx(skip)]
     pub permissions: Option<Vec<String>>,
+    #[serde(skip_deserializing)]
+    #[sqlx(skip)]
+    pub edit_permissions: Option<Vec<String>>,
     pub is_active: i64,
     pub referred_by: Option<String>,
     #[sqlx(default)]

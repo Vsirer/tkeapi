@@ -7,9 +7,12 @@
 
 import React, { lazy } from 'react';
 
-// Safely lazy load a component, returning a dummy if the file doesn't exist
-// By using import.meta.glob, Vite will not throw build errors if the target directory is deleted.
-const pluginComponents = import.meta.glob('./pages/Plugins/**/*.tsx');
+// 仅精确按需扫描插件入口文件，禁止递归 /**/*.tsx 导致 600+ 内部细碎组件被碎片化拆包
+const pluginComponents = import.meta.glob([
+  './pages/Plugins/*.tsx',
+  './pages/Plugins/*/*.tsx',
+  './pages/Plugins/Playground_2026/components/WorkflowCreateBootstrap.tsx',
+]);
 
 const missingModule = () =>
   React.createElement(
@@ -49,7 +52,6 @@ export const PortalDocsViewer = loadPluginComponent('SitePortalPro/PortalDocsVie
 export const PortalDocsManager = loadPluginComponent('SitePortalPro/PortalDocsManager.tsx');
 export const PortalAboutManagerPro = loadPluginComponent('SitePortalPro/PortalAboutManagerPro.tsx');
 export const PortalContactManagerPro = loadPluginComponent('SitePortalPro/PortalContactManagerPro.tsx');
-export const HappyHorseManager = loadPluginComponent('HappyHorse/HappyHorseManager.tsx');
 export const DocsManager = loadPluginComponent('DocsApi/DocsManager.tsx');
 export const HaLogs = loadPluginComponent('HighAvailability/HaLogs.tsx');
 

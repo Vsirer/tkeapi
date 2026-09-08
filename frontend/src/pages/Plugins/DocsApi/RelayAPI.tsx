@@ -7,6 +7,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { getAnnouncementLabel } from '../../../utils/announcement';
+import { applyDocsContentVars, buildDocHref } from '../../../utils/docsContentVars';
 import {
   parseNotificationPreferences,
   shouldShowWebNotifications,
@@ -22,7 +23,7 @@ const { Header, Sider, Content } = Layout;
 const { useBreakpoint } = Grid;
 import {
   Sidebar as SidebarIcon, Bell, Folder, FolderOpen,
-  FileText, ChevronRight, Search, ArrowLeft, Copy, ExternalLink,
+  FileText, ChevronRight, Search, ArrowLeft, Copy, Check, ExternalLink,
   Terminal, Rocket, BookOpen, Settings, Code, Sparkles, AlertTriangle,
   XCircle, CheckCircle, ChevronDown, Compass, FileCode, CheckCircle2,
   GalleryVerticalEnd, ClipboardList, Palette
@@ -42,12 +43,14 @@ import useSettingsStore from '../../../store/settings';
 import useAuthStore from '../../../store/auth';
 import UserAvatarMenu from '../../../components/UserAvatarMenu';
 import { formatApiDateTime } from '../../../utils/timedisplay';
+import { copyToClipboard } from '../../../utils/clipboard';
 
 interface Announcement {
   id: number;
   title: string;
   content: string;
   is_pinned: number;
+  sort_order?: number;
   created_at: string;
 }
 
@@ -64,6 +67,16 @@ interface DocTreeNode {
 }
 
 // ----------------------------------------------------
+// 递归提取 React 节点纯文本，避免代码块高亮标签被 String() 强转导致 [object Object]
+const extractText = (node: any): string => {
+  if (!node) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (node.props?.children) return extractText(node.props.children);
+  return '';
+};
+
+// ----------------------------------------------------
 // 辅助子组件：复制按钮代码块
 // ----------------------------------------------------
 const CodeBlock: React.FC<{ language: string; value: string; children: React.ReactNode }> = ({ language, value, children }) => {
@@ -71,12 +84,12 @@ const CodeBlock: React.FC<{ language: string; value: string; children: React.Rea
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
+    const ok = await copyToClipboard(value);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      message.error(docsT('msg_copy_failed'));
+    } else {
+      message.error(docsT('msg_copy_failed', '复制失败'));
     }
   };
 
@@ -296,6 +309,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
   const [loading, setLoading] = useState(true);
   const [pluginEnabled, setPluginEnabled] = useState(true);
   const [docDetail, setDocDetail] = useState<any>(null);
+  const [docCopied, setDocCopied] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedMenuKeys, setExpandedMenuKeys] = useState<string[]>([]);
@@ -368,9 +382,6 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     text3: isLight ? '#6b7280' : 'rgba(255,255,255,0.5)',
     scrollThumb: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)',
   };
-  useEffect(() => {
-    document.title = `${docsT('client_doc_title')} - ${siteTitle}`;
-  }, [isEn, siteTitle]);
 
   // 拉取公告 + 已启用插件（对齐控制台右上角）
   useEffect(() => {
@@ -437,6 +448,37 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     }
     return t;
   };
+
+  const currentDocTitle = useMemo(() => {
+    if (docDetail?.title) {
+      return cleanTitle(docDetail.title);
+    }
+    if (selectedDocId && treeData.length > 0) {
+      const findNodeTitle = (nodes: DocTreeNode[]): string | null => {
+        for (const n of nodes) {
+          if (n.id === selectedDocId) return n.title;
+          if (n.children && n.children.length > 0) {
+            const found = findNodeTitle(n.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const title = findNodeTitle(treeData);
+      if (title) return cleanTitle(title);
+    }
+    return '';
+  }, [docDetail?.title, selectedDocId, treeData]);
+
+  useEffect(() => {
+    const docTitleLabel = docsT('client_doc_title', 'API文档');
+    const displaySiteName = settings?.site?.name || settings?.site?.title || 'Tkeapi';
+    if (currentDocTitle) {
+      document.title = `${currentDocTitle}-${docTitleLabel}-${displaySiteName}`;
+    } else {
+      document.title = `${docTitleLabel}-${displaySiteName}`;
+    }
+  }, [currentDocTitle, i18n.language, settings?.site?.name, settings?.site?.title]);
 
   const findFirstArticle = (nodes: DocTreeNode[]): DocTreeNode | null => {
     for (const node of nodes) {
@@ -608,6 +650,11 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     }
   };
 
+  const errorCodesHref = useMemo(
+    () => buildDocHref(treeData, 'error-codes', basePath),
+    [treeData, basePath],
+  );
+
   const processedContent = useMemo(() => {
     if (!docDetail?.content) return '';
     let content = docDetail.content;
@@ -615,11 +662,30 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
     const protocol = window.location.protocol;
     const baseUrl = `${protocol}//${domain}`;
 
-    content = content.replace(/\{\{domain\}\}/g, domain);
-    content = content.replace(/\{\{baseUrl\}\}/g, baseUrl);
+    content = applyDocsContentVars(content, {
+      domain,
+      baseUrl,
+      error_codes_href: errorCodesHref,
+    });
 
     return content;
-  }, [docDetail]);
+  }, [docDetail, errorCodesHref]);
+
+  useEffect(() => {
+    setDocCopied(false);
+  }, [selectedDocId]);
+
+  const handleCopyDoc = async () => {
+    const rawContent = processedContent || docDetail?.content;
+    if (!rawContent) return;
+    const ok = await copyToClipboard(rawContent);
+    if (ok) {
+      setDocCopied(true);
+      setTimeout(() => setDocCopied(false), 2000);
+    } else {
+      message.error(docsT('msg_copy_failed', '复制失败'));
+    }
+  };
 
   const changeLanguage = (lng: string) => {
     i18n.changeLanguage(lng);
@@ -1010,23 +1076,53 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
       );
     }
 
+    const renderDocHeaderActions = () => (
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <Tooltip title={docCopied ? docsT('copied', '已复制') : docsT('copy_md', '复制MD')} placement="bottom">
+          <button
+            type="button"
+            onClick={handleCopyDoc}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-all cursor-pointer shadow-xs ${
+              docCopied
+                ? 'text-zinc-900 dark:text-zinc-50 bg-zinc-200/90 dark:bg-zinc-700/90 border-zinc-300 dark:border-zinc-600'
+                : 'text-zinc-700 dark:text-zinc-200 hover:text-zinc-900 dark:hover:text-white bg-zinc-100 dark:bg-zinc-800/90 hover:bg-zinc-200 dark:hover:bg-zinc-700 border-zinc-200/80 dark:border-zinc-700/80'
+            }`}
+            aria-label={docsT('copy_md', '复制MD')}
+          >
+            {docCopied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-zinc-900 dark:text-zinc-100" />
+                <span className="font-medium text-zinc-900 dark:text-zinc-100">{docsT('copied', '已复制')}</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5 text-zinc-500 dark:text-zinc-400" />
+                <span className="font-medium">{docsT('copy_md', '复制MD')}</span>
+              </>
+            )}
+          </button>
+        </Tooltip>
+        {pluginEnabled && tocList.length > 0 && (
+          <Tooltip title={docsT('client_toc_title')} placement="bottom">
+            <Button
+              type="text"
+              shape="circle"
+              icon={<GalleryVerticalEnd className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />}
+              onClick={() => setOpenOutlineDrawer(true)}
+              className="xl:!hidden flex items-center justify-center hover:bg-zinc-100 dark:hover:bg-zinc-900/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer flex-shrink-0"
+              style={{ width: 32, height: 32 }}
+            />
+          </Tooltip>
+        )}
+      </div>
+    );
+
     const markdownComponents = {
-      h1: ({ children, ...props }: any) => {
+      h1: ({ children, node, ...props }: any) => {
         return (
           <div className="flex items-center justify-between border-b border-border/80 pb-3 mb-6 mt-2 gap-4">
             <h1 {...props}>{children}</h1>
-            {pluginEnabled && tocList.length > 0 && (
-              <Tooltip title={docsT('client_toc_title')} placement="bottom">
-                <Button
-                  type="text"
-                  shape="circle"
-                  icon={<GalleryVerticalEnd className="w-4 h-4 text-zinc-500 dark:text-zinc-400" />}
-                  onClick={() => setOpenOutlineDrawer(true)}
-                  className="xl:!hidden flex items-center justify-center hover:bg-zinc-100 dark:hover:bg-zinc-900/60 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer flex-shrink-0"
-                  style={{ width: 32, height: 32 }}
-                />
-              </Tooltip>
-            )}
+            {renderDocHeaderActions()}
           </div>
         );
       },
@@ -1046,7 +1142,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
       },
       code({ node, inline, className, children, ...props }: any) {
         const match = /language-(\w+)/.exec(className || '');
-        const rawValue = String(children).replace(/\n$/, '');
+        const rawValue = extractText(children).replace(/\n$/, '');
         return !inline && match ? (
           <CodeBlock language={match[1]} value={rawValue} {...props}>
             {children}
@@ -1058,14 +1154,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
         );
       },
       blockquote: ({ children }: any) => {
-        let textContent = '';
-        const extractText = (node: any): string => {
-          if (typeof node === 'string') return node;
-          if (Array.isArray(node)) return node.map(extractText).join('');
-          if (node?.props?.children) return extractText(node.props.children);
-          return '';
-        };
-        textContent = extractText(children).trim();
+        const textContent = extractText(children).trim();
 
         let type = 'info';
         let cleanText = textContent;
@@ -1134,10 +1223,17 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
       }
     };
 
+    const hasH1 = /^#\s+/m.test(processedContent);
     const blocks = parseMarkdownBlocks(processedContent);
 
     return (
       <div className="docs-content-article space-y-6">
+        {!hasH1 && docDetail?.title && (
+          <div className="flex items-center justify-between border-b border-border/80 pb-3 mb-6 mt-2 gap-4">
+            <h1>{docDetail.title}</h1>
+            {renderDocHeaderActions()}
+          </div>
+        )}
         {blocks.map((block, idx) => {
           if (block.type === 'markdown') {
             return (
@@ -1477,7 +1573,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                 : '1px solid rgba(31, 31, 35, 0.55)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flexShrink: 1, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', minWidth: 32, flexShrink: 1 }}>
               <Button
                 type="text"
                 icon={<SidebarIcon size={16} />}
@@ -1560,16 +1656,18 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
 
               {!screens.xs && categories.length > 0 && (
                 <div
-                  className="flex items-center gap-3.5 overflow-x-auto no-scrollbar py-2 px-3"
+                  className="flex items-center gap-2 overflow-x-auto no-scrollbar py-2 px-2"
                   style={{
-                    marginLeft: 8,
+                    marginLeft: 6,
+                    minWidth: 0,
+                    flexShrink: 1,
                     transition: 'margin-left 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
                   }}
                 >
                   {categories.map(cat => (
                     <button
                       key={cat.id}
-                      className={`docs-category-btn px-3.5 py-1 text-sm rounded-full transition-all cursor-pointer whitespace-nowrap flex-shrink-0 ${
+                      className={`docs-category-btn px-3 py-1 text-sm rounded-full transition-all cursor-pointer whitespace-nowrap flex-shrink-0 ${
                         activeCategoryId === cat.id ? 'active' : ''
                       }`}
                       onClick={() => handleCategoryChange(cat.id)}
@@ -1590,7 +1688,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                   height: 40px;
                 }
               `}</style>
-              <Space size={screens.xs ? 2 : 8} align="center" style={{ flexShrink: 0 }}>
+              <Space size={screens.xs ? 2 : 6} align="center" style={{ flexShrink: 0 }}>
                 {isPluginVisibleForUser('model_marketplace') && (
                   <Tooltip title={_t('menu.model_marketplace', '模型广场')} placement="bottom">
                     <Button
@@ -1619,8 +1717,8 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                         fontSize: 14,
                         fontWeight: 500,
                         height: screens.xs ? 34 : 40,
-                        width: screens.xs ? 34 : undefined,
-                        padding: screens.xs ? 0 : '0 12px',
+                        width: (screens.xs || !screens.md) ? (screens.xs ? 34 : 40) : undefined,
+                        padding: (screens.xs || !screens.md) ? 0 : '0 12px',
                       }}
                       onClick={(e) => {
                         if (!e.metaKey && !e.ctrlKey) {
@@ -1629,7 +1727,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                         }
                       }}
                     >
-                      {!screens.xs && (
+                      {!screens.xs && screens.md && (
                         <span style={{ display: 'inline-block', transform: 'translateY(1.5px)' }}>{_t('menu.model_marketplace', 'Models')}</span>
                       )}
                     </Button>
@@ -1667,8 +1765,8 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                       fontSize: 14,
                       fontWeight: 500,
                       height: screens.xs ? 34 : 40,
-                      width: screens.xs ? 34 : undefined,
-                      padding: screens.xs ? 0 : '0 12px',
+                      width: (screens.xs || !screens.md) ? (screens.xs ? 34 : 40) : undefined,
+                      padding: (screens.xs || !screens.md) ? 0 : '0 12px',
                     }}
                     onClick={(e) => {
                       if (!e.metaKey && !e.ctrlKey) {
@@ -1677,7 +1775,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                       }
                     }}
                   >
-                    {!screens.xs && (
+                    {!screens.xs && screens.md && (
                       <span style={{ display: 'inline-block', transform: 'translateY(1.5px)' }}>{_t('menu.relay_api', 'API教程')}</span>
                     )}
                   </Button>

@@ -556,6 +556,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (billing_type === 'requests') {
             if (billing_rule === 'image_resolution' && Array.isArray(tiers) && tiers.length > 0) {
                 priceHtml = renderMinPrice(tiers.filter(t => t.enabled !== false).map(t => t.rate), 'models_unit_image');
+            } else if (billing_rule === 'image_resolution_io' && Array.isArray(tiers) && tiers.length > 0) {
+                priceHtml = renderMinPrice(tiers.filter(t => t.enabled !== false).flatMap(t => [t.input_rate, t.rate]), 'models_unit_image');
             } else if (billing_rule === 'image_size_pixel' && Array.isArray(tiers) && tiers.length > 0) {
                 const rates = [];
                 tiers.filter(t => t.enabled !== false).forEach(t => {

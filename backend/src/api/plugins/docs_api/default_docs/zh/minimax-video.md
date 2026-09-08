@@ -1,12 +1,15 @@
 # MiniMax 视频生成接入指南
 
-MiniMax H3（`MiniMax-H3`）支持文生视频、首尾帧图生视频，以及图片/视频/音频多模态参考生视频。按 OpenAI 兼容异步协议接入即可：`POST /v1/video/generations` 提交，`GET /v1/video/generations/{task_id}` 轮询。
+MiniMax H3（`MiniMax-H3`）支持文生视频、首尾帧图生视频，以及图片/视频/音频多模态参考生视频。现在支持两种调用方式：
+
+- OpenAI 兼容：`POST /v1/video/generations` 提交，`GET /v1/video/generations/{task_id}` 轮询
+- MiniMax 官方原生：`POST /v2/video_generation` 提交，`GET /v2/query/video_generation/{task_id}` 轮询
 
 > **场景互斥**：首尾帧图生（`first_frame`/`last_frame`）与参考生（`reference_image`/`reference_video`/`reference_audio`）不可混用。
 
 ---
 
-## 1. 提交视频生成任务代码示例 (POST)
+## 1. OpenAI 兼容接入 (POST)
 
 * **HTTP Method**: `POST`
 * **请求路径**: `https://{{domain}}/v1/video/generations`
@@ -115,7 +118,7 @@ curl -X POST https://{{domain}}/v1/video/generations \
 
 ---
 
-## 2. 轮询获取任务结果 (GET)
+## 2. OpenAI 兼容轮询结果 (GET)
 
 * **请求路径**: `/v1/video/generations/{task_id}` 或 `/v1/tasks/{task_id}`
 
@@ -126,16 +129,51 @@ curl -X GET https://{{domain}}/v1/video/generations/video_task_minimax_001 \
 
 ---
 
-## 3. 完整参数字典说明
+## 3. MiniMax 官方原生路由示例
 
-| OpenAI 兼容参数名 | 类型 | 必填 | 默认值 | 描述与限制 |
+原生路由适合已按 MiniMax 官方 SDK / 请求体接入的客户端，直接替换 Base URL 和鉴权即可，无需再改写为 OpenAI 兼容格式。
+
+### A. 原生提交任务
+
+* **请求路径**: `/v2/video_generation`
+
+```bash
+curl -X POST https://{{domain}}/v2/video_generation \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMax-H3",
+    "content": [
+      { "type": "text", "text": "城市霓虹雨夜，镜头缓慢推进，人物转身看向镜头" },
+      { "type": "image_url", "image_url": { "url": "https://example.com/first_frame.png" }, "role": "first_frame" }
+    ],
+    "resolution": "2K",
+    "duration": 5,
+    "aigc_watermark": true
+  }'
+```
+
+### B. 原生查询任务
+
+* **请求路径**: `/v2/query/video_generation/{task_id}`
+
+```bash
+curl -X GET https://{{domain}}/v2/query/video_generation/video_task_minimax_001 \
+  -H "Authorization: Bearer sk-your_token_here"
+```
+
+---
+
+## 4. 完整参数字典说明
+
+| 参数名 | 类型 | 必填 | 默认值 | 描述与限制 |
 | :--- | :--- | :--- | :--- | :--- |
 | `model` | `string` | **是** | - | 视频模型，V2 通道当前为 `MiniMax-H3`（以平台实际上架名为准）。 |
-| `prompt` | `string` | **是** | - | 文本描述。 |
+| `prompt` | `string` | OpenAI 兼容必填 | - | 文本描述。走 OpenAI 兼容时使用。 |
 | `images` / `image_urls` | `array` | 否 | - | 图片 URL 或 `{url, role}`。默认：1 张→`first_frame`，2 张→首尾帧，3+→`reference_image`。角色可用 `first_frame`/`last_frame`/`reference_image`（`type` 等价）。参考图最多 9 张。 |
 | `videos` | `array` | 否 | - | 参考视频 URL 或对象；默认 `role=reference_video`，最多 3 段，单段约 2–15s，总时长 ≤15s。 |
 | `audios` | `array` | 否 | - | 参考音频；默认 `role=reference_audio`，最多 3 段；不可单独作为唯一参考。 |
-| `content` | `array` | 否 | - | 多模态数组；与扁平字段同时存在时以 `content` 为准。 |
+| `content` | `array` | 原生路由推荐 | - | 多模态数组；与扁平字段同时存在时以 `content` 为准。适合 MiniMax 官方原生路由。 |
 | `resolution` | `string` | **是*** | - | `768P` 或 `2K`。 |
 | `duration` | `integer` | **是*** | - | 生成秒数，可选 `4`–`15`。 |
 | `ratio` | `string` | 条件 | - | 文生必填且非 `adaptive`：`21:9`/`16:9`/`4:3`/`1:1`/`3:4`/`9:16`。图生由输入图决定（`adaptive`）。参考生可选，默认 `adaptive`。 |
@@ -146,7 +184,7 @@ curl -X GET https://{{domain}}/v1/video/generations/video_task_minimax_001 \
 
 ---
 
-## 4. 返回结果示例 (200 OK)
+## 5. 返回结果示例
 
 * **提交任务响应**：
 ```json

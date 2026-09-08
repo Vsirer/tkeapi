@@ -11,6 +11,7 @@ import { FolderOpenOutlined, CloseOutlined, PictureOutlined, VideoCameraOutlined
 import { useCanvas, usePlayground } from '../context/PlaygroundContext';
 import { useThemeStore } from '../../../../store/theme';
 import { extractVideoUrl } from '../utils/resultExtractor';
+import { downloadFileByUrl } from '../utils/downloadFile';
 import JSZip from 'jszip';
 import { parseApiTimeAsUtc } from '../../../../utils/timedisplay';
 
@@ -153,7 +154,7 @@ const ResourcePreviewItem: React.FC<ResourcePreviewItemProps> = React.memo(({
     );
   };
 
-  // 单个资源的一键下载方法 (支持跨域 Blob 下载及 A 标签降级)
+  // 单个资源的一键下载方法 (支持跨域：CORS 直拉失败则同源中转)
   const handleDownloadSingle = async (e: React.MouseEvent) => {
     e.stopPropagation();
     const downloadUrl = res.type === 'video' ? videoUrl : imgUrl;
@@ -164,20 +165,12 @@ const ResourcePreviewItem: React.FC<ResourcePreviewItemProps> = React.memo(({
     const finalFileName = getFileNameFromUrl(downloadUrl, `resource-${res.id}.${defaultExt}`);
 
     try {
-      const response = await fetch(downloadUrl);
-      if (!response.ok) throw new Error('Fetch failed');
-      const blob = await response.blob();
-      const tempUrl = window.URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = tempUrl;
-      a.download = finalFileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(tempUrl);
+      await downloadFileByUrl(downloadUrl, {
+        filename: finalFileName,
+        mediaType: res.type === 'video' ? 'video' : 'image',
+      });
     } catch (err) {
-      console.warn('CORS限制或下载异常，采用新窗口打开降级方案', err);
+      console.warn('下载异常，采用新窗口打开降级方案', err);
       window.open(downloadUrl, '_blank');
     } finally {
       setIsDownloading(false);

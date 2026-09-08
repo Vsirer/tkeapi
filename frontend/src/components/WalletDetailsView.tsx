@@ -11,9 +11,9 @@ import { useTranslation } from 'react-i18next';
 import { useThemeStore } from '../store/theme';
 import useSettingsStore from '../store/settings';
 import request from '../utils/request';
-import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { formatApiDateTime, parseApiTimeAsUtc } from '../utils/timedisplay';
-import { toDateRangeParams } from '../utils/dateRangeParams';
+import { timedisplayNow, toDateRangeParams } from '../utils/dateRangeParams';
 import { rechargeTypeLabel } from '../utils/rechargeType';
 
 const { Text } = Typography;
@@ -57,19 +57,18 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
 
   // 组件局部状态控制日期过滤，使外部完全解耦
   const [activePreset, setActivePreset] = useState<string | null>('thisMonth');
-  const [filterRange, setFilterRange] = useState<any>(() => {
-    const now = dayjs();
-    return [now.startOf('month'), now.endOf('month')];
-  });
+  const [filterRange, setFilterRange] = useState<any>(() => [
+    timedisplayNow().startOf('month'),
+    timedisplayNow().endOf('month'),
+  ]);
 
   const [consumedSystem, setConsumedSystem] = useState<number>(0);
   const [consumedGift, setConsumedGift] = useState<number>(0);
   const [consumedLoading, setConsumedLoading] = useState<boolean>(false);
+  const { start_date, end_date } = toDateRangeParams(filterRange);
 
   React.useEffect(() => {
     if (!user || !user.id) return;
-    
-    const { start_date, end_date } = toDateRangeParams(filterRange);
 
     setConsumedLoading(true);
 
@@ -107,35 +106,37 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
         setConsumedLoading(false);
       });
     }
-  }, [filterRange, user.id, useReferralApi]);
+  }, [start_date, end_date, user.id, useReferralApi]);
 
   const handlePresetChange = (preset: string) => {
     setActivePreset(preset);
-    const now = dayjs();
-    let range: [dayjs.Dayjs, dayjs.Dayjs] | null = null;
+    const now = timedisplayNow();
+    let range: [Dayjs, Dayjs] | null = null;
     switch (preset) {
       case 'today':
-        range = [now.startOf('day'), now.endOf('day')];
+        range = [now.startOf('day'), now.clone().endOf('day')];
         break;
-      case 'yesterday':
-        const yesterday = now.subtract(1, 'day');
-        range = [yesterday.startOf('day'), yesterday.endOf('day')];
+      case 'yesterday': {
+        const day = now.subtract(1, 'day').startOf('day');
+        range = [day, day.clone().endOf('day')];
         break;
+      }
       case 'thisMonth':
-        range = [now.startOf('month'), now.endOf('month')];
+        range = [now.startOf('month'), now.clone().endOf('month')];
         break;
-      case 'lastMonth':
-        const lastMonth = now.subtract(1, 'month');
-        range = [lastMonth.startOf('month'), lastMonth.endOf('month')];
+      case 'lastMonth': {
+        const month = now.subtract(1, 'month').startOf('month');
+        range = [month, month.clone().endOf('month')];
         break;
+      }
       case 'thisYear':
-        range = [now.startOf('year'), now.endOf('year')];
+        range = [now.startOf('year'), now.clone().endOf('year')];
         break;
       case 'lastHalfYear':
-        range = [now.subtract(6, 'month').startOf('day'), now.endOf('day')];
+        range = [now.clone().subtract(6, 'month').startOf('day'), now.clone().endOf('day')];
         break;
       case 'lastYear':
-        range = [now.subtract(1, 'year').startOf('day'), now.endOf('day')];
+        range = [now.clone().subtract(1, 'year').startOf('day'), now.clone().endOf('day')];
         break;
       case 'all':
         range = null;
@@ -152,10 +153,10 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
   };
 
   const filteredRecharges = recharges.filter((r: any) => {
-    if (!filterRange || !filterRange[0] || !filterRange[1]) return true;
+    if (!start_date || !end_date) return true;
     const rMs = parseApiTimeAsUtc(r.created_at)?.getTime();
     if (rMs == null) return false;
-    return rMs >= filterRange[0].startOf('day').valueOf() && rMs <= filterRange[1].endOf('day').valueOf();
+    return rMs >= Date.parse(start_date) && rMs <= Date.parse(end_date);
   });
 
   const systemRecharges = filteredRecharges.filter((r: any) => (r.wallet_type || 'system') === 'system');

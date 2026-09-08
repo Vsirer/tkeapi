@@ -68,7 +68,7 @@ const ChannelCategoryManager: React.FC<ChannelCategoryManagerProps> = ({
     try {
       await request.delete(`/channel-categories/${id}`);
       message.success(t('common.success'));
-      fetchItems();
+      await fetchItems();
       onUpdate();
     } catch (e) {
       console.error(e);
@@ -88,7 +88,7 @@ const ChannelCategoryManager: React.FC<ChannelCategoryManagerProps> = ({
       }
       message.success(t('common.success'));
       setIsEditModalVisible(false);
-      fetchItems();
+      await fetchItems();
       onUpdate();
     } catch (e) {
       console.error(e);

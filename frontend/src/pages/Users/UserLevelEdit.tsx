@@ -7,7 +7,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Card, Form, Input, InputNumber, Button, message, Space, Tabs, Spin, Switch, Radio } from 'antd';
-import { SaveOutlined, ArrowLeftOutlined, KeyOutlined } from '@ant-design/icons';
+import { SaveOutlined, ArrowLeftOutlined, KeyOutlined, FileTextOutlined, SettingOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
 import { pinyin } from 'pinyin-pro';
@@ -64,6 +64,7 @@ const UserLevelEdit: React.FC = () => {
         max_token_count: 10,
         allow_view_log_details: true,
         sort_order: 0,
+        invoice_enabled: false,
       });
       return;
     }
@@ -80,6 +81,7 @@ const UserLevelEdit: React.FC = () => {
             marketing_enabled: level.marketing_enabled === 1,
             is_default: level.is_default === 1,
             allow_view_log_details: level.allow_view_log_details === undefined ? true : level.allow_view_log_details === 1,
+            invoice_enabled: level.invoice_enabled === 1,
           });
         } else {
           message.error('未找到对应等级记录');
@@ -87,7 +89,6 @@ const UserLevelEdit: React.FC = () => {
         }
       } catch (e) {
         console.error(e);
-        message.error('获取等级详情失败');
       } finally {
         setLoading(false);
       }
@@ -104,6 +105,7 @@ const UserLevelEdit: React.FC = () => {
       marketing_enabled: values.marketing_enabled === undefined ? undefined : (values.marketing_enabled ? 1 : 0),
       is_default: values.is_default === undefined ? undefined : (values.is_default ? 1 : 0),
       allow_view_log_details: values.allow_view_log_details === undefined ? undefined : (values.allow_view_log_details ? 1 : 0),
+      invoice_enabled: values.invoice_enabled === undefined ? undefined : (values.invoice_enabled ? 1 : 0),
     };
     // 新建时自动生成 group_key
     if (isAdd && !payload.group_key) {
@@ -330,6 +332,54 @@ const UserLevelEdit: React.FC = () => {
             >
               <Switch />
             </Form.Item>
+          </TabPane>
+
+          <TabPane tab={<span><FileTextOutlined /> Invoices收据&发票</span>} key="5" forceRender>
+            <Form.Item 
+              name="invoice_enabled" 
+              label="开启该用户等级的 Invoices 收据与发票功能" 
+              valuePropName="checked"
+              extra="开启后，属于该等级的用户登录时可在「用户设置 -> 财务发票 (Invoices)」中使用发票与交易凭单功能；关闭则对该等级用户隐藏。"
+            >
+              <Switch />
+            </Form.Item>
+
+            <Card 
+              size="small" 
+              style={{ 
+                marginTop: 16, 
+                borderRadius: 8, 
+                background: 'var(--ant-color-bg-container)',
+                border: '1px solid var(--ant-color-border-secondary)'
+              }}
+            >
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 500 }}>
+                  <FileTextOutlined style={{ color: '#722ed1', fontSize: 18 }} />
+                  <span>发票与收据全局业务参数统一配置</span>
+                </div>
+                <div style={{ color: 'var(--ant-color-text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+                  发票开票主体、纳税人识别号、销方联系邮箱、国际海外模式（商业发票/收据前缀、货币符号、打印条款）与中国大陆境内增值税发票规则（起开门槛、税率、应税劳务类目）等全局业务参数，已统一移至<b>「支付财务设置 → Invoices收据&amp;发票」</b>中集中维护。在此处开启本等级权限后，该等级用户即可使用全局配置的发票功能。
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <Button 
+                    type="primary" 
+                    icon={<SettingOutlined />}
+                    onClick={() => navigate(`/${adminPath}/payment-settings?tab=invoices`)}
+                    style={{
+                      backgroundColor: '#722ed1',
+                      borderColor: '#722ed1',
+                      color: '#ffffff',
+                      fontWeight: 500,
+                      borderRadius: 6,
+                      boxShadow: '0 2px 8px rgba(114, 46, 209, 0.4)',
+                    }}
+                  >
+                    前往「支付财务设置」配置发票详细规则
+                  </Button>
+                </div>
+              </Space>
+            </Card>
           </TabPane>
         </Tabs>
       </Form>

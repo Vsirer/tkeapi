@@ -211,9 +211,12 @@ pub async fn image_generations(
 
     // 2. 渠道选择 + HA failover（仅插件开且令牌 HA 开才切换）
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
+    let mut billing_rule_cache = None;
+    let mut access_cache = None;
 
     while ha.cont() {
         let start_time = std::time::Instant::now();
+        let mut ha_pool = None;
         let channel = match proxy::select_channel_for_model(
             &state,
             &token,
@@ -224,12 +227,18 @@ pub async fn image_generations(
             &ha.exclude_aids,
             !ha.had_upstream,
             Some("图片"),
+            &mut ha_pool,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                ha.note_pool(ha_pool);
+                ha.on_channel(&c);
+                c
+            }
             Err(e) => {
                 // 已有上游错误则保留上游文案；否则 e 已按 log_miss 落库（No available channels）
+                ha.note_pool(ha_pool);
                 ha.on_select_err(e);
                 break;
             }
@@ -237,16 +246,24 @@ pub async fn image_generations(
 
         // 3. 预扣费检查（带 channel 精确匹配同名模型的预扣费金额，同时获取 Model 供下游复用）
         // 余额不足等不可 failover，必须 break（不可 ? 直接退出 HA 环，以免跳过 finish）
-        let (pre_deduction, db_model, resolved_cat) =
-            match proxy::check_access(&state, &token, model, &ctx, Some("图片"), Some(&channel))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    ha.on_access_err(e);
-                    break;
-                }
-            };
+        let (pre_deduction, db_model, resolved_cat) = match proxy::check_access_with_model(
+            &state,
+            &token,
+            model,
+            &ctx,
+            Some("图片"),
+            &channel,
+            None,
+            &mut access_cache,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                ha.on_access_err(e);
+                break;
+            }
+        };
 
         // 模型映射：图片走分辨率档（resolve_model_body）
         let (resolved_model, mapping_source) =
@@ -292,9 +309,15 @@ pub async fn image_generations(
             resolved.upstream_path = raw_path.to_string();
         }
 
-        // 查询计费规则（供 spawn 内计费阶段使用）
-        let mut db_rule =
-            proxy::get_model_billing_rule(&state, model, Some(&channel), db_model.as_ref()).await;
+        // 查询计费规则（同 billing_rule_id 复用，供 spawn 内计费阶段使用）
+        let mut db_rule = proxy::get_model_billing_rule(
+            &state,
+            model,
+            Some(&channel),
+            db_model.as_ref(),
+            &mut billing_rule_cache,
+        )
+        .await;
 
         // 【一条日志原则】在耗时的参数转换（含图片下载转 base64）之前预记录日志，用户立即可见"处理中"状态
         let ep = format!(
@@ -320,7 +343,6 @@ pub async fn image_generations(
                     request_content: Some(&request_content_str),
                     upstream_url: Some(&initial_url),
                     channel: &channel,
-                    billing_model_hint: None,
                     plugin_tag: Some(plugin_tag_ct.as_str()),
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
@@ -373,13 +395,15 @@ pub async fn image_generations(
                     resolved.upstream_path.replace("${model}", &resolved_model)
                 );
                 // 上游 Content-Type 与客户端一致透传（不再因 gpt+图片强制改写）
-                tracing::info!(
+                crate::relay_debug!(
                     "[Image] 目标类型={} URL={}",
                     resolved.target_type,
                     forward::mask_key_in_string(&url, &channel.api_key)
                 );
 
-                let builder = if is_multipart {
+                let builder = if is_multipart
+                    && forward::supports_multipart_edits(&resolved.target_type)
+                {
                     let auth_headers = forward::build_auth_headers(&resolved, &channel.api_key, true);
                     let mut b = state.http_client.post(&url);
                     for (k, v) in &auth_headers {
@@ -429,11 +453,7 @@ pub async fn image_generations(
                     let upstream_hdrs = upstream_resp.headers().clone();
                     let err = upstream_resp.text().await.unwrap_or_default();
                     let latency_ms = start_time.elapsed().as_millis() as u32;
-                    tracing::warn!(
-                        "[Image] 上游失败 状态码={} 响应体长度={}",
-                        status,
-                        err.len()
-                    );
+                    crate::relay_debug!("[Image] 上游失败 状态码={}",status);
                     let bill = crate::relay::ha::FailBill::http(
                         latency_ms,
                         status,
@@ -473,32 +493,34 @@ pub async fn image_generations(
                     )
                     .await?;
 
-                    tracing::info!(
+                    crate::relay_debug!(
                         "[Image] 路径=STREAM 流式={} 上游流式={}",
                         is_stream,
                         is_upstream_stream
                     );
-                    Ok(crate::relay::stream::handle_image_stream(
-                        state,
-                        token,
-                        channel,
-                        model.to_string(),
-                        upstream_resp,
-                        ctx.clone(),
-                        request_content_str,
-                        start_time,
-                        resolved.upstream_path.replace("${model}", &resolved_model),
-                        Some(upstream_body.to_string()),
-                        pre_deduction,
-                        pre_deduct_gift,
-                        raw_path.to_string(),
-                        None,
-                        pending_log_id,
-                        db_model,
-                        db_rule,
-                    )
-                    .await
-                    .into_response())
+                    Ok(super::ProtectOut::Live(
+                        crate::relay::stream::handle_image_stream(
+                            state,
+                            token,
+                            channel,
+                            model.to_string(),
+                            upstream_resp,
+                            ctx.clone(),
+                            request_content_str,
+                            start_time,
+                            resolved.upstream_path.replace("${model}", &resolved_model),
+                            Some(upstream_body.to_string()),
+                            pre_deduction,
+                            pre_deduct_gift,
+                            raw_path.to_string(),
+                            None,
+                            pending_log_id,
+                            db_model,
+                            db_rule,
+                        )
+                        .await
+                        .into_response(),
+                    ))
                 } else {
                     // 非流式：先抓头再读 body → 检测业务级错误 → 通过后才预扣费
                     let upstream_hdrs = upstream_resp.headers().clone();
@@ -574,7 +596,7 @@ pub async fn image_generations(
                             // OpenAI 兼容 + 无 poll_path：同步轮询直到获取终态
                             // task_id 已在上方通过 find_id 提取，直接复用
                             let tid = &task_id_str;
-                            tracing::info!(
+                            crate::relay_debug!(
                                 "[Image] 路径=SYNC_POLL 目标类型={} 任务ID={}",
                                 resolved.target_type,
                                 tid
@@ -590,7 +612,7 @@ pub async fn image_generations(
                             };
 
                             match super::task::poll_task_result(
-                                &state.http_client,
+                                &state,
                                 &channel,
                                 &resolved,
                                 tid,
@@ -603,72 +625,43 @@ pub async fn image_generations(
                             )
                             .await
                             {
-                                Some((success_body, status)) if status == "succeeded" => {
-                                    tracing::info!("[ImageSyncPoll] 模型={}, 任务ID={}, 状态=成功, 响应长度={}",
-                                            model, tid, success_body.len());
-                                    response_content_str = success_body;
-                                }
-                                Some((fail_body, _)) => {
-                                    let poll_json: serde_json::Value =
-                                        serde_json::from_str(&fail_body)
-                                            .unwrap_or(serde_json::json!({}));
-                                    let err_msg =
-                                        crate::relay::response_formatter::extract_error_message(
-                                            &poll_json,
-                                        );
-                                    tracing::warn!(
-                                        "[ImageSyncPoll] 模型={}, 任务ID={}, 状态=失败, 错误={}",
+                                super::task::PollOutcome::Succeeded(success_body) => {
+                                    crate::relay_debug!(
+                                        "[ImageSyncPoll] 模型={}, 任务ID={}, 状态=成功, 响应长度={}",
                                         model,
                                         tid,
-                                        err_msg
+                                        success_body.len()
                                     );
-                                    let latency_ms = start_time.elapsed().as_millis() as u32;
-                                    let billing_detail = if pre_deduction > 0.0 {
-                                        "同步轮询任务失败，预扣费已退回".to_string()
-                                    } else {
-                                        "同步轮询任务失败".to_string()
-                                    };
-                                    let status_code = proxy::infer_error_status_code(&poll_json);
-                                    let bill = crate::relay::ha::FailBill::http(
-                                        latency_ms,
-                                        status_code,
-                                        err_msg.clone(),
-                                        request_content_str,
-                                        upstream_body.to_string(),
-                                    )
-                                    .content(Some(fail_body))
-                                    .client(err_msg)
-                                    .pre(pre_deduction, pre_deduct_gift)
-                                    .detail(billing_detail);
-                                    return Err(crate::relay::ha::HaAttempt::park(
-                                        &fail_buf, bill, None,
-                                    ));
+                                    response_content_str = success_body;
                                 }
-                                None => {
-                                    tracing::warn!(
-                                        "[ImageSyncPoll] 模型={}, 任务ID={}, 状态=超时",
+                                super::task::PollOutcome::Failed(fail) => {
+                                    crate::relay_debug!(
+                                        "[ImageSyncPoll] 模型={}, 任务ID={}, 状态={}, 错误={}",
                                         model,
-                                        tid
+                                        tid,
+                                        if fail.timed_out { "超时" } else { "失败" },
+                                        fail.message
                                     );
-                                    let err_msg =
-                                        format!("任务处理超时，请稍后查询结果，任务ID: {}", tid);
                                     let latency_ms = start_time.elapsed().as_millis() as u32;
-                                    let billing_detail = if pre_deduction > 0.0 {
-                                        "同步轮询超时，预扣费已退回".to_string()
-                                    } else {
-                                        "同步轮询超时".to_string()
-                                    };
-                                    let status_code =
-                                        proxy::infer_error_status_code_from_str(&err_msg);
+                                    let billing_detail = match (fail.timed_out, pre_deduction > 0.0)
+                                    {
+                                        (true, true) => "同步轮询超时，预扣费已退回",
+                                        (true, false) => "同步轮询超时",
+                                        (false, true) => "同步轮询任务失败，预扣费已退回",
+                                        (false, false) => "同步轮询任务失败",
+                                    }
+                                    .to_string();
+                                    let content =
+                                        fail.body.unwrap_or_else(|| response_content_str.clone());
                                     let bill = crate::relay::ha::FailBill::http(
                                         latency_ms,
-                                        status_code,
-                                        err_msg.clone(),
+                                        fail.http_status,
+                                        fail.message.clone(),
                                         request_content_str,
                                         upstream_body.to_string(),
                                     )
-                                    .content(Some(response_content_str))
-                                    .client(err_msg)
+                                    .content(Some(content))
+                                    .client(fail.message)
                                     .pre(pre_deduction, pre_deduct_gift)
                                     .detail(billing_detail);
                                     return Err(crate::relay::ha::HaAttempt::park(
@@ -689,54 +682,43 @@ pub async fn image_generations(
                     let latency_ms = start_time.elapsed().as_millis() as u32;
 
                     // 渠道 TOS 存储：在日志记录之前对原始响应做 URL/base64 替换，确保日志中的地址与最终返回一致
-                    let rf = body.get("response_format").and_then(|v| v.as_str());
-                    let response_content_str = if let Some(days) = channel.tos_storage() {
-                        super::tos_persist::persist_response_resources(
-                            &state,
-                            &response_content_str,
-                            channel.id,
-                            days,
-                            rf,
-                            Some("image"),
-                        )
-                        .await
-                    } else {
-                        response_content_str
-                    };
+                    let response_content_str = super::tos_persist::persist_for_channel(
+                        &state,
+                        &channel,
+                        &response_content_str,
+                        &request_content_str,
+                        &resolved_cat,
+                    )
+                    .await;
 
                     if is_async {
-                        tracing::info!("[Image] 路径=ASYNC_SUBMIT 预扣费={}", pre_deduction);
+                        crate::relay_debug!("[Image] 路径=ASYNC_SUBMIT 预扣费={}", pre_deduction);
                         let billing_detail = if pre_deduction > 0.0 {
                             "异步任务预扣费冻结".to_string()
                         } else {
                             "异步任务处理中(冻结)".to_string()
                         };
                         proxy::record_and_bill_inner(proxy::BillRecord {
-                            state: &state,
-                            token: &token,
+                            ctx: crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
+                                .category(resolved_cat.as_str())
+                                .db(db_model.as_ref()),
                             channel: &channel,
-                            model: model,
-                            prompt_tokens: 0,
-                            completion_tokens: 0,
-                            cached_tokens: 0,
+                            log_id: pending_log_id,
+                            usage: Default::default(),
                             cost: pre_deduction,
                             pre_deducted: pre_deduction,
-                            pre_deduct_gift: pre_deduct_gift,
-                            status_code: 200,
-                            endpoint: &ep,
-                            error_msg: None,
-                            latency_ms: latency_ms,
+                            pre_deduct_gift,
+                            latency_ms,
                             is_stream: 0,
-                            request_content: Some(request_content_str),
-                            response_content: Some(response_content_str.clone()),
-                            upstream_req_content: Some(upstream_body.to_string()),
-                            billing_detail: Some(billing_detail),
-                            hint_category: Some(resolved_cat.as_str()),
-                            pending_log_id: pending_log_id,
-                            billing_model_hint: None,
-                            plugin_tag: None,
-                            db_model: db_model.as_ref(),
+                            status_code: 200,
+                            error_msg: None,
+                            request: Some(request_content_str),
+                            response: Some(response_content_str.clone()),
+                            upstream_req: Some(upstream_body.to_string()),
+                            detail: Some(billing_detail),
+                            features: None,
                             time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                            plugin_tag: None,
                         })
                         .await;
 
@@ -779,7 +761,7 @@ pub async fn image_generations(
                         );
                         if resp_image_count.unwrap_or(0) <= 0 {
                             let err_msg = "上游返回空响应或无有效图片";
-                            tracing::warn!(
+                            crate::relay_debug!(
                                 "[ImageSync] 模型={}, 空响应/无有效图片 响应长度={} 图片数量={:?}",
                                 model,
                                 response_content_str.len(),
@@ -805,29 +787,19 @@ pub async fn image_generations(
 
                         let usage_tokens =
                             crate::relay::usage_extractor::parse_usage(&response_content_str);
-                        let p_tokens = usage_tokens.prompt;
-                        let c_tokens = usage_tokens.completion;
 
-                        let mut features =
-                            crate::relay::usage_extractor::extract_request_features(&body);
-                        let upstream_features =
-                            crate::relay::usage_extractor::extract_request_features(&upstream_body);
-                        features.merge(upstream_features);
-                        if let Ok(resp_json) =
-                            serde_json::from_str::<serde_json::Value>(&response_content_str)
-                        {
-                            features.merge(
-                                crate::relay::usage_extractor::extract_request_features(&resp_json),
-                            );
-                        }
-                        if let Some(resp_count) = resp_image_count {
-                            features.image_count = Some(resp_count);
-                        }
-                        tracing::info!(
+                        let mut features = crate::relay::usage_extractor::features_from_values(
+                            Some(&body),
+                            Some(&upstream_body),
+                            Some(&response_content_str),
+                        );
+                        // 闸口已确认有图；强制与闸口同源张数，避免二次解析差异
+                        features.image_count = resp_image_count;
+                        crate::relay_debug!(
                             "[Image] 路径=SYNC Tokens={}+{} 图片数量={:?} 耗时={}ms",
-                            p_tokens,
-                            c_tokens,
-                            resp_image_count,
+                            usage_tokens.prompt,
+                            usage_tokens.completion,
+                            features.image_count,
                             latency_ms
                         );
                         let (c, d) = crate::relay::calculate_relay_cost(
@@ -845,31 +817,26 @@ pub async fn image_generations(
                         .await;
 
                         proxy::record_and_bill_inner(proxy::BillRecord {
-                            state: &state,
-                            token: &token,
+                            ctx: crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
+                                .category(resolved_cat.as_str())
+                                .db(db_model.as_ref()),
                             channel: &channel,
-                            model: model,
-                            prompt_tokens: p_tokens,
-                            completion_tokens: c_tokens,
-                            cached_tokens: 0,
+                            log_id: pending_log_id,
+                            usage: usage_tokens,
                             cost: c,
                             pre_deducted: pre_deduction,
-                            pre_deduct_gift: pre_deduct_gift,
-                            status_code: 200,
-                            endpoint: &ep,
-                            error_msg: None,
-                            latency_ms: latency_ms,
+                            pre_deduct_gift,
+                            latency_ms,
                             is_stream: 0,
-                            request_content: Some(request_content_str),
-                            response_content: Some(response_content_str.clone()),
-                            upstream_req_content: Some(upstream_body.to_string()),
-                            billing_detail: Some(d),
-                            hint_category: Some(resolved_cat.as_str()),
-                            pending_log_id: pending_log_id,
-                            billing_model_hint: None,
-                            plugin_tag: None,
-                            db_model: db_model.as_ref(),
+                            status_code: 200,
+                            error_msg: None,
+                            request: Some(request_content_str),
+                            response: Some(response_content_str.clone()),
+                            upstream_req: Some(upstream_body.to_string()),
+                            detail: Some(d),
+                            features: Some(features),
                             time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                            plugin_tag: None,
                         })
                         .await;
 
@@ -883,9 +850,30 @@ pub async fn image_generations(
                         }
                     }
 
+                    Ok(super::ProtectOut::Raw(super::UpstreamRaw {
+                        headers: upstream_hdrs,
+                        body: response_content_str,
+                        task_id: task_id_str,
+                    }))
+                }
+            }
+        });
+
+        let bill_ctx = crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
+            .category(resolved_cat.as_str())
+            .db(db_model.as_ref());
+        match super::join_protected(&mut ha, result_rx, &bill_ctx, &channel, Some(&initial_url))
+            .await
+        {
+            super::ProtectJoin::Ok(super::ProtectOut::Raw(raw)) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &initial_url, ms).await;
+                let final_response_str = if body.get("model_name").is_some() {
+                    raw.body
+                } else {
                     let mut sys_log_id: Option<String> = None;
-                    if task_id_str.is_empty() {
-                        if let Some(id) = pending_log_id {
+                    if raw.task_id.is_empty() {
+                        if let Some(id) = ha.pending_log_id {
                             sys_log_id = sqlx::query_scalar(
                                 &state
                                     .db
@@ -897,68 +885,38 @@ pub async fn image_generations(
                             .unwrap_or(None);
                         }
                     }
-
-                    // 可灵原生请求含 model_name 参数，响应直接透传；其他走 apply_format 统一转换
-                    let final_response_str = if body.get("model_name").is_some() {
-                        response_content_str
+                    let fallback_id = if raw.task_id.is_empty() {
+                        sys_log_id.as_deref()
                     } else {
-                        let fallback_id = if task_id_str.is_empty() {
-                            sys_log_id.as_deref()
-                        } else {
-                            Some(task_id_str.as_str())
-                        };
-                        crate::relay::response_formatter::apply_format(
-                            &raw_path,
-                            &resolved_cat,
-                            &response_content_str,
-                            false,
-                            fallback_id,
-                        )
+                        Some(raw.task_id.as_str())
                     };
-
-                    // 双向响应格式统一对齐
-                    let final_response_str =
-                        super::tos_persist::align_response_format(&state, &final_response_str, rf)
-                            .await;
-
-                    Ok(upstream_headers::json_with_upstream_headers(
-                        &upstream_hdrs,
-                        final_response_str,
-                    ))
-                }
+                    crate::relay::response_formatter::apply_format(
+                        raw_path,
+                        &resolved_cat,
+                        &raw.body,
+                        false,
+                        fallback_id,
+                    )
+                };
+                let rf = body.get("response_format").and_then(|v| v.as_str());
+                let final_response_str =
+                    super::tos_persist::align_response_format(&state, &final_response_str, rf)
+                        .await;
+                return Ok(upstream_headers::json_with_upstream_headers(
+                    &raw.headers,
+                    final_response_str,
+                ));
             }
-        });
-
-        // 等待 spawned task 结果；若 handler 被 drop（客户端断开），task 继续运行
-        match result_rx.await {
-            Ok(result) => match result {
-                Ok(resp) => {
-                    let ms = start_time.elapsed().as_millis() as u32;
-                    ha.ok(&state, &channel, &initial_url, ms).await;
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    if ha
-                        .fail(
-                            &crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
-                                .category(resolved_cat.as_str())
-                                .db(db_model.as_ref()),
-                            &channel,
-                            e,
-                            Some(&initial_url),
-                        )
-                        .await
-                    {
-                        ha.bump();
-                        continue;
-                    }
-                    break;
-                }
-            },
-            Err(_) => {
-                ha.last_err = AppError::Internal("请求处理任务异常终止".into());
-                break;
+            super::ProtectJoin::Ok(super::ProtectOut::Live(resp)) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &initial_url, ms).await;
+                return Ok(resp);
             }
+            super::ProtectJoin::Retry => {
+                ha.bump();
+                continue;
+            }
+            super::ProtectJoin::Stop => break,
         }
     } // end while
 

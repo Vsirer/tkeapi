@@ -21,6 +21,8 @@ Căn chỉnh hoàn hảo với giao diện chuyển văn bản thành hình ản
 * **Hủy/Xóa tác vụ**: `/api/v3/contents/generations/tasks/{task_id}` (`DELETE`)
 * **Danh sách lịch sử tác vụ**: `/api/v3/contents/generations/tasks` (`GET`)
 
+Ưu tiên `doubao-seedance-2-5` (bản cũ `doubao-seedance-2-0` ở cuối trang Seedance). Dùng `content.role` (`first_frame` / `last_frame` / `reference_*`). Xem [API video](https://www.volcengine.com/docs/82379/1520757). Seedance 2.5: duration `4`–`30` hoặc `-1`; chỉnh sửa cần `ratio=adaptive` và `duration=-1`.
+
 ### 4. Giao diện tổng hợp giọng nói (TTS)
 * **Chế độ luồng sự kiện (SSE)**: `/api/v3/tts/unidirectional/sse` (`POST`)
 * **Chế độ HTTP non-streaming**: `/api/v3/tts/unidirectional` (`POST`)

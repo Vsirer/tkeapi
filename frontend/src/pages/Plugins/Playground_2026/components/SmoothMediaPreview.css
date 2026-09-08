@@ -1,0 +1,108 @@
+/*
+ * tokensbyte opensource
+ * (c) 2026 tokensbyte.ai
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tokensbyte.ai/)
+ */
+
+.pg-smooth-media-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #141416;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 纯净灰度骨架屏：随机交错快速入场 + 错峰纯灰度呼吸微动效 */
+.pg-smooth-media-skeleton {
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  overflow: hidden;
+  z-index: 1;
+  background-color: #17171a;
+  animation: pg-skeleton-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) var(--pg-stagger-delay, 0ms) backwards,
+             pg-skeleton-pure-pulse 1.6s ease-in-out var(--pg-pulse-delay, 0s) infinite;
+  transition: opacity 0.32s ease, visibility 0.32s ease;
+  transition-delay: var(--pg-stagger-delay, 0ms);
+  pointer-events: none;
+}
+
+.pg-smooth-media-skeleton.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 骨架屏交错入场淡入 */
+@keyframes pg-skeleton-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 纯灰度微呼吸动效（无渐变扫光、纯黑白灰阶） */
+@keyframes pg-skeleton-pure-pulse {
+  0%, 100% {
+    background-color: #17171a;
+  }
+  50% {
+    background-color: #242429;
+  }
+}
+
+/* 真实素材：随机快速交错平滑浮现 */
+.pg-smooth-media-el {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 5px;
+  opacity: 0;
+  transform: scale(1.015);
+  transition: opacity 0.36s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.36s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--pg-stagger-delay, 0ms);
+  will-change: opacity, transform;
+  position: relative;
+  z-index: 0;
+}
+
+.pg-smooth-media-el.is-loaded {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* 亮色模式适配 */
+[data-theme='light'] .pg-smooth-media-wrap,
+body[data-theme='light'] .pg-smooth-media-wrap,
+html.light .pg-smooth-media-wrap,
+.light .pg-smooth-media-wrap {
+  background: #f4f4f5;
+}
+
+[data-theme='light'] .pg-smooth-media-skeleton,
+body[data-theme='light'] .pg-smooth-media-skeleton,
+html.light .pg-smooth-media-skeleton,
+.light .pg-smooth-media-skeleton {
+  background-color: #e4e4e7;
+  animation: pg-skeleton-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) var(--pg-stagger-delay, 0ms) backwards,
+             pg-skeleton-pure-pulse-light 1.6s ease-in-out var(--pg-pulse-delay, 0s) infinite;
+}
+
+@keyframes pg-skeleton-pure-pulse-light {
+  0%, 100% {
+    background-color: #e4e4e7;
+  }
+  50% {
+    background-color: #d4d4d8;
+  }
+}

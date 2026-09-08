@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-//! Relay: POST /v1/video/generations
+//! Relay: POST /v1/video/generations（对外主入口）；POST /v1/videos 与 POST /v1/videos/generations 为 OpenAI 兼容别名
 //! OpenAI-compatible video generation task endpoint with forward-rule-driven protocol adaptation.
 
 use super::cascade::{
@@ -24,16 +24,6 @@ use axum::{
 };
 use std::sync::Arc;
 
-/// 快乐小马插件 stub（feature 关闭时使用，确保条件编译分支仍能通过类型检查）
-#[cfg(not(feature = "plugin_happyhorse"))]
-#[derive(Debug, Clone)]
-struct HappyHorseStub {
-    pub actual_model: String,
-    pub media_type: String,
-    pub routing_node: String,
-    pub custom_model_id: String,
-}
-
 /// POST /v1/video/generations — Submit a video generation task
 
 pub async fn video_generations(
@@ -45,10 +35,10 @@ pub async fn video_generations(
 ) -> AppResult<Response> {
     let start_time = std::time::Instant::now();
     let raw_path = uri.path();
-    // 归一化
-    // - /v1/videos/text2video|image2video|multi-image2video|omni-video → /v1/video/generations
-    let entry_path = if raw_path.starts_with("/v1/videos/") {
-        // 可灵原生视频路径归一化（匹配转发规则的 path_rewrite.old）
+    // 归一化到兼容入口，便于匹配转发规则 path_rewrite.old=/v1/video/generations：
+    // - OpenAI Videos：/v1/videos
+    // - 可灵原生：/v1/videos/text2video|image2video|...
+    let entry_path = if raw_path == "/v1/videos" || raw_path.starts_with("/v1/videos/") {
         "/v1/video/generations".to_string()
     } else {
         raw_path.to_string()
@@ -104,36 +94,24 @@ pub async fn video_generations(
         .ok_or_else(|| AppError::BadRequest("Missing required parameter: model".to_string()))?;
     let model = model_str.as_str();
 
-    // Plugin: happyhorse_router 智能路由拦截（条件编译，移除 feature 后自动禁用）
-    #[cfg(feature = "plugin_happyhorse")]
-    let hh_intercept =
-        crate::api::plugins::happyhorse_router::try_intercept(&state.db.pool, model, &body).await;
-    #[cfg(not(feature = "plugin_happyhorse"))]
-    let hh_intercept: Option<HappyHorseStub> = None;
-
-    // billing_model: 用于预扣费和计费查询的模型（普通=model，小马=actual_model）
-    // 日志和原始请求始终使用第1个模型 model
-    let billing_model = hh_intercept
-        .as_ref()
-        .map_or(model, |r| r.actual_model.as_str());
-
     // 1. Token 模型权限校验（渠道选择前快速拦截）
-    proxy::check_model_permission(&state, &token, billing_model, &entry_path, Some(category))
+    proxy::check_model_permission(&state, &token, model, &entry_path, Some(category))
         .await?;
 
     let ctx = proxy::get_user_context(&state, &token.user_id).await?;
 
+    let mut billing_rule_cache = None;
+    let mut access_cache = None;
+
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
 
     while ha.cont() {
-        // 2. 渠道选择（智能路由用 routing_node，普通用原始 model）
-        let channel_model_query = hh_intercept
-            .as_ref()
-            .map_or(model, |r| r.routing_node.as_str());
+        // 2. 渠道选择
+        let mut ha_pool = None;
         let channel = match proxy::select_channel_with_db(
             &state,
             &token,
-            channel_model_query,
+            model,
             &ctx.user_group,
             &ctx.level_id,
             &entry_path,
@@ -141,11 +119,17 @@ pub async fn video_generations(
             &ha.exclude_aids,
             !ha.had_upstream,
             Some(category),
+            &mut ha_pool,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                ha.note_pool(ha_pool);
+                ha.on_channel(&c);
+                c
+            }
             Err(e) => {
+                ha.note_pool(ha_pool);
                 ha.on_select_err(e);
                 break;
             }
@@ -155,11 +139,12 @@ pub async fn video_generations(
         let (pre_deduction, db_model, resolved_cat) = match proxy::check_access_with_model(
             &state,
             &token,
-            billing_model,
+            model,
             &ctx,
             Some(category),
-            Some(&channel),
-            db_model_from_mid.clone(),
+            &channel,
+            db_model_from_mid.as_ref(),
+            &mut access_cache,
         )
         .await
         {
@@ -173,7 +158,7 @@ pub async fn video_generations(
         // 转发规则（复用 db_model 避免重查 models 表）
         let mut resolved = match forward::resolve_forward_rule(
             &state,
-            billing_model,
+            model,
             &resolved_cat,
             &entry_path,
             Some(&channel),
@@ -183,10 +168,10 @@ pub async fn video_generations(
         {
             Some(r) => r,
             None => {
-                if forward::model_has_forward_rules(&state, billing_model).await {
+                if forward::model_has_forward_rules(&state, model).await {
                     ha.on_access_err(AppError::BadRequest(format!(
                         "模型 '{}' 不支持当前接口，请检查模型对应的转发规则",
-                        billing_model
+                        model
                     )));
                     break;
                 }
@@ -201,21 +186,22 @@ pub async fn video_generations(
         forward::refine_target_type(&mut resolved, &channel.base_url);
         forward::apply_channel_provider(&mut resolved, &channel);
 
-        // 模型映射：视频走分辨率档（resolve_model_body）
-        let resolved_model_query = hh_intercept
-            .as_ref()
-            .map_or(channel_model_query, |r| r.actual_model.as_str());
+        // 模型映射：视频走分辨率档（resolve_model_body）；依赖本轮 Channel/子配，不可环外缓存
         let (final_resolved_model, mapping_source) = router::resolve_model_body(
             &channel,
-            resolved_model_query,
+            model,
             db_model.as_ref(),
             Some(&body),
         );
 
-        // 查询模型计费规则（复用 db_model 避免重查 models 表）
-        let db_rule =
-            proxy::get_model_billing_rule(&state, billing_model, Some(&channel), db_model.as_ref())
-                .await;
+        let db_rule = proxy::get_model_billing_rule(
+            &state,
+            model,
+            Some(&channel),
+            db_model.as_ref(),
+            &mut billing_rule_cache,
+        )
+        .await;
         let mut upstream_body: serde_json::Value = forward::transform_request_body(
             &resolved,
             &final_resolved_model,
@@ -240,6 +226,15 @@ pub async fn video_generations(
         // 级联超分：增强档优先转发规则 res_enhance，缺省标准版；忽略请求体 version
         let mut cascade_tag_json = None;
         if resolved.is_cascade {
+            if body
+                .get("output_format")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.trim().eq_ignore_ascii_case("mov"))
+            {
+                return Err(AppError::BadRequest(
+                    "暂不支持 output_format 为 mov".to_string(),
+                ));
+            }
             // 目标分辨率单一来源：请求体 → 上游体 → 720p（与 cascade 标签 / 计费缺省一致）
             let target_res = if let Some(v) = body.get("resolution") {
                 v.as_str()
@@ -261,9 +256,9 @@ pub async fn video_generations(
             let cascade_scene =
                 cascade_resolve_scene(cascade_version, &target_key, &resolved.res_scene);
             upstream_body["resolution"] = serde_json::json!(base_res);
-            tracing::info!(
+            crate::relay_debug!(
                 "[Cascade] 模型: {}, 增强: {}({}), 目标: {}, 底座: {}, 场景: {}",
-                billing_model,
+                model,
                 cascade_version,
                 volc_mid,
                 target_key,
@@ -281,6 +276,7 @@ pub async fn video_generations(
                 })?;
             let volc_model_id = volc_db_model.model_id.as_str();
 
+            let mut _ha_pool = None;
             let volc_channel = match proxy::select_channel_with_db(
                 &state,
                 &token,
@@ -292,12 +288,13 @@ pub async fn video_generations(
                 &[],
                 true,
                 Some("视频增强"),
+                &mut _ha_pool,
             )
             .await
             {
                 Ok(ch) => ch,
                 Err(e) => {
-                    tracing::warn!(
+                    crate::relay_debug!(
                         "[Cascade S2 Error] 级联画质增强专属渠道获取失败! 模型='{}' 分组='{}' 等级='{}' MIDs={:?} 错误={:?}",
                         volc_model_id, ctx.user_group, ctx.level_id, Some(vec![volc_db_model.mid.clone()]), e
                     );
@@ -351,20 +348,47 @@ pub async fn video_generations(
             {
                 let video_urls = proxy::extract_request_video_urls(&body);
                 if !video_urls.is_empty() {
-                    let dur =
-                        proxy::sum_remote_videos_duration(&state.http_client, &video_urls).await;
-                    if dur <= 0.0 {
-                        return Err(AppError::BadRequest(
-                            "无法探测输入视频的时长，请确保视频能正常公开访问，且为合法的视频格式"
-                                .to_string(),
-                        ));
+                    let dur = proxy::sum_remote_media_duration(&state.http_client, &video_urls)
+                        .await
+                        .map_err(AppError::BadRequest)?;
+                    if dur > 0.0 {
+                        cascade_val["input_duration"] = serde_json::json!(dur);
                     }
-                    cascade_val["input_duration"] = serde_json::json!(dur);
                 }
             }
 
             cascade_tag_json = Some(cascade_val);
         }
+
+        // 预提取特征并预探测多媒体实际时长（供各规则入库快照）
+        let pre_features = if db_rule
+            .as_ref()
+            .is_some_and(|r| {
+                r.billing_rule == "fal_ref_video"
+                    || r.billing_rule == "minimax_h3"
+                    || r.billing_rule == "video_seconds_io"
+            })
+        {
+            let mut feat = crate::relay::usage_extractor::extract_request_features(&upstream_body);
+            let video_urls = proxy::extract_request_video_urls(&upstream_body);
+            let audio_urls = proxy::extract_request_audio_urls(&upstream_body);
+            if !video_urls.is_empty() || !audio_urls.is_empty() {
+                let (v_dur, a_dur) = tokio::try_join!(
+                    proxy::sum_remote_media_duration(&state.http_client, &video_urls),
+                    proxy::sum_remote_media_duration(&state.http_client, &audio_urls)
+                )
+                .map_err(AppError::BadRequest)?;
+                if v_dur > 0.0 {
+                    feat.video_ref_seconds = Some(v_dur);
+                }
+                if a_dur > 0.0 {
+                    feat.audio_ref_seconds = Some(a_dur);
+                }
+            }
+            Some(feat)
+        } else {
+            None
+        };
 
         // 可灵动态路径：根据请求体内容调整实际端点（text2video/image2video/multi-image2video）
         forward::resolve_kling_dynamic_path(&mut resolved, &upstream_body);
@@ -385,18 +409,11 @@ pub async fn video_generations(
                 .replace("${model}", &final_resolved_model)
         );
 
-        // plugin_tag：快乐小马 / 级联 / 客户端 callback（上游体根级 callback_url；与入口是否 OpenAI 无关）
+        // plugin_tag：级联 / 客户端 callback（上游体根级 callback_url；与入口是否 OpenAI 无关）
         // 火山等官方参数可经 OpenAI 路由透传到 upstream_body
         let client_cb = super::vendor_callback::extract_client_callback_url(&upstream_body);
         let plugin_tag: Option<String> = {
             let mut tag_json = serde_json::json!({});
-            #[cfg(feature = "plugin_happyhorse")]
-            if let Some(ref hh) = hh_intercept {
-                tag_json = serde_json::from_str(
-                    &crate::api::plugins::happyhorse_router::build_plugin_tag(hh),
-                )
-                .unwrap_or(serde_json::json!({}));
-            }
             if let Some(cascade_val) = cascade_tag_json {
                 tag_json["cascade"] = cascade_val;
             }
@@ -423,7 +440,6 @@ pub async fn video_generations(
                 request_content: Some(&request_content_str),
                 upstream_url: Some(&url),
                 channel: &channel,
-                billing_model_hint: Some(billing_model),
                 plugin_tag: plugin_tag.as_deref(),
                 category: Some(resolved_cat.as_str()),
                 db_model: db_model.as_ref(),
@@ -482,7 +498,6 @@ pub async fn video_generations(
                             billing_detail: asset_convert_log.clone(),
                             hint_category: Some(resolved_cat.as_str()),
                             pending_log_id: ha.pending_log_id,
-                            billing_model_hint: Some(billing_model),
                             db_model: db_model.as_ref(),
                             client_msg: None,
                             pre_deducted: 0.0,
@@ -539,7 +554,6 @@ pub async fn video_generations(
                     billing_detail: asset_convert_log.clone(),
                     hint_category: Some(resolved_cat.as_str()),
                     pending_log_id: ha.pending_log_id,
-                    billing_model_hint: Some(billing_model),
                     db_model: db_model.as_ref(),
                     client_msg: None,
                     pre_deducted: 0.0,
@@ -561,7 +575,7 @@ pub async fn video_generations(
         let mapping_detail: Option<String> = mapping_source.map(|src| {
             format!(
                 "{}: {} ➞ {}",
-                src, resolved_model_query, final_resolved_model
+                src, model, final_resolved_model
             )
         });
         let timeout_ctx = ha.timeout_ctx();
@@ -570,39 +584,37 @@ pub async fn video_generations(
         let result_rx = super::spawn_protected({
             let state = state.clone();
             let token = token.clone();
-            let channel = channel.clone();
+            let mut channel = channel.clone();
             let ep = ep.clone();
             let mut upstream_body = upstream_body.clone();
             let asset_convert_log = asset_convert_log.clone();
             let url = url.clone();
             let mut plugin_tag = plugin_tag.clone();
             let model = model.to_string();
-            let billing_model = billing_model.to_string();
             let raw_path = raw_path.to_string();
             let resolved_cat = resolved_cat.clone();
             let request_content_str = request_content_str.clone();
             let dm = db_model.clone();
             let resolved = resolved.clone();
+            let pre_features = pre_features;
             async move {
                 #[cfg(feature = "plugin_comfyui")]
                 let mut comfy_prompt_json: Option<String> = None;
-                let (mut response_content_str, upstream_hdrs) =
-                    if resolved.target_type == "comfyui" {
+                let (mut response_content_str, mut upstream_hdrs) = if resolved.target_type == "comfyui"
+                {
                     #[cfg(feature = "plugin_comfyui")]
                     {
-                        let (wf_id, server_id) =
+                        let target =
                             match crate::api::plugins::comfyui_bridge::resolve_submit_target(
                                 &state,
-                                resolved.comfyui_workflow_id,
-                                resolved.comfyui_server_id,
-                                &resolved.comfyui_server_ids,
-                                resolved.comfyui_dispatch.as_deref(),
+                                &upstream_body,
+                                &channel,
                             )
                             .await
                             {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    let msg = e.to_string();
+                                    let msg = e.message();
                                     let bill = crate::relay::ha::FailBill::biz(
                                         start_time.elapsed().as_millis() as u32,
                                         msg.clone(),
@@ -616,52 +628,30 @@ pub async fn video_generations(
                                 }
                             };
                         match crate::api::plugins::comfyui_bridge::submit_video(
-                            &state,
-                            wf_id,
+                            Arc::clone(&state),
                             &upstream_body,
-                            server_id,
+                            &target,
+                            pending_log_id,
+                            Some(token.user_id.as_str()),
                         )
                         .await
                         {
                             Ok(ack) => {
-                                if let Some(pk) = pending_log_id {
-                                    crate::api::plugins::comfyui_bridge::link_job(
-                                        &state, pk, &ack,
-                                    )
-                                    .await
-                                    .map_err(|e| {
-                                        let msg = format!("关联 ComfyUI 任务失败: {e}");
-                                        let bill = crate::relay::ha::FailBill::biz(
-                                            start_time.elapsed().as_millis() as u32,
-                                            msg.clone(),
-                                            msg,
-                                            request_content_str.clone(),
-                                            ack.prompt_json.clone(),
-                                        );
-                                        crate::relay::ha::HaAttempt::park(&fail_buf, bill, None)
-                                    })?;
-                                }
+                                channel.base_url = ack.base_url.clone();
+                                let body = ack.openai_body();
                                 comfy_prompt_json = Some(ack.prompt_json);
-                                (
-                                    serde_json::json!({
-                                        "id": ack.prompt_id,
-                                        "prompt_id": ack.prompt_id,
-                                        "status": "pending"
-                                    })
-                                    .to_string(),
-                                    axum::http::HeaderMap::new(),
-                                )
+                                (body, axum::http::HeaderMap::new())
                             }
                             Err(e) => {
-                                let msg = e.to_string();
-                                let latency_ms = start_time.elapsed().as_millis() as u32;
-                                let bill = crate::relay::ha::FailBill::biz(
-                                    latency_ms,
+                                let msg = e.error.message();
+                                let bill = crate::relay::ha::FailBill::http(
+                                    start_time.elapsed().as_millis() as u32,
+                                    e.error.http_status(),
                                     msg.clone(),
-                                    msg,
                                     request_content_str.clone(),
-                                    upstream_body.to_string(),
-                                );
+                                    e.prompt_json,
+                                )
+                                .client(msg);
                                 return Err(crate::relay::ha::HaAttempt::park(
                                     &fail_buf, bill, None,
                                 ));
@@ -672,8 +662,8 @@ pub async fn video_generations(
                     {
                         let bill = crate::relay::ha::FailBill::biz(
                             start_time.elapsed().as_millis() as u32,
-                            "ComfyUI 接入插件未编译",
-                            "ComfyUI 接入插件未编译",
+                            "当前服务暂不可用",
+                            "当前服务暂不可用",
                             request_content_str.clone(),
                             String::new(),
                         );
@@ -760,8 +750,7 @@ pub async fn video_generations(
                 };
 
                 #[cfg(feature = "plugin_comfyui")]
-                let upstream_req = comfy_prompt_json
-                    .unwrap_or_else(|| upstream_body.to_string());
+                let upstream_req = comfy_prompt_json.unwrap_or_else(|| upstream_body.to_string());
                 #[cfg(not(feature = "plugin_comfyui"))]
                 let upstream_req = upstream_body.to_string();
 
@@ -793,7 +782,7 @@ pub async fn video_generations(
                 if let Some(ref md) = mapping_detail {
                     billing_detail.push_str(&format!(" | {}", md));
                 }
-                // 级联：S1 真 id → plugin_tag；响应体 id 换成 cgt（落库/对外同源，bill 仍从响应提取）
+                // 级联：S1 真 id → plugin_tag；响应体 id / 上游响应头 x-request-id 换成 cgt
                 if resolved.is_cascade {
                     let upstream_tid =
                         serde_json::from_str::<serde_json::Value>(&response_content_str)
@@ -808,90 +797,72 @@ pub async fn video_generations(
                             &mut response_content_str,
                             &cgt,
                         );
+                        upstream_headers::replace_header_if_present(
+                            &mut upstream_hdrs,
+                            "x-request-id",
+                            &cgt,
+                        );
                     }
                 }
                 proxy::record_and_bill_inner(proxy::BillRecord {
-                    state: &state,
-                    token: &token,
+                    ctx: crate::relay::ha::HaBillCtx::new(&state, &token, &model, &ep)
+                        .category(resolved_cat.as_str())
+                        .db(dm.as_ref()),
                     channel: &channel,
-                    model: &model,
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    cached_tokens: 0,
+                    log_id: pending_log_id,
+                    usage: Default::default(),
                     cost: pre_deduction,
                     pre_deducted: pre_deduction,
-                    pre_deduct_gift: pre_deduct_gift,
-                    status_code: 200,
-                    endpoint: &ep,
-                    error_msg: None,
-                    latency_ms: latency_ms,
+                    pre_deduct_gift,
+                    latency_ms,
                     is_stream: 0,
-                    request_content: Some(request_content_str),
-                    response_content: Some(response_content_str.clone()),
-                    upstream_req_content: Some(upstream_req),
-                    billing_detail: Some(billing_detail),
-                    hint_category: Some(resolved_cat.as_str()),
-                    pending_log_id: pending_log_id,
-                    billing_model_hint: Some(&billing_model),
-                    plugin_tag: plugin_tag.as_deref(),
-                    db_model: dm.as_ref(),
+                    status_code: 200,
+                    error_msg: None,
+                    request: Some(request_content_str),
+                    response: Some(response_content_str.clone()),
+                    upstream_req: Some(upstream_req),
+                    detail: Some(billing_detail),
+                    features: pre_features,
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                    plugin_tag: plugin_tag.as_deref(),
                 })
                 .await;
 
-                let final_response_str = crate::relay::response_formatter::apply_format(
-                    &raw_path,
-                    &resolved_cat,
-                    &response_content_str,
-                    false,
-                    None,
-                );
-
-                Ok(upstream_headers::json_with_upstream_headers(
-                    &upstream_hdrs,
-                    final_response_str,
-                ))
+                Ok(super::UpstreamRaw::new(upstream_hdrs, response_content_str))
             }
         });
 
-        match result_rx.await {
-            Ok(result) => match result {
-                Ok(resp) => {
-                    let ms = start_time.elapsed().as_millis() as u32;
-                    ha.ok(&state, &channel, &url, ms).await;
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    if ha
-                        .fail(
-                            &crate::relay::ha::HaBillCtx::new(&state, &token, &model, &ep)
-                                .category(resolved_cat.as_str())
-                                .billing_model(billing_model)
-                                .db(db_model.as_ref()),
-                            &channel,
-                            e,
-                            Some(&url),
-                        )
-                        .await
-                    {
-                        ha.bump();
-                        continue;
-                    }
-                    break;
-                }
-            },
-            Err(_) => {
-                ha.last_err = AppError::Internal("请求处理任务异常终止".into());
-                break;
+        let bill_ctx = crate::relay::ha::HaBillCtx::new(&state, &token, &model, &ep)
+            .category(resolved_cat.as_str())
+            .db(db_model.as_ref());
+        match super::join_protected(&mut ha, result_rx, &bill_ctx, &channel, Some(&url)).await {
+            super::ProtectJoin::Ok(raw) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &url, ms).await;
+                let final_response_str = crate::relay::response_formatter::apply_format(
+                    &raw_path,
+                    &resolved_cat,
+                    &raw.body,
+                    false,
+                    None,
+                );
+                return Ok(upstream_headers::json_with_upstream_headers(
+                    &raw.headers,
+                    final_response_str,
+                ));
             }
+            super::ProtectJoin::Retry => {
+                ha.bump();
+                continue;
+            }
+            super::ProtectJoin::Stop => break,
         }
     }
 
     Err(ha
         .finish(
             &crate::relay::ha::HaBillCtx::new(&state, &token, model, &entry_path)
-                .category(category)
-                .billing_model(billing_model),
+                .category(category),
         )
         .await)
 }

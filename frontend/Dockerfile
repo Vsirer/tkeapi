@@ -75,6 +75,19 @@ RUN echo 'map $http_x_forwarded_proto $forwarded_proto { \
         proxy_send_timeout 900s; \
         proxy_read_timeout 900s; \
     } \
+    location /v2 { \
+        proxy_pass http://backend:3000; \
+        proxy_set_header Host $host; \
+        proxy_set_header X-Real-IP $remote_addr; \
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \
+        proxy_set_header X-Forwarded-Proto $forwarded_proto; \
+        proxy_buffering off; \
+        proxy_cache off; \
+        chunked_transfer_encoding on; \
+        proxy_connect_timeout 900s; \
+        proxy_send_timeout 900s; \
+        proxy_read_timeout 900s; \
+    } \
     location /compatible-mode { \
         proxy_pass http://backend:3000; \
         proxy_set_header Host $host; \

@@ -11,9 +11,9 @@ export function resolveFreeImageCount(value: unknown, billingRule?: string): num
   return 5;
 }
 
-/** 新建表单 / 保存兜底默认值（Seedream 新建默认 2） */
+/** 新建表单 / 保存兜底默认值（Seedream 新建默认 1） */
 export function formDefaultFreeImageCount(billingRule: string): number {
-  if (billingRule === 'volc_seedream_pro') return 2;
-  if (billingRule === 'minimax_h3') return 5;
+  if (billingRule === 'volc_seedream_pro') return 1;
+  if (billingRule === 'minimax_h3' || billingRule === 'video_seconds_io') return 5;
   return 0;
 }

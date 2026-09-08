@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Table, Card, Typography, Space, Input, Button, Tag, DatePicker, Grid, List } from 'antd';
 import { SyncOutlined, SearchOutlined, GiftOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
@@ -37,6 +38,7 @@ const GiftRecords: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.admin_path || 'admin';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [data, setData] = useState<GiftRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,8 +93,20 @@ const GiftRecords: React.FC = () => {
       key: 'user',
       render: (record: GiftRecord) => (
         <Space direction="vertical" size={0}>
-          <Text strong>{record.username}</Text>
-          <Text type="secondary" style={{ fontSize: '12px' }}>UID: {record.uid}</Text>
+          {record.uid ? (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
+              {record.username}
+            </Link>
+          ) : (
+            <Text strong>{record.username}</Text>
+          )}
+          {record.uid ? (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.45)' }}>
+              UID: {record.uid}
+            </Link>
+          ) : (
+            <Text type="secondary" style={{ fontSize: '12px' }}>-</Text>
+          )}
         </Space>
       ),
     },
@@ -121,8 +135,12 @@ const GiftRecords: React.FC = () => {
         if (!record.referrer_uid) return '-';
         return (
           <Space direction="vertical" size={0}>
-            <Text strong>{record.referrer_username}</Text>
-            <Text type="secondary" style={{ fontSize: '12px' }}>UID: {record.referrer_uid}</Text>
+            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontWeight: 600 }}>
+              {record.referrer_username}
+            </Link>
+            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.45)' }}>
+              UID: {record.referrer_uid}
+            </Link>
           </Space>
         );
       },
@@ -204,12 +222,26 @@ const GiftRecords: React.FC = () => {
               <Card
                 size="small"
                 style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-                title={<Text strong>{record.username}</Text>}
+                title={
+                  record.uid ? (
+                    <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
+                      {record.username}
+                    </Link>
+                  ) : (
+                    <Text strong>{record.username}</Text>
+                  )
+                }
                 extra={<Tag color="gold">🎁 {rechargeTypeLabel(record.recharge_type)}</Tag>}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
-                  <Text style={{ fontSize: 12 }}>{record.uid}</Text>
+                  {record.uid ? (
+                    <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12 }}>
+                      {record.uid}
+                    </Link>
+                  ) : (
+                    <Text style={{ fontSize: 12 }}>-</Text>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>金额</Text>
@@ -225,8 +257,12 @@ const GiftRecords: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>用户推荐人</Text>
                   <Space direction="vertical" size={0} align="end">
-                    <Text strong style={{ fontSize: 12 }}>{record.referrer_username}</Text>
-                    <Text type="secondary" style={{ fontSize: 10 }}>UID: {record.referrer_uid}</Text>
+                    <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 12, fontWeight: 600 }}>
+                      {record.referrer_username}
+                    </Link>
+                    <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 10, color: 'rgba(0, 0, 0, 0.45)' }}>
+                      UID: {record.referrer_uid}
+                    </Link>
                   </Space>
                 </div>
                 )}

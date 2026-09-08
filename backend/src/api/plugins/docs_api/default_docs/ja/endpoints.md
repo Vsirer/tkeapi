@@ -11,6 +11,7 @@
 | 画像編集 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 互換 |
 | 非同期ビデオタスク送信 | `/v1/video/generations` | `POST` | OpenAI 互換 |
 | 非同期ビデオタスクステータス確認 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 互換 |
+| 非同期ビデオタスクキャンセル | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI 互換 |
 | テキスト音声合成 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 互換 |
 | トークン利用可能残高照会 | `/v1/balance` | `GET` | アカウント情報 |
 | アカウント総残高照会 | `/v1/user/balance` | `GET` | アカウント情報 |
@@ -40,10 +41,12 @@
 | 阿里百炼 | 万相画像生成タスク (送信) | `/api/v1/services/aigc/multimodal-generation/generation` | `POST` |
 | 阿里百炼 | 非同期タスク照会 (汎用) | `/api/v1/tasks/{task_id}` | `GET` |
 | 阿里百炼 | テキストベクトル化 | `/compatible-mode/v1/embeddings` | `POST` |
-| 阿里百炼 | ドキュメントリランク (Rerank) | `/compatible-api/v1/reranks` | `POST` |
+| Alibaba Bailian | Document Reranking (Rerank) | `/compatible-api/v1/reranks` | `POST` |
+| Alibaba Bailian | Document Reranking (Native) | `/api/v1/services/rerank/text-rerank/text-rerank` | `POST` |
 | 可灵 AI | テキスト動画生成 (Kling) | `/v1/videos/text2video` | `POST` |
 | 可灵 AI | 画像動画生成 (Kling) | `/v1/videos/image2video` | `POST` |
 | 可灵 AI | タスクステータス照会 (動画/画像) | `/v1/videos/{endpoint}/{task_id}` | `GET` |
 | Google | Gemini テキスト生成 | `/v1beta/models/{model}:generateContent` | `POST` |
 | Google | Gemini ストリーミングテキスト生成 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |
 | Anthropic | Claude ネイティブメッセージ | `/v1/messages` | `POST` |
+| MiniMax | Anthropic 互換 Messages | `/anthropic/v1/messages` | `POST` |

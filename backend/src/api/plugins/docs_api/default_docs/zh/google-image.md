@@ -44,7 +44,47 @@ curl -X POST https://{{domain}}/v1/images/generations \
   }'
 ```
 
-### C. 搜索增强生图 (Search Grounding)
+### C. 多图参考生图
+
+传入多张参考图时，可用 `image_urls` 数组（或 `image` 数组）。适用于角色 + 场景、风格 + 主体等多素材融合。
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "prompt": "参考图一角色外形与图二咖啡馆场景，统一插画风格，暖色自然光",
+    "image_urls": [
+      "https://example.com/character.png",
+      "https://example.com/cafe_scene.png"
+    ],
+    "ratio": "16:9",
+    "resolution": "1k",
+    "n": 1,
+    "response_format": "url"
+  }'
+```
+
+也支持 Base64 混传（与 URL 可组合为数组）：
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "prompt": "将图一人物放入图二背景，保持光影一致",
+    "image": [
+      "https://example.com/person.png",
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."
+    ],
+    "ratio": "1:1",
+    "resolution": "1k"
+  }'
+```
+
+### D. 搜索增强生图 (Search Grounding)
 
 可开启联网搜索，辅助检索最新视觉信息作画。
 
@@ -70,8 +110,8 @@ curl -X POST https://{{domain}}/v1/images/generations \
 | :--- | :--- | :--- | :--- | :--- |
 | `model` | `string` | **是** | - | 如 `gemini-3.1-flash-image-preview`。 |
 | `prompt` | `string` | **是** | - | 画面提示词。 |
-| `image` | `string / array` | 否 | - | 参考图 URL（字符串或数组）。 |
-| `image_urls` | `array` | 否 | - | 参考图 URL 数组；与 `image` 二选一。 |
+| `image` | `string / array` | 否 | - | 参考图 URL 或 Base64（单张或数组）。 |
+| `image_urls` | `array` | 否 | - | 多图参考 URL 数组；与 `image` 二选一，多图时推荐此字段。 |
 | `ratio` | `string` | 否 | `"1:1"` | 宽高比：`"1:1"` / `"3:4"` / `"4:3"` / `"9:16"` / `"16:9"`。优先于 `size`。 |
 | `resolution` | `string` | 否 | `"1k"` | 如 `"1k"`、`"2k"`。优先于 `size`。 |
 | `size` | `string` | 否 | - | 兼容写法：带冒号（如 `"16:9"`）表示比例；不带冒号（如 `"1k"`）表示分辨率。**请勿传 `"1024x1024"` 像素值**。 |

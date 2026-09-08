@@ -21,6 +21,7 @@ import useSettingsStore from '../../../../store/settings';
 import RateDisplay from '../../../Models/RateDisplay';
 import { getCategoryIcon, getCategoryLabel, getLucideCategoryIcon } from '../constants';
 import SmartSvgIcon from '../../../../components/SmartSvgIcon';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -48,23 +49,11 @@ const SettingsWidget: React.FC = React.memo(() => {
       await saveModelConfig(currentModel.mid, paramValues);
     }
   }, [currentModel, isLocked, paramValues, saveModelConfig, deleteModelConfig]);
-  const handleCopy = (text: string) => {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => {
-        setCopiedId(text);
-        setTimeout(() => setCopiedId(null), 2000);
-      }).catch(() => {});
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      try {
-        document.execCommand('copy');
-        setCopiedId(text);
-        setTimeout(() => setCopiedId(null), 2000);
-      } catch (err) {}
-      document.body.removeChild(textarea);
+  const handleCopy = async (text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedId(text);
+      setTimeout(() => setCopiedId(null), 2000);
     }
   };
   const { themeMode } = useThemeStore();

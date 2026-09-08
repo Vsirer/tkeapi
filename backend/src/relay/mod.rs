@@ -12,6 +12,7 @@ pub mod cascade;
 pub mod channel_quota;
 pub mod forward;
 pub mod ha;
+pub mod ha_rule;
 pub mod image;
 pub mod native;
 pub mod proxy;
@@ -60,6 +61,38 @@ pub mod tos_persist;
 
 use std::future::Future;
 
+/// 连接保护任务产出：上游原文 + 头（格式转换 / 拼 Response 在 task 外）
+pub struct UpstreamRaw {
+    pub headers: axum::http::HeaderMap,
+    pub body: String,
+    /// 提交响应里提取的任务 id，供外层 `apply_format` 兜底；其它入口空
+    pub task_id: String,
+}
+
+impl UpstreamRaw {
+    #[inline]
+    pub fn new(headers: axum::http::HeaderMap, body: String) -> Self {
+        Self {
+            headers,
+            body,
+            task_id: String::new(),
+        }
+    }
+}
+
+/// 同步原文，或流式已启动泵的 Response
+pub enum ProtectOut {
+    Raw(UpstreamRaw),
+    Live(axum::response::Response),
+}
+
+/// 连接保护 oneshot 收口：成功 / HA 续试 / 停切
+pub enum ProtectJoin<T> {
+    Ok(T),
+    Retry,
+    Stop,
+}
+
 /// 连接保护：独立 task 执行 `fut`，结果经 oneshot 回传；客户端断开不影响 fut 跑完
 #[inline]
 pub fn spawn_protected<T: Send + 'static>(
@@ -70,6 +103,30 @@ pub fn spawn_protected<T: Send + 'static>(
         let _ = tx.send(fut.await);
     });
     rx
+}
+
+/// 收连接保护结果；拼响应体由调用方在 Ok 分支做
+pub async fn join_protected<T>(
+    ha: &mut ha::HaAttempt,
+    rx: tokio::sync::oneshot::Receiver<Result<T, crate::error::AppError>>,
+    ctx: &ha::HaBillCtx<'_>,
+    channel: &crate::models::Channel,
+    url: Option<&str>,
+) -> ProtectJoin<T> {
+    match rx.await {
+        Ok(Ok(v)) => ProtectJoin::Ok(v),
+        Ok(Err(e)) => {
+            if ha.fail(ctx, channel, e, url).await {
+                ProtectJoin::Retry
+            } else {
+                ProtectJoin::Stop
+            }
+        }
+        Err(_) => {
+            ha.last_err = crate::error::AppError::Internal("请求处理任务异常终止".into());
+            ProtectJoin::Stop
+        }
+    }
 }
 
 /// 底座费用 × res_mul；倍率为 1 时原样返回（无 token 时的时长等计费兜底）
@@ -104,41 +161,52 @@ pub async fn calculate_relay_cost(
     model_name: &str,
     resolved_model: &str,
 ) -> (f64, String) {
-    let is_ha_enabled = relay_settings::get_cached_ha_enabled(&state.db).await;
-
+    // HA 插件开启时才按渠道倍率计费（与历史语义一致）
+    let rate = if relay_settings::get_cached_ha_enabled(&state.db).await {
+        channel.rate
+    } else {
+        1.0
+    };
     let umd = db_model
         .and_then(|m| crate::relay::proxy::parse_user_model_discount(&ctx.model_discounts, &m.mid));
-    let (final_discount, discount_source) =
+    let (src_d, src_name) =
         crate::relay::proxy::resolve_discount(db_model, ctx.discount, umd, ctx.discount_type);
+    let floor = crate::relay::proxy::clamp_discount_floor(src_d * rate, db_model);
+    // 触限价：公式直接用限价；否则用折扣来源，渠道倍率后置相乘（便于分列展示）
+    let bill_d = floor.unwrap_or(src_d);
 
-    let applied_discount = if is_ha_enabled {
-        final_discount * channel.rate
-    } else {
-        final_discount
-    };
-
-    let (mut cost, mut detail) = compute_cost_raw(
-        db_model,
-        db_rule.as_deref(),
-        usage,
-        applied_discount,
-        features,
+    let (mut cost, mut detail) =
+        compute_cost_raw(db_model, db_rule.as_deref(), usage, bill_d, features);
+    detail = detail.replace(
+        '¤',
+        &crate::api::settings::get_currency_settings(state)
+            .await
+            .currency_unit,
     );
+    let label = match floor {
+        Some(f) => format!("{:.2}倍率(折扣限价)", f),
+        None => format!("{:.2}倍率({})", src_d, src_name),
+    };
+    detail = detail.replacen(&format!("{:.2}倍率", bill_d), &label, 1);
 
-    // 将折扣名字直接融合进 {:.2}倍率 描述中
-    let discount_target = format!("{:.2}倍率", applied_discount);
-    let discount_replace = format!("{:.2}倍率({})", applied_discount, discount_source);
-    detail = detail.replace(&discount_target, &discount_replace);
-
-    // 后置时间段倍率：优先 billing_features 快照（异步结算），否则用请求开始锁定的 applied_multiplier
     if let Some(rule) = db_rule {
-        let (new_cost, new_detail) = apply_locked_time_multiplier(cost, detail, rule, features);
-        cost = new_cost;
-        detail = new_detail;
+        let (c, d) = apply_locked_time_multiplier(cost, detail, rule, features);
+        cost = c;
+        detail = d;
     }
-    if is_ha_enabled && channel.rate != 1.0 {
-        detail = format!("{} * {:.2}倍(渠道倍率)", detail, channel.rate);
+
+    let use_rate = (rate - 1.0).abs() > 0.00001;
+    if floor.is_some() {
+        detail.push_str(&format!(" | 原{:.2}({})", src_d, src_name));
+        if use_rate {
+            detail.push_str(&format!("×{:.2}(渠道)", rate));
+        }
+        detail.push_str("低于限价");
+    } else if use_rate {
+        cost *= rate;
+        detail.push_str(&format!(" * {:.2}倍(渠道倍率)", rate));
     }
+
     if let Some(src) = mapping_source {
         detail.push_str(&format!(" | {}: {} ➞ {}", src, model_name, resolved_model));
     }
@@ -172,6 +240,7 @@ pub fn apply_locked_time_multiplier(
 
 /// 统一计费逻辑（返回金额已 round 到 6 位小数）
 /// 若 `db_rule.applied_multiplier` 已在请求开始锁定（或 features.time_multiplier 有快照），会后置乘时段倍率
+/// 明细中的货币单位占位符 `¤` 由调用方换成站点 `currency_unit`
 pub fn compute_cost(
     db_model: Option<&crate::models::Model>,
     db_rule: Option<&crate::models::BillingRule>,
@@ -194,6 +263,7 @@ pub fn compute_cost(
 }
 
 /// 统一计费逻辑（未舍入，供内部组合后再 round）
+/// 单价处写 `¤` 占位货币单位，由 `calculate_relay_cost` / 渠道测试换成站点 `currency_unit`
 fn compute_cost_raw(
     _db_model: Option<&crate::models::Model>,
     db_rule: Option<&crate::models::BillingRule>,
@@ -238,7 +308,7 @@ fn compute_cost_raw(
             let ws_cost_raw = web_search_count * web_search_rate / 1000.0;
             let cost = (token_cost_raw + ws_cost_raw) * discount;
             let detail = format!(
-                "[ {} + 联网搜索: {}次*{}元/千次 ] * {:.2}倍率",
+                "[ {} + 联网搜索: {}次*{}¤/千次 ] * {:.2}倍率",
                 token_detail_raw, web_search_count, web_search_rate, discount
             );
             (cost, detail)
@@ -259,6 +329,9 @@ fn compute_cost_raw(
         /// 图片：有图（图生图）倍率，仅 image_resolution 使用
         #[serde(default)]
         pub image_ref_multiplier: Option<f64>,
+        /// 图片输入单价，仅 image_resolution_io 使用
+        #[serde(default)]
+        pub input_rate: f64,
     }
 
     /// 供视频画质（分辨率及帧率阶梯）计费使用的辅助结构体
@@ -307,7 +380,7 @@ fn compute_cost_raw(
                 count = match features.image_count {
                     Some(c) if c > 0 => c as f64,
                     _ => {
-                        tracing::warn!(
+                        crate::relay_debug!(
                             "[Billing] per_image 规则未获取到有效图片数量，按 0 张不计费"
                         );
                         0.0
@@ -387,6 +460,38 @@ fn compute_cost_raw(
                         }
                     }
                 }
+            } else if rule.billing_rule == "image_resolution_io" {
+                let output_n = features.image_count.map(|c| c.max(1) as f64).unwrap_or(1.0);
+                let input_n = features.image_ref_count.unwrap_or(0) as f64;
+                let res = features.resolution.as_deref().unwrap_or("1k");
+                let mut input_rate = 0.0;
+                let mut output_rate = rule.fixed_rate;
+                if let Ok(tiers) = serde_json::from_str::<Vec<ResolutionTier>>(&rule.pricing_tiers)
+                {
+                    let picked = tiers
+                        .iter()
+                        .filter(|t| t.enabled)
+                        .find(|t| t.resolution.eq_ignore_ascii_case(res))
+                        .or_else(|| {
+                            tiers.iter().filter(|t| t.enabled).max_by(|a, b| {
+                                a.rate
+                                    .partial_cmp(&b.rate)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        });
+                    if let Some(t) = picked {
+                        input_rate = t.input_rate;
+                        output_rate = t.rate;
+                    }
+                }
+                let cost = (input_n * input_rate + output_n * output_rate) * discount;
+                return (
+                    cost,
+                    format!(
+                        "分辨率K输入/生成 -> (输入:{}张*{} + 生成:{}张*{}) * {:.2}倍率",
+                        input_n as i32, input_rate, output_n as i32, output_rate, discount
+                    ),
+                );
             } else if rule.billing_rule == "image_size_pixel" {
                 // 按分辨率像素计费：匹配 size 参数（如 1024x1024），支持画质独立定价
                 count = features.image_count.map(|c| c.max(1) as f64).unwrap_or(1.0);
@@ -542,76 +647,57 @@ fn compute_cost_raw(
                 count = chars / 10000.0;
                 detail_desc = format!("按字符计费({}字符)", chars as i32);
             } else if rule.billing_rule == "volc_seedream_pro" {
-                // 火山 Seedream Pro：输入图超额（free_image_count，缺省 1=首张免费）
-                // + 输出图按总像素万阶梯单价
-
-                // 1) 输入图费：
+                // 输入图超额（free_image_count，缺省 1）+ 输出按像素档×张数
+                // layer_decomposition=true 且阶梯填了图层单价则走图层价，否则单图价
                 let free_images = free_image_count_from_ext(&rule.extended_config, 1);
                 let input_images = features.image_ref_count.unwrap_or(0);
                 let billable_inputs = (input_images - free_images).max(0);
                 let input_rate = rule.prompt_rate;
                 let input_cost = billable_inputs as f64 * input_rate;
 
-                // 2) 输出图费：
                 let image_count = features.image_count.map(|c| c.max(1) as f64).unwrap_or(1.0);
-                let raw_size = features.size.as_deref().unwrap_or("1024x1024");
+                let total_pixels_wan =
+                    pixels_wan_from_size(features.size.as_deref().unwrap_or("1024x1024"));
 
-                // 解析宽和高计算总像素（万像素）
-                let mut total_pixels_wan = 104.8576; // 默认 1024 * 1024 / 10000.0
-                if let Some((w, h)) = raw_size.split_once('x').and_then(|(ws, hs)| {
-                    let w = ws.trim().parse::<f64>().ok()?;
-                    let h = hs.trim().parse::<f64>().ok()?;
-                    Some((w, h))
-                }) {
-                    total_pixels_wan = (w * h) / 10000.0;
-                }
-
-                // 定义阶梯结构
                 #[derive(serde::Deserialize)]
                 struct VolcSeedreamTier {
                     pub max_pixels_wan: f64,
                     pub rate: f64,
+                    #[serde(default)]
+                    pub layer_rate: f64,
                     #[serde(default = "crate::relay::default_tier_enabled")]
                     pub enabled: bool,
                 }
 
-                let mut output_rate = rule.fixed_rate; // 默认费率兜底
+                let mut output_rate = rule.fixed_rate;
                 let mut match_desc = "默认输出单价".to_string();
 
-                if let Ok(tiers) =
+                if let Ok(mut tiers) =
                     serde_json::from_str::<Vec<VolcSeedreamTier>>(&rule.pricing_tiers)
                 {
-                    let mut matched = false;
-                    let mut matched_tier: Option<&VolcSeedreamTier> = None;
-
-                    // 升序排列
-                    let mut sorted_tiers = tiers;
-                    sorted_tiers.sort_by(|a, b| {
+                    tiers.sort_by(|a, b| {
                         a.max_pixels_wan
                             .partial_cmp(&b.max_pixels_wan)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-
-                    for tier in &sorted_tiers {
-                        if !tier.enabled {
-                            continue;
-                        }
-                        if total_pixels_wan <= tier.max_pixels_wan {
-                            matched_tier = Some(tier);
-                            matched = true;
+                    let mut matched: Option<&VolcSeedreamTier> = None;
+                    for tier in &tiers {
+                        if tier.enabled && total_pixels_wan <= tier.max_pixels_wan {
+                            matched = Some(tier);
                             break;
                         }
                     }
-
-                    if !matched {
-                        matched_tier = sorted_tiers.iter().filter(|t| t.enabled).last();
+                    if matched.is_none() {
+                        matched = tiers.iter().filter(|t| t.enabled).last();
                     }
-
-                    if let Some(tier) = matched_tier {
-                        output_rate = tier.rate;
+                    if let Some(tier) = matched {
+                        let layer = features.layer_decomposition && tier.layer_rate > 0.0;
+                        output_rate = if layer { tier.layer_rate } else { tier.rate };
                         match_desc = format!(
-                            "命中阶梯(<= {:.0}万像素 单价: {:.6})",
-                            tier.max_pixels_wan, tier.rate
+                            "命中阶梯(<= {:.0}万像素 {} 单价: {:.6})",
+                            tier.max_pixels_wan,
+                            if layer { "图层" } else { "单图" },
+                            output_rate
                         );
                     }
                 }
@@ -620,7 +706,7 @@ fn compute_cost_raw(
                 let total_cost = (input_cost + output_cost) * discount;
 
                 let detail = format!(
-                    "火山SeedreamPro计费 -> (输入图超额:{}张(共{}张,免费{}张)*{}元/张 + 输出图: {}张*[总像素: {:.2}万, {}])*{:.2}倍率",
+                    "火山SeedreamPro计费 -> (输入图超额:{}张(共{}张,免费{}张)*{}¤/张 + 输出图: {}张*[总像素: {:.2}万, {}])*{:.2}倍率",
                     billable_inputs,
                     input_images,
                     free_images,
@@ -694,6 +780,7 @@ fn compute_cost_raw(
                 }
             } else if rule.billing_rule == "minimax_h3" {
                 // 分辨率秒单价 × total_seconds + 输入图超额（free_image_count，缺省 5）
+                let total_dur = features.total_video_seconds();
                 let (r, desc) = match_res_rate(features.resolution.as_deref(), true);
                 rate = r;
                 detail_desc = format!("视频秒价+输入图 {}", desc);
@@ -702,13 +789,13 @@ fn compute_cost_raw(
                 let input_images = features.image_ref_count.unwrap_or(0).max(0);
                 let billable_images = (input_images - free_images).max(0);
                 let image_rate = rule.prompt_rate;
-                let total_cost = (dur * rate + billable_images as f64 * image_rate) * discount;
+                let total_cost = (total_dur * rate + billable_images as f64 * image_rate) * discount;
                 return (
                     total_cost,
                     format!(
-                        "{} -> ({:.2}秒*{} + 输入图超额:{}张(共{}张,免费{}张)*{}元/张)*{:.2}倍率",
+                        "{} -> ({:.2}秒*{} + 输入图超额:{}张(共{}张,免费{}张)*{}¤/张)*{:.2}倍率",
                         detail_desc,
-                        dur,
+                        total_dur,
                         rate,
                         billable_images,
                         input_images,
@@ -717,6 +804,150 @@ fn compute_cost_raw(
                         discount
                     ),
                 );
+            } else if rule.billing_rule == "video_seconds_io" {
+                // 输出生成秒数 × 生成秒单价 + 输入参考秒数 × 输入秒单价 + 输入图超额（free_image_count，缺省 5）
+                let out_dur = features.duration_seconds.unwrap_or(0.0);
+                let in_dur = features.video_ref_seconds.unwrap_or(0.0);
+                let res = features.resolution.as_deref();
+
+                let mut in_rate = 0.0;
+                let mut out_rate = rate;
+                let match_desc;
+
+                if let Ok(tiers) = serde_json::from_str::<Vec<ResolutionTier>>(&rule.pricing_tiers) {
+                    let enabled_tiers: Vec<&ResolutionTier> = tiers.iter().filter(|t| t.enabled).collect();
+                    let picked = if let Some(r) = res {
+                        enabled_tiers.iter().find(|t| t.resolution.eq_ignore_ascii_case(r)).copied()
+                    } else {
+                        None
+                    };
+                    if let Some(t) = picked {
+                        in_rate = t.input_rate;
+                        out_rate = t.rate;
+                        match_desc = format!("命中分辨率 {} (生成单价:{}, 输入单价:{})", t.resolution, t.rate, t.input_rate);
+                    } else if let Some(t) = enabled_tiers.iter().max_by(|a, b| a.rate.partial_cmp(&b.rate).unwrap_or(std::cmp::Ordering::Equal)) {
+                        in_rate = t.input_rate;
+                        out_rate = t.rate;
+                        match_desc = match res {
+                            Some(r) => format!("分辨率{}未命中，兜底最高阶梯({} 生成单价:{}, 输入单价:{})", r, t.resolution, t.rate, t.input_rate),
+                            None => format!("无分辨率，兜底最高阶梯({} 生成单价:{}, 输入单价:{})", t.resolution, t.rate, t.input_rate),
+                        };
+                    } else {
+                        match_desc = format!("默认单价: {}", rate);
+                    }
+                } else {
+                    match_desc = format!("默认单价: {}", rate);
+                }
+
+                detail_desc = format!("视频秒价(输入/生成)+输入图 {}", match_desc);
+
+                let free_images = free_image_count_from_ext(&rule.extended_config, 5);
+                let input_images = features.image_ref_count.unwrap_or(0).max(0);
+                let billable_images = (input_images - free_images).max(0);
+                let image_rate = rule.prompt_rate;
+                let total_cost = (out_dur * out_rate + in_dur * in_rate + billable_images as f64 * image_rate) * discount;
+                return (
+                    total_cost,
+                    format!(
+                        "{} -> (生成:{:.2}秒*{} + 输入:{:.2}秒*{} + 输入图超额:{}张(共{}张,免费{}张)*{}¤/张)*{:.2}倍率",
+                        detail_desc,
+                        out_dur,
+                        out_rate,
+                        in_dur,
+                        in_rate,
+                        billable_images,
+                        input_images,
+                        free_images,
+                        image_rate,
+                        discount
+                    ),
+                );
+            } else if rule.billing_rule == "fal_ref_video" {
+                // fal MiniMax H3 Max 官方公式计费：成片秒价 + 参考素材 Token 池超额
+                let output_cost = dur * rule.duration_rate;
+
+                let ext: serde_json::Value =
+                    serde_json::from_str(&rule.extended_config).unwrap_or_default();
+                let free_ref_tokens = ext
+                    .get("free_ref_tokens")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(4096.0);
+                let ref_token_rate_per_1k = ext
+                    .get("ref_token_rate_per_1k")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.02);
+                let image_tokens_default = ext
+                    .get("image_tokens_default")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1024.0);
+                let audio_tokens_per_sec = ext
+                    .get("audio_ref_tokens_per_sec")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(80.0);
+
+                let is_480p = features
+                    .resolution
+                    .as_deref()
+                    .is_some_and(|r| r.to_lowercase().contains("480"));
+                let video_tokens_per_sec = if is_480p {
+                    ext.pointer("/video_ref_tokens_per_sec/480p")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(2886.0)
+                } else {
+                    ext.pointer("/video_ref_tokens_per_sec/768p")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(7459.0)
+                };
+
+                let image_count = features.image_ref_count.unwrap_or(0).max(0) as f64;
+                let image_tokens = image_count * image_tokens_default;
+
+                let video_ref_sec = features.video_ref_seconds.unwrap_or(0.0).max(0.0);
+                let video_tokens = (video_ref_sec * video_tokens_per_sec).round();
+
+                let audio_ref_sec = features.audio_ref_seconds.unwrap_or(0.0).max(0.0);
+                let audio_tokens = (audio_ref_sec * audio_tokens_per_sec).round();
+
+                let total_ref_tokens = image_tokens + video_tokens + audio_tokens;
+                let billable_ref_tokens = (total_ref_tokens - free_ref_tokens).max(0.0);
+                let ref_cost = (billable_ref_tokens / 1000.0) * ref_token_rate_per_1k;
+
+                let total_cost = (output_cost + ref_cost) * discount;
+
+                let mut ref_parts = Vec::new();
+                if image_count > 0.0 {
+                    ref_parts.push(format!("图:{}张({:.0}Token)", image_count, image_tokens));
+                }
+                if video_ref_sec > 0.0 {
+                    ref_parts.push(format!(
+                        "视频:{:.1}秒({:.0}Token@{})",
+                        video_ref_sec,
+                        video_tokens,
+                        if is_480p { "480p" } else { "768p" }
+                    ));
+                }
+                if audio_ref_sec > 0.0 {
+                    ref_parts.push(format!("音频:{:.1}秒({:.0}Token)", audio_ref_sec, audio_tokens));
+                }
+                let ref_desc = if ref_parts.is_empty() {
+                    "无参考素材".to_string()
+                } else {
+                    ref_parts.join("+")
+                };
+
+                let detail = format!(
+                    "fal H3-MAX 视频 -> (成片:{:.2}秒*{}¤ + 参考Token:[{} -> 总{:.0}-免{:.0}=计费{:.0}]*{}¤/千Token)*{:.2}倍率",
+                    dur,
+                    rule.duration_rate,
+                    ref_desc,
+                    total_ref_tokens,
+                    free_ref_tokens,
+                    billable_ref_tokens,
+                    ref_token_rate_per_1k,
+                    discount
+                );
+
+                return (total_cost, detail);
             } else if rule.billing_rule == "video_quality" {
                 detail_desc = format!("视频画质阶梯找寻(默认单价: {})", rate);
                 if let Some(res) = &features.resolution {
@@ -1027,7 +1258,12 @@ fn compute_cost_raw(
             let mut p_rate = rule.prompt_rate;
             let mut c_rate = rule.completion_rate;
             let mut is_overridden = false;
-            let mut detail_desc = "标准 Tokens 计费".to_string();
+            let is_glm_5_3 = rule.billing_rule == "glm_5_3";
+            let mut detail_desc = if is_glm_5_3 {
+                "glm 5.3".to_string()
+            } else {
+                "标准 Tokens 计费".to_string()
+            };
 
             if rule.billing_rule == "seedance2.0" {
                 if let Ok(ext) = serde_json::from_str::<serde_json::Value>(&rule.extended_config) {
@@ -1257,13 +1493,15 @@ fn compute_cost_raw(
                 }
 
                 // 计算公式：文本输入 + 图片输入
-                let cost_raw = (prompt_tokens as f64 * p_rate
+                // prompt_tokens 是上游返回的总输入 tokens（包含文本和图片），纯文本需扣除图片部分，防止双重计费
+                let text_prompt = (prompt_tokens - usage.image_tokens).max(0);
+                let cost_raw = (text_prompt as f64 * p_rate
                     + usage.image_tokens as f64 * img_prompt_rate)
                     / 1_000_000.0;
 
                 let d_raw = format!(
                     "多模态计费 -> ({}文本P*{} + {}图片P*{})/1M",
-                    prompt_tokens, p_rate, usage.image_tokens, img_prompt_rate
+                    text_prompt, p_rate, usage.image_tokens, img_prompt_rate
                 );
                 let (cost, d) = apply_web_search(cost_raw, d_raw);
                 return (cost, d);
@@ -1333,10 +1571,10 @@ fn compute_cost_raw(
                 return (cost, detail);
             }
 
-            // 兜底防线：若有多模态图片输入，但在非多模态分类规则下结算，
-            // 则文本与图片在常规规则下统一合并按输入费率 p_rate 收费，将图片 token 累加回 prompt_tokens
-            let prompt_tokens = if usage.image_tokens > 0 {
-                prompt_tokens + usage.image_tokens
+            // 常规单价规则：prompt_tokens 通常已包含多模态图片输入（如 OpenAI、火山方舟等规范），
+            // 仅当 prompt_tokens 小于 image_tokens 时（极少数非标上游未计入图片）才补充差额，防止双重计费
+            let prompt_tokens = if usage.image_tokens > prompt_tokens {
+                usage.image_tokens
             } else {
                 prompt_tokens
             };
@@ -1368,57 +1606,44 @@ fn compute_cost_raw(
                 detail_desc = format!("{} [叠加Flex离线折扣: {}倍]", detail_desc, off_discount);
             }
 
-            // Claude 语义判定：有缓存创建 token，或配置了 Claude 读取费率且有缓存读取 token
-            let is_claude = features.cache_creation.filter(|&n| n > 0).is_some()
-                || (rule.claude_cache_read_rate > 0.0 && cached_tokens > 0);
+            // 缓存独立计价仅在对应费率开关开启（费率>0）时参与；关闭则不计、不回落到输入价
+            let cc = usage.cache_creation;
+            let cc_rate = rule.claude_cache_creation_rate;
+            let cr_rate = rule.claude_cache_read_rate;
+            let bill_cc = !is_glm_5_3 && cc > 0 && cc_rate > 0.0;
+            let bill_cr = !is_glm_5_3 && cached_tokens > 0 && cr_rate > 0.0;
+            let is_claude = bill_cc || bill_cr;
 
             // 上游显式 total_tokens 且 total==prompt+completion → OpenAI 子集语义（回填 total 不算）
-            let is_openai_format =
-                usage.has_total_tokens && usage.total == prompt_tokens + completion_tokens;
-            let cc = features.cache_creation.unwrap_or(0);
+            let is_openai_format = is_glm_5_3
+                || (usage.has_total_tokens && usage.total == prompt_tokens + completion_tokens);
 
             let (cost, detail_str) = if is_claude {
-                // Claude：创建/读取独立计价；OpenAI 包装含缓存时拆分，Anthropic 原生不拆
-                let effective_prompt = if is_openai_format && prompt_tokens >= cc + cached_tokens {
-                    prompt_tokens - cc - cached_tokens
+                let sub_cc = if bill_cc { cc } else { 0 };
+                let sub_cr = if bill_cr { cached_tokens } else { 0 };
+                let effective_prompt = if is_openai_format && prompt_tokens >= sub_cc + sub_cr {
+                    prompt_tokens - sub_cc - sub_cr
                 } else {
                     prompt_tokens
                 };
-                let cc_rate = rule.claude_cache_creation_rate;
-                let cr_rate = if rule.claude_cache_read_rate > 0.0 {
-                    rule.claude_cache_read_rate
-                } else if is_cached_rate_set {
-                    cached_r
-                } else {
-                    p_rate
-                };
-                let creation = if cc > 0 && cc_rate > 0.0 {
-                    cc as f64 * cc_rate
-                } else {
-                    0.0
-                };
-                let read = if cached_tokens > 0 {
-                    cached_tokens as f64 * cr_rate
-                } else {
-                    0.0
-                };
+                let creation = if bill_cc { cc as f64 * cc_rate } else { 0.0 };
+                let read = if bill_cr { cached_tokens as f64 * cr_rate } else { 0.0 };
                 let cost_raw = (effective_prompt as f64 * p_rate
                     + completion_tokens as f64 * c_rate
                     + creation
                     + read)
                     / 1_000_000.0;
-                let d = format!(
-                    "{} -> ({}P*{} + {}C*{} + {}创建@{} + {}读取@{})/1M",
-                    detail_desc,
-                    effective_prompt,
-                    p_rate,
-                    completion_tokens,
-                    c_rate,
-                    cc,
-                    cc_rate,
-                    cached_tokens,
-                    cr_rate
+                let mut d = format!(
+                    "{} -> ({}P*{} + {}C*{}",
+                    detail_desc, effective_prompt, p_rate, completion_tokens, c_rate
                 );
+                if bill_cc {
+                    d.push_str(&format!(" + {}创建@{}", cc, cc_rate));
+                }
+                if bill_cr {
+                    d.push_str(&format!(" + {}读取@{}", cached_tokens, cr_rate));
+                }
+                d.push_str(")/1M");
                 (cost_raw, d)
             } else {
                 let (effective_prompt, bill_cache, bill_write) = split_prompt_subsets(
@@ -1447,22 +1672,29 @@ fn compute_cost_raw(
                     d.push_str(&format!(" + {:.0}写*{}", bill_write, cache_write_r));
                 }
                 d.push_str(")/1M");
-                if cached_tokens > 0 && bill_cache == 0 {
+                if is_openai_format && cached_tokens > 0 && bill_cache == 0 {
                     d.push_str(&format!(" [含{:.0}读·按输入价]", cached_tokens));
                 }
-                if cache_write_tokens > 0 && bill_write == 0 {
+                if is_openai_format && cache_write_tokens > 0 && bill_write == 0 {
                     d.push_str(&format!(" [含{:.0}写·按输入价]", cache_write_tokens));
                 }
                 (cost_raw, d)
             };
-            let (cost, d) = apply_web_search(cost, detail_str);
+            let (cost, d) = if is_glm_5_3 {
+                (
+                    cost * discount,
+                    format!("{} * {:.2}倍率", detail_str, discount),
+                )
+            } else {
+                apply_web_search(cost, detail_str)
+            };
             (cost, d)
         }
     }
 }
 
-/// OpenAI（显式 total 且 prompt 盖住缓存）：独立费率则从 prompt 拆出，否则已含在内。
-/// 否则按 Anthropic：独立费率累加，否则并入输入价。
+/// OpenAI（缓存是 prompt 子集）：独立费率则从 prompt 拆出，否则已含在输入价内。
+/// Anthropic（缓存独立于 input）：仅开启的费率参与；关闭则不计、不并入输入。
 fn split_prompt_subsets(
     prompt: i32,
     cached: i32,
@@ -1476,18 +1708,9 @@ fn split_prompt_subsets(
     let bill_c = if bill_cached { cached } else { 0 };
     let bill_w = if bill_write { cache_write } else { 0 };
     if is_openai_format && prompt >= cached + cache_write {
-        let sub = bill_c + bill_w;
-        if sub > 0 {
-            (prompt - sub, bill_c, bill_w)
-        } else {
-            (prompt, 0, 0)
-        }
+        (prompt - bill_c - bill_w, bill_c, bill_w)
     } else {
-        (
-            prompt + cached - bill_c + cache_write - bill_w,
-            bill_c,
-            bill_w,
-        )
+        (prompt, bill_c, bill_w)
     }
 }
 
@@ -1564,16 +1787,29 @@ fn free_image_count_from_ext(extended_config: &str, default: i32) -> i32 {
         .max(0) as i32
 }
 
+/// Seedream 输出总像素（万）：走 normalize_pixel_size，解析失败按 1024×1024
+fn pixels_wan_from_size(size: &str) -> f64 {
+    normalize_pixel_size(size)
+        .split_once('x')
+        .and_then(|(w, h)| {
+            let w = w.parse::<f64>().ok()?;
+            let h = h.parse::<f64>().ok()?;
+            (w > 0.0 && h > 0.0).then_some((w * h) / 10000.0)
+        })
+        .unwrap_or(104.8576)
+}
+
 /// 将 size 参数统一为像素分辨率格式（小写 x 分隔）
 /// 支持：1024x1024、1024*1024、1024×1024、1024X1024、2:3
-/// K 等级映射：1k→1024x1024、2k→2048x2048、3k→3072x3072、4k→4096x4096
+/// K 等级：1k/1.5k/2k/4k → 边长 n×1024
 fn normalize_pixel_size(size: &str) -> String {
     let s = size.trim().to_lowercase();
-    // K 等级映射
     if let Some(k) = s.strip_suffix('k') {
-        if let Ok(n) = k.parse::<u32>() {
-            let px = n * 1024;
-            return format!("{}x{}", px, px);
+        if let Ok(n) = k.parse::<f64>() {
+            if n > 0.0 {
+                let px = (n * 1024.0).round() as u32;
+                return format!("{}x{}", px, px);
+            }
         }
     }
     // 像素格式：支持 x、*、×（Unicode 乘号）、:（比例）分隔
@@ -1588,4 +1824,90 @@ fn normalize_pixel_size(size: &str) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::BillingRule;
+    use crate::relay::usage_extractor::{ExtractedFeatures, UsageTokens};
+
+    fn make_test_rule(billing_rule: &str, prompt_rate: f64, extended_config: &str) -> BillingRule {
+        let ts = crate::time_system::DbTs::now();
+        BillingRule {
+            id: 1,
+            name: "测试规则".to_string(),
+            billing_type: "tokens".to_string(),
+            prompt_rate,
+            completion_rate: 0.0,
+            cached_rate: 0.0,
+            claude_cache_creation_rate: 0.0,
+            claude_cache_read_rate: 0.0,
+            fixed_rate: 0.0,
+            duration_rate: 0.0,
+            billing_rule: billing_rule.to_string(),
+            pricing_tiers: "[]".to_string(),
+            extended_config: extended_config.to_string(),
+            provider_id: None,
+            type_id: None,
+            is_active: 1,
+            is_system: 1,
+            pid: "test-rule".to_string(),
+            pricing_type: "per_token".to_string(),
+            sort_order: 0,
+            created_at: ts.clone(),
+            updated_at: ts,
+            applied_multiplier: 1.0,
+            is_multiplier_applied: false,
+        }
+    }
+
+    #[test]
+    fn test_multimodal_billing_prevents_double_counting() {
+        // 文本单价 0.5 / 1M，图片单价 1.5 / 1M
+        let rule = make_test_rule("multimodal", 0.5, r#"{"image_prompt_rate": 1.5}"#);
+
+        // 火山方舟多模态返回：总 prompt_tokens = 1340 (包含 1312 文本 + 28 图片)
+        let usage = UsageTokens {
+            prompt: 1340,
+            completion: 0,
+            image_tokens: 28,
+            ..Default::default()
+        };
+        let features = ExtractedFeatures::default();
+
+        let (cost, detail) = compute_cost_raw(None, Some(&rule), &usage, 1.0, &features);
+
+        // 正确计费：(1312 * 0.5 + 28 * 1.5) / 1_000_000 = (656 + 42) / 1_000_000 = 0.000698
+        let expected_cost = (1312.0 * 0.5 + 28.0 * 1.5) / 1_000_000.0;
+        assert!((cost - expected_cost).abs() < 1e-9);
+
+        // 旧 Bug 会算成：(1340 * 0.5 + 28 * 1.5) / 1_000_000 = 0.000712
+        let old_buggy_cost = (1340.0 * 0.5 + 28.0 * 1.5) / 1_000_000.0;
+        assert!((cost - old_buggy_cost).abs() > 1e-8);
+        assert!(detail.contains("1312文本P*0.5"));
+        assert!(detail.contains("28图片P*1.5"));
+    }
+
+    #[test]
+    fn test_flat_billing_does_not_blindly_add_image_tokens() {
+        let mut rule = make_test_rule("flat", 1.0, "{}");
+        rule.completion_rate = 2.0;
+
+        // prompt 1340 已经包含 image_tokens 28，常规规则不应盲目叠加为 1368
+        let usage = UsageTokens {
+            prompt: 1340,
+            completion: 100,
+            image_tokens: 28,
+            ..Default::default()
+        };
+        let features = ExtractedFeatures::default();
+
+        let (cost, detail) = compute_cost_raw(None, Some(&rule), &usage, 1.0, &features);
+
+        let expected_cost = (1340.0 * 1.0 + 100.0 * 2.0) / 1_000_000.0;
+        assert!((cost - expected_cost).abs() < 1e-9);
+        assert!(detail.contains("1340入*1"));
+        assert!(detail.contains("100出*2"));
+    }
 }

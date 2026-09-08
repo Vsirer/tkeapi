@@ -88,5 +88,7 @@
   "client_style_select": "スタイル選択",
   "client_style_light": "ライトモード",
   "client_style_dark": "ダークモード",
-  "client_github": "GitHub"
+  "client_github": "GitHub",
+  "copy_md": "MDコピー",
+  "client_msg_copy_doc_success": "Markdown ドキュメントをクリップボードにコピーしました"
 }

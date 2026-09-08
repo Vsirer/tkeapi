@@ -103,8 +103,8 @@ const PortalStyleSelection: React.FC = () => {
           ? '风格已保存，请到「门户管理 → 静态生成」执行全站生成'
           : '风格配置已保存，静态页将自动更新'
       );
-    } catch {
-      message.error('保存失败');
+    } catch (e) {
+      console.error(e);
     } finally {
       setSaving(false);
     }

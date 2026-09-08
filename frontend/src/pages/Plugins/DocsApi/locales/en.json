@@ -94,5 +94,7 @@
   "client_style_select": "Appearance",
   "client_style_light": "Light",
   "client_style_dark": "Dark",
-  "client_github": "GitHub"
+  "client_github": "GitHub",
+  "copy_md": "Copy MD",
+  "client_msg_copy_doc_success": "Markdown document copied to clipboard"
 }

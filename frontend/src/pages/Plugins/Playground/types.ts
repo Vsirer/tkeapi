@@ -23,6 +23,8 @@ export interface SchemeParam {
   max?: number;
   step?: number;
   placeholder?: string;
+  /** 选项展示文案映射，例如 { "opaque": "不透明", "transparent": "透明" } */
+  option_labels?: Record<string, string>;
 }
 
 /** 体验模型定义 */
@@ -32,6 +34,7 @@ export interface PlaygroundModel {
   name: string;
   model_id: string;
   description?: string;
+  desc?: string;
   logo?: string;
   type_name: string;
   scheme_id: string;
@@ -39,6 +42,14 @@ export interface PlaygroundModel {
   scheme_type: string;
   /** 方案固定字段：最大参考图数量 */
   max_reference_images?: number;
+  /** 合并后的工作流入参口（含参考图/视频/音频 max） */
+  inputs?: {
+    key?: string;
+    enabled?: boolean;
+    modality?: string;
+    bind_key?: string;
+    max?: number;
+  }[];
   endpoint?: string;
   poll_endpoint?: string;
   params: SchemeParam[];

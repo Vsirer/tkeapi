@@ -81,6 +81,7 @@ export const ADMIN_MENU_PERMISSIONS: AdminMenuPermNode[] = [
       { label: '系统资金明细', labelKey: 'menu.finance_recharges', value: 'finance.recharges' },
       { label: '赠送金明细', labelKey: 'menu.finance_gifts', value: 'finance.gifts' },
       { label: '在线充值明细', labelKey: 'menu.finance_orders', value: 'finance.orders' },
+      { label: '发票申请审核', labelKey: 'menu.finance_invoices', value: 'finance.invoices' },
       { label: '财务数据分析', labelKey: 'menu.finance_analysis', value: 'finance.analysis' },
     ],
   },
@@ -97,6 +98,45 @@ export const ADMIN_MENU_PERMISSIONS: AdminMenuPermNode[] = [
     ],
   },
 ];
+
+type AdminPermPolicy = {
+  view: string[];
+  edit: string[];
+};
+
+/** 兼容旧数组与 { view, edit } */
+export function parseAdminGroupPermissions(raw?: string | null): AdminPermPolicy {
+  if (!raw) return { view: [], edit: [] };
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const view = parsed.filter((p): p is string => typeof p === 'string');
+      return { view, edit: [...view] };
+    }
+    if (parsed && Array.isArray(parsed.view)) {
+      const view = parsed.view.filter((p: unknown): p is string => typeof p === 'string');
+      const edit = Array.isArray(parsed.edit)
+        ? parsed.edit.filter((p: unknown): p is string => typeof p === 'string' && view.includes(p))
+        : [...view];
+      return { view, edit };
+    }
+  } catch {
+    /* ignore */
+  }
+  return { view: [], edit: [] };
+}
+
+export function normalizeAdminEditPermissions(view: string[], edit: string[]): string[] {
+  const viewSet = new Set(view);
+  const next = new Set(edit.filter((k) => viewSet.has(k)));
+  for (const group of ADMIN_MENU_PERMISSIONS) {
+    if (!group.children?.length) continue;
+    const viewed = group.children.map((c) => c.value).filter((k) => viewSet.has(k));
+    if (viewed.length === 0) continue;
+    if (!viewed.every((k) => next.has(k))) next.delete(group.value);
+  }
+  return Array.from(next);
+}
 
 /** 扁平化所有可勾选权限值（含一级与二级） */
 export function flattenAdminMenuPermissions(
@@ -147,9 +187,12 @@ export function normalizeAdminMenuPermissions(perms: string[]): string[] {
 /** 权限标签展示用短名 */
 export function getAdminMenuPermissionLabel(
   value: string,
-  t?: (key: string, fallback?: string) => string,
+  t?: any,
 ): string {
-  const tx = (key: string, fallback: string) => (t ? t(key, fallback) : fallback);
+  const tx = (key: string, fallback: string) => {
+    if (!t) return fallback;
+    return String(t(key, { defaultValue: fallback }) ?? fallback);
+  };
   for (const group of ADMIN_MENU_PERMISSIONS) {
     if (group.value === value) return tx(group.labelKey, group.label);
     const child = group.children?.find((c) => c.value === value);

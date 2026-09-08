@@ -162,7 +162,7 @@ const AuthLayout: React.FC<AuthLayoutProps> = ({
       )}
       {/* 1. 左侧装饰栏（大屏显示） */}
       {loginStyle === 'split' && (
-        <div className="relative hidden lg:flex flex-col justify-between p-10 text-white border-r border-zinc-800/30 shadcn-auth-grid select-none z-10">
+        <div className="relative hidden lg:flex flex-col justify-between p-10 text-white border-r border-zinc-800/60 shadcn-auth-grid select-none z-10">
           {/* 星星闪烁与流星轨迹背景效果 */}
           <GridStarsEffect />
 
@@ -175,36 +175,38 @@ const AuthLayout: React.FC<AuthLayoutProps> = ({
               {logo ? (
                 <img src={logo} alt="logo" className="w-7 h-7 object-contain rounded" />
               ) : (
-                <div className="flex items-center justify-center w-7 h-7 rounded bg-primary text-primary-foreground">
+                <div className="flex items-center justify-center w-7 h-7 rounded bg-primary text-primary-foreground shadow-sm shadow-primary/30">
                   <Terminal className="w-4 h-4" />
                 </div>
               )}
-              <span>{settings?.site?.name || 'Tkeapi'}</span>
+              <span className="font-semibold tracking-tight">{settings?.site?.name || 'Tkeapi'}</span>
             </a>
           ) : (
             <div className="relative z-20 flex items-center gap-2.5 text-lg font-semibold tracking-tight">
               {logo ? (
                 <img src={logo} alt="logo" className="w-7 h-7 object-contain rounded" />
               ) : (
-                <div className="flex items-center justify-center w-7 h-7 rounded bg-primary text-primary-foreground">
+                <div className="flex items-center justify-center w-7 h-7 rounded bg-primary text-primary-foreground shadow-sm shadow-primary/30">
                   <Terminal className="w-4 h-4" />
                 </div>
               )}
-              <span>{settings?.site?.name || 'Tkeapi'}</span>
+              <span className="font-semibold tracking-tight">{settings?.site?.name || 'Tkeapi'}</span>
             </div>
           )}
 
           {/* 底部名言引用 */}
-          <div className="relative z-20 mt-auto max-w-md">
-            <blockquote className="space-y-3">
-              <p className="text-lg font-medium leading-relaxed text-zinc-100">
-                {getQuote()}
-              </p>
-              <footer className="text-sm text-zinc-400 flex items-center gap-2">
-                <span className="h-px w-4 bg-zinc-600 inline-block" />
-                <span>{settings?.site?.name || 'Tkeapi'} Team</span>
-              </footer>
-            </blockquote>
+          <div className="relative z-20 mt-auto max-w-lg">
+            <div className="p-5 rounded-2xl bg-zinc-950/40 backdrop-blur-md border border-white/10 shadow-2xl shadow-black/40">
+              <blockquote className="space-y-2.5">
+                <p className="text-base font-normal leading-relaxed text-zinc-100">
+                  {getQuote()}
+                </p>
+                <footer className="text-xs text-zinc-400 flex items-center gap-2 pt-1">
+                  <span className="h-px w-4 bg-zinc-600 inline-block" />
+                  <span className="text-zinc-300 font-medium">{settings?.site?.name || 'Tkeapi'} Team</span>
+                </footer>
+              </blockquote>
+            </div>
           </div>
         </div>
       )}

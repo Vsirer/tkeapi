@@ -132,7 +132,7 @@ pub async fn list_recharges(
         count_q = count_q.bind(val);
     }
     let total = count_q.fetch_one(&state.db.pool).await.map_err(|e| {
-        tracing::error!("Finance recharges count error: {:?}", e);
+        tracing::warn!("Finance recharges count error: {:?}", e);
         e
     })?;
 
@@ -146,7 +146,7 @@ pub async fn list_recharges(
         data_q = data_q.bind(val);
     }
     let data = data_q.fetch_all(&state.db.pool).await.map_err(|e| {
-        tracing::error!("Finance recharges data error: {:?}", e);
+        tracing::warn!("Finance recharges data error: {:?}", e);
         e
     })?;
 
@@ -254,7 +254,7 @@ pub async fn list_orders(
         count_q = count_q.bind(val);
     }
     let total = count_q.fetch_one(&state.db.pool).await.map_err(|e| {
-        tracing::error!("Finance orders count error: {:?}", e);
+        tracing::warn!("Finance orders count error: {:?}", e);
         e
     })?;
 
@@ -268,7 +268,7 @@ pub async fn list_orders(
         data_q = data_q.bind(val);
     }
     let data = data_q.fetch_all(&state.db.pool).await.map_err(|e| {
-        tracing::error!("Finance orders data error: {:?}", e);
+        tracing::warn!("Finance orders data error: {:?}", e);
         e
     })?;
 
@@ -429,7 +429,7 @@ pub async fn get_daily_stats(
                                 tracing::info!("✅ [SWR] 后台异步更新财务统计缓存成功");
                             }
                             Err(e) => {
-                                tracing::error!("❌ [SWR] 后台异步更新财务统计缓存失败: {:?}", e);
+                                tracing::warn!("❌ [SWR] 后台异步更新财务统计缓存失败: {:?}", e);
                             }
                         }
                     });

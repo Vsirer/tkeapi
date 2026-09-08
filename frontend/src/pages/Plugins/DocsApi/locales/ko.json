@@ -88,5 +88,7 @@
   "client_style_select": "스타일 선택",
   "client_style_light": "라이트 모드",
   "client_style_dark": "다크 모드",
-  "client_github": "GitHub"
+  "client_github": "GitHub",
+  "copy_md": "MD 복사",
+  "client_msg_copy_doc_success": "Markdown 문서가 클립보드에 복사되었습니다"
 }

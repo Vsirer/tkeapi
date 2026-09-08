@@ -1,7 +1,7 @@
 # TokensByte Relay 中枢开发规范
 
 > **适用范围**: `backend/src/relay/` 目录下的所有模块。  
-> **最后更新**: 2026-08-12  
+> **最后更新**: 2026-08-27  
 > **目的**: 确保模型转发、计费、日志、异步任务、HA 逻辑一致，防止扩展时引入遗漏。
 
 ---
@@ -88,7 +88,7 @@ proxy::pre_deduct_or_intercept(..., category).await
 |-----|------|
 | `record_zero_cost_fail` | **只记账**；HA 终态 / 业务侧停切；调用方自行 `upstream_fail` / `BadRequest` / `PaymentRequired` |
 | `HaAttempt::park` + `FailBill::transport|http|biz` | 上游失败暂存（不写 logs）→ 外环 `ha.fail`；中间失败不记账 |
-| `spawn_protected` | 连接保护：独立 task 跑完上游/预扣/落库，oneshot 回传 |
+| `spawn_protected` + `join_protected` | 连接保护：独立 task 跑完上游/预扣/落库；拼 Response 在 task 外 |
 
 `pre_deducted`/`pre_deduct_gift`：尚未预扣传 `0.0`；预扣后失败退费传已扣金额。  
 成功计费、异步冻结、流结束结算：**不要**走上述 API。
@@ -114,7 +114,7 @@ Err(ha.finish(&HaBillCtx::new(&state, &token, model, entry_path).category("聊�
 ```
 
 - `FailBill::transport` / `http` / `biz`：三类上游失败账单；可选 `.stream` / `.detail` / `.pre` / `.content` / `.client`
-- `spawn_protected(fut)`：连接保护（oneshot 回传）；fire-and-forget 计费仍用普通 `tokio::spawn`
+- `spawn_protected(fut)` + `join_protected`：连接保护（上游/预扣/落库，oneshot 回传）；拼 Response 在 Ok 分支；流泵仍用普通 `tokio::spawn`
 - `park`：spawn 暂存 `FailBill` + 对外错误（不写 logs）
 - `fail`：记 snap / 首败；续试则退预扣并清零首败预扣；末次强制停切后 `settle_first`+`save`
 - `settle_first`：首败渠 + 首败 `endpoint` + `FailBill`；category 用当前 `HaBillCtx`
@@ -122,14 +122,14 @@ Err(ha.finish(&HaBillCtx::new(&state, &token, model, entry_path).category("聊�
 - 业务侧：`record_zero_cost_*` + `on_access_err`（预扣失败勿 `?` 跳出）
 - `ok`/`save`：仅真实 HA 渠写 `ha_usage_logs`
 - `set_pending`：禁止 `None` 覆盖已有 id
-- 对外：`HaAttempt` + `HaBillCtx::new` + `FailBill` + `spawn_protected` + `policy` / …
+- 对外：`HaAttempt` + `HaBillCtx::new` + `FailBill` + `spawn_protected` / `join_protected` + `policy` / …
 
 ---
 
 ## 五、计费流水线
 
 ```
-get_user_context → check_access → select_channel → resolve_forward_rule
+get_user_context → check_access_with_model → select_channel → resolve_forward_rule
   → transform_request_body → 上游
   → [同步] usage → calculate_relay_cost → BillRecord
   → [异步] POST 冻结 pre_deduction → GET/轮询结算
@@ -156,7 +156,7 @@ POST 冻结（`billing_detail` 含「冻结」）→ GET 成功结算 / 失败�
 - Usage：`usage_extractor::parse_usage`（OpenAI / Gemini / 火山 / SSE）
 - 转发：`forward.rs`（`ResolvedForward`、`target_type`、白名单透传）
 - 素材：`asset_convert.rs`（仅 `asset_convert==true`；失败不阻塞主请求）
-- 异步任务：`poll_task_result` + `PollTaskOpts`（查询前 5→1s，`POLL_FAIL_LIMIT=15`）；级联裁剪/抽帧经内部 `CascadeMk`→`cascade_mk_url`；增强状态仍由 GET/TaskPoller；后台周期见 `RelaySettings.poll_tick_secs`（缓存）
+- 异步任务：`poll_task_result` → `PollOutcome`（`Succeeded` / `Failed{timed_out}`）+ `PollTaskOpts`（查询前 5→1s，可重试达 `POLL_FAIL_LIMIT=15`，不可重试立即失败并保留上游文案）；级联裁剪/抽帧经内部 `CascadeMk`→`cascade_mk_url`；增强状态仍由 GET/TaskPoller；后台周期见 `RelaySettings.poll_tick_secs`（缓存）
 - 级联增强：S2 成功走 `cascade_on_s2_succeeded`（usage×res_mul + 按需抽帧写 stage2）；对外/用户端经 `cascade_s1_with_s2_url` 叠尾帧；落库 stage1 保持原尾帧
 - 级联出片不变量：S2 完成前禁止展示 S1 成片（剥 content/data/video_url 等）；失败勿回退空 URL；logs 短路先 status 再级联；处理中无 `{id,status}` 空壳兜底
 - 结算：`cascade_stage2_submit` 只落库错误态，退费由 task `settle_failure` / `try_cascade_stage2_submit` 统一结案
@@ -183,7 +183,7 @@ POST 冻结（`billing_detail` 含「冻结」）→ GET 成功结算 / 失败�
 |------|--------|
 | 计费 | `calculate_relay_cost`, `compute_cost` |
 | 日志 | `PendingLog`, `BillRecord`, `record_pending_log` |
-| HA | `FailBill::transport|http|biz`, `park` / `fail` / `ok` / `finish`, `spawn_protected` |
+| HA | `FailBill::transport|http|biz`, `park` / `fail` / `ok` / `finish`, `spawn_protected` / `join_protected` |
 | 预扣费 | `pre_deduct_or_intercept` |
 | Usage / 特征 | `parse_usage`, `extract_request_features` |
 | 异步 | `already_billed`, `"冻结"`, `TaskRelayLogRow` |

@@ -23,6 +23,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
+import { copyToClipboard as copyToClipboardUtil } from '../../utils/clipboard';
 import type { Redemption, RedemptionGroup } from '../../types';
 import dayjs from 'dayjs';
 import { isRedemptionExpired } from '../../utils/quotaPeriod';
@@ -147,35 +148,16 @@ const Redemptions: React.FC = () => {
       );
     } catch (e) {
       console.error(e);
-      msgApi.error(isZh ? '保存失败' : 'Save failed');
     } finally {
       setToggleLoading(false);
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => {
-          msgApi.success(t('common.copied'));
-        });
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        textArea.style.top = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        try {
-          document.execCommand('copy');
-          msgApi.success(t('common.copied'));
-        } finally {
-          textArea.remove();
-        }
-      }
-    } catch {
+  const copyToClipboard = async (text: string) => {
+    const ok = await copyToClipboardUtil(text);
+    if (ok) {
+      msgApi.success(t('common.copied'));
+    } else {
       msgApi.error(isZh ? '复制失败，请手动选择复制' : 'Failed to copy, please select manually');
     }
   };

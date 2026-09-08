@@ -1,39 +1,108 @@
-# Google Gemini-3.1 Image Generation Example
+# Google Gemini-3.1 Image Generation
 
 `gemini-3.1-flash-image-preview` via OpenAI-compatible `POST /v1/images/generations`. Use `ratio` and `resolution` as shown below.
 
-### 1. Endpoint
+---
+
+## 1. Endpoint
+
 * **HTTP Method**: `POST`
 * **Request Path**: `https://{{domain}}/v1/images/generations`
+* **Authorization**: `Authorization: Bearer sk-your_token`
 
-### 2. Code Example
+### A. Text-to-Image
+
 ```bash
 curl -X POST https://{{domain}}/v1/images/generations \
   -H "Authorization: Bearer sk-your_token_here" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gemini-3.1-flash-image-preview",
-    "prompt": "Japanese courtyard in sunny day, cherry blossoms falling, clear pond, highly detailed lighting effects",
-    "ratio": "1:1",
+    "prompt": "Japanese courtyard in sunny day, cherry blossoms falling, clear pond, highly detailed lighting",
+    "ratio": "16:9",
     "resolution": "1k",
     "n": 1,
     "response_format": "url"
   }'
 ```
 
-### 3. Request Parameters
+### B. Image-to-Image (single reference)
 
-| OpenAI-Compatible Parameter | Type | Required | Default | Description & Restrictions |
+Supports HTTPS URL or `data:image/png;base64,...`.
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "prompt": "Make the cat more sci-fi with glowing mechanical eyes, cyberpunk realism",
+    "image": "https://example.com/assets/my_cat.png",
+    "ratio": "1:1",
+    "resolution": "1k",
+    "response_format": "url"
+  }'
+```
+
+### C. Multi-Image Reference
+
+Pass multiple refs via `image_urls` (or `image` array) for character + scene fusion.
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "prompt": "Match character from image 1 and cafe scene from image 2, warm illustration style",
+    "image_urls": [
+      "https://example.com/character.png",
+      "https://example.com/cafe_scene.png"
+    ],
+    "ratio": "16:9",
+    "resolution": "1k",
+    "n": 1
+  }'
+```
+
+### D. Search Grounding
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.1-flash-image-preview",
+    "prompt": "Concept design of the latest 2026 smartphone with transparent screen",
+    "google_search": true,
+    "google_image_search": true,
+    "ratio": "16:9",
+    "resolution": "1k"
+  }'
+```
+
+---
+
+## 2. Request Parameters
+
+| Parameter | Type | Required | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `model` | `string` | Yes | - | Name of the model. Pass `gemini-3.1-flash-image-preview`. |
-| `prompt` | `string` | Yes | - | Text prompt describing the image. |
-| `ratio` | `string` | No | `"1:1"` | Aspect ratio of the generated image. Supported values: `"1:1"`, `"3:4"`, `"4:3"`, `"9:16"`, `"16:9"`, etc. Takes precedence over `size`. |
-| `resolution` | `string` | No | `"1k"` | Resolution of the image. Supported values: `"1k"` (max side 1024px), `"2k"` (max side 2048px), etc. Takes precedence over `size`. |
-| `size` | `string` | No | - | Fallback: values with a colon (e.g. `"16:9"`) mean ratio; without (e.g. `"1k"`) mean resolution. **Do not pass `"1024x1024"`.** |
-| `response_format` | `string` | No | `url` | Format of response. Support `url` or `b64_json`. |
-| `n` | `integer` | No | `1` | Number of images to generate. |
+| `model` | `string` | Yes | - | e.g. `gemini-3.1-flash-image-preview`. |
+| `prompt` | `string` | Yes | - | Image description. |
+| `image` | `string / array` | No | - | Reference URL or Base64 (single or array). |
+| `image_urls` | `array` | No | - | Multi-image reference URLs; preferred for multiple refs. |
+| `ratio` | `string` | No | `"1:1"` | `"1:1"` / `"3:4"` / `"4:3"` / `"9:16"` / `"16:9"`. Overrides `size`. |
+| `resolution` | `string` | No | `"1k"` | e.g. `"1k"`, `"2k"`. Overrides `size`. |
+| `size` | `string` | No | - | Colon = ratio; plain = resolution. **Do not pass `"1024x1024"`.** |
+| `response_format` | `string` | No | `"url"` | `"url"` or `"b64_json"`. |
+| `n` | `integer` | No | `1` | Number of images. |
+| `google_search` | `boolean` | No | `false` | Enable Google Search grounding. |
+| `google_image_search` | `boolean` | No | `false` | Enable image search grounding. |
 
-### 4. Response Example (200 OK)
+---
+
+## 3. Response Example (200 OK)
+
 ```json
 {
   "created": 1719441600,

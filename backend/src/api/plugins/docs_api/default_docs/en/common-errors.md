@@ -1,63 +1,20 @@
 
-### 5. Common Error Responses
+### 5. Common Error Codes & Troubleshooting
 
-Our API conforms to standard HTTP status codes and unified JSON error formats. Below are common failure scenarios and troubleshooting tips:
+HTTP codes, error body format, and troubleshooting are **maintained in one dedicated page** (not duplicated under each example).
 
-:::tabs
-=== 400 Bad Request (Invalid Parameters / Model Not Found)
-Returned when the requested `model` does not exist, is misspelled, or the request JSON body is malformed or missing required fields.
+👉 **[Gateway Error Codes & Troubleshooting]({{error_codes_href}})**
 
-*   **HTTP Status**: `400`
-*   **Response Example**:
-    ```json
-    {
-      "error": {
-        "message": "The model does not exist or you do not have access to it.",
-        "type": "invalid_request_error",
-        "param": "model",
-        "code": "model_not_found"
-      }
-    }
-    ```
-*   **Troubleshooting**:
-    1. Check if the `model` parameter is correct. Refer to the "Endpoints Overview" for available models.
-    2. Validate your JSON request body structure to ensure all delimiters are closed.
+**Quick reference**:
 
-=== 401 Unauthorized (Invalid API Key)
-Returned when the API Key (Token) in the HTTP Header is missing, expired, or invalid.
+| Code | Meaning |
+| :---: | :--- |
+| **402** | Insufficient balance (**not** 429) |
+| **400** | Bad request / content or copyright filter |
+| **429** | RPS/RPM limits or in-flight task cap (low balance) |
+| **403** | Token / IP / model permission (balance → 402; content filter → 400) |
+| **200 + `status: failed`** | Async video/long-task business failure on poll |
 
-*   **HTTP Status**: `401`
-*   **Response Example**:
-    ```json
-    {
-      "error": {
-        "message": "Invalid API Key or authorization header. Please check your credentials.",
-        "type": "invalid_request_error",
-        "param": null,
-        "code": "invalid_api_key"
-      }
-    }
-    ```
-*   **Troubleshooting**:
-    1. Ensure the request header includes `"Authorization: Bearer sk-xxx"`. Note the space between `Bearer` and the key.
-    2. Check the developer console to confirm the token is active and has not been disabled or deleted.
+HTTP status matches call log `status_code` for traceability by `log_id`.
 
-=== 429 Too Many Requests (Insufficient Quota / Rate Limit)
-Returned when your account credit balance is insufficient to pay for the request, or your request frequency exceeds the Rate Limit (RPM/TPM).
-
-*   **HTTP Status**: `429`
-*   **Response Example**:
-    ```json
-    {
-      "error": {
-        "message": "Your credit balance is insufficient. Please recharge your account.",
-        "type": "insufficient_quota",
-        "param": null,
-        "code": "insufficient_quota"
-      }
-    }
-    ```
-*   **Troubleshooting**:
-    1. Log in to the console to check if your account balance is positive.
-    2. If you hit a rate limit, implement an exponential backoff retry policy in your application, or contact us to raise limits.
-:::
+> **Maintenance**: update the `error-codes` article only; this appendix links to it.

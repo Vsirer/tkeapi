@@ -1,6 +1,6 @@
 # 이미지 생성 및 편집 인터페이스
 
-게이트웨이의 이미지 생성 인터페이스는 OpenAI 표준 이미지 생성 사양과 완벽하게 호환됩니다. 시스템 백엔드에는 Dall-E-3, Gemini Imagen, 볼케인진(Volcengine), 텐센트 Hunyuan, 알리바바 Wanxiang, Jimeng AI 등 다양한 주요 이미지 생성 채널이 통합되어 있으며, 각 제공업체 고유의 매개변수를 자동으로 매핑하고 분석합니다.
+OpenAI 호환 이미지 API. 알리千问 이미지(`qwen-image-3.0-pro`)는 **`wan-image`** 참조.
 
 ### 1. 이미지 생성 (Image Generations)
 * **경로**: `/v1/images/generations`
@@ -9,7 +9,7 @@
 #### 主要请求参数说明
 | 매개변수명 | 타입 | 필수 여부 | 설명 |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | 예 | 이미지 생성 모델명 (예: `dall-e-3` (OpenAI), `wanx-v1` (알리바바 Wanxiang), `seedream-5.0-lite` (Jimeng)) |
+| `model` | `string` | 예 | 이미지 생성 모델명 (예: `dall-e-3` (OpenAI), `qwen-image-3.0-pro`, `seedream-5.0-lite` (Jimeng)) |
 | `prompt` | `string` | 예 | 이미지를 묘사하는 텍스트 프롬프트 |
 | `n` | `integer` | 아니오 | 생성하고자 하는 이미지 수 (기본값 `1`). 게이트웨이가 상류 채널 네이티브의 해당 매개변수로 자동 변환합니다. |
 | `size` | `string` | 아니오 | 해상도 (예: `1024x1024`). 시스템이 지원되는 표준 규격으로 해상도를 자동 변환하여 전송합니다. |

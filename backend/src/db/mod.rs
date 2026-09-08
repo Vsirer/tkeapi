@@ -52,7 +52,7 @@ impl Database {
                 Err(e) => {
                     eprintln!("⚠️ Database connection error: {:?}", e);
                     if attempts >= max_attempts {
-                        tracing::error!(
+                        tracing::warn!(
                             "❌ Failed to connect to database after {} attempts: {}",
                             max_attempts,
                             e

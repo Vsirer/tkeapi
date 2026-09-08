@@ -7,7 +7,8 @@
 
 //! 响应格式化引擎 (Response Formatter)
 //! 将各厂商上游返回格式归一化为 OpenAI 标准规范格式。
-//! 仅对 OpenAI 兼容路由（/v1/images/generations、/v1/images/edits、/v1/video/generations、/v1/tasks/）生效。
+//! 仅对 OpenAI 兼容路由（/v1/images/generations、/v1/images/edits、
+//! /v1/video/generations、/v1/videos、/v1/videos/generations、/v1/tasks/）生效。
 //! 设计原则：采用递归扫描模式，确保无论上游结构如何变化，都能准确抓取 ID、状态和媒体 URL。
 
 use regex::Regex;
@@ -15,12 +16,40 @@ use serde_json::{json, Value};
 
 /// 判定请求路径是否属于标准的 OpenAI 兼容 API 路径（排除如 /api/ 厂商原生接口）
 pub fn is_openai_compatible_path(raw_path: &str) -> bool {
-    !raw_path.starts_with("/api/")
-        && (raw_path == "/v1/images/generations"
-            || raw_path == "/v1/images/edits"
-            || raw_path == "/v1/video/generations"
-            || raw_path.starts_with("/v1/video/generations/")
-            || raw_path.starts_with("/v1/tasks/"))
+    let Some(p) = raw_path.strip_prefix("/v1/") else {
+        return false;
+    };
+
+    // 1. 图像生成/编辑与通用任务轮询
+    if p == "images/generations" || p == "images/edits" || p.starts_with("tasks/") {
+        return true;
+    }
+
+    // 2. 标准视频入口与轮询：/v1/video/generations[/...]
+    if p == "video/generations" || p.starts_with("video/generations/") {
+        return true;
+    }
+
+    // 3. OpenAI Videos 兼容别名（/v1/videos、/v1/videos/generations[/...]、/v1/videos/{task_id}）
+    //    排除可灵原生路径：text2video、image2video、multi-image2video、omni-video
+    if let Some(sub) = p.strip_prefix("videos") {
+        if sub.is_empty() {
+            return true; // /v1/videos
+        }
+        if let Some(rest) = sub.strip_prefix('/') {
+            if rest == "generations" || rest.starts_with("generations/") {
+                return true; // /v1/videos/generations 或 /v1/videos/generations/{task_id}
+            }
+            // 单段 task_id 轮询：/v1/videos/{task_id}
+            return !rest.contains('/')
+                && !matches!(
+                    rest,
+                    "text2video" | "image2video" | "multi-image2video" | "omni-video"
+                );
+        }
+    }
+
+    false
 }
 
 /// 统一格式化入口：对 OpenAI 兼容路由自动转换响应格式。
@@ -73,7 +102,7 @@ pub fn format_openai(
             return raw.to_string();
         }
         if let Some(meta) = v.get("usageMetadata") {
-            let usage = gemini_usage_metadata_to_openai(meta);
+            let usage = crate::relay::usage_extractor::gemini_usage_metadata_to_openai(meta);
             let mut out = v;
             out["usage"] = usage;
             return to_json(&out);
@@ -99,7 +128,8 @@ pub fn format_openai(
 // ── ID 提取（公共方法，供 task.rs / image.rs / proxy.rs 复用） ──
 
 /// 从任意厂商响应 JSON 中提取任务 ID（兼容 task_id / id / data.task_id 等多种路径）
-/// 搜索路径覆盖：根节点、task、data 对象/数组、output、data.task.id、腾讯云 Response.TaskId
+/// 优先级：真实任务号字段优先；根级 `request_id` 仅作 fal 等无 task_id 厂商的最后兜底
+///（DashScope 等同体常同时有 `request_id` + `output.task_id`，不可先取 request_id）。
 pub fn find_id(v: &Value) -> String {
     let mut id = v
         .get("task_id")
@@ -110,9 +140,10 @@ pub fn find_id(v: &Value) -> String {
         .or_else(|| v.pointer("/data/id"))
         .or_else(|| v.pointer("/data/0/task_id"))
         .or_else(|| v.pointer("/data/0/id")) // 可灵 3.0 按任务ID查询: data[].id
-        .or_else(|| v.pointer("/output/task_id"))
+        .or_else(|| v.pointer("/output/task_id")) // DashScope / 阿里百炼
         .or_else(|| v.pointer("/data/task/id"))
         .or_else(|| v.pointer("/Response/TaskId"))
+        .or_else(|| v.get("request_id")) // fal.ai queue: { request_id, status }；须在真实 task_id 之后
         .and_then(|val| {
             // 兼容字符串和数字类型的 task_id（如火山方舟返回数字 ID）
             val.as_str()
@@ -151,7 +182,7 @@ pub fn extract_async_task_id(v: &Value) -> String {
 
 // ── 异步结案失败体 / 状态提取 ──
 
-/// 异步结案失败最小任务体（约定：HTTP 200 + status=failed + id + error）
+/// 异步结案失败最小任务体（默认 HTTP 200；体含数字 error.code 时轮询出口透出）
 pub fn async_task_failed_body(task_id: &str, message: &str) -> String {
     json!({
         "id": task_id,
@@ -164,19 +195,240 @@ pub fn async_task_failed_body(task_id: &str, message: &str) -> String {
     .to_string()
 }
 
-/// 强制根节点对外任务号：写 `id`；若已有根 `task_id` 则同步（与 `find_id` 优先级对齐，避免仍提取到上游号）
+/// 强制根节点对外任务号：写 `id`；若已有根 `task_id` 则同步。原位改值，避免 `Value` 重排键。
 pub fn force_json_task_id(s: &mut String, task_id: &str) {
     if task_id.is_empty() {
         return;
     }
-    if let Ok(mut v) = serde_json::from_str::<Value>(s) {
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert("id".to_string(), json!(task_id));
-            if obj.contains_key("task_id") {
-                obj.insert("task_id".to_string(), json!(task_id));
+    let lit = json!(task_id).to_string();
+    if !json_root_set(s, "id", &lit) {
+        json_root_insert_first(s, "id", &lit);
+    }
+    json_root_set(s, "task_id", &lit);
+}
+
+#[derive(Clone, Copy)]
+struct JsonMember {
+    key_lo: usize,
+    val_lo: usize,
+    val_hi: usize,
+}
+
+fn json_skip_ws(s: &str, i: &mut usize) {
+    let b = s.as_bytes();
+    while *i < b.len() && b[*i].is_ascii_whitespace() {
+        *i += 1;
+    }
+}
+
+fn json_skip_string(s: &str, i: &mut usize) -> Option<()> {
+    let b = s.as_bytes();
+    if b.get(*i) != Some(&b'"') {
+        return None;
+    }
+    *i += 1;
+    while *i < b.len() {
+        match b[*i] {
+            b'\\' => *i = (*i + 2).min(b.len()),
+            b'"' => {
+                *i += 1;
+                return Some(());
             }
-            *s = serde_json::to_string(&v).unwrap_or_else(|_| s.clone());
+            _ => *i += 1,
         }
+    }
+    None
+}
+
+fn json_skip_balanced(s: &str, i: &mut usize, open: u8, close: u8) -> Option<()> {
+    let b = s.as_bytes();
+    if b.get(*i) != Some(&open) {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut in_str = false;
+    let mut esc = false;
+    *i += 1;
+    while *i < b.len() && depth > 0 {
+        let c = b[*i];
+        *i += 1;
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+        }
+    }
+    (depth == 0).then_some(())
+}
+
+fn json_skip_value(s: &str, i: &mut usize) -> Option<(usize, usize)> {
+    json_skip_ws(s, i);
+    let start = *i;
+    match s.as_bytes().get(*i)? {
+        b'"' => json_skip_string(s, i)?,
+        b'{' => json_skip_balanced(s, i, b'{', b'}')?,
+        b'[' => json_skip_balanced(s, i, b'[', b']')?,
+        _ => {
+            let b = s.as_bytes();
+            while *i < b.len() && !matches!(b[*i], b',' | b'}' | b']') {
+                *i += 1;
+            }
+        }
+    }
+    Some((start, *i))
+}
+
+fn json_root_open(s: &str) -> Option<usize> {
+    let mut i = 0;
+    json_skip_ws(s, &mut i);
+    (s.as_bytes().get(i) == Some(&b'{')).then_some(i)
+}
+
+fn json_for_each_member(
+    s: &str,
+    obj_open: usize,
+    mut f: impl FnMut(&str, JsonMember) -> bool,
+) -> Option<()> {
+    let b = s.as_bytes();
+    if b.get(obj_open) != Some(&b'{') {
+        return None;
+    }
+    let mut i = obj_open + 1;
+    json_skip_ws(s, &mut i);
+    if b.get(i) == Some(&b'}') {
+        return Some(());
+    }
+    loop {
+        json_skip_ws(s, &mut i);
+        let key_lo = i;
+        json_skip_string(s, &mut i)?;
+        let key = serde_json::from_str::<String>(&s[key_lo..i]).ok()?;
+        json_skip_ws(s, &mut i);
+        if b.get(i) != Some(&b':') {
+            return None;
+        }
+        i += 1;
+        let (val_lo, val_hi) = json_skip_value(s, &mut i)?;
+        if !f(&key, JsonMember { key_lo, val_lo, val_hi }) {
+            return Some(());
+        }
+        json_skip_ws(s, &mut i);
+        match b.get(i) {
+            Some(b',') => i += 1,
+            Some(b'}') => return Some(()),
+            _ => return None,
+        }
+    }
+}
+
+fn json_find_root(s: &str, key: &str) -> Option<JsonMember> {
+    let mut found = None;
+    json_for_each_member(s, json_root_open(s)?, |k, m| {
+        if k == key {
+            found = Some(m);
+            false
+        } else {
+            true
+        }
+    })?;
+    found
+}
+
+fn json_walk_objects(s: &str, obj_open: usize, f: &mut impl FnMut(&str, JsonMember)) {
+    let _ = json_for_each_member(s, obj_open, |k, m| {
+        f(k, m);
+        let mut i = m.val_lo;
+        json_skip_ws(s, &mut i);
+        if s.as_bytes().get(i) == Some(&b'{') {
+            json_walk_objects(s, i, f);
+        }
+        true
+    });
+}
+
+pub(crate) fn json_root_raw_value<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    json_find_root(s, key).map(|m| &s[m.val_lo..m.val_hi])
+}
+
+/// 根字段已存在则原位替换值，不重排其它键。无此键 / 非对象 → false
+pub(crate) fn json_root_set(s: &mut String, key: &str, raw_val: &str) -> bool {
+    let Some(m) = json_find_root(s, key) else {
+        return false;
+    };
+    s.replace_range(m.val_lo..m.val_hi, raw_val);
+    true
+}
+
+fn json_root_insert_first(s: &mut String, key: &str, raw_val: &str) {
+    let Some(open) = json_root_open(s) else {
+        return;
+    };
+    let mut j = open + 1;
+    json_skip_ws(s, &mut j);
+    let empty = s.as_bytes().get(j) == Some(&b'}');
+    let piece = if empty {
+        format!("{}:{raw_val}", json!(key))
+    } else {
+        format!("{}:{raw_val},", json!(key))
+    };
+    s.insert_str(open + 1, &piece);
+}
+
+pub(crate) fn json_root_remove(s: &mut String, key: &str) {
+    let Some(m) = json_find_root(s, key) else {
+        return;
+    };
+    let b = s.as_bytes();
+    let mut lo = m.key_lo;
+    let mut hi = m.val_hi;
+    let mut k = hi;
+    json_skip_ws(s, &mut k);
+    if b.get(k) == Some(&b',') {
+        hi = k + 1;
+    } else {
+        let mut p = lo;
+        while p > 0 && b[p - 1].is_ascii_whitespace() {
+            p -= 1;
+        }
+        if p > 0 && b[p - 1] == b',' {
+            lo = p - 1;
+        }
+    }
+    s.replace_range(lo..hi, "");
+}
+
+pub(crate) fn json_replace_str(s: &mut String, old: &str, new: &str) {
+    if old.is_empty() || old == new {
+        return;
+    }
+    if let (Ok(old_lit), Ok(new_lit)) = (serde_json::to_string(old), serde_json::to_string(new)) {
+        *s = s.replace(&old_lit, &new_lit);
+    }
+}
+
+/// 已有同名字段（含嵌套对象）原位改值，不追加
+pub(crate) fn json_replace_fields(s: &mut String, kv: &[(&str, &str)]) {
+    let Some(open) = json_root_open(s) else {
+        return;
+    };
+    let mut hits: Vec<(usize, usize, &str)> = Vec::new();
+    json_walk_objects(s, open, &mut |k, m| {
+        if let Some((_, raw)) = kv.iter().find(|(n, _)| *n == k) {
+            hits.push((m.val_lo, m.val_hi, raw));
+        }
+    });
+    for (lo, hi, raw) in hits.into_iter().rev() {
+        s.replace_range(lo..hi, raw);
     }
 }
 
@@ -218,6 +470,14 @@ pub fn extract_raw_status(v: &Value) -> String {
                 {
                     return "FAILED".to_string();
                 }
+                // MPS DescribeImageTaskDetail：FINISH 但 ErrMsg 非空即失败（可无 ResultSet）
+                if resp
+                    .get("ErrMsg")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    return "FAILED".to_string();
+                }
             }
             return status.to_string();
         }
@@ -255,9 +515,8 @@ pub fn parse_raw_status_to_standard(raw: &str) -> &'static str {
         "completed" | "succeeded" | "succeed" | "success" | "finish" | "done" => "completed",
         "failed" | "canceled" | "cancelled" | "error" | "timeout" | "unknown" | "fail"
         | "abort" | "not_found" | "expired" => "failed",
-        "processing" | "running" | "active" | "generating" | "waiting" | "in_queue" => {
-            "in_progress"
-        }
+        "processing" | "running" | "active" | "generating" | "waiting" | "in_queue"
+        | "in_progress" => "in_progress",
         "submitted" | "pending" | "queueing" | "queued" => "pending",
         _ => "unknown",
     }
@@ -340,8 +599,8 @@ pub fn find_urls(v: &Value) -> Vec<String> {
         push_unique(&mut urls, u);
     }
 
-    // 3. 火山方舟: content.video_url；MiniMax H3 v2: task.content.url
-    for path in &["/content/video_url", "/task/content/url"] {
+    // 3. 火山方舟: content.video_url；MiniMax H3 v2: task.content.url；fal.ai: video.url
+    for path in &["/content/video_url", "/task/content/url", "/video/url"] {
         if let Some(u) = v.pointer(path).and_then(|u| u.as_str()) {
             push_unique(&mut urls, u);
         }
@@ -477,7 +736,7 @@ pub fn find_urls(v: &Value) -> Vec<String> {
         }
     }
 
-    // 6b. 腾讯云 VOD / 混元 AIGC: Response.{TaskType}.Output.FileInfos[].FileUrl / Url
+    // 6b. 腾讯云 VOD FileInfos；MPS SignedUrl（跳过 InputInfo，避免模特图当出图）
     if let Some(resp) = v.get("Response") {
         if let Some(task) = tencent_aigc_task(resp) {
             if let Some(arr) = task.pointer("/Output/FileInfos").and_then(|a| a.as_array()) {
@@ -489,6 +748,16 @@ pub fn find_urls(v: &Value) -> Vec<String> {
                     {
                         push_unique(&mut urls, u);
                     }
+                }
+            }
+        }
+        if let Some(arr) = resp
+            .get("ImageProcessTaskResultSet")
+            .and_then(|a| a.as_array())
+        {
+            for item in arr {
+                if let Some(u) = item.pointer("/Output/SignedUrl").and_then(|u| u.as_str()) {
+                    push_unique(&mut urls, u);
                 }
             }
         }
@@ -551,6 +820,7 @@ fn scan_value_for_urls(v: &Value, urls: &mut Vec<String>) {
                     || k == "task_input"
                     || k == "original_input"
                     || k == "task_data"
+                    || k == "InputInfo"
                 {
                     continue;
                 }
@@ -627,7 +897,9 @@ fn openai_status(v: &Value, urls: &[String]) -> String {
         return "failed".to_string();
     }
     match std {
-        s @ ("completed" | "failed" | "pending" | "in_progress") => s.to_string(),
+        "completed" | "failed" | "in_progress" => std.to_string(),
+        // OpenAI 轮询无 pending：上游 queueing/pending 统一为 in_progress
+        "pending" => "in_progress".to_string(),
         _ => "in_progress".to_string(),
     }
 }
@@ -643,25 +915,8 @@ fn resolve_client_usage(v: &Value) -> Option<Value> {
     if let Some(u) = openai_usage_node(v) {
         return Some(u.clone());
     }
-    v.get("usageMetadata").map(gemini_usage_metadata_to_openai)
-}
-
-fn gemini_usage_metadata_to_openai(u: &Value) -> Value {
-    let i64_field = |k: &str| u.get(k).and_then(|t| t.as_i64()).unwrap_or(0);
-    let pt = i64_field("promptTokenCount");
-    let ct_meta = i64_field("candidatesTokenCount");
-    let total_meta = i64_field("totalTokenCount");
-    let ct = if ct_meta > 0 {
-        ct_meta
-    } else {
-        (total_meta - pt).max(0)
-    };
-    let total = if total_meta > 0 { total_meta } else { pt + ct };
-    json!({
-        "prompt_tokens": pt,
-        "completion_tokens": ct,
-        "total_tokens": total,
-    })
+    v.get("usageMetadata")
+        .map(crate::relay::usage_extractor::gemini_usage_metadata_to_openai)
 }
 
 // ── URL/Base64 → OpenAI data item 统一转换（build_openai_sync 和 build_openai_poll 共用）──
@@ -749,9 +1004,9 @@ fn build_openai_poll(category: &str, v: &Value, fallback_id: Option<&str>) -> St
                 .collect();
             resp["data"] = json!(items);
         }
-        resp["usage"] = resolve_client_usage(v).unwrap_or_else(|| {
-            json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-        });
+        resp["usage"] = resolve_client_usage(v).unwrap_or_else(
+            || json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
+        );
     }
 
     if status == "failed" {
@@ -763,6 +1018,11 @@ fn build_openai_poll(category: &str, v: &Value, fallback_id: Option<&str>) -> St
 
 /// 统一从 Value 中提取最核心的错误文本信息（集合了所有的已知厂商指针路径）
 pub fn extract_error_message_from_value(v: &Value) -> Option<String> {
+    // fal / FastAPI：{"detail":[{"msg":"..."}, ...]} 或 {"detail":"..."}
+    if let Some(msg) = fastapi_detail_message(v) {
+        return Some(msg);
+    }
+
     v.pointer("/data/error/message")
         .or_else(|| v.pointer("/data/error"))
         .or_else(|| v.pointer("/error/message"))
@@ -780,6 +1040,12 @@ pub fn extract_error_message_from_value(v: &Value) -> Option<String> {
         .or_else(|| v.get("ErrorMessage"))
         // 腾讯云任务级：优先 Response.{TaskType}.Message，无 TaskType 时回退已知 Aigc* 节点
         .or_else(|| tencent_task_message(v))
+        .or_else(|| {
+            v.pointer("/Response/Message")
+                .filter(|m| m.as_str().is_some_and(|s| !s.is_empty()))
+        })
+        // 即梦 CV 网关错误体：[{"algo_msg":"..."}]
+        .or_else(|| v.pointer("/0/algo_msg"))
         .and_then(|val| {
             if val.is_object() {
                 val.get("message")
@@ -793,6 +1059,21 @@ pub fn extract_error_message_from_value(v: &Value) -> Option<String> {
                     .or_else(|| Some(val.to_string()))
             }
         })
+}
+
+/// fal / FastAPI 校验错误：`detail` 为对象数组（取 msg）或纯字符串
+fn fastapi_detail_message(v: &Value) -> Option<String> {
+    let detail = v.get("detail")?;
+    if let Some(arr) = detail.as_array() {
+        let msgs: Vec<&str> = arr
+            .iter()
+            .filter_map(|item| item.get("msg").and_then(|m| m.as_str()))
+            .filter(|s| !s.is_empty())
+            .collect();
+        (!msgs.is_empty()).then(|| msgs.join("; "))
+    } else {
+        detail.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+    }
 }
 
 /// 腾讯云 VOD/混元任务节点 Message：复用 [`tencent_aigc_task`]
@@ -864,6 +1145,12 @@ pub fn is_upstream_error_response(v: &Value) -> bool {
     if v.pointer("/Response/Error").is_some() {
         return true;
     }
+    if v.pointer("/Response/ErrMsg")
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        return true;
+    }
     // 2. 即梦/火山网关错误
     if v.pointer("/ResponseMetadata/Error").is_some() {
         return true;
@@ -923,6 +1210,10 @@ pub fn is_upstream_error_response(v: &Value) -> bool {
         if code != 0 {
             return true;
         }
+    }
+    // 8. fal / FastAPI：{"detail":"..."} 或 {"detail":[{"msg":"..."}]}
+    if fastapi_detail_message(v).is_some() {
+        return true;
     }
     false
 }

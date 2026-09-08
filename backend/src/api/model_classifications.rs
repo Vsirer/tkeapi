@@ -14,18 +14,36 @@ use axum::{
 };
 use std::sync::Arc;
 
+const VOLC_ENHANCE_EXCLUDE_COND: &str = "(m.mid IS NULL OR m.mid NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'dbs-sr', 'dbs-fs'))";
+
+async fn is_volcengine_enhance_active(state: &AppState) -> bool {
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    {
+        crate::api::plugins::is_plugin_enabled(state, "volcengine_enhance").await
+    }
+    #[cfg(not(feature = "plugin_volcengine_enhance"))]
+    {
+        false
+    }
+}
+
 // --- Providers ---
 
 pub async fn list_providers(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<ModelProvider>>> {
-    let providers = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT p.*, COUNT(m.id) as model_count FROM model_providers p LEFT JOIN models m ON p.id = m.provider_id GROUP BY p.id, p.name, p.name_en, p.sort_order, p.is_active, p.is_system, p.remark, p.logo, p.created_at, p.updated_at ORDER BY p.sort_order DESC, p.id ASC"),
-    )
-    .fetch_all(&state.db.pool)
-    .await?;
+    let volc_active = is_volcengine_enhance_active(&state).await;
+    let join_clause = if volc_active {
+        "LEFT JOIN models m ON p.id = m.provider_id"
+    } else {
+        "LEFT JOIN models m ON p.id = m.provider_id AND (m.mid IS NULL OR m.mid NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'dbs-sr', 'dbs-fs'))"
+    };
+    let query_str = format!(
+        "SELECT p.*, COUNT(m.id) as model_count FROM model_providers p {join_clause} GROUP BY p.id, p.name, p.name_en, p.sort_order, p.is_active, p.is_system, p.remark, p.logo, p.created_at, p.updated_at ORDER BY p.sort_order DESC, p.id ASC"
+    );
+    let providers = sqlx::query_as(&state.db.format_query(&query_str))
+        .fetch_all(&state.db.pool)
+        .await?;
     Ok(Json(providers))
 }
 
@@ -122,7 +140,7 @@ pub async fn delete_provider(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let _is_sys: i32 = sqlx::query_scalar(
+    let is_sys: i32 = sqlx::query_scalar(
         &state
             .db
             .format_query("SELECT is_system FROM model_providers WHERE id = ?"),
@@ -132,11 +150,27 @@ pub async fn delete_provider(
     .await
     .unwrap_or(0);
 
+    if is_sys == 1 {
+        return Err(crate::error::AppError::BadRequest(
+            "系统内置服务商不允许删除".to_string(),
+        ));
+    }
+
     // NULL out references in models table
     sqlx::query(
         &state
             .db
             .format_query("UPDATE models SET provider_id = NULL WHERE provider_id = ?"),
+    )
+    .bind(id)
+    .execute(&state.db.pool)
+    .await?;
+
+    // NULL out references in billing_rules table
+    sqlx::query(
+        &state
+            .db
+            .format_query("UPDATE billing_rules SET provider_id = NULL WHERE provider_id = ?"),
     )
     .bind(id)
     .execute(&state.db.pool)
@@ -159,13 +193,18 @@ pub async fn delete_provider(
 pub async fn list_api_providers(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<ModelProvider>>> {
-    let providers = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT p.*, COUNT(m.id) as model_count FROM model_api_providers p LEFT JOIN models m ON p.id = m.api_provider_id GROUP BY p.id, p.name, p.name_en, p.sort_order, p.is_active, p.is_system, p.remark, p.logo, p.created_at, p.updated_at ORDER BY p.sort_order DESC, p.id ASC"),
-    )
-    .fetch_all(&state.db.pool)
-    .await?;
+    let volc_active = is_volcengine_enhance_active(&state).await;
+    let join_clause = if volc_active {
+        "LEFT JOIN models m ON p.id = m.api_provider_id"
+    } else {
+        "LEFT JOIN models m ON p.id = m.api_provider_id AND (m.mid IS NULL OR m.mid NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'dbs-sr', 'dbs-fs'))"
+    };
+    let query_str = format!(
+        "SELECT p.*, COUNT(m.id) as model_count FROM model_api_providers p {join_clause} GROUP BY p.id, p.name, p.name_en, p.sort_order, p.is_active, p.is_system, p.remark, p.logo, p.created_at, p.updated_at ORDER BY p.sort_order DESC, p.id ASC"
+    );
+    let providers = sqlx::query_as(&state.db.format_query(&query_str))
+        .fetch_all(&state.db.pool)
+        .await?;
     Ok(Json(providers))
 }
 
@@ -241,6 +280,22 @@ pub async fn delete_api_provider(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let is_sys: i32 = sqlx::query_scalar(
+        &state
+            .db
+            .format_query("SELECT is_system FROM model_api_providers WHERE id = ?"),
+    )
+    .bind(id)
+    .fetch_one(&state.db.pool)
+    .await
+    .unwrap_or(0);
+
+    if is_sys == 1 {
+        return Err(crate::error::AppError::BadRequest(
+            "系统内置API服务商不允许删除".to_string(),
+        ));
+    }
+
     sqlx::query(
         &state
             .db
@@ -264,20 +319,21 @@ pub async fn delete_api_provider(
 // --- Types ---
 
 pub async fn list_types(State(state): State<Arc<AppState>>) -> AppResult<Json<Vec<ModelType>>> {
-    let plugin_enabled: i32 = sqlx::query_scalar(
-        "SELECT CAST(is_enabled AS INTEGER) FROM plugins WHERE name = 'volcengine_enhance' LIMIT 1",
-    )
-    .fetch_optional(&state.db.pool)
-    .await?
-    .unwrap_or(0);
-
-    let query_str = if plugin_enabled == 1 {
-        "SELECT t.*, COUNT(m.id) as model_count FROM model_types t LEFT JOIN models m ON t.id = m.type_id GROUP BY t.id, t.name, t.name_en, t.sort_order, t.is_active, t.is_system, t.logo, t.default_features, t.created_at, t.updated_at ORDER BY t.sort_order DESC, t.id ASC"
+    let volc_active = is_volcengine_enhance_active(&state).await;
+    let (join_clause, where_clause) = if volc_active {
+        ("LEFT JOIN models m ON t.id = m.type_id", "")
     } else {
-        "SELECT t.*, COUNT(m.id) as model_count FROM model_types t LEFT JOIN models m ON t.id = m.type_id WHERE t.name != '视频增强' GROUP BY t.id, t.name, t.name_en, t.sort_order, t.is_active, t.is_system, t.logo, t.default_features, t.created_at, t.updated_at ORDER BY t.sort_order DESC, t.id ASC"
+        (
+            "LEFT JOIN models m ON t.id = m.type_id AND (m.mid IS NULL OR m.mid NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'dbs-sr', 'dbs-fs'))",
+            "WHERE t.name != '视频增强'",
+        )
     };
 
-    let types = sqlx::query_as(&state.db.format_query(query_str))
+    let query_str = format!(
+        "SELECT t.*, COUNT(m.id) as model_count FROM model_types t {join_clause} {where_clause} GROUP BY t.id, t.name, t.name_en, t.sort_order, t.is_active, t.is_system, t.logo, t.default_features, t.created_at, t.updated_at ORDER BY t.sort_order DESC, t.id ASC"
+    );
+
+    let types = sqlx::query_as(&state.db.format_query(&query_str))
         .fetch_all(&state.db.pool)
         .await?;
     Ok(Json(types))
@@ -355,14 +411,18 @@ pub async fn update_type(
     }
 
     let name_en = req.name_en.unwrap_or_default().trim().to_string();
+    let video_preset_features =
+        r#"["全能参考生视频","文生视频","图生视频","首尾帧生视频","编辑视频","延长视频"]"#;
     let model_type = sqlx::query_as(
-        &state.db.format_query("UPDATE model_types SET name = ?, name_en = ?, sort_order = ?, is_active = ?, logo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING *")
+        &state.db.format_query("UPDATE model_types SET name = ?, name_en = ?, sort_order = ?, is_active = ?, logo = ?, default_features = CASE WHEN ? = '视频' THEN ? ELSE default_features END, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING *")
     )
     .bind(&req.name)
     .bind(name_en)
     .bind(req.sort_order)
     .bind(req.is_active)
     .bind(&req.logo)
+    .bind(&req.name)
+    .bind(video_preset_features)
     .bind(id)
     .fetch_one(&state.db.pool)
     .await?;
@@ -374,7 +434,7 @@ pub async fn delete_type(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let _is_sys: i32 = sqlx::query_scalar(
+    let is_sys: i32 = sqlx::query_scalar(
         &state
             .db
             .format_query("SELECT is_system FROM model_types WHERE id = ?"),
@@ -384,11 +444,27 @@ pub async fn delete_type(
     .await
     .unwrap_or(0);
 
+    if is_sys == 1 {
+        return Err(crate::error::AppError::BadRequest(
+            "系统内置类型不允许删除".to_string(),
+        ));
+    }
+
     // NULL out references in models table
     sqlx::query(
         &state
             .db
             .format_query("UPDATE models SET type_id = NULL WHERE type_id = ?"),
+    )
+    .bind(id)
+    .execute(&state.db.pool)
+    .await?;
+
+    // NULL out references in billing_rules table
+    sqlx::query(
+        &state
+            .db
+            .format_query("UPDATE billing_rules SET type_id = NULL WHERE type_id = ?"),
     )
     .bind(id)
     .execute(&state.db.pool)
@@ -424,6 +500,8 @@ pub async fn get_classifications_stats(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<StatsQuery>,
 ) -> AppResult<Json<ClassificationsResponse>> {
+    let volc_active = is_volcengine_enhance_active(&state).await;
+
     // ── 官方服务商 count（交叉: api_provider_id + type_id） ──
     let mut p_sql = r#"SELECT p.id, p.name, p.name_en, p.logo, p.is_system, COUNT(m.id) as count 
            FROM model_providers p 
@@ -431,6 +509,9 @@ pub async fn get_classifications_stats(
         .to_string();
 
     let mut p_conds: Vec<&str> = vec![];
+    if !volc_active {
+        p_conds.push(VOLC_ENHANCE_EXCLUDE_COND);
+    }
     if query.api_provider_id.is_some() {
         p_conds.push("m.api_provider_id = ?");
     }
@@ -463,6 +544,9 @@ pub async fn get_classifications_stats(
         .to_string();
 
     let mut ap_conds: Vec<&str> = vec![];
+    if !volc_active {
+        ap_conds.push(VOLC_ENHANCE_EXCLUDE_COND);
+    }
     if query.provider_id.is_some() {
         ap_conds.push("m.provider_id = ?");
     }
@@ -495,6 +579,9 @@ pub async fn get_classifications_stats(
         .to_string();
 
     let mut t_conds: Vec<&str> = vec![];
+    if !volc_active {
+        t_conds.push(VOLC_ENHANCE_EXCLUDE_COND);
+    }
     if query.provider_id.is_some() {
         t_conds.push("m.provider_id = ?");
     }
@@ -508,7 +595,12 @@ pub async fn get_classifications_stats(
         t_sql.push_str(" AND ");
         t_sql.push_str(&t_conds.join(" AND "));
     }
-    t_sql.push_str(" WHERE t.is_active = 1 GROUP BY t.id, t.name, t.name_en, t.logo, t.is_system ORDER BY t.sort_order DESC, t.id ASC");
+    let type_where = if volc_active {
+        " WHERE t.is_active = 1 GROUP BY t.id, t.name, t.name_en, t.logo, t.is_system ORDER BY t.sort_order DESC, t.id ASC"
+    } else {
+        " WHERE t.is_active = 1 AND t.name != '视频增强' GROUP BY t.id, t.name, t.name_en, t.logo, t.is_system ORDER BY t.sort_order DESC, t.id ASC"
+    };
+    t_sql.push_str(type_where);
 
     let formatted_t_sql = state.db.format_query(&t_sql);
     let mut tq = sqlx::query_as::<_, crate::models::ClassificationCount>(&formatted_t_sql);

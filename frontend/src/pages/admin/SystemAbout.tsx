@@ -44,6 +44,37 @@ const formatPct = (v: number) => {
   return `${rounded}%`;
 };
 
+const formatTimeWithTz = (raw?: string | null, fallbackTz?: string): string => {
+  if (!raw) return '-';
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '-') return '-';
+  if (trimmed.includes('(UTC') || trimmed.endsWith('UTC')) {
+    return trimmed;
+  }
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+([+-]\d{2}):?(\d{2})$/);
+  if (match) {
+    const [, dt, signHours, minutesStr] = match;
+    const sign = signHours[0];
+    const hours = parseInt(signHours.slice(1), 10);
+    const minutes = parseInt(minutesStr, 10);
+    if (hours === 0 && minutes === 0) {
+      return `${dt} (UTC)`;
+    }
+    if (minutes === 0) {
+      return `${dt} (UTC${sign}${hours})`;
+    }
+    return `${dt} (UTC${sign}${hours}:${minutesStr})`;
+  }
+  const zMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})Z$/);
+  if (zMatch) {
+    return `${zMatch[1]} ${zMatch[2]} (UTC)`;
+  }
+  if (fallbackTz && /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+    return `${trimmed} (${fallbackTz})`;
+  }
+  return trimmed;
+};
+
 const ringStroke = (pct: number, isLight: boolean) => {
   if (pct >= 90) return '#ef4444';
   if (pct >= 70) return '#f59e0b';
@@ -156,7 +187,7 @@ const RuntimePanel: React.FC<{ runtime: RuntimeInfo; isLight: boolean }> = ({ ru
             </div>
             <div className="flex items-center justify-between gap-2 text-[11px]">
               <span className="text-muted-foreground shrink-0">启动时间</span>
-              <span className="tabular-nums text-foreground whitespace-nowrap">{runtime.started_at || '-'}</span>
+              <span className="tabular-nums text-foreground whitespace-nowrap">{formatTimeWithTz(runtime.started_at, 'UTC')}</span>
             </div>
           </div>
         </div>
@@ -219,7 +250,7 @@ const RuntimePanel: React.FC<{ runtime: RuntimeInfo; isLight: boolean }> = ({ ru
                   {runtime.platform || '-'}
                 </td>
                 <td className="px-2.5 py-2 text-xs tabular-nums text-foreground whitespace-nowrap">
-                  {runtime.started_at || '-'}
+                  {formatTimeWithTz(runtime.started_at, 'UTC')}
                 </td>
               </tr>
             </tbody>
@@ -305,7 +336,7 @@ const SystemAbout: React.FC = () => {
               <div className="text-sm font-medium text-foreground mb-1.5">{current.message}</div>
               <div className="flex items-center md:justify-end gap-4 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5"><User className="w-3.5 h-3.5" /> {current.author}</span>
-                <span className="inline-flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> {current.date}</span>
+                <span className="inline-flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> {formatTimeWithTz(current.date)}</span>
               </div>
             </div>
           </div>
@@ -353,7 +384,7 @@ const SystemAbout: React.FC = () => {
 
                   <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
                     <span className="inline-flex items-center gap-1.5"><User className="w-3.5 h-3.5" /> {c.author}</span>
-                    <span className="inline-flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> {c.date}</span>
+                    <span className="inline-flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> {formatTimeWithTz(c.date)}</span>
                   </div>
                 </div>
               </div>

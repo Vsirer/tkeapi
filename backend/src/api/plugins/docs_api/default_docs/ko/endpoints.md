@@ -11,6 +11,7 @@
 | 이미지 편집 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 호환 |
 | 비동기 비디오 작업 제출 | `/v1/video/generations` | `POST` | OpenAI 호환 |
 | 비동기 비디오 작업 상태 조회 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 호환 |
+| 비동기 비디오 작업 취소 | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI 호환 |
 | 텍스트 음성 합성 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 호환 |
 | 토큰 사용 가능 한도 조회 | `/v1/balance` | `GET` | 계정 정보 |
 | 계정 총 잔액 조회 | `/v1/user/balance` | `GET` | 계정 정보 |
@@ -41,9 +42,11 @@
 | 알리바바 Bailian | 비동기 작업 조회 (공통) | `/api/v1/tasks/{task_id}` | `GET` |
 | 알리바바 Bailian | 텍스트 임베딩 | `/compatible-mode/v1/embeddings` | `POST` |
 | 알리바바 Bailian | 문서 재순위화 (Rerank) | `/compatible-api/v1/reranks` | `POST` |
+| 알리바바 Bailian | 문서 재순위화 (Native) | `/api/v1/services/rerank/text-rerank/text-rerank` | `POST` |
 | Kling AI | 텍스트 기반 비디오 생성 (Kling) | `/v1/videos/text2video` | `POST` |
 | Kling AI | 이미지 기반 비디오 생성 (Kling) | `/v1/videos/image2video` | `POST` |
 | Kling AI | 작업 상태 조회 (비디오/이미지) | `/v1/videos/{endpoint}/{task_id}` | `GET` |
 | Google | Gemini 텍스트 생성 | `/v1beta/models/{model}:generateContent` | `POST` |
 | Google | Gemini 스트리밍 텍스트 생성 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |
 | Anthropic | Claude 네이티브 메시지 | `/v1/messages` | `POST` |
+| MiniMax | Anthropic 호환 Messages | `/anthropic/v1/messages` | `POST` |

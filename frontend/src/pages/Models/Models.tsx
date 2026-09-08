@@ -225,7 +225,6 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
       );
     } catch (err: any) {
       console.error('更新模型组简介失败:', err);
-      message.error(err.message || '后台同步更新模型组简介失败');
     }
   };
 
@@ -611,7 +610,7 @@ const Models: React.FC = () => {
   const [billingSearchKeyword, setBillingSearchKeyword] = useState<string>('');
   const [forwardRuleSearchKeyword, setForwardRuleSearchKeyword] = useState<string>('');
   const [forwardRuleCategoryFilter, setForwardRuleCategoryFilter] = useState<string>('all');
-  const [sortType, setSortType] = useState<string>('name_asc');
+  const [sortType, setSortType] = useState<string>('order_desc');
   const [recentlyAddedId, setRecentlyAddedId] = useState<number | null>(null);
   const [tableBillingTypeFilter, setTableBillingTypeFilter] = useState<string>('all');
   const [tableStatusFilter, setTableStatusFilter] = useState<string>('all');
@@ -736,6 +735,7 @@ const Models: React.FC = () => {
       ...record,
       forward_rule_ids: ruleIds,
       feature_attributes: featureAttributes,
+      sort_order: record.sort_order ?? 0,
       is_active: record.is_active === 1,
       enable_log_content: record.enable_log_content === 1,
       site_discount_enabled: record.site_discount_enabled === 1,
@@ -770,6 +770,7 @@ const Models: React.FC = () => {
       values.site_discount_enabled = values.site_discount_enabled ? 1 : 0;
       values.global_discount_enabled = values.global_discount_enabled ? 1 : 0;
       values.feature_attributes = JSON.stringify(values.feature_attributes || []);
+      values.sort_order = typeof values.sort_order === 'number' ? values.sort_order : (Number(values.sort_order) || 0);
       // 模型ID别名映射：开关关闭时清空值
       if (!aliasEnabled) {
         values.model_id_alias = '';
@@ -803,8 +804,18 @@ const Models: React.FC = () => {
       await request.put(`/models/${id}`, { remark });
     } catch (e) {
       console.error(e);
-      message.error(t('common.error') || '保存备注失败');
-      fetchModels(); // 失败时强制同步最新数据回滚
+      fetchModels();
+    }
+  };
+
+  const handleUpdateSortOrder = async (id: number, sort_order: number) => {
+    // 乐观更新：本地状态立刻变更，瞬时生效
+    setModels(prev => prev.map(m => m.id === id ? { ...m, sort_order } : m));
+    try {
+      await request.put(`/models/${id}`, { sort_order });
+    } catch (e) {
+      console.error(e);
+      fetchModels();
     }
   };
 
@@ -825,7 +836,6 @@ const Models: React.FC = () => {
       fetchClassificationsStats();
     } catch (e) {
       console.error(e);
-      message.error('批量更新模型状态失败');
       fetchModels();
     } finally {
       setBatchLoading(false);
@@ -843,7 +853,6 @@ const Models: React.FC = () => {
       setModels(prev => prev.map(m => selectedRowKeys.includes(m.id) ? { ...m, enable_log_content: enable } : m));
     } catch (e) {
       console.error(e);
-      message.error('批量更新日志记录失败');
       fetchModels();
     } finally {
       setBatchLoading(false);
@@ -852,31 +861,19 @@ const Models: React.FC = () => {
 
   const handleBatchDelete = async () => {
     if (selectedRowKeys.length === 0) return;
-    const systemIds = new Set(models.filter(m => m.is_system === 1).map(m => m.id));
-    const toDelete = selectedRowKeys.filter(id => !systemIds.has(Number(id)));
-    const skipped = selectedRowKeys.length - toDelete.length;
-    if (toDelete.length === 0) {
-      message.warning(t('models.cannot_delete_system'));
-      return;
-    }
     setBatchLoading(true);
     try {
       await Promise.all(
-        toDelete.map(id => request.delete(`/models/${id}`))
+        selectedRowKeys.map(id => request.delete(`/models/${id}`))
       );
-      message.success(
-        skipped > 0
-          ? `已删除 ${toDelete.length} 个模型，跳过 ${skipped} 个系统预设`
-          : `已成功删除 ${toDelete.length} 个模型`
-      );
-      const deletedSet = new Set(toDelete);
+      message.success(`已成功删除 ${selectedRowKeys.length} 个模型`);
+      const deletedSet = new Set(selectedRowKeys.map(Number));
       setModels(prev => prev.filter(m => !deletedSet.has(m.id)));
       setSelectedRowKeys([]);
       fetchClassificationsStats();
       fetchAllClassifications();
     } catch (e) {
       console.error(e);
-      message.error('批量删除模型失败');
       fetchModels();
     } finally {
       setBatchLoading(false);
@@ -898,7 +895,7 @@ const Models: React.FC = () => {
     return t ? (isEn && t.name_en ? t.name_en : t.name) : null;
   };
 
-  const [colWidths] = useState<number[]>([120, 320, 340, 180, 260, 100, 100]);
+  const [colWidths] = useState<number[]>([100, 200, 240, 130, 250, 80, 80, 90]);
   const currentWidthsRef = useRef([...colWidths]);
 
   const handleResize = useMemo(() => {
@@ -908,7 +905,7 @@ const Models: React.FC = () => {
         cancelAnimationFrame(animationFrameId);
       }
       animationFrameId = requestAnimationFrame(() => {
-        const minWidth = index === 0 ? 60 : index === 5 ? 60 : 80;
+        const minWidth = index === 0 ? 60 : (index === 5 || index === 6) ? 60 : 80;
         const validWidth = Math.max(minWidth, newWidth);
         
         currentWidthsRef.current[index] = validWidth;
@@ -996,7 +993,7 @@ const Models: React.FC = () => {
       title: '模型(MID)',
       dataIndex: 'mid',
       key: 'mid',
-      width: 120,
+      width: 100,
       render: (text: string, record: ModelModel) => (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <span style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)' }}>{text || '-'}</span>
@@ -1021,7 +1018,7 @@ const Models: React.FC = () => {
       title: t('models.model_name'),
       dataIndex: 'name',
       key: 'name',
-      width: 320,
+      width: 200,
       filterDropdown: ({ setSelectedKeys, confirm }: any) => (
         <div style={{ padding: 8 }}>
           <Radio.Group 
@@ -1034,6 +1031,7 @@ const Models: React.FC = () => {
             value={sortType}
             style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
           >
+            <Radio value="order_desc">按排序权重 (从大到小)</Radio>
             <Radio value="name_asc">按名称 (A-Z)</Radio>
             <Radio value="name_desc">按名称 (Z-A)</Radio>
             <Radio value="time_desc">按添加时间 (最新)</Radio>
@@ -1042,7 +1040,7 @@ const Models: React.FC = () => {
         </div>
       ),
       filterIcon: () => (
-        <FilterOutlined style={{ color: sortType !== 'name_asc' ? '#1677ff' : undefined }} />
+        <FilterOutlined style={{ color: sortType !== 'order_desc' ? '#1677ff' : undefined }} />
       ),
       render: (text: string, record: ModelModel) => {
         const providerName = record.provider_id ? getProviderName(record.provider_id) : null;
@@ -1082,7 +1080,7 @@ const Models: React.FC = () => {
       title: t('models.model_id'),
       dataIndex: 'model_id',
       key: 'model_id',
-      width: 340,
+      width: 240,
       render: (text: string, record: ModelModel) => {
         let rules: { name: string; eid?: string }[] = [];
         try {
@@ -1150,7 +1148,7 @@ const Models: React.FC = () => {
     {
       title: t('models.billing_type'),
       key: 'billing_type',
-      width: 180,
+      width: 130,
       filterDropdown: ({ setSelectedKeys, confirm }: any) => (
         <div style={{ padding: 8 }}>
           <Radio.Group 
@@ -1176,15 +1174,26 @@ const Models: React.FC = () => {
         const br = allBillingRules.find(b => b.id === record.billing_rule_id);
         const type = br ? br.billing_type : 'tokens';
         return (
-          <Space direction="vertical" size={0}>
+          <Space direction="vertical" size={0} style={{ width: '100%', overflow: 'hidden' }}>
             <span style={{ fontSize: '11px', lineHeight: 1.2, margin: 0, color: 'var(--text-secondary, #595959)' }}>{t(`models.type_${type}`)}</span>
             {br && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '100%', overflow: 'hidden' }}>
                 <a
                   href={`/${settings?.site?.admin_path || 'admin1688'}/billing-rules?edit_id=${br.id}`}
                   target="_blank"
                   rel="noreferrer"
-                  style={{ fontSize: '11px', lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)', textDecoration: 'underline' }}
+                  title={br.name}
+                  style={{
+                    fontSize: '11px',
+                    lineHeight: 1.2,
+                    color: 'var(--text-secondary, #8c8c8c)',
+                    textDecoration: 'underline',
+                    display: 'block',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    maxWidth: '100%'
+                  }}
                 >
                   {br.name}
                 </a>
@@ -1198,7 +1207,7 @@ const Models: React.FC = () => {
     {
       title: t('models.rates'),
       key: 'rates',
-      width: 260,
+      width: 250,
       render: (_: any, record: ModelModel) => {
         const br = allBillingRules.find((b: any) => b.id === record.billing_rule_id);
         if (!br) return <Text type="secondary" italic>未挂载费用模板</Text>;
@@ -1222,10 +1231,51 @@ const Models: React.FC = () => {
       }
     },
     {
+      title: '页面排序',
+      dataIndex: 'sort_order',
+      key: 'sort_order',
+      width: 80,
+      align: 'center' as const,
+      sorter: (a: ModelModel, b: ModelModel) => (a.sort_order || 0) - (b.sort_order || 0),
+      render: (val: number, record: ModelModel) => {
+        const order = record.sort_order ?? 0;
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Tooltip title="点击直接修改排序，数值越大越靠前">
+              <Text
+                editable={{
+                  tooltip: false,
+                  text: String(order),
+                  onChange: (newVal) => {
+                    const num = parseInt(newVal.trim(), 10);
+                    handleUpdateSortOrder(record.id, isNaN(num) ? 0 : num);
+                  },
+                }}
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  background: order > 0 ? 'rgba(59, 130, 246, 0.08)' : 'rgba(128, 128, 128, 0.06)',
+                  color: order > 0 ? '#2563eb' : 'var(--text-secondary, #8c8c8c)',
+                  border: order > 0 ? '1px solid rgba(59, 130, 246, 0.2)' : '1px solid rgba(128, 128, 128, 0.15)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                {order}
+              </Text>
+            </Tooltip>
+          </div>
+        );
+      },
+    },
+    {
       title: t('common.status'),
       dataIndex: 'is_active',
       key: 'is_active',
-      width: 100,
+      width: 80,
       filterDropdown: ({ setSelectedKeys, confirm }: any) => (
         <div style={{ padding: 8 }}>
           <Radio.Group 
@@ -1277,19 +1327,13 @@ const Models: React.FC = () => {
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 100,
+      width: 90,
       render: (_: unknown, record: ModelModel) => (
         <Space size={4}>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          {record.is_system === 1 ? (
-            <Tooltip title={t('models.cannot_delete_system')}>
-              <Button icon={<DeleteOutlined />} disabled />
-            </Tooltip>
-          ) : (
-            <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
-              <Button icon={<DeleteOutlined />} danger />
-            </Popconfirm>
-          )}
+          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
+            <Button icon={<DeleteOutlined />} danger />
+          </Popconfirm>
         </Space>
       ),
     },
@@ -1297,7 +1341,7 @@ const Models: React.FC = () => {
 
   const resizableColumns = useMemo(() => {
     return columns.map((col: any, idx) => {
-      const minWidth = idx === 0 ? 60 : idx === 5 ? 60 : 80;
+      const minWidth = idx === 0 ? 60 : (idx === 5 || idx === 6) ? 60 : 80;
       const colClassName = `col-idx-${idx}`;
       const existingClassName = col.className || '';
       const combinedClassName = existingClassName ? `${existingClassName} ${colClassName}` : colClassName;
@@ -1357,8 +1401,16 @@ const Models: React.FC = () => {
         if (a.id === recentlyAddedId) return -1;
         if (b.id === recentlyAddedId) return 1;
       }
+      if (sortType === 'order_desc') {
+        const diff = (b.sort_order ?? 0) - (a.sort_order ?? 0);
+        if (diff !== 0) return diff;
+        return b.id - a.id;
+      }
       if (sortType === 'name_desc') {
         return (b.name || '').localeCompare(a.name || '', 'zh', { sensitivity: 'base', numeric: true });
+      }
+      if (sortType === 'name_asc') {
+        return (a.name || '').localeCompare(b.name || '', 'zh', { sensitivity: 'base', numeric: true });
       }
       if (sortType === 'time_asc') {
         return a.id - b.id;
@@ -1366,7 +1418,9 @@ const Models: React.FC = () => {
       if (sortType === 'time_desc') {
         return b.id - a.id;
       }
-      return (a.name || '').localeCompare(b.name || '', 'zh', { sensitivity: 'base', numeric: true });
+      const diff = (b.sort_order ?? 0) - (a.sort_order ?? 0);
+      if (diff !== 0) return diff;
+      return b.id - a.id;
     });
     return list;
   }, [models, searchKeyword, sortType, tableBillingTypeFilter, tableStatusFilter, allBillingRules, recentlyAddedId]);
@@ -1493,51 +1547,57 @@ const Models: React.FC = () => {
         /* 让 table 总是充满 100% 宽度，但通过 min-width 强制阻挡在各列最小拉伸宽度之和 */
         .compact-table .ant-table table {
           width: 100% !important;
-          min-width: var(--table-scroll-x, 1420px) !important;
+          min-width: var(--table-scroll-x, 1170px) !important;
           table-layout: fixed !important;
         }
         
         /* 强制每一列的宽度使用对应的 CSS 变量，确保即使内容较长也会被剪切/折行，而非撑开 */
         .compact-table .col-idx-0 {
-          width: var(--col-width-0, 120px) !important;
-          min-width: var(--col-width-0, 120px) !important;
-          max-width: var(--col-width-0, 120px) !important;
+          width: var(--col-width-0, 100px) !important;
+          min-width: var(--col-width-0, 100px) !important;
+          max-width: var(--col-width-0, 100px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-1 {
-          width: var(--col-width-1, 320px) !important;
-          min-width: var(--col-width-1, 320px) !important;
-          /* 不设 max-width 限制，使其可在宽屏自适应平摊多余宽度 */
+          width: var(--col-width-1, 200px) !important;
+          min-width: var(--col-width-1, 200px) !important;
+          max-width: var(--col-width-1, 200px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-2 {
-          width: var(--col-width-2, 340px) !important;
-          min-width: var(--col-width-2, 340px) !important;
-          /* 不设 max-width 限制，使其可在宽屏自适应平摊多余宽度 */
+          width: var(--col-width-2, 240px) !important;
+          min-width: var(--col-width-2, 240px) !important;
+          max-width: var(--col-width-2, 240px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-3 {
-          width: var(--col-width-3, 180px) !important;
-          min-width: var(--col-width-3, 180px) !important;
-          max-width: var(--col-width-3, 180px) !important;
+          width: var(--col-width-3, 130px) !important;
+          min-width: var(--col-width-3, 130px) !important;
+          max-width: var(--col-width-3, 130px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-4 {
-          width: var(--col-width-4, 260px) !important;
-          min-width: var(--col-width-4, 260px) !important;
-          max-width: var(--col-width-4, 260px) !important;
+          width: var(--col-width-4, 250px) !important;
+          min-width: var(--col-width-4, 250px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-5 {
-          width: var(--col-width-5, 100px) !important;
-          min-width: var(--col-width-5, 100px) !important;
-          max-width: var(--col-width-5, 100px) !important;
+          width: var(--col-width-5, 80px) !important;
+          min-width: var(--col-width-5, 80px) !important;
+          max-width: var(--col-width-5, 80px) !important;
           overflow: hidden !important;
         }
         .compact-table .col-idx-6 {
-          width: var(--col-width-6, 100px) !important;
-          min-width: var(--col-width-6, 100px) !important;
-          max-width: var(--col-width-6, 100px) !important;
+          width: var(--col-width-6, 80px) !important;
+          min-width: var(--col-width-6, 80px) !important;
+          max-width: var(--col-width-6, 80px) !important;
+          overflow: hidden !important;
+        }
+        .compact-table .col-idx-7 {
+          width: var(--col-width-7, 90px) !important;
+          min-width: var(--col-width-7, 90px) !important;
+          max-width: var(--col-width-7, 90px) !important;
+          overflow: hidden !important;
         }
         
 
@@ -1574,8 +1634,8 @@ const Models: React.FC = () => {
                 onChange={(val) => setSourceFilter(val as ModelSourceFilter)}
                 options={[
                   { label: t('models.source_all'), value: 'all' },
-                  { label: t('models.source_system'), value: 'system' },
                   { label: t('models.source_custom'), value: 'custom' },
+                  { label: t('models.source_system'), value: 'system' },
                 ]}
               />
             </Space>
@@ -1888,17 +1948,33 @@ const Models: React.FC = () => {
                 {(record.pre_deduction ?? 0) > 0 && (
                   <CardRow label="预扣"><Text style={{ fontSize: 11, color: '#faad14' }}>{formatPrice(record.pre_deduction)}</Text></CardRow>
                 )}
+                <CardRow label="页面排序">
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <Text
+                      editable={{
+                        tooltip: false,
+                        text: String(record.sort_order ?? 0),
+                        onChange: (val) => {
+                          const num = parseInt(val.trim(), 10);
+                          handleUpdateSortOrder(record.id, isNaN(num) ? 0 : num);
+                        },
+                      }}
+                      style={{
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: (record.sort_order ?? 0) > 0 ? '#1677ff' : undefined,
+                      }}
+                    >
+                      {record.sort_order ?? 0}
+                    </Text>
+                  </div>
+                </CardRow>
                 <CardActions>
                   <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-                  {record.is_system === 1 ? (
-                    <Tooltip title={t('models.cannot_delete_system')}>
-                      <Button size="small" icon={<DeleteOutlined />} disabled />
-                    </Tooltip>
-                  ) : (
-                    <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
-                      <Button size="small" icon={<DeleteOutlined />} danger />
-                    </Popconfirm>
-                  )}
+                  <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
+                    <Button size="small" icon={<DeleteOutlined />} danger />
+                  </Popconfirm>
                 </CardActions>
               </MobileCard>
             );
@@ -1920,10 +1996,11 @@ const Models: React.FC = () => {
               '--col-width-4': `${currentWidthsRef.current[4]}px`,
               '--col-width-5': `${currentWidthsRef.current[5]}px`,
               '--col-width-6': `${currentWidthsRef.current[6]}px`,
+              '--col-width-7': `${currentWidthsRef.current[7]}px`,
               '--table-scroll-x': `${currentWidthsRef.current.reduce((a, b) => a + b, 0)}px`
             } as React.CSSProperties}
           >
-            <div style={{ minWidth: 'var(--table-scroll-x, 1200px)', display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <div style={{ minWidth: 'var(--table-scroll-x, 1170px)', display: 'flex', flexDirection: 'column', gap: 0 }}>
               {loading ? (
                 <Table className="compact-table" dataSource={[]} columns={resizableColumns} loading rowKey="id" tableLayout="fixed" />
               ) : displayGroups.length === 0 ? (
@@ -2278,6 +2355,11 @@ const Models: React.FC = () => {
 
                     <Row gutter={16}>
                        <Col span={12}>
+                           <Form.Item name="sort_order" label={<Text strong>页面排序</Text>} initialValue={0} extra={<span style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)' }}>数值越大在列表中显示越靠前</span>}>
+                              <InputNumber style={{ width: '100%' }} precision={0} placeholder="越大越靠前" />
+                           </Form.Item>
+                       </Col>
+                       <Col span={12}>
                            <Form.Item name="pre_deduction" label={<Text strong>{`预扣费 (${settings?.currency?.default_currency || 'USD'})`}</Text>} initialValue={0.0}>
                               <InputNumber style={{ width: '100%' }} precision={6} min={0} />
                            </Form.Item>
@@ -2301,7 +2383,7 @@ const Models: React.FC = () => {
 
                     <Form.Item noStyle shouldUpdate={(prev: any, cur: any) => prev.site_discount_enabled !== cur.site_discount_enabled}>
                       {({ getFieldValue }: any) => getFieldValue('site_discount_enabled') ? (
-                        <Form.Item name="site_discount" label={<Text strong>折扣限价倍率</Text>} initialValue={1.0} extra="系统取 MIN(用户模型折扣, 全站折扣, 等级折扣) 最低值后，与此限价取 MAX 保底，保证折扣不低于此值">
+                        <Form.Item name="site_discount" label={<Text strong>折扣限价倍率</Text>} initialValue={1.0} extra="系统取 MIN(用户模型折扣, 全站折扣, 用户等级折扣) 与渠道倍率的乘积后，与此限价取 MAX 保底，保证有效倍率不低于此值">
                           <InputNumber style={{ width: '100%' }} precision={2} step={0.1} min={0.01} />
                         </Form.Item>
                       ) : null}
@@ -2326,7 +2408,7 @@ const Models: React.FC = () => {
                             label={<Text strong>全站折扣倍率</Text>}
                             initialValue={1.0}
                             dependencies={['site_discount', 'site_discount_enabled']}
-                            extra="开启后所有用户使用此模型时参与折扣比较。系统取 MIN(用户模型折扣, 全站折扣, 等级折扣) 最低值，若开启折扣限价则 MAX(最低折扣, 限价) 保底"
+                            extra="开启后所有用户使用此模型时参与折扣比较。系统取 MIN(用户模型折扣, 全站折扣, 用户等级折扣) 最低值，再与渠道倍率相乘；若开启折扣限价则对乘积 MAX 保底"
                             rules={siteEnabled ? [{
                               validator: (_: any, value: number) =>
                                 value != null && value < siteDiscount

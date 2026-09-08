@@ -76,7 +76,6 @@ const UserLevels: React.FC = () => {
       fetchLevels();
     } catch (e: any) {
       console.error(e);
-      message.error(e.response?.data?.message || t('common.error'));
     }
   };
 
@@ -125,7 +124,7 @@ const UserLevels: React.FC = () => {
         return (
           <Space wrap>
             <Text>{val.toFixed(2)}x</Text>
-            {dt === 2 && <Tag color="blue">等级折扣</Tag>}
+            {dt === 2 && <Tag color="blue">用户等级折扣</Tag>}
             {dt === 1 && <Tag color="cyan">全站折扣</Tag>}
             {dt === 0 && <Tag color="default">系统融合</Tag>}
             {off > 0 && <Tag color="green">-{off}% (优惠)</Tag>}
@@ -160,6 +159,22 @@ const UserLevels: React.FC = () => {
       sorter: (a: UserLevel, b: UserLevel) => (a.allow_view_log_details || 0) - (b.allow_view_log_details || 0),
       render: (val: number) => (
         val === 0 ? <Tag color="default">已关闭</Tag> : <Tag color="blue">已开启</Tag>
+      ),
+    },
+    {
+      title: '发票&收据',
+      dataIndex: 'invoice_enabled',
+      key: 'invoice_enabled',
+      sorter: (a: UserLevel, b: UserLevel) => (a.invoice_enabled || 0) - (b.invoice_enabled || 0),
+      render: (val: number, record: UserLevel) => (
+        val === 1 ? (
+          <Space size={4}>
+            <Tag color="cyan">已开启</Tag>
+            <Tag color={record.invoice_mode === 'china' ? 'orange' : 'purple'}>
+              {record.invoice_mode === 'china' ? '境内模式' : '国际模式'}
+            </Tag>
+          </Space>
+        ) : <Tag color="default">已关闭</Tag>
       ),
     },
     {
@@ -252,10 +267,10 @@ const UserLevels: React.FC = () => {
                 <CardRow label="用户数">
                   <Tag color="blue">{record.user_count || 0}</Tag>
                 </CardRow>
-                <CardRow label="等级折扣倍率">
+                <CardRow label="用户等级折扣倍率">
                   <Space wrap>
                     <Text>{record.discount.toFixed(2)}x</Text>
-                    {record.discount_type === 2 && <Tag color="blue">等级折扣</Tag>}
+                    {record.discount_type === 2 && <Tag color="blue">用户等级折扣</Tag>}
                     {record.discount_type === 1 && <Tag color="cyan">全站折扣</Tag>}
                     {record.discount_type === 0 && <Tag color="default">系统融合</Tag>}
                     {off > 0 && <Tag color="green">-{off}%</Tag>}

@@ -9,7 +9,7 @@ import React, { useState, useEffect, useRef } from 'react';
 
 interface TwinkleCell {
   index: number;
-  type: 'indigo' | 'sky' | 'purple';
+  type: 'indigo' | 'sky' | 'purple' | 'emerald' | 'amber';
   expiresAt: number;
 }
 
@@ -56,8 +56,8 @@ export const GridStarsEffect: React.FC = () => {
     const totalCells = dimensions.cols * dimensions.rows;
     if (totalCells === 0) return;
 
-    const targetCount = Math.min(Math.floor(totalCells * 0.04), 40); // ~4% of cells twinkle, max 40
-    const types: ('indigo' | 'sky' | 'purple')[] = ['indigo', 'sky', 'purple'];
+    const targetCount = Math.min(Math.floor(totalCells * 0.05), 50); // ~5% of cells twinkle, max 50
+    const types: ('indigo' | 'sky' | 'purple' | 'emerald' | 'amber')[] = ['indigo', 'sky', 'purple', 'emerald', 'amber'];
 
     const interval = setInterval(() => {
       const now = Date.now();
@@ -218,13 +218,14 @@ export const GridStarsEffect: React.FC = () => {
               const dy = r - hoverRow;
               const dist = Math.sqrt(dx * dx + dy * dy);
 
-              // Focused small spotlight: within 1.2 cell radius (only immediate containing cell + edge neighbors)
-              if (dist <= 1.2) {
+              // Focused small spotlight: within 1.3 cell radius
+              if (dist <= 1.3) {
                 isHoverActive = true;
-                const factor = 1 - dist / 1.5; // 1.0 down to ~0.2
+                const factor = Math.max(0, 1 - dist / 1.4); // 1.0 down to ~0.1
                 inlineStyle = {
-                  backgroundColor: `rgba(99, 102, 241, ${(factor * factor * 0.32).toFixed(3)})`, // Brighter fill
-                  boxShadow: `inset 0 0 16px rgba(56, 189, 248, ${(factor * 0.58).toFixed(3)}), inset 0 0 8px rgba(99, 102, 241, ${(factor * 0.58).toFixed(3)})`, // Dual-tone glow
+                  backgroundColor: `rgba(99, 102, 241, ${(factor * 0.45 + 0.15).toFixed(3)})`,
+                  boxShadow: `0 0 16px rgba(56, 189, 248, ${(factor * 0.75).toFixed(3)}), inset 0 0 12px rgba(165, 180, 252, ${(factor * 0.85).toFixed(3)})`,
+                  borderColor: `rgba(165, 180, 252, ${(factor * 0.65).toFixed(3)})`,
                 };
               }
             }
@@ -234,27 +235,43 @@ export const GridStarsEffect: React.FC = () => {
             if (trailItem && !isHoverActive) {
               isHoverActive = true;
               inlineStyle = {
-                backgroundColor: 'rgba(99, 102, 241, 0.25)', // Bright trail fill
-                boxShadow: 'inset 0 0 12px rgba(56, 189, 248, 0.45), inset 0 0 6px rgba(99, 102, 241, 0.45)', // Bright trail inner glow
+                backgroundColor: 'rgba(99, 102, 241, 0.32)',
+                boxShadow: '0 0 16px rgba(56, 189, 248, 0.55), inset 0 0 10px rgba(165, 180, 252, 0.65)',
+                borderColor: 'rgba(165, 180, 252, 0.5)',
               };
             }
 
-            // Assign unique colors to twinkling cells when not hovered
+            // Assign unique high-contrast colors to twinkling cells when not hovered
             if (twinkle && !isHoverActive) {
               if (twinkle.type === 'indigo') {
                 inlineStyle = {
-                  backgroundColor: 'rgba(99, 102, 241, 0.07)',
-                  boxShadow: 'inset 0 0 6px rgba(99, 102, 241, 0.12)',
+                  backgroundColor: 'rgba(99, 102, 241, 0.32)',
+                  boxShadow: '0 0 16px rgba(99, 102, 241, 0.65), inset 0 0 10px rgba(165, 180, 252, 0.7)',
+                  borderColor: 'rgba(165, 180, 252, 0.55)',
                 };
               } else if (twinkle.type === 'sky') {
                 inlineStyle = {
-                  backgroundColor: 'rgba(56, 189, 248, 0.08)',
-                  boxShadow: 'inset 0 0 6px rgba(56, 189, 248, 0.15)',
+                  backgroundColor: 'rgba(56, 189, 248, 0.35)',
+                  boxShadow: '0 0 16px rgba(56, 189, 248, 0.7), inset 0 0 10px rgba(186, 230, 253, 0.75)',
+                  borderColor: 'rgba(186, 230, 253, 0.6)',
+                };
+              } else if (twinkle.type === 'purple') {
+                inlineStyle = {
+                  backgroundColor: 'rgba(168, 85, 247, 0.32)',
+                  boxShadow: '0 0 16px rgba(168, 85, 247, 0.65), inset 0 0 10px rgba(216, 180, 254, 0.7)',
+                  borderColor: 'rgba(216, 180, 254, 0.55)',
+                };
+              } else if (twinkle.type === 'emerald') {
+                inlineStyle = {
+                  backgroundColor: 'rgba(16, 185, 129, 0.32)',
+                  boxShadow: '0 0 16px rgba(16, 185, 129, 0.65), inset 0 0 10px rgba(110, 231, 183, 0.7)',
+                  borderColor: 'rgba(110, 231, 183, 0.55)',
                 };
               } else {
                 inlineStyle = {
-                  backgroundColor: 'rgba(168, 85, 247, 0.06)',
-                  boxShadow: 'inset 0 0 6px rgba(168, 85, 247, 0.10)',
+                  backgroundColor: 'rgba(245, 158, 11, 0.32)',
+                  boxShadow: '0 0 16px rgba(245, 158, 11, 0.65), inset 0 0 10px rgba(253, 230, 138, 0.7)',
+                  borderColor: 'rgba(253, 230, 138, 0.55)',
                 };
               }
             }

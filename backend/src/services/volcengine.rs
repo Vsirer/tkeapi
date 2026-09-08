@@ -12,8 +12,72 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::LazyLock;
+use tokio::sync::Mutex;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// DeleteAsset 全局串行间隔（批量删 / 清空 / 定时清理 / 上游中继共用）。
+pub const DELETE_ASSET_GAP_MS: u64 = 1000;
+/// 遇限流后的退避（不持锁），再重试当前条。
+pub const DELETE_ASSET_RATE_LIMIT_BACKOFF_MS: u64 = 60_000;
+/// 单条 DeleteAsset 限流最大重试次数，耗尽则跳过，避免清空任务永久卡住。
+pub const DELETE_ASSET_RATE_LIMIT_MAX_RETRIES: u32 = 5;
+
+static DELETE_ASSET_PACE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// 全局锁内执行一次 DeleteAsset。
+/// - 成功/非限流：持锁 sleep 间隔，保证约 1s/条
+/// - 限流：先放锁再退避，避免一条 429 卡住全站删除
+/// 返回 `true` 表示限流（调用方应重试）。
+pub async fn run_delete_asset_paced<F, Fut>(op: F) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), bool>>,
+{
+    let result = {
+        let _pace = DELETE_ASSET_PACE.lock().await;
+        let r = op().await;
+        if matches!(&r, Ok(()) | Err(false)) {
+            tokio::time::sleep(std::time::Duration::from_millis(DELETE_ASSET_GAP_MS)).await;
+        }
+        r
+    };
+    match result {
+        Ok(()) | Err(false) => false,
+        Err(true) => {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                DELETE_ASSET_RATE_LIMIT_BACKOFF_MS,
+            ))
+            .await;
+            true
+        }
+    }
+}
+
+/// 对单条 DeleteAsset 做 paced + 限流重试；耗尽则跳过（不永久卡住）。
+pub async fn delete_asset_paced_with_retries<F, Fut>(mut op: F, log_tag: &str, asset_id: &str)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), bool>>,
+{
+    let mut hits = 0u32;
+    loop {
+        if !run_delete_asset_paced(|| op()).await {
+            return;
+        }
+        hits += 1;
+        if hits >= DELETE_ASSET_RATE_LIMIT_MAX_RETRIES {
+            tracing::warn!(
+                "[{}] DeleteAsset 限流重试耗尽({}次)，跳过: {}",
+                log_tag,
+                DELETE_ASSET_RATE_LIMIT_MAX_RETRIES,
+                asset_id
+            );
+            return;
+        }
+    }
+}
 
 /// HMAC-SHA256 签名（公共工具函数，供火山引擎所有服务复用）
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
@@ -515,12 +579,14 @@ pub fn normalize_ark_asset_id(id: &str) -> &str {
 }
 
 impl VolcClient {
-    /// 判断方舟/开放平台错误是否为限流（429 / AccountFlowLimitExceeded 等）。
+    /// 判断方舟/开放平台错误是否为限流（明确 HTTP/业务码，不用裸 `429` 子串）。
     pub fn is_api_rate_limited(err: &str) -> bool {
         let m = err.to_ascii_lowercase();
-        m.contains("429")
-            || m.contains("too many requests")
+        // 本仓库包装：`Volcengine API error: 429 …` / `上游素材接口错误: 429`
+        m.contains("api error: 429")
+            || m.contains("接口错误: 429")
             || m.contains("accountflowlimitexceeded")
+            || m.contains("too many requests")
             || m.contains("flow control")
             || m.contains("flowcontrol")
             || m.contains("rate limit")
@@ -528,7 +594,7 @@ impl VolcClient {
             || m.contains("request limit")
     }
 
-    /// 调用方舟 DeleteAsset：`Ok` 成功，`Err(true)` 限流应停本轮，`Err(false)` 其它失败。
+    /// 调用方舟 DeleteAsset：`Ok` 成功，`Err(true)` 限流可重试，`Err(false)` 其它失败。
     pub async fn delete_asset_logged(&self, asset_id: &str, log_tag: &str) -> Result<(), bool> {
         let id = normalize_ark_asset_id(asset_id);
         if id.is_empty() {
@@ -555,12 +621,7 @@ impl VolcClient {
             Err(e) => {
                 let msg = e.to_string();
                 if Self::is_api_rate_limited(&msg) {
-                    tracing::info!(
-                        "[{}] DeleteAsset 限流，本轮停止: {} - {}",
-                        log_tag,
-                        id,
-                        msg
-                    );
+                    tracing::info!("[{}] DeleteAsset 限流: {} - {}", log_tag, id, msg);
                     Err(true)
                 } else {
                     tracing::info!(

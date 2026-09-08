@@ -681,7 +681,7 @@ pub async fn redeem_code(
     )
     .await
     {
-        tracing::error!(
+        tracing::warn!(
             "Failed to award commission for redemption {}: {}",
             recharge_id,
             e

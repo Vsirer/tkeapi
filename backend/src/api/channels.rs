@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::models::{
     Channel, ChannelListResponse, ChannelSafe, CreateChannelRequest, UpdateChannelRequest,
 };
@@ -15,6 +15,29 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+
+async fn ensure_ha_channel_rule(
+    state: &AppState,
+    provider_type: &str,
+    config: &serde_json::Value,
+) -> AppResult<()> {
+    if provider_type != "high_availability_group" {
+        return Ok(());
+    }
+    let Some(id) = config
+        .get("rule")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(());
+    };
+    let bundle = crate::relay::relay_settings::get_cached_ha_rules(&state.db).await;
+    if bundle.has_id(id) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest("所选高可用规则不存在".into()))
+    }
+}
 
 pub async fn list_channels(
     State(state): State<Arc<AppState>>,
@@ -47,8 +70,9 @@ pub async fn create_channel(
     let models_json = serde_json::to_string(&request.models).unwrap_or_else(|_| "[]".to_string());
     let mapping_json = serde_json::to_string(&request.model_mapping.unwrap_or_default())
         .unwrap_or_else(|_| "{}".to_string());
-    let config_json = serde_json::to_string(&request.config.unwrap_or_default())
-        .unwrap_or_else(|_| "{}".to_string());
+    let config_val = request.config.unwrap_or_else(|| serde_json::json!({}));
+    ensure_ha_channel_rule(&state, &request.provider_type, &config_val).await?;
+    let config_json = serde_json::to_string(&config_val).unwrap_or_else(|_| "{}".to_string());
     let groups_json = serde_json::to_string(&request.user_groups.unwrap_or_default())
         .unwrap_or_else(|_| "[]".to_string());
     let exclude_groups_json =
@@ -194,6 +218,7 @@ pub async fn update_channel(
         channel.monthly_quota_limit = monthly;
     }
     if let Some(config) = request.config {
+        ensure_ha_channel_rule(&state, &channel.provider_type, &config).await?;
         channel.config = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
     }
     if let Some(rate) = request.rate {
@@ -204,7 +229,7 @@ pub async fn update_channel(
     }
 
     if let Some(preset_id) = request.preset_id {
-        channel.preset_id = Some(preset_id);
+        channel.preset_id = preset_id;
     }
 
     let mut group_aid_val = channel.group_aid.clone().unwrap_or_default();
@@ -372,7 +397,8 @@ pub async fn test_channel(
 
             if let Some(cfg) = sub_config {
                 // 测试指定子上游时校验其额度（站点时区，与线上扣费一致）
-                let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+                let site_tz =
+                    crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
                 let (_, now_week, now_month) = crate::models::quota_period_keys(&site_tz);
                 if cfg.status != 1 {
                     return Err(crate::error::AppError::Forbidden(
@@ -469,6 +495,7 @@ pub async fn test_channel(
         &test_model,
         Some(&channel),
         db_model.as_ref(),
+        &mut None,
     )
     .await;
 
@@ -502,6 +529,7 @@ pub async fn test_channel(
                 let mid = db_model.as_ref().map(|m| m.mid.clone());
                 let mut res = crate::relay::forward::parse_forward_config(
                     &config,
+                    &category_path,
                     &category_path,
                     &r.eid,
                     mid,
@@ -589,46 +617,48 @@ pub async fn test_channel(
         if fwd.target_type == "comfyui" {
             #[cfg(feature = "plugin_comfyui")]
             {
-                let (wf_id, server_id) =
+                let target =
                     crate::api::plugins::comfyui_bridge::resolve_submit_target(
                         &state,
-                        fwd.comfyui_workflow_id,
-                        fwd.comfyui_server_id,
-                        &fwd.comfyui_server_ids,
-                        fwd.comfyui_dispatch.as_deref(),
+                        &openai_body,
+                        &channel,
                     )
                     .await?;
                 request_json = serde_json::to_string(&openai_body).unwrap_or_default();
-                masked_endpoint = format!("{}/prompt", channel.base_url.trim_end_matches('/'));
-                curl_cmd = format!("# ComfyUI workflow_id={wf_id} server_id={server_id:?}");
+                curl_cmd = format!(
+                    "# 本地视频上游 workflow={} servers={:?}",
+                    target.workflow_id, target.eligible_server_ids
+                );
                 match crate::api::plugins::comfyui_bridge::submit_video(
-                    &state,
-                    wf_id,
+                    Arc::clone(&state),
                     &openai_body,
-                    server_id,
+                    &target,
+                    None,
+                    None,
                 )
                 .await
                 {
                     Ok(ack) => {
-                        let ack_json = serde_json::json!({
-                            "id": ack.prompt_id,
-                            "prompt_id": ack.prompt_id,
-                            "status": "pending"
-                        });
-                        raw_response_text = ack_json.to_string();
-                        response_res = Ok(ack_json);
+                        channel.base_url = ack.base_url.clone();
+                        raw_response_text = ack.openai_body();
+                        response_res = Ok(serde_json::from_str(&raw_response_text)
+                            .unwrap_or_else(|_| serde_json::json!({"id": ack.task_id})));
                         request_json = ack.prompt_json.clone();
                         comfy_ack = Some(ack);
                     }
                     Err(e) => {
-                        let msg = e.to_string();
+                        let msg = e.error.to_string();
+                        if !e.prompt_json.is_empty() {
+                            request_json = e.prompt_json;
+                        }
                         raw_response_text = msg.clone();
                         response_res = Ok(serde_json::json!({
-                            "_upstream_status": 502,
+                            "_upstream_status": e.error.http_status(),
                             "_upstream_error": {"error": msg}
                         }));
                     }
                 }
+                masked_endpoint = format!("{}/prompt", channel.base_url.trim_end_matches('/'));
                 let send_failed = match &response_res {
                     Ok(v) => v.get("_upstream_error").is_some(),
                     Err(_) => true,
@@ -641,7 +671,7 @@ pub async fn test_channel(
             #[cfg(not(feature = "plugin_comfyui"))]
             {
                 return Err(crate::error::AppError::BadRequest(
-                    "ComfyUI 接入插件未编译".into(),
+                    "当前服务暂不可用".into(),
                 ));
             }
         }
@@ -733,7 +763,7 @@ pub async fn test_channel(
     }
 
     // ── 响应格式转换（与 relay 保持一致，确保 task_id 可被正确提取）──
-    let response_content_for_log = if fwd.target_type.starts_with("tencent_vod") {
+    let response_content_for_log = if crate::relay::forward::is_tencent_target(&fwd.target_type) {
         let (converted, _) =
             crate::relay::task::convert_tencent_post_response(&raw_response_text, &category);
         converted
@@ -800,6 +830,12 @@ pub async fn test_channel(
         1.0,
         &crate::relay::usage_extractor::ExtractedFeatures::default(),
     );
+    let calc_detail = calc_detail.replace(
+        '¤',
+        &crate::api::settings::get_currency_settings(&state)
+            .await
+            .currency_unit,
+    );
     let final_billing_detail = format!("[测试渠道，不扣费] {}", calc_detail);
     let billing_pid = db_rule.as_ref().map(|r| r.pid.clone());
     let forward_eid = db_forward_rule.as_ref().map(|r| r.eid.clone()).or_else(|| {
@@ -859,8 +895,8 @@ pub async fn test_channel(
     // ── 异步任务自动轮询（统一支持所有厂商：火山/腾讯云/DashScope/可灵等）──
     let mut response_res = response_res;
     if will_poll {
-        if let Some((final_body, _final_status)) = crate::relay::task::poll_task_result(
-            &state.http_client,
+        if let Some(final_body) = crate::relay::task::poll_task_result(
+            &state,
             &channel,
             &fwd,
             &task_id,
@@ -872,6 +908,7 @@ pub async fn test_channel(
             },
         )
         .await
+        .into_terminal_body()
         {
             // 更新日志：终态响应 + 最终计费明细（去掉冻结标记）
             if let Some(lid) = db_row_id {

@@ -6,10 +6,12 @@
  */
 
 use crate::{
-    api::plugins::{get_tos_config, load_plugin_configs_pub},
+    api::plugins::{
+        collect_object_stores, delete_stored_object, get_object_store, load_plugin_configs_pub,
+    },
     auth,
     error::{AppError, AppResult},
-    services::tos,
+    services::object_store::StoreKind,
     time_system::DbTs,
     AppState,
 };
@@ -23,12 +25,15 @@ use serde_json::json;
 use sha2::Digest;
 use std::sync::Arc;
 
+mod download;
+
 /// 素材数量统计时排除创作参考附件（references/ 目录）
 const SQL_EXCLUDE_REFERENCE_ASSETS: &str =
     "AND COALESCE(tos_object_key, '') NOT LIKE '%/references/%'";
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
+        .merge(download::router())
         .route("/init-storage", post(init_storage))
         .route("/projects", get(list_projects).post(create_project))
         .route(
@@ -58,12 +63,14 @@ async fn init_storage(
     Extension(claims): Extension<auth::Claims>,
 ) -> AppResult<Json<serde_json::Value>> {
     // 1. 检查 TOS 配置是否存在
-    let tos_config = get_tos_config(&state, "playground").await.ok_or_else(|| {
-        AppError::BadRequest(
-            "系统存储未配置，请联系管理员正确配置火山引擎 TOS 对象存储后再使用创作中心。"
-                .to_string(),
-        )
-    })?;
+    let tos_config = get_object_store(&state, "playground")
+        .await
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "系统存储未配置，请联系管理员正确配置火山引擎 TOS 对象存储后再使用创作中心。"
+                    .to_string(),
+            )
+        })?;
 
     // 2. 获取用户 UID
     let uid: String =
@@ -78,7 +85,8 @@ async fn init_storage(
     let keep_key = tos_config.full_key(&format!("{}/.keep", user_folder));
     let keep_data = b"playground user root folder".to_vec();
 
-    tos::upload_file(&tos_config, &keep_key, keep_data, "text/plain", None)
+    tos_config
+        .upload_file(&keep_key, keep_data, "text/plain", None)
         .await
         .map_err(|e| {
             AppError::Internal(format!(
@@ -248,16 +256,16 @@ async fn create_project(
     .await?;
 
     // 在 TOS 上为该项目创建子文件夹 p{uid}/{project_id}/
-    if let Some(tos_config) = get_tos_config(&state, "playground").await {
+    if let Some(tos_config) = get_object_store(&state, "playground").await {
         let project_folder_key = tos_config.full_key(&format!("p{}/{:08}/.keep", uid, new_id));
-        let _ = tos::upload_file(
-            &tos_config,
-            &project_folder_key,
-            b"playground project folder".to_vec(),
-            "text/plain",
-            None,
-        )
-        .await;
+        let _ = tos_config
+            .upload_file(
+                &project_folder_key,
+                b"playground project folder".to_vec(),
+                "text/plain",
+                None,
+            )
+            .await;
     }
 
     Ok(Json(json!({
@@ -445,8 +453,8 @@ async fn delete_project(
         return Err(AppError::NotFound("项目不存在".to_string()));
     };
 
-    let asset_rows: Vec<(String, String)> = sqlx::query_as(&state.db.format_query(
-        "SELECT COALESCE(tos_object_key, ''), COALESCE(file_url, '') \
+    let asset_rows: Vec<(String, String, String)> = sqlx::query_as(&state.db.format_query(
+        "SELECT COALESCE(tos_object_key, ''), COALESCE(file_url, ''), COALESCE(storage_provider, 'tos') \
          FROM playground_assets WHERE project_id = ? AND user_id = ?",
     ))
     .bind(id)
@@ -465,18 +473,28 @@ async fn delete_project(
     .execute(&state.db.pool)
     .await?;
 
-    if let Some(tos_config) = get_tos_config(&state, "playground").await {
-        let asset_keys = tos::collect_object_keys(&tos_config, asset_rows);
-        tos::spawn_purge(
-            tos_config,
-            format!("p{}/{:08}", project_uid, id),
-            asset_keys,
-            "[Playground] 项目",
-            id,
-        );
-    } else {
+    let prefix = format!("p{}/{:08}", project_uid, id);
+    let mut extra_tos = Vec::new();
+    let mut extra_cos = Vec::new();
+    for (key, url, provider) in asset_rows {
+        match StoreKind::parse(&provider) {
+            StoreKind::Tos => extra_tos.push((key, url)),
+            StoreKind::Cos => extra_cos.push((key, url)),
+        }
+    }
+    let mut purged = false;
+    for store in collect_object_stores(&state, "playground").await {
+        let extra = match StoreKind::parse(store.provider()) {
+            StoreKind::Tos => extra_tos.clone(),
+            StoreKind::Cos => extra_cos.clone(),
+        };
+        let keys = store.collect_object_keys(extra);
+        store.spawn_purge(prefix.clone(), keys, "[Playground] 项目", id);
+        purged = true;
+    }
+    if !purged {
         tracing::warn!(
-            "[Playground] 项目 {} 已删库，但未配置 TOS，跳过对象清理",
+            "[Playground] 项目 {} 已删库，但未配置对象存储，跳过对象清理",
             id
         );
     }
@@ -550,6 +568,7 @@ async fn db_insert_asset(
     generation_params: Option<&serde_json::Value>,
     canvas_node_data: Option<&serde_json::Value>,
     file_hash: &str,
+    storage_provider: &str,
 ) -> AppResult<i64> {
     let gen_params_str = generation_params.map(|v| v.to_string()).unwrap_or_default();
     let node_data_str = canvas_node_data.map(|v| v.to_string()).unwrap_or_default();
@@ -558,8 +577,8 @@ async fn db_insert_asset(
         &state.db.format_query(
             "INSERT INTO playground_assets \
              (project_id, user_id, uid, asset_type, file_name, file_size, file_url, tos_object_key, \
-              prompt, model_id, model_name, generation_params, canvas_node_data, file_hash) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+              prompt, model_id, model_name, generation_params, canvas_node_data, file_hash, storage_provider) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
         )
     )
     .bind(project_id)
@@ -576,6 +595,7 @@ async fn db_insert_asset(
     .bind(&gen_params_str)
     .bind(&node_data_str)
     .bind(file_hash)
+    .bind(storage_provider)
     .fetch_one(&state.db.pool)
     .await?;
 
@@ -686,7 +706,7 @@ async fn persist_asset(
     let (project_id, uid) = verify_project_owner(&state, payload.project_id, &claims.sub).await?;
 
     // 获取 Playground 的 TOS 配置
-    let tos_config = get_tos_config(&state, "playground")
+    let tos_config = get_object_store(&state, "playground")
         .await
         .ok_or_else(|| AppError::BadRequest("Playground 存储未配置，请联系管理员".to_string()))?;
 
@@ -775,7 +795,8 @@ async fn persist_asset(
         _ => "application/json",
     };
 
-    let file_url = tos::upload_file(&tos_config, &object_key, file_data, content_type, None)
+    let file_url = tos_config
+        .upload_file(&object_key, file_data, content_type, None)
         .await
         .map_err(|e| AppError::Internal(format!("TOS 上传失败: {}", e)))?;
 
@@ -796,6 +817,7 @@ async fn persist_asset(
         payload.generation_params.as_ref(),
         payload.canvas_node_data.as_ref(),
         &file_hash,
+        tos_config.provider(),
     )
     .await?;
 
@@ -843,7 +865,7 @@ async fn presign_upload(
     .await?;
 
     // 获取 TOS 配置
-    let tos_config = get_tos_config(&state, "playground")
+    let tos_config = get_object_store(&state, "playground")
         .await
         .ok_or_else(|| AppError::BadRequest("Playground 存储未配置，请联系管理员".to_string()))?;
 
@@ -868,7 +890,7 @@ async fn presign_upload(
     // 构造前端可访问的文件 URL（通过 object_key 生成，与 upload_file 返回的 URL 一致）
     let file_url = tos_config.file_url(&object_key);
 
-    let upload_url = tos::generate_presigned_put_url(&tos_config, &object_key, 300);
+    let upload_url = tos_config.generate_presigned_put_url(&object_key, 300);
 
     Ok(Json(json!({
         "upload_url": upload_url,   // 前端直接 PUT 到此 URL 上传文件
@@ -916,11 +938,11 @@ async fn confirm_upload(
     // 安全校验：object_key 必须包含当前用户 uid，防止前端伪造他人路径
     let expected_prefix = format!("p{}/", uid);
     // 获取 TOS 路径前缀以便去除后再校验
-    let tos_config = get_tos_config(&state, "playground")
+    let tos_config = get_object_store(&state, "playground")
         .await
         .ok_or_else(|| AppError::BadRequest("Playground 存储未配置，请联系管理员".to_string()))?;
-    let key_without_prefix = if !tos_config.path_prefix.is_empty() {
-        let prefix = tos_config.path_prefix.trim_end_matches('/');
+    let key_without_prefix = if !tos_config.path_prefix().is_empty() {
+        let prefix = tos_config.path_prefix().trim_end_matches('/');
         payload
             .object_key
             .strip_prefix(&format!("{}/", prefix))
@@ -947,7 +969,7 @@ async fn confirm_upload(
     .await
     {
         // 由于空间配额超限被拒，将已成功直传到 TOS 桶的物理文件进行删除，防垃圾孤儿文件堆积
-        let _ = tos::delete_file(&tos_config, &payload.object_key).await;
+        let _ = tos_config.delete_file(&payload.object_key).await;
         return Err(e);
     }
 
@@ -1016,6 +1038,7 @@ async fn confirm_upload(
         payload.generation_params.as_ref(),
         payload.canvas_node_data.as_ref(),
         payload.file_hash.as_deref().unwrap_or(""),
+        tos_config.provider(),
     )
     .await?;
 
@@ -1034,15 +1057,16 @@ async fn delete_asset(
     Extension(claims): Extension<auth::Claims>,
 ) -> AppResult<Json<serde_json::Value>> {
     // 查询资源信息
-    let asset: Option<(i64, String)> = sqlx::query_as(
-        &state.db.format_query("SELECT id, tos_object_key FROM playground_assets WHERE id = ? AND user_id = ? AND is_deleted = 0")
+    let asset: Option<(i64, String, String)> = sqlx::query_as(
+        &state.db.format_query("SELECT id, tos_object_key, COALESCE(storage_provider, 'tos') FROM playground_assets WHERE id = ? AND user_id = ? AND is_deleted = 0")
     )
     .bind(id)
     .bind(&claims.sub)
     .fetch_optional(&state.db.pool)
     .await?;
 
-    let (_asset_id, tos_key) = asset.ok_or_else(|| AppError::NotFound("资源不存在".to_string()))?;
+    let (_asset_id, tos_key, provider) =
+        asset.ok_or_else(|| AppError::NotFound("资源不存在".to_string()))?;
 
     // 物理删除 DB 记录（TOS 文件也是真删，保持一致）
     sqlx::query(
@@ -1055,12 +1079,7 @@ async fn delete_asset(
     .execute(&state.db.pool)
     .await?;
 
-    // 尝试从 TOS 删除（失败不影响返回）
-    if !tos_key.is_empty() {
-        if let Some(tos_config) = get_tos_config(&state, "playground").await {
-            let _ = tos::delete_file(&tos_config, &tos_key).await;
-        }
-    }
+    delete_stored_object(&state, "playground", &provider, &tos_key).await;
 
     Ok(Json(json!({ "message": "资源已删除" })))
 }
@@ -1221,7 +1240,7 @@ async fn upload_reference(
     Extension(claims): Extension<auth::Claims>,
     mut multipart: axum::extract::Multipart,
 ) -> AppResult<Json<serde_json::Value>> {
-    let tos_config = get_tos_config(&state, "playground")
+    let tos_config = get_object_store(&state, "playground")
         .await
         .ok_or_else(|| AppError::BadRequest("Playground 存储未配置".to_string()))?;
 
@@ -1279,7 +1298,8 @@ async fn upload_reference(
     );
     let object_key = tos_config.full_key(&relative_path);
 
-    let file_url = tos::upload_file(&tos_config, &object_key, data.to_vec(), &content_type, None)
+    let file_url = tos_config
+        .upload_file(&object_key, data.to_vec(), &content_type, None)
         .await
         .map_err(|e| AppError::Internal(format!("TOS 上传失败: {}", e)))?;
 
@@ -1303,8 +1323,8 @@ async fn upload_reference(
 
     sqlx::query(
         &state.db.format_query(
-            "INSERT INTO playground_assets (project_id, user_id, uid, asset_type, file_name, file_size, file_url, tos_object_key, is_deleted, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())"
+            "INSERT INTO playground_assets (project_id, user_id, uid, asset_type, file_name, file_size, file_url, tos_object_key, is_deleted, created_at, storage_provider) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), ?)"
         )
     )
     .bind(pid)
@@ -1315,6 +1335,7 @@ async fn upload_reference(
     .bind(file_size)
     .bind(&file_url)
     .bind(&object_key)
+    .bind(tos_config.provider())
     .execute(&state.db.pool)
     .await?;
 
@@ -1345,7 +1366,7 @@ pub async fn cleanup_stale_playground_nodes(state: &crate::AppState) {
         return;
     }
 
-    let tos_config = match get_tos_config(state, "playground").await {
+    let tos_config = match get_object_store(state, "playground").await {
         Some(c) => c,
         None => return, // TOS 未配置则跳过
     };
@@ -1627,16 +1648,16 @@ pub async fn cleanup_stale_playground_nodes(state: &crate::AppState) {
             } else {
                 "image/jpeg"
             };
-            let file_url =
-                match tos::upload_file(&tos_config, &object_key, file_data, content_type, None)
-                    .await
-                {
-                    Ok(url) => url,
-                    Err(e) => {
-                        tracing::warn!("[PlaygroundRecovery] TOS 上传失败: {}", e);
-                        continue;
-                    }
-                };
+            let file_url = match tos_config
+                .upload_file(&object_key, file_data, content_type, None)
+                .await
+            {
+                Ok(url) => url,
+                Err(e) => {
+                    tracing::warn!("[PlaygroundRecovery] TOS 上传失败: {}", e);
+                    continue;
+                }
+            };
 
             // 创建 playground_assets 记录
             let model_name = task_data
@@ -1651,8 +1672,8 @@ pub async fn cleanup_stale_playground_nodes(state: &crate::AppState) {
                 &state.db.format_query(
                     "INSERT INTO playground_assets \
                      (project_id, user_id, uid, asset_type, file_name, file_size, file_url, tos_object_key, \
-                      prompt, model_id, model_name, generation_params, canvas_node_data) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)"
+                      prompt, model_id, model_name, generation_params, canvas_node_data, storage_provider) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)"
                 )
             )
             .bind(project_id)
@@ -1667,6 +1688,7 @@ pub async fn cleanup_stale_playground_nodes(state: &crate::AppState) {
             .bind(model_id)
             .bind(model_name)
             .bind(&node_data_str)
+            .bind(tos_config.provider())
             .execute(&state.db.pool)
             .await;
 

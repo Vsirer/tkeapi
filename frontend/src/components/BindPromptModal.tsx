@@ -27,7 +27,7 @@ import {
   isBindPromptDismissedToday,
   isBindSatisfied,
 } from '../utils/bindPolicy';
-import request from '../utils/request';
+import { fetchConsoleBootstrap } from '../utils/consoleBootstrap';
 import type { User } from '../types';
 
 /**
@@ -71,10 +71,10 @@ const BindPromptModal: React.FC = () => {
 
       let latest: User = user;
       try {
-        const profile = (await request.get('/user/profile')) as User;
-        if (profile && !cancelled) {
-          latest = { ...user, ...profile };
-          setUser(latest);
+        const boot = await fetchConsoleBootstrap();
+        if (boot?.user && !cancelled) {
+          latest = { ...user, ...boot.user };
+          setUser(latest, !!sessionStorage.getItem('token'));
           setDisplayUser(latest);
         }
       } catch {

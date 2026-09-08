@@ -35,9 +35,8 @@ const EmailNotification: React.FC = () => {
       const res = await (request.post('/settings', { smtp: values }) as any);
       message.success(t('settings.save_success'));
       updateStoreSettings(res);
-    } catch (e) {
-      message.error(t('common.error'));
-    } finally {
+    } catch { /* ignore */ }
+    finally {
       setLoading(false);
     }
   };
@@ -49,7 +48,7 @@ const EmailNotification: React.FC = () => {
       const res = await (request.post('/settings/email/test', { to: testEmail }) as any);
       res.success ? message.success(res.message) : message.error(res.message);
     } catch (e: any) {
-      message.error(e?.message || '发送失败');
+      console.error(e);
     } finally {
       setTestLoading(false);
     }

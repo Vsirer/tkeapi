@@ -6,7 +6,7 @@
  */
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -23,12 +23,12 @@ pub struct ExtractedFeatures {
     pub service_tier: Option<String>,
     /// 提示词扩写（DashScope 等图片模型，可能影响计费）
     pub prompt_extend: bool,
+    /// 火山 Seedream 图层拆分（请求 layer_decomposition=true）
+    pub layer_decomposition: bool,
     /// 可灵视频生成模式（std/pro/4k），影响计费倍率，默认 std
     pub mode: Option<String>,
     /// 可灵视频有声/无声（on/off），影响计费倍率，默认 off
     pub sound: Option<String>,
-    /// Claude 缓存创建 Token 数（来自 usage 提取，合并 5m+1h）
-    pub cache_creation: Option<i32>,
     /// 参考图数量（用于腾讯云 Vidu 图片计费区分 ref_1_3 / ref_4_7）
     pub image_ref_count: Option<i32>,
     /// 原始 size 参数（如 "1024x1024"），用于按分辨率像素计费
@@ -45,6 +45,10 @@ pub struct ExtractedFeatures {
     pub web_search: Option<i32>,
     /// 峰谷时段倍率快照（请求开始/冻结时锁定；异步结算优先使用，避免跨时段变价）
     pub time_multiplier: Option<f64>,
+    /// 参考视频总时长（秒），用于 fal 等模型参考视频 Token 计费
+    pub video_ref_seconds: Option<f64>,
+    /// 参考音频总时长（秒），用于 fal 等模型参考音频 Token 计费
+    pub audio_ref_seconds: Option<f64>,
 }
 
 /// content[].type 是否包含指定关键字
@@ -90,19 +94,7 @@ fn field_media_present(body: &Value, key: &str) -> bool {
     body.get(key).is_some_and(media_payload_present)
 }
 
-fn set_str_if_none(dst: &mut Option<String>, val: Option<&str>) {
-    if dst.is_none() {
-        if let Some(s) = val.filter(|s| !s.is_empty()) {
-            *dst = Some(s.to_string());
-        }
-    }
-}
-
 #[inline]
-fn set_res_field(dst: &mut Option<String>, node: Option<&Value>, key: &str) {
-    set_str_if_none(dst, node.and_then(|n| n.get(key)).and_then(|r| r.as_str()));
-}
-
 fn set_f64_if_none(dst: &mut Option<f64>, val: Option<f64>) {
     if dst.is_none() {
         if let Some(v) = val {
@@ -233,6 +225,7 @@ fn count_image_list_fields(body: &Value) -> i32 {
     body.get("images")
         .or(body.get("image_urls"))
         .or(body.get("image_list"))
+        .or(body.get("reference_image_urls"))
         .and_then(|v| v.as_array())
         .map(|a| a.len() as i32)
         .unwrap_or(0)
@@ -276,7 +269,9 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
             }
         }
     }
-    has_video |= nonempty_array_field(body, "videos");
+    has_video |= nonempty_array_field(body, "videos")
+        || nonempty_array_field(body, "reference_video_urls");
+    has_audio |= nonempty_array_field(body, "reference_audio_urls");
 
     let (kling_video, contents_images) = body
         .get("contents")
@@ -318,6 +313,8 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
         &mut has_audio,
     );
 
+    let mut video_ref_seconds = None;
+
     // duration：根、task、parameters、OutputConfig、settings（分辨率见 extract_resolution）
     set_f64_if_none(
         &mut duration_seconds,
@@ -356,6 +353,7 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
             .and_then(|p| p.get("prompt_extend"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+    let layer_decomposition = body.get("layer_decomposition").and_then(|v| v.as_bool()) == Some(true);
 
     let mode = body
         .get("mode")
@@ -382,6 +380,7 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
         || nonempty_array_field(body, "image_urls")
         || nonempty_array_field(body, "image_list")
         || nonempty_array_field(body, "subject_image_list")
+        || nonempty_array_field(body, "reference_image_urls")
         || body.get("image_reference").is_some_and(|v| !v.is_null())
         || tencent_refs > 0
         || contents_images > 0;
@@ -414,10 +413,15 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
         .get("usage")
         .or_else(|| body.get("task").and_then(|t| t.get("usage")))
     {
-        if let Some(dur) = usage
+        if let Some(in_sec) = usage.get("input_seconds").and_then(parse_json_f64) {
+            video_ref_seconds = Some(in_sec);
+        }
+        if let Some(out_sec) = usage.get("output_seconds").and_then(parse_json_f64) {
+            duration_seconds = Some(out_sec);
+        } else if let Some(dur) = usage
             .get("total_seconds")
+            .or_else(|| usage.get("duration"))
             .and_then(parse_json_f64)
-            .or_else(|| usage.get("duration").and_then(parse_json_f64))
         {
             duration_seconds = Some(dur);
         }
@@ -521,9 +525,9 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
         image_count,
         service_tier,
         prompt_extend,
+        layer_decomposition,
         mode,
         sound,
-        cache_creation: None,
         image_ref_count,
         size,
         quality,
@@ -532,10 +536,17 @@ pub fn extract_request_features(body: &Value) -> ExtractedFeatures {
         version,
         web_search: None,
         time_multiplier: None,
+        video_ref_seconds,
+        audio_ref_seconds: None,
     }
 }
 
 impl ExtractedFeatures {
+    /// 获取视频总时长（用于 minimax_h3 兼容）：输出生成时长 + 输入参考视频时长
+    pub fn total_video_seconds(&self) -> f64 {
+        self.duration_seconds.unwrap_or(0.0) + self.video_ref_seconds.unwrap_or(0.0)
+    }
+
     /// 严谨合并另外一个特征结构体中的字段（用于出参特征与入参特征融合，保障计费一致性）
     pub fn merge(&mut self, other: ExtractedFeatures) {
         overwrite_if_some(&mut self.duration_seconds, other.duration_seconds);
@@ -552,6 +563,8 @@ impl ExtractedFeatures {
         overwrite_if_some(&mut self.image_count, other.image_count);
         // 峰谷快照：已锁定的值不被后续 merge 冲掉
         set_opt_if_none(&mut self.time_multiplier, other.time_multiplier);
+        overwrite_if_some(&mut self.video_ref_seconds, other.video_ref_seconds);
+        overwrite_if_some(&mut self.audio_ref_seconds, other.audio_ref_seconds);
     }
 
     /// 轮询结算：叠加终态响应特征，并应用厂商覆盖（顺序与历史一致，不可打乱）
@@ -858,14 +871,86 @@ fn assign_upstream_total(u: &mut UsageTokens, total: i32) {
     }
 }
 
-/// 将 usage 中的计费特征写回 ExtractedFeatures（流式/非流式共用）
+/// 将 usage 中需持久到 billing_features 的附加项写回（流式/非流式共用）
 pub fn enrich_features_from_usage(features: &mut ExtractedFeatures, usage: &UsageTokens) {
-    if usage.cache_creation > 0 {
-        features.cache_creation = Some(usage.cache_creation);
-    }
     if usage.web_search > 0 {
         features.web_search = Some(usage.web_search);
     }
+}
+
+/// 统一构建计费特征（落库与计费同源）。
+/// - `billed`：调用方已用于 `calculate_relay_cost` 的特征 → 直接复用，保证库表与扣费一致
+/// - 未传：从请求/上游/响应抽取，并补响应真实张数与 usage 附加项
+pub fn build_billing_features(
+    request: Option<&str>,
+    upstream: Option<&str>,
+    response: Option<&str>,
+    billed: Option<ExtractedFeatures>,
+    time_multiplier: Option<f64>,
+) -> ExtractedFeatures {
+    let mut feat = match billed {
+        Some(b) => b,
+        None => features_from_exchange(request, upstream, response),
+    };
+    set_opt_if_none(&mut feat.time_multiplier, time_multiplier);
+    feat
+}
+
+/// 已解析 JSON 的请求体场景（同步图片等）：与落库同一套抽取
+pub fn features_from_values(
+    request: Option<&Value>,
+    upstream: Option<&Value>,
+    response: Option<&str>,
+) -> ExtractedFeatures {
+    let mut f = match request {
+        Some(v) => extract_request_features(v),
+        None => ExtractedFeatures::default(),
+    };
+    if let Some(v) = upstream {
+        f.merge(extract_request_features(v));
+    }
+    if let Some(resp) = response {
+        if let Ok(v) = serde_json::from_str::<Value>(resp) {
+            f.merge(extract_request_features(&v));
+        }
+        enrich_features_from_usage(&mut f, &parse_usage(resp));
+        if let Some(n) = count_response_images(resp) {
+            f.image_count = Some(n);
+        }
+    }
+    f
+}
+
+/// 从请求/上游 body + 响应文本抽取特征（含响应真实图片张数）
+pub fn features_from_exchange(
+    request: Option<&str>,
+    upstream: Option<&str>,
+    response: Option<&str>,
+) -> ExtractedFeatures {
+    let req = request.and_then(|s| serde_json::from_str(s).ok());
+    let up = upstream.and_then(|s| serde_json::from_str(s).ok());
+    features_from_values(req.as_ref(), up.as_ref(), response)
+}
+
+/// Gemini `usageMetadata` → OpenAI `usage`（忽略 rawPromptTokenCount）
+pub fn gemini_usage_metadata_to_openai(u: &Value) -> Value {
+    let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
+    let prompt = n("promptTokenCount");
+    let thoughts = n("thoughtsTokenCount").max(n("thoughtTokenCount"));
+    let completion = n("candidatesTokenCount") + thoughts;
+    let mut usage = json!({
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    });
+    if thoughts > 0 {
+        usage["completion_tokens_details"] = json!({ "reasoning_tokens": thoughts });
+    }
+    let cached = n("cachedContentTokenCount");
+    if cached > 0 {
+        usage["prompt_tokens_details"] = json!({ "cached_tokens": cached });
+    }
+    usage
 }
 
 /// 从 usage JSON 对象提取 token 字段，取大值写入 UsageTokens（初始 0 时等同赋值，
@@ -905,8 +990,13 @@ fn apply_usage_max(u: &mut UsageTokens, usage: &Value) {
         json_field_i32(usage, "cache_creation_input_tokens")
     };
     assign_max(&mut u.cache_creation, cc);
-    // 根级缓存命中兜底：Claude cache_read_input_tokens / DeepSeek prompt_cache_hit_tokens
-    if u.cached == 0 {
+    // GLM 差异 usage：输入含缓存 = hit + miss。其余根级命中：Claude cache_read / DeepSeek hit
+    if usage.get("prompt_cache_miss_tokens").is_some() {
+        let hit = json_field_i32(usage, "prompt_cache_hit_tokens");
+        let miss = json_field_i32(usage, "prompt_cache_miss_tokens");
+        assign_max(&mut u.cached, hit);
+        assign_max(&mut u.prompt, hit + miss);
+    } else if u.cached == 0 {
         u.cached = json_field_i32(usage, "cache_read_input_tokens")
             .max(json_field_i32(usage, "prompt_cache_hit_tokens"));
     }
@@ -943,15 +1033,7 @@ pub fn parse_usage(response: &str) -> UsageTokens {
         }
         // Google Gemini
         if let Some(usage) = v.get("usageMetadata") {
-            u.prompt = json_field_i32(usage, "promptTokenCount");
-            let total = json_field_i32(usage, "totalTokenCount");
-            assign_upstream_total(&mut u, total);
-            u.completion = if total >= u.prompt {
-                total - u.prompt
-            } else {
-                0
-            };
-            u.cached = json_field_i32(usage, "cachedContentTokenCount");
+            apply_usage_max(&mut u, &gemini_usage_metadata_to_openai(usage));
             found = true;
         }
         // 3. 包裹格式: { code, data: { usage: {...} } }
@@ -1115,18 +1197,25 @@ pub fn normalize_resolution_label(raw: &str) -> String {
     res
 }
 
+fn res_str(v: &Value) -> Option<&str> {
+    v.get("resolution")
+        .or_else(|| v.get("Resolution"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
 /// 从请求/响应体提取规范化分辨率（计费特征与模型别名映射共用唯一入口）。
-/// 来源：resolution / parameters / settings / OutputConfig / usage.SR，缺省时由 size→1k/2k/4k。
+/// 来源：根 / task / parameters / settings / OutputConfig / ImageTask.AiTryOnConfig / usage.SR；缺省时由 size→1k/2k/4k。
 pub fn extract_resolution(body: &Value) -> Option<String> {
-    let mut resolution = None;
-    set_res_field(&mut resolution, Some(body), "resolution");
-    set_res_field(&mut resolution, body.get("task"), "resolution");
-    set_res_field(&mut resolution, body.get("parameters"), "resolution");
-    set_res_field(&mut resolution, body.get("OutputConfig"), "Resolution");
-    set_str_if_none(
-        &mut resolution,
-        body.pointer("/settings/resolution").and_then(|r| r.as_str()),
-    );
+    let mut resolution = res_str(body)
+        .or_else(|| {
+            ["task", "parameters", "settings", "OutputConfig"]
+                .iter()
+                .find_map(|k| body.get(*k).and_then(res_str))
+        })
+        .or_else(|| body.pointer("/ImageTask/AiTryOnConfig").and_then(res_str))
+        .map(str::to_string);
     if let Some(usage) = body
         .get("usage")
         .or_else(|| body.get("task").and_then(|t| t.get("usage")))

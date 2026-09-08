@@ -83,7 +83,7 @@ impl BillingPipelineHandle {
     pub async fn join(self) {
         match tokio::time::timeout(Duration::from_secs(25), self.worker).await {
             Ok(Ok(())) => tracing::info!("[BillingPipeline] 工作协程排空并退出"),
-            Ok(Err(e)) => tracing::error!("[BillingPipeline] 工作协程等待异常: {}", e),
+            Ok(Err(e)) => tracing::warn!("[BillingPipeline] 工作协程等待异常: {}", e),
             Err(_) => tracing::warn!("[BillingPipeline] 排空超时"),
         }
     }
@@ -197,7 +197,7 @@ async fn flush_batch(db: &Database, buf: &mut HashMap<String, Aggregated>) {
         }
         // 短暂重试后仍失败则放回缓冲，避免内存已占用但 DB 永久丢账
         if let Err(e) = flush_one_with_retry(db, token_id, &agg, 3).await {
-            tracing::error!(
+            tracing::warn!(
                 "[BillingPipeline] 刷盘失败 令牌ID={} 日期={} 金额={:.6}: {} (已重新排队)",
                 token_id,
                 agg.day,

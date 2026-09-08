@@ -595,7 +595,7 @@ document.addEventListener("DOMContentLoaded", () => {
             inputCell.innerHTML = inHtml;
             outputCell.innerHTML = `<div class="price-box"><div class="price-main">${formatPrice(b.completion_rate, b)} <span class="price-unit">/ 1M</span></div></div>`;
         } else if (b.billing_type === 'requests') {
-            if ((br === 'image_resolution' || br === 'image_size_pixel') && tiers.length > 0) {
+            if ((br === 'image_resolution' || br === 'image_size_pixel' || br === 'image_resolution_io') && tiers.length > 0) {
                 const active = tiers.filter(t => t.enabled !== false);
                 const perImageText = isEn ? 'img' : '张';
                 let listHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
@@ -605,6 +605,11 @@ document.addEventListener("DOMContentLoaded", () => {
                         listHtml += `<div class="tag-image">${label} (${isEn ? 'Low' : '低'}): <span style="font-weight:600;font-family:monospace;">${formatPrice(t.rate_low, b)}</span> / ${perImageText}</div>`;
                         listHtml += `<div class="tag-image">${label} (${isEn ? 'Med' : '中'}): <span style="font-weight:600;font-family:monospace;">${formatPrice(t.rate_medium, b)}</span> / ${perImageText}</div>`;
                         listHtml += `<div class="tag-image">${label} (${isEn ? 'High' : '高'}): <span style="font-weight:600;font-family:monospace;">${formatPrice(t.rate_high, b)}</span> / ${perImageText}</div>`;
+                    } else if (br === 'image_resolution_io') {
+                        const inputText = isEn ? 'Image input' : '图片输入';
+                        const genText = isEn ? 'Image generation' : '图片生成';
+                        listHtml += `<div class="tag-image">${label} ${inputText}: <span style="font-weight:600;font-family:monospace;">${formatPrice(t.input_rate, b)}</span> / ${perImageText}</div>`;
+                        listHtml += `<div class="tag-image">${label} ${genText}: <span style="font-weight:600;font-family:monospace;">${formatPrice(t.rate, b)}</span> / ${perImageText}</div>`;
                     } else {
                         listHtml += `<div class="tag-image">${label}: <span style="font-weight:600;font-family:monospace;">${formatPrice(t.rate, b)}</span> / ${perImageText}</div>`;
                     }

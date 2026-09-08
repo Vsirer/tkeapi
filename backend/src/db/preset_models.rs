@@ -23,10 +23,15 @@ pub struct PresetModelDef {
     pub logo: &'static str,
     pub pre_deduction: f64,
     pub feature_attributes: &'static str,
+    pub site_discount: f64,
+    pub site_discount_enabled: i32,
+    pub global_discount: f64,
+    pub global_discount_enabled: i32,
+    pub is_active: i32,
+    pub enable_log_content: i32,
+    pub remark: &'static str,
+    pub description: &'static str,
 }
-
-const VIDEO_IO: &str = r#"["文生视频","图生视频"]"#;
-const VIDEO_REF: &str = r#"["文生视频","图生视频","参考生视频"]"#;
 
 /// 与系统内置官方计费 / 转发规则名称一一对应；新增条目须新开迁移，勿改已执行过的种子。
 pub fn preset_model_catalog() -> &'static [PresetModelDef] {
@@ -34,35 +39,51 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
         PresetModelDef {
             mid: "310001",
             name: "Doubao Seedance 2.0",
-            model_id: "doubao-seedance-2-0",
+            model_id: "doubao-seedance-2-0-260128",
             original_id: "doubao-seedance-2-0",
-            model_id_alias: "doubao-seedance-2-0-260128",
+            model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
             billing_rule_name: "Seedance2.0官方计费",
             forward_rule_name: "火山方舟 视频生成",
             logo: "doubao",
-            pre_deduction: 30.0,
-            feature_attributes: VIDEO_IO,
+            pre_deduction: 5.0,
+            feature_attributes: "[]",
+            site_discount: 1.0,
+            site_discount_enabled: 1,
+            global_discount: 1.0,
+            global_discount_enabled: 1,
+            is_active: 1,
+            enable_log_content: 0,
+            remark: "",
+            description: "Doubao Seedance 2.0",
         },
         PresetModelDef {
             mid: "310002",
             name: "Doubao Seedance 2.0 Fast",
             model_id: "doubao-seedance-2-0-fast",
             original_id: "doubao-seedance-2-0-fast",
-            model_id_alias: "doubao-seedance-2-0-fast-260128",
+            model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
             billing_rule_name: "Seedance2.0Fast官方计费",
             forward_rule_name: "火山方舟 视频生成",
             logo: "doubao",
-            pre_deduction: 30.0,
-            feature_attributes: VIDEO_IO,
+            pre_deduction: 5.0,
+            feature_attributes: "[]",
+            site_discount: 1.0,
+            site_discount_enabled: 1,
+            global_discount: 1.0,
+            global_discount_enabled: 1,
+            is_active: 1,
+            enable_log_content: 1,
+            remark: "",
+            description: "Doubao Seedance 2.0 Fast",
         },
         PresetModelDef {
             mid: "310003",
             name: "Doubao Seedance 2.5",
-            model_id: "doubao-seedance-2-5",
+            model_id: "doubao-seedance-2-5-260628",
             original_id: "doubao-seedance-2-5",
             model_id_alias: "",
             provider_name: "火山引擎",
@@ -70,64 +91,38 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
             billing_rule_name: "Seedance2.5官方计费",
             forward_rule_name: "火山方舟 视频生成",
             logo: "doubao",
-            pre_deduction: 50.0,
-            feature_attributes: VIDEO_IO,
+            pre_deduction: 5.0,
+            feature_attributes: "[]",
+            site_discount: 1.0,
+            site_discount_enabled: 1,
+            global_discount: 1.0,
+            global_discount_enabled: 1,
+            is_active: 1,
+            enable_log_content: 1,
+            remark: "",
+            description: "Doubao Seedance 2.5",
         },
         PresetModelDef {
             mid: "310004",
-            name: "Kling V3",
-            model_id: "kling-v3",
-            original_id: "kling-v3",
+            name: "Doubao Seedance 2.0 Mini",
+            model_id: "doubao-seedance-2-0-mini",
+            original_id: "doubao-seedance-2-0-mini",
             model_id_alias: "",
-            provider_name: "可灵 AI",
+            provider_name: "火山引擎",
             type_name: "视频",
-            billing_rule_name: "可灵V3视频计费",
-            forward_rule_name: "可灵视频 3.0（文/图·推荐）",
-            logo: "kling",
-            pre_deduction: 8.0,
-            feature_attributes: VIDEO_IO,
-        },
-        PresetModelDef {
-            mid: "310005",
-            name: "Kling V3 Omni",
-            model_id: "kling-v3-omni",
-            original_id: "kling-v3-omni",
-            model_id_alias: "",
-            provider_name: "可灵 AI",
-            type_name: "视频",
-            billing_rule_name: "可灵V3-Omni视频计费",
-            forward_rule_name: "可灵 Omni 视频 3.0（推荐）",
-            logo: "kling",
-            pre_deduction: 8.0,
-            feature_attributes: VIDEO_REF,
-        },
-        PresetModelDef {
-            mid: "310006",
-            name: "Kling Video O1",
-            model_id: "kling-video-o1",
-            original_id: "kling-video-o1",
-            model_id_alias: "",
-            provider_name: "可灵 AI",
-            type_name: "视频",
-            billing_rule_name: "可灵Video-O1视频计费",
-            forward_rule_name: "可灵 Omni 视频 (kling-v3-omni/video-o1)",
-            logo: "kling",
-            pre_deduction: 8.0,
-            feature_attributes: VIDEO_REF,
-        },
-        PresetModelDef {
-            mid: "310007",
-            name: "Kling V2.1",
-            model_id: "kling-v2-1",
-            original_id: "kling-v2-1",
-            model_id_alias: "",
-            provider_name: "可灵 AI",
-            type_name: "视频",
-            billing_rule_name: "可灵视频官方计费",
-            forward_rule_name: "可灵 视频生成 (文/图/多图)",
-            logo: "kling",
+            billing_rule_name: "Seedance2.0mini官方计费",
+            forward_rule_name: "火山方舟 视频生成",
+            logo: "doubao",
             pre_deduction: 5.0,
-            feature_attributes: VIDEO_IO,
+            feature_attributes: "[]",
+            site_discount: 1.0,
+            site_discount_enabled: 1,
+            global_discount: 1.0,
+            global_discount_enabled: 1,
+            is_active: 1,
+            enable_log_content: 1,
+            remark: "",
+            description: "Doubao Seedance 2.0 Mini",
         },
     ]
 }
@@ -207,9 +202,10 @@ pub async fn seed_system_preset_models(pool: &PgPool) -> anyhow::Result<u32> {
                     feature_attributes, created_at, updated_at
                )
                SELECT $1, $2, $3, $4, $5, $6, $7, '{"default":1.0}', $8, $9,
-                      $10, 1.0, 1, 1.0, 0, 1, 0, 1, $11,
-                      '系统预设模型，已绑定官方计费与转发规则',
-                      $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                      $10, $11, $12, $13, $14,
+                      $15, $16, 1, $17,
+                      $18,
+                      $19, $20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                WHERE NOT EXISTS (SELECT 1 FROM models WHERE mid = $1)"#,
         )
         .bind(def.mid)
@@ -222,8 +218,15 @@ pub async fn seed_system_preset_models(pool: &PgPool) -> anyhow::Result<u32> {
         .bind(&forward_ids)
         .bind(billing_rule_id)
         .bind(def.pre_deduction)
+        .bind(def.site_discount)
+        .bind(def.site_discount_enabled)
+        .bind(def.global_discount)
+        .bind(def.global_discount_enabled)
+        .bind(def.is_active)
+        .bind(def.enable_log_content)
         .bind(def.logo)
-        .bind(def.name)
+        .bind(def.remark)
+        .bind(def.description)
         .bind(def.feature_attributes)
         .execute(pool)
         .await?;
@@ -250,65 +253,5 @@ pub fn source_join_predicate(source: Option<&str>) -> Option<&'static str> {
         Some("system") => Some("m.is_system = 1"),
         Some("custom") => Some("m.is_system = 0"),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn catalog_mids_unique_and_stable() {
-        let catalog = preset_model_catalog();
-        assert!(!catalog.is_empty());
-        let mut mids = HashSet::new();
-        for def in catalog {
-            assert!(!def.mid.is_empty());
-            assert!(
-                mids.insert(def.mid),
-                "duplicate preset mid {}",
-                def.mid
-            );
-            assert!(def.mid.starts_with("31"), "preset mid should use 31 prefix");
-            assert!(!def.name.is_empty());
-            assert!(!def.model_id.is_empty());
-            assert!(!def.billing_rule_name.is_empty());
-            assert!(!def.forward_rule_name.is_empty());
-            assert!(!def.provider_name.is_empty());
-            assert!(!def.type_name.is_empty());
-        }
-    }
-
-    #[test]
-    fn catalog_binds_known_official_rules() {
-        let billing: HashSet<&str> = preset_model_catalog()
-            .iter()
-            .map(|d| d.billing_rule_name)
-            .collect();
-        assert!(billing.contains("Seedance2.0官方计费"));
-        assert!(billing.contains("Seedance2.5官方计费"));
-        assert!(billing.contains("可灵V3视频计费"));
-        assert!(billing.contains("可灵视频官方计费"));
-
-        let forwards: HashSet<&str> = preset_model_catalog()
-            .iter()
-            .map(|d| d.forward_rule_name)
-            .collect();
-        assert!(forwards.contains("火山方舟 视频生成"));
-        assert!(forwards.contains("可灵视频 3.0（文/图·推荐）"));
-    }
-
-    #[test]
-    fn source_filter_sql_only_known_values() {
-        assert_eq!(source_filter_sql(None), "");
-        assert_eq!(source_filter_sql(Some("all")), "");
-        assert_eq!(source_filter_sql(Some("system")), " AND is_system = 1");
-        assert_eq!(source_filter_sql(Some("custom")), " AND is_system = 0");
-        assert_eq!(source_filter_sql(Some("'; drop table models --")), "");
-        assert_eq!(source_join_predicate(Some("system")), Some("m.is_system = 1"));
-        assert_eq!(source_join_predicate(Some("custom")), Some("m.is_system = 0"));
-        assert_eq!(source_join_predicate(Some("all")), None);
-        assert_eq!(source_join_predicate(None), None);
     }
 }

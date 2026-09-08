@@ -5,19 +5,17 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-import React, { useEffect, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import { Link, useOutletContext } from 'react-router-dom';
 import { getAnnouncementLabel } from '../../utils/announcement';
-import { Row, Col, Card, Typography, Table, Space, List, Progress, Alert, Grid, Spin, Modal, Button, Statistic, Divider, Tooltip as AntTooltip, DatePicker, Radio, Tag } from 'antd';
+import { Row, Col, Card, Typography, Table, Space, List, Progress, Alert, Grid, Spin, Modal, Button, Divider, Tooltip as AntTooltip, DatePicker, Radio, Tag } from 'antd';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
 import {
-  ExpandAltOutlined,
   BarChartOutlined,
   DatabaseOutlined,
   AccountBookOutlined,
-  FullscreenOutlined,
-  FullscreenExitOutlined,
   CloseOutlined,
+  BellOutlined,
 } from '@ant-design/icons';
 import { LineChart as LineChartIcon, PieChart as PieChartIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -28,21 +26,7 @@ import { useThemeStore } from '../../store/theme';
 import type { DashboardStats, RequestLog, Announcement, ModelTrend30dResponse, LiveMetricsResponse, LiveMetricsSnapshot } from '../../types';
 import dayjs from 'dayjs';
 import { toCalendarDateRangeParams } from '../../utils/dateRangeParams';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  ComposedChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-} from 'recharts';
+import ModelDistribution30d from './ModelDistribution30d';
 
 const { Title, Text } = Typography;
 
@@ -50,6 +34,7 @@ const Dashboard: React.FC = () => {
   const { t, i18n } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.admin_path || 'admin';
   const { user } = useAuthStore();
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
@@ -57,8 +42,131 @@ const Dashboard: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [liveMetrics, setLiveMetrics] = useState<LiveMetricsSnapshot | null>(null);
-  const outletContext = useOutletContext<{ announcements: Announcement[] } | null>();
-  const pinnedAnnouncement = outletContext?.announcements.find((a) => a.is_pinned === 1) || null;
+  const [liveMetricsReady, setLiveMetricsReady] = useState(false);
+  const outletContext = useOutletContext<{
+    announcements: Announcement[];
+    notifyConsolePageReady?: () => void;
+  } | null>();
+  const notifyConsolePageReady = outletContext?.notifyConsolePageReady;
+  const [currentPinnedIndex, setCurrentPinnedIndex] = useState<number>(0);
+  const [isPinnedBannerHovered, setIsPinnedBannerHovered] = useState(false);
+  const [selectedNoticeForModal, setSelectedNoticeForModal] = useState<Announcement | null>(null);
+  const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
+  const [isNoticeTruncated, setIsNoticeTruncated] = useState(false);
+  const noticeTitleRef = useRef<HTMLSpanElement>(null);
+  const noticeContentRef = useRef<HTMLDivElement>(null);
+  const initializedPinnedRef = useRef(false);
+
+  const handleOpenNoticeDetail = (notice: Announcement) => {
+    setSelectedNoticeForModal(notice);
+    setIsNoticeModalOpen(true);
+  };
+
+  const pinnedAnnouncements = useMemo(() => {
+    const raw = outletContext?.announcements?.filter((a) => a.is_pinned === 1 && a.is_active === 1) || [];
+    const seen = new Set<number>();
+    const list: Announcement[] = [];
+    for (const item of raw) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        list.push(item);
+      }
+    }
+    return list;
+  }, [outletContext?.announcements]);
+
+  // 当置顶通知数据到达后，随机展示一条（优先不与上次展示的相同），并重置初始化标记
+  useEffect(() => {
+    if (pinnedAnnouncements.length === 0) {
+      setCurrentPinnedIndex(0);
+      initializedPinnedRef.current = false;
+      return;
+    }
+
+    if (!initializedPinnedRef.current) {
+      initializedPinnedRef.current = true;
+      if (pinnedAnnouncements.length === 1) {
+        setCurrentPinnedIndex(0);
+        try {
+          sessionStorage.setItem('last_dashboard_pinned_id', String(pinnedAnnouncements[0].id));
+        } catch {}
+        return;
+      }
+
+      const lastId = sessionStorage.getItem('last_dashboard_pinned_id');
+      const candidateIndices = pinnedAnnouncements
+        .map((a, idx) => ({ id: a.id, idx }))
+        .filter((item) => String(item.id) !== lastId);
+
+      const chosenIdx =
+        candidateIndices.length > 0
+          ? candidateIndices[Math.floor(Math.random() * candidateIndices.length)].idx
+          : Math.floor(Math.random() * pinnedAnnouncements.length);
+
+      setCurrentPinnedIndex(chosenIdx);
+      try {
+        sessionStorage.setItem('last_dashboard_pinned_id', String(pinnedAnnouncements[chosenIdx].id));
+      } catch {}
+    } else {
+      setCurrentPinnedIndex((prev) => (prev < pinnedAnnouncements.length ? prev : 0));
+    }
+  }, [pinnedAnnouncements]);
+
+  // 当存在多条置顶通知时，定时自动轮播切换，悬浮暂停
+  useEffect(() => {
+    if (pinnedAnnouncements.length <= 1 || isPinnedBannerHovered) return;
+
+    const timer = setInterval(() => {
+      setCurrentPinnedIndex((prev) => {
+        const next = (prev + 1) % pinnedAnnouncements.length;
+        try {
+          if (pinnedAnnouncements[next]) {
+            sessionStorage.setItem('last_dashboard_pinned_id', String(pinnedAnnouncements[next].id));
+          }
+        } catch {}
+        return next;
+      });
+    }, 8000);
+
+    return () => clearInterval(timer);
+  }, [pinnedAnnouncements, isPinnedBannerHovered]);
+
+  const pinnedAnnouncement = pinnedAnnouncements[currentPinnedIndex] || pinnedAnnouncements[0] || null;
+
+  // 检测当前置顶通知是否内容超出/显示不完整（超出1行标题或2行正文或含隐藏图片/特殊标签）
+  useEffect(() => {
+    if (!pinnedAnnouncement) {
+      setIsNoticeTruncated(false);
+      return;
+    }
+
+    const checkTruncation = () => {
+      let truncated = false;
+      if (noticeTitleRef.current) {
+        if (noticeTitleRef.current.scrollWidth > noticeTitleRef.current.clientWidth + 1) {
+          truncated = true;
+        }
+      }
+      if (noticeContentRef.current) {
+        if (noticeContentRef.current.scrollHeight > noticeContentRef.current.clientHeight + 1) {
+          truncated = true;
+        }
+      }
+      const contentHtml = getAnnouncementLabel(pinnedAnnouncement.content) || '';
+      if (/<img|<table|<pre|<blockquote|<hr/i.test(contentHtml)) {
+        truncated = true;
+      }
+      setIsNoticeTruncated(truncated);
+    };
+
+    const animId = requestAnimationFrame(checkTruncation);
+    window.addEventListener('resize', checkTruncation);
+
+    return () => {
+      cancelAnimationFrame(animId);
+      window.removeEventListener('resize', checkTruncation);
+    };
+  }, [pinnedAnnouncement, currentPinnedIndex, i18n.language]);
   const { RangePicker } = DatePicker;
   const isAdmin = user?.role === 'admin';
   const [dateRange, setDateRange] = useState<[any, any] | null>(() => [
@@ -132,10 +240,7 @@ const Dashboard: React.FC = () => {
     : t('dashboard.scope_user');
   const modelDetailHint = t('dashboard.model_detail_recent');
   const [cardHeight, setCardHeight] = useState(580);
-  const [isTrendModalVisible, setIsTrendModalVisible] = useState(false);
-  const [isFullscreenTrend, setIsFullscreenTrend] = useState(false);
-  const [isModel30dModalVisible, setIsModel30dModalVisible] = useState(false);
-  const [isFullscreen30d, setIsFullscreen30d] = useState(false);
+  const [isModel30dView, setIsModel30dView] = useState(false);
   const [modelStats30d, setModelStats30d] = useState<ModelTrend30dResponse | null>(null);
   const [loading30d, setLoading30d] = useState(false);
 
@@ -151,35 +256,11 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const chartData30d = React.useMemo(() => {
-    if (!modelStats30d) return [];
-    
-    const dataMap = new Map<string, any>();
-    
-    // Initialize dates for the last 30 days
-    for (let i = 29; i >= 0; i--) {
-      const d = dayjs().subtract(i, 'day').format('YYYY-MM-DD');
-      dataMap.set(d, { date: d.slice(5) });
-    }
-
-    if (modelStats30d.daily_data && Array.isArray(modelStats30d.daily_data)) {
-      modelStats30d.daily_data.forEach(item => {
-        if (!dataMap.has(item.date)) {
-          dataMap.set(item.date, { date: item.date.slice(5) });
-        }
-        const entry = dataMap.get(item.date);
-        entry[item.model] = parseFloat(item.total_cost.toFixed(6));
-      });
-    }
-
-    return Array.from(dataMap.values()).sort((a, b) => a.date.localeCompare(b.date));
-  }, [modelStats30d]);
-
   useEffect(() => {
-    if (isModel30dModalVisible && !modelStats30d) {
+    if (isModel30dView && !modelStats30d) {
       fetchModelStats30d();
     }
-  }, [isModel30dModalVisible]);
+  }, [isModel30dView]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -251,15 +332,19 @@ const Dashboard: React.FC = () => {
       Object.assign(params, toCalendarDateRangeParams(dateRange));
       const data = await (request.get<DashboardStats>('/dashboard', { params }) as unknown as Promise<DashboardStats>);
       setStats(data);
+      if (data.live_metrics) {
+        setLiveMetrics(data.live_metrics);
+      }
     } catch (error) {
       console.error(error);
-    } finally {
-      setLoading(false);
+      void fetchLiveMetrics();
     }
   };
 
   const fetchLiveMetrics = async () => {
-    if (typeof document !== 'undefined' && document.hidden) return;
+    if (typeof document !== 'undefined' && document.hidden) {
+      return;
+    }
     try {
       const data = await (request.get<LiveMetricsResponse>('/metrics/live') as unknown as Promise<LiveMetricsResponse>);
       setLiveMetrics(data.metrics);
@@ -270,15 +355,23 @@ const Dashboard: React.FC = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    fetchStats();
+    fetchStats().finally(() => {
+      if (!cancelled) {
+        setLoading(false);
+        setLiveMetricsReady(true);
+      }
+    });
     // 与后端 dashboard SWR 缓存 TTL（180s）对齐，减轻 logs 大表聚合压力
     const timer = setInterval(fetchStats, 180000);
-    return () => clearInterval(timer);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [dateRange]);
 
   useEffect(() => {
-    fetchLiveMetrics();
     const timer = setInterval(fetchLiveMetrics, 5000);
     const onVis = () => {
       if (!document.hidden) fetchLiveMetrics();
@@ -289,6 +382,12 @@ const Dashboard: React.FC = () => {
       document.removeEventListener('visibilitychange', onVis);
     };
   }, []);
+
+  // 看板主数据与实时指标都结束后再通知布局弹公告，避免加载过程中反复闪屏
+  useEffect(() => {
+    if (loading || !liveMetricsReady) return;
+    notifyConsolePageReady?.();
+  }, [loading, liveMetricsReady, notifyConsolePageReady]);
 
   const columns = [
     {
@@ -319,11 +418,18 @@ const Dashboard: React.FC = () => {
           {
             title: t('dashboard.recent_activity_user', '用户'),
             key: 'user',
-            render: (log: RequestLog) => (
-              <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 13 }}>
-                {log.user_nickname || log.user_uid || log.user_id || '-'}
-              </Text>
-            ),
+            render: (log: RequestLog) => {
+              const displayName = log.user_nickname || log.user_uid || log.user_id || '-';
+              return log.user_uid ? (
+                <Link to={`/${adminPath}/users/${log.user_uid}/basic`} style={{ fontSize: 13, fontWeight: 500 }}>
+                  {displayName}
+                </Link>
+              ) : (
+                <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 13 }}>
+                  {displayName}
+                </Text>
+              );
+            },
           },
         ]
       : []),
@@ -407,7 +513,176 @@ const Dashboard: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1600, margin: '0 auto' }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: pinnedAnnouncement ? 16 : 24 }}>
+      {!isModel30dView && (
+      <>
+      {pinnedAnnouncement && (
+        <div
+          className="compact-announcement-banner"
+          onMouseEnter={() => setIsPinnedBannerHovered(true)}
+          onMouseLeave={() => setIsPinnedBannerHovered(false)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            height: screens.xs ? 'auto' : '64px',
+            minHeight: '64px',
+            padding: '8px 14px',
+            marginBottom: 10,
+            borderRadius: '8px',
+            background: _isLight ? 'rgba(24, 24, 27, 0.03)' : 'rgba(250, 250, 250, 0.04)',
+            border: _isLight ? '1px solid rgba(24, 24, 27, 0.08)' : '1px solid rgba(250, 250, 250, 0.1)',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.02)',
+            transition: 'all 0.2s ease',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              flex: 1,
+              minWidth: 0,
+              cursor: isNoticeTruncated ? 'pointer' : 'default',
+            }}
+            onClick={() => {
+              if (isNoticeTruncated) {
+                handleOpenNoticeDetail(pinnedAnnouncement);
+              }
+            }}
+          >
+            {/* Custom Bell Icon */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '32px',
+                height: '32px',
+                borderRadius: '6px',
+                background: _isLight ? 'rgba(24, 24, 27, 0.06)' : 'rgba(255, 255, 255, 0.08)',
+                color: _isLight ? '#18181b' : '#fafafa',
+                flexShrink: 0,
+              }}
+            >
+              <BellOutlined style={{ fontSize: '15px' }} />
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '2px' }}>
+              <span
+                ref={noticeTitleRef}
+                style={{
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  lineHeight: '18px',
+                  color: _isLight ? '#18181b' : '#f4f4f5',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {getAnnouncementLabel(pinnedAnnouncement.title)}
+              </span>
+              <div
+                ref={noticeContentRef}
+                className="quill-content compact-announcement"
+                dangerouslySetInnerHTML={{ __html: getAnnouncementLabel(pinnedAnnouncement.content) }}
+                style={{
+                  fontSize: '12px',
+                  lineHeight: '15px',
+                  maxHeight: '30px',
+                  color: _isLight ? '#52525b' : '#a1a1aa',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  wordBreak: 'break-word',
+                }}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+            {isNoticeTruncated && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenNoticeDetail(pinnedAnnouncement);
+                }}
+                style={{
+                  padding: '0 2px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: _isLight ? '#52525b' : '#a1a1aa',
+                  textDecoration: 'none',
+                  background: 'transparent',
+                  border: 'none',
+                  outline: 'none',
+                  cursor: 'pointer',
+                  transition: 'color 0.2s ease',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.color = _isLight ? '#18181b' : '#fafafa'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.color = _isLight ? '#52525b' : '#a1a1aa'; }}
+              >
+                {t('dashboard.view_detail', '详情')}
+              </button>
+            )}
+
+            {/* 多条置顶通知时展示可点击切换的小圆点 */}
+            {pinnedAnnouncements.length > 1 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  flexShrink: 0,
+                  paddingLeft: '2px',
+                }}
+              >
+                {pinnedAnnouncements.map((_, idx) => {
+                  const isActive = idx === currentPinnedIndex;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCurrentPinnedIndex(idx);
+                        try {
+                          sessionStorage.setItem('last_dashboard_pinned_id', String(pinnedAnnouncements[idx]?.id));
+                        } catch {}
+                      }}
+                      aria-label={`切换到第 ${idx + 1} 条置顶通知`}
+                      style={{
+                        padding: 0,
+                        border: 'none',
+                        cursor: 'pointer',
+                        height: '5px',
+                        width: isActive ? '14px' : '5px',
+                        borderRadius: '9999px',
+                        backgroundColor: isActive
+                          ? _isLight
+                            ? '#18181b'
+                            : '#fafafa'
+                          : _isLight
+                            ? 'rgba(0, 0, 0, 0.18)'
+                            : 'rgba(255, 255, 255, 0.22)',
+                        transition: 'all 0.2s ease',
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 系统概览标题与过滤工具栏 */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <Title level={2} style={{ margin: 0, fontWeight: 600, color: _isLight ? '#1f2937' : '#E8EAED' }}>
             {t('dashboard.title')}
@@ -426,16 +701,16 @@ const Dashboard: React.FC = () => {
             {scopeLabel}
           </Tag>
           <AntTooltip title={t('dashboard.view_30d_trend', '查看 30 天趋势')}>
-            <LineChartIcon 
+            <LineChartIcon
               size={24}
               strokeWidth={2}
               className="shadcn-icon-btn"
-              style={{ 
-                marginLeft: 12, 
-                color: _isLight ? '#000000' : '#ffffff', 
-                cursor: 'pointer' 
-              }} 
-              onClick={() => setIsTrendModalVisible(true)}
+              style={{
+                marginLeft: 12,
+                color: _isLight ? '#000000' : '#ffffff',
+                cursor: 'pointer',
+              }}
+              onClick={() => setIsModel30dView(true)}
             />
           </AntTooltip>
         </div>
@@ -455,44 +730,6 @@ const Dashboard: React.FC = () => {
           />
         </div>
       </div>
-
-      {pinnedAnnouncement && (
-        <div
-          className="compact-announcement-banner"
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '10px',
-            padding: '8px 12px',
-            marginBottom: 16,
-            borderRadius: '8px',
-            background: _isLight ? 'rgba(24, 24, 27, 0.04)' : 'rgba(250, 250, 250, 0.06)',
-            border: _isLight ? '1px solid rgba(24, 24, 27, 0.1)' : '1px solid rgba(250, 250, 250, 0.12)',
-            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.02)',
-          }}
-        >
-          {/* Custom Info Icon */}
-          <div style={{ display: 'flex', alignItems: 'center', height: '18px', color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }}>
-            <svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor" style={{ verticalAlign: 'middle' }}>
-              <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm32 664c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V456c0-4.4 3.6-8 8-8h48c-4.4 0-8 3.6-8 8v272zm-32-344c-22.1 0-40-17.9-40-40s17.9-40 40-40 40 17.9 40 40-17.9 40-40 40z" />
-            </svg>
-          </div>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <span style={{ fontWeight: 600, fontSize: '13px', color: _isLight ? '#1f2937' : '#f3f4f6', lineHeight: '1.4' }}>
-              {getAnnouncementLabel(pinnedAnnouncement.title)}
-            </span>
-            <div 
-              className="quill-content compact-announcement" 
-              dangerouslySetInnerHTML={{ __html: getAnnouncementLabel(pinnedAnnouncement.content) }} 
-              style={{ 
-                fontSize: '12px', 
-                lineHeight: '1.4', 
-                color: _isLight ? '#4b5563' : '#d1d5db' 
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* 概览仪表盘：消耗 Token | 预估成本 | 请求+令牌 | 实时吞吐 */}
       <Row gutter={[16, 16]}>
@@ -672,9 +909,15 @@ const Dashboard: React.FC = () => {
                     </CardRow>
                     {isAdmin && (
                       <CardRow compact={true} label={t('dashboard.recent_activity_user', '用户')}>
-                        <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>
-                          {item.user_nickname || item.user_uid || item.user_id || '-'}
-                        </Text>
+                        {item.user_uid ? (
+                          <Link to={`/${adminPath}/users/${item.user_uid}/basic`} style={{ fontSize: 12, fontWeight: 500 }}>
+                            {item.user_nickname || item.user_uid || item.user_id || '-'}
+                          </Link>
+                        ) : (
+                          <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>
+                            {item.user_nickname || item.user_uid || item.user_id || '-'}
+                          </Text>
+                        )}
                       </CardRow>
                     )}
                     <CardRow compact={true} label={t('dashboard.recent_activity_tokens', 'Tokens (In / Out)')}>
@@ -716,7 +959,7 @@ const Dashboard: React.FC = () => {
                   color: _isLight ? '#000000' : '#ffffff', 
                   cursor: 'pointer' 
                 }} 
-                onClick={() => setIsModel30dModalVisible(true)}
+                onClick={() => setIsModel30dView(true)}
               />
             </AntTooltip>
           </div>
@@ -849,6 +1092,17 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
       </Row>
+      </>
+      )}
+
+      {isModel30dView && (
+        <ModelDistribution30d
+          data={modelStats30d}
+          loading={loading30d}
+          currencySymbol={currencySymbol}
+          onBack={() => setIsModel30dView(false)}
+        />
+      )}
       
       {/* Global override for table styles to ensure monochrome dark theme */}
       <style>{`
@@ -874,17 +1128,17 @@ const Dashboard: React.FC = () => {
         .compact-announcement h5,
         .compact-announcement h6,
         .compact-announcement ul,
-        .compact-announcement ol {
+        .compact-announcement ol,
+        .compact-announcement li {
           margin: 0 !important;
           padding: 0 !important;
-          line-height: 1.4 !important;
+          display: inline !important;
+          line-height: inherit !important;
+          font-size: inherit !important;
+          font-weight: inherit !important;
         }
-        .compact-announcement p + p,
-        .compact-announcement p + ul,
-        .compact-announcement p + ol,
-        .compact-announcement ul + p,
-        .compact-announcement ol + p {
-          margin-top: 3px !important;
+        .compact-announcement img {
+          display: none !important;
         }
         .custom-scrollbar::-webkit-scrollbar,
         .ant-card-body::-webkit-scrollbar {
@@ -904,220 +1158,191 @@ const Dashboard: React.FC = () => {
           background: ${_isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'};
         }
       `}</style>
-      
-      <Modal
-        closable={false}
-        title={
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 16 }}>{t('dashboard.trend_30d_title', '最近 30 天数据趋势')}</span>
-            <Space size="small">
-              <Button 
-                type="text" 
-                icon={isFullscreenTrend ? <FullscreenExitOutlined /> : <ExpandAltOutlined />} 
-                onClick={() => setIsFullscreenTrend(!isFullscreenTrend)} 
-                style={{ color: _isLight ? '#666' : '#999' }}
-              >
-                {isFullscreenTrend ? t('dashboard.exit_fullscreen', '退出全屏') : t('dashboard.fullscreen', '全屏')}
-              </Button>
-              <Button 
-                type="text" 
-                icon={<CloseOutlined />} 
-                onClick={() => {
-                  setIsTrendModalVisible(false);
-                  setIsFullscreenTrend(false);
-                }} 
-                style={{ color: _isLight ? '#666' : '#999' }}
-              />
-            </Space>
-          </div>
-        }
-        open={isTrendModalVisible}
-        onCancel={() => {
-          setIsTrendModalVisible(false);
-          setIsFullscreenTrend(false);
-        }}
-        footer={null}
-        width={isFullscreenTrend ? '100vw' : 800}
-        style={isFullscreenTrend ? { top: 0, padding: 0, margin: 0, maxWidth: '100vw' } : { top: 40 }}
-        styles={{ 
-          body: { 
-            padding: '24px 0', 
-            height: isFullscreenTrend ? 'calc(100vh - 55px)' : 'auto',
-            background: _isLight ? '#fff' : '#141414',
-          }
-        }}
-      >
-        <div style={{ height: isFullscreenTrend ? 'calc(100vh - 120px)' : 400, width: '100%', padding: '0 24px' }}>
-          {stats?.daily_trends && stats.daily_trends.length > 0 ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={stats.daily_trends} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={_isLight ? '#f0f0f0' : '#434343'} vertical={false} />
-                <XAxis dataKey="date" stroke={textColor} tick={{fill: textColor}} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="left" stroke={textColor} tick={{fill: textColor}} tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" stroke={textColor} tick={{fill: textColor}} tickLine={false} axisLine={false} tickFormatter={(value: number) => parseFloat(Number(value).toFixed(6)).toString()} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: isDark ? '#1f1f1f' : '#fff', color: textColor, borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }} 
-                  formatter={(value: any, name: any) => [
-                    name === t('dashboard.estimated_cost') ? `${currencySymbol}${parseFloat(Number(value).toFixed(6))}` : value,
-                    name
-                  ]}
-                  cursor={{fill: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'}}
-                />
-                <Legend iconType="circle" wrapperStyle={{ paddingTop: 20 }} />
-                <Line yAxisId="left" type="monotone" dataKey="requests" stroke="#faad14" strokeWidth={3} name={t('dashboard.total_requests')} dot={false} />
-                <Bar yAxisId="right" dataKey="cost" fill="#71717a" radius={[4, 4, 0, 0]} name={t('dashboard.estimated_cost')} barSize={18} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          ) : (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: _isLight ? '#999' : '#888' }}>
-              {t('dashboard.no_data')}
-            </div>
-          )}
-        </div>
-      </Modal>
 
+      {/* 单条通知详情弹窗 */}
       <Modal
         closable={false}
-        title={
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 16 }}>{t('dashboard.model_distribution_30d', '模型分布 (按成本) - 最近 30 天趋势')}</span>
-            <Space size="small">
-              <Button 
-                type="text" 
-                icon={isFullscreen30d ? <FullscreenExitOutlined /> : <ExpandAltOutlined />} 
-                onClick={() => setIsFullscreen30d(!isFullscreen30d)} 
-                style={{ color: _isLight ? '#666' : '#999' }}
-              >
-                {isFullscreen30d ? t('dashboard.exit_fullscreen', '退出全屏') : t('dashboard.fullscreen', '全屏')}
-              </Button>
-              <Button 
-                type="text" 
-                icon={<CloseOutlined />} 
-                onClick={() => {
-                  setIsModel30dModalVisible(false);
-                  setIsFullscreen30d(false);
-                }} 
-                style={{ color: _isLight ? '#666' : '#999' }}
-              />
-            </Space>
-          </div>
-        }
-        open={isModel30dModalVisible}
+        open={isNoticeModalOpen && !!selectedNoticeForModal}
         onCancel={() => {
-          setIsModel30dModalVisible(false);
-          setIsFullscreen30d(false);
+          setIsNoticeModalOpen(false);
+          setSelectedNoticeForModal(null);
         }}
         footer={null}
-        width={isFullscreen30d ? '100vw' : 1000}
-        style={isFullscreen30d ? { top: 0, padding: 0, margin: 0, maxWidth: '100vw' } : { top: 40 }}
-        styles={{ 
-          body: { 
-            padding: '24px', 
-            height: isFullscreen30d ? 'calc(100vh - 55px)' : 650, 
-            overflowY: 'auto',
-            background: _isLight ? '#f5f5f5' : '#0a0a0a',
-          }
-        }}
+        width={640}
+        centered
+        styles={{
+          content: {
+            padding: 0,
+            borderRadius: '12px',
+            background: _isLight ? '#ffffff' : '#18181b',
+            border: _isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
+            boxShadow: _isLight
+              ? '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)'
+              : '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
+            overflow: 'hidden',
+          },
+          body: {
+            padding: 0,
+          },
+        } as any}
       >
-        <div className="custom-scrollbar" style={{ height: '100%', overflowX: 'hidden' }}>
-          {modelStats30d && modelStats30d.top_models && Array.isArray(modelStats30d.top_models) && modelStats30d.top_models.length > 0 ? (
-            <Row gutter={[24, 24]}>
-              {modelStats30d.top_models.map((m, index) => {
-                // 明暗双套高对比色，避免暗色下近黑线条/字不可见
-                const colors = _isLight
-                  ? ['#d97706', '#0284c7', '#16a34a', '#e11d48', '#0d9488', '#ca8a04', '#ea580c', '#2563eb', '#64748b', '#0891b2']
-                  : ['#fbbf24', '#38bdf8', '#4ade80', '#fb7185', '#2dd4bf', '#facc15', '#fb923c', '#60a5fa', '#94a3b8', '#22d3ee'];
-                const strokeColor = colors[index % colors.length];
-                const axisColor = _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.55)';
-                const modelData = chartData30d.map(d => ({ date: d.date, cost: d[m.model] || 0 }));
-                return (
-                  <Col xs={24} lg={12} xl={isFullscreen30d ? 8 : 12} key={m.model}>
-                    <Card 
-                      bordered={false}
-                      style={{ 
-                        background: _isLight ? '#fff' : '#141414', 
-                        borderRadius: 12,
-                        border: _isLight ? 'none' : '1px solid rgba(255,255,255,0.06)',
-                        boxShadow: _isLight ? '0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px 0 rgba(0, 0, 0, 0.02)' : 'none'
+        {selectedNoticeForModal && (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {/* 弹窗顶部 Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 16,
+                padding: '20px 24px 16px',
+                borderBottom: _isLight ? '1px solid #f4f4f5' : '1px solid #27272a',
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Tag
+                    style={{
+                      margin: 0,
+                      borderRadius: 4,
+                      fontSize: '12px',
+                      fontWeight: 500,
+                      background: _isLight ? 'rgba(24, 24, 27, 0.08)' : 'rgba(255, 255, 255, 0.12)',
+                      color: _isLight ? '#18181b' : '#f4f4f5',
+                      border: 'none',
+                    }}
+                  >
+                    {t('dashboard.pinned_notice', '置顶通知')}
+                  </Tag>
+                  {selectedNoticeForModal.created_at && (
+                    <span style={{ fontSize: '12px', color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                      {dayjs(selectedNoticeForModal.created_at).format('YYYY-MM-DD HH:mm')}
+                    </span>
+                  )}
+                </div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: '16px',
+                    fontWeight: 600,
+                    color: _isLight ? '#09090b' : '#fafafa',
+                    lineHeight: '1.4',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {getAnnouncementLabel(selectedNoticeForModal.title)}
+                </h3>
+              </div>
+              <Button
+                type="text"
+                icon={<CloseOutlined />}
+                onClick={() => {
+                  setIsNoticeModalOpen(false);
+                  setSelectedNoticeForModal(null);
+                }}
+                style={{
+                  color: _isLight ? '#71717a' : '#a1a1aa',
+                  width: 28,
+                  height: 28,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+
+            {/* 弹窗内容主体 */}
+            <div
+              className="custom-scrollbar quill-content"
+              style={{
+                padding: '20px 24px',
+                maxHeight: '55vh',
+                overflowY: 'auto',
+                fontSize: '14px',
+                lineHeight: '1.6',
+                color: _isLight ? '#27272a' : '#d4d4d8',
+              }}
+              dangerouslySetInnerHTML={{ __html: getAnnouncementLabel(selectedNoticeForModal.content) }}
+            />
+
+            {/* 弹窗底部操作 Footer */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 24px',
+                borderTop: _isLight ? '1px solid #f4f4f5' : '1px solid #27272a',
+                background: _isLight ? '#fafafa' : '#141416',
+              }}
+            >
+              <div>
+                {pinnedAnnouncements.length > 1 && (
+                  <span style={{ fontSize: '12px', color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                    {pinnedAnnouncements.findIndex((a) => a.id === selectedNoticeForModal.id) + 1} / {pinnedAnnouncements.length}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {pinnedAnnouncements.length > 1 && (
+                  <>
+                    <Button
+                      size="small"
+                      disabled={pinnedAnnouncements.findIndex((a) => a.id === selectedNoticeForModal.id) <= 0}
+                      onClick={() => {
+                        const curIdx = pinnedAnnouncements.findIndex((a) => a.id === selectedNoticeForModal.id);
+                        if (curIdx > 0) {
+                          setSelectedNoticeForModal(pinnedAnnouncements[curIdx - 1]);
+                        }
                       }}
-                      styles={{ body: { padding: '20px 24px' } }}
+                      style={{
+                        borderRadius: 6,
+                        fontSize: '12px',
+                      }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                          <span style={{ 
-                            display: 'inline-block', width: 12, height: 12, borderRadius: '50%', backgroundColor: strokeColor, flexShrink: 0,
-                          }} />
-                          <Title level={4} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fafafa', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {m.model}
-                          </Title>
-                        </div>
-                      </div>
-                      
-                      <Row gutter={16} style={{ marginBottom: 20 }}>
-                        <Col span={12}>
-                          <Statistic 
-                            title={<span style={{ color: axisColor, fontSize: 13 }}>{t('dashboard.total_spend', '总花费')}</span>} 
-                            value={m.total_cost} 
-                            precision={6}
-                            prefix={currencySymbol}
-                            valueStyle={{ color: strokeColor, fontWeight: 600, fontSize: 22 }} 
-                          />
-                        </Col>
-                        <Col span={12}>
-                          <Statistic 
-                            title={<span style={{ color: axisColor, fontSize: 13 }}>{t('dashboard.call_count', '调用次数')}</span>} 
-                            value={m.count} 
-                            valueStyle={{ color: _isLight ? '#434343' : '#e5e5e5', fontWeight: 600, fontSize: 22 }} 
-                          />
-                        </Col>
-                      </Row>
-
-                      <div style={{ height: 180, width: '100%' }}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={modelData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke={_isLight ? '#f0f0f0' : 'rgba(255,255,255,0.08)'} vertical={false} />
-                            <XAxis
-                              dataKey="date"
-                              stroke={axisColor}
-                              tick={{ fontSize: 11, fill: axisColor }}
-                              tickLine={false}
-                              axisLine={false}
-                            />
-                            <YAxis
-                              stroke={axisColor}
-                              tick={{ fontSize: 11, fill: axisColor }}
-                              tickLine={false}
-                              axisLine={false}
-                              tickFormatter={(value: number) => parseFloat(Number(value).toFixed(6)).toString()}
-                            />
-                            <Tooltip 
-                              formatter={(value: any) => [`${currencySymbol}${parseFloat(Number(value).toFixed(6))}`, t('dashboard.estimated_cost')]}
-                              contentStyle={{
-                                backgroundColor: isDark ? '#1c1c1f' : '#fff',
-                                color: textColor,
-                                borderRadius: 8,
-                                border: isDark ? '1px solid rgba(255,255,255,0.1)' : '1px solid #eee',
-                                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                              }}
-                              labelStyle={{ color: textColor }}
-                              itemStyle={{ color: textColor }}
-                              cursor={{ stroke: isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)' }}
-                            />
-                            <Line type="monotone" dataKey="cost" stroke={strokeColor} strokeWidth={2.5} dot={false} activeDot={{ r: 5, strokeWidth: 0, fill: strokeColor }} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </Card>
-                  </Col>
-                );
-              })}
-            </Row>
-          ) : (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: _isLight ? '#999' : '#888' }}>
-              {loading30d ? <Spin size="large" /> : t('dashboard.no_data')}
+                      {t('common.prev', '上一条')}
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={pinnedAnnouncements.findIndex((a) => a.id === selectedNoticeForModal.id) >= pinnedAnnouncements.length - 1}
+                      onClick={() => {
+                        const curIdx = pinnedAnnouncements.findIndex((a) => a.id === selectedNoticeForModal.id);
+                        if (curIdx < pinnedAnnouncements.length - 1) {
+                          setSelectedNoticeForModal(pinnedAnnouncements[curIdx + 1]);
+                        }
+                      }}
+                      style={{
+                        borderRadius: 6,
+                        fontSize: '12px',
+                      }}
+                    >
+                      {t('common.next', '下一条')}
+                    </Button>
+                  </>
+                )}
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    setIsNoticeModalOpen(false);
+                    setSelectedNoticeForModal(null);
+                  }}
+                  style={{
+                    borderRadius: 6,
+                    fontWeight: 500,
+                    fontSize: '13px',
+                    height: '32px',
+                    background: _isLight ? '#18181b' : '#fafafa',
+                    color: _isLight ? '#fafafa' : '#18181b',
+                    border: 'none',
+                  }}
+                >
+                  {t('common.close', '关闭')}
+                </Button>
+              </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

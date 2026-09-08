@@ -118,6 +118,22 @@ impl Channel {
         )
     }
 
+    /// 渠道指定的对象存储厂商（`tos`/`cos`）；空则跟随站点 `default_provider`
+    pub fn tos_storage_provider(&self) -> Option<String> {
+        let cfg: serde_json::Value = serde_json::from_str(&self.config).ok()?;
+        cfg.get("tos_storage_provider")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_lowercase())
+    }
+
+    /// 对象存储转存上下文：`(channel_id, 过期天数, 可选厂商)`；未开启则 None
+    pub fn storage_persist(&self) -> Option<(i64, i32, Option<String>)> {
+        let days = self.tos_storage()?;
+        Some((self.id, days, self.tos_storage_provider()))
+    }
+
     pub fn has_available_quota(&self, now_day: &str, now_week: &str, now_month: &str) -> bool {
         crate::models::channel_quota::has_available_quota(
             self.quota_limit,
@@ -203,9 +219,16 @@ pub struct UpdateChannelRequest {
     pub user_groups: Option<Vec<String>>,
     pub exclude_user_groups: Option<Vec<String>>,
     pub group_aid: Option<String>,
-    pub preset_id: Option<i64>,
+    #[serde(
+        default,
+        deserialize_with = "crate::models::user::deserialize_some_option"
+    )]
+    pub preset_id: Option<Option<i64>>,
     /// None = 未传不改；Some(None) = 清空；Some(Some(id)) = 设置
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::models::user::deserialize_some_option"
+    )]
     pub category_id: Option<Option<i64>>,
     pub sort_order: Option<i32>,
     pub priority: Option<i32>,

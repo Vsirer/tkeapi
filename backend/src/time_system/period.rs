@@ -102,6 +102,26 @@ fn resolve_local(tz: Tz, naive: chrono::NaiveDateTime) -> DateTime<Tz> {
     }
 }
 
+/// 距 timedisplay 下一次本地 `hour:min:sec` 的等待时长（至少 1 秒）。
+pub fn duration_until_next_local_hms(
+    timedisplay: &str,
+    hour: u32,
+    min: u32,
+    sec: u32,
+) -> std::time::Duration {
+    let tz = parse_timedisplay(timedisplay);
+    let now = Utc::now().with_timezone(&tz);
+    let hms = NaiveTime::from_hms_opt(hour, min, sec).expect("valid HMS");
+    let mut next = resolve_local(tz, now.date_naive().and_time(hms));
+    if next <= now {
+        next = resolve_local(tz, (now.date_naive() + Duration::days(1)).and_time(hms));
+    }
+    (next.with_timezone(&Utc) - Utc::now())
+        .to_std()
+        .unwrap_or(std::time::Duration::from_secs(60))
+        .max(std::time::Duration::from_secs(1))
+}
+
 /// 按自定义日切点计算额度日键（站点 timedisplay）。
 /// 有效刷新时刻 = 某日历日 `hour:minute` + `cooldown_minutes`；
 /// 日键取「最近一次已到达的切点」所对应的那个日历日（冷却跨午夜时会正确回退多天）。

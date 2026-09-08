@@ -47,7 +47,7 @@ pub fn outbound_client_builder() -> reqwest::ClientBuilder {
 /// AppState 共享客户端：无全局 request timeout（流式安全）。
 pub fn build_outbound_client() -> reqwest::Client {
     outbound_client_builder().build().unwrap_or_else(|e| {
-        tracing::error!("出站 HTTP Client 构建失败，降级为最小安全配置: {}", e);
+        tracing::warn!("出站 HTTP Client 构建失败，降级为最小安全配置: {}", e);
         reqwest::Client::builder()
             .tcp_nodelay(true)
             .connect_timeout(Duration::from_secs(10))

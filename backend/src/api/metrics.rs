@@ -28,20 +28,22 @@ fn now_sec() -> u64 {
         .as_secs()
 }
 
+pub(crate) fn live_metrics_snapshot(claims: &auth::Claims) -> MetricsSnapshot {
+    if claims.role == "admin" {
+        snapshot_global()
+    } else {
+        snapshot_user(&claims.sub)
+    }
+}
+
 /// GET /api/v1/metrics/live
 pub async fn get_live_metrics(
     Extension(claims): Extension<auth::Claims>,
 ) -> AppResult<Json<LiveMetricsResponse>> {
     let is_admin = claims.role == "admin";
-    let (metrics, scope) = if is_admin {
-        (snapshot_global(), "global")
-    } else {
-        (snapshot_user(&claims.sub), "self")
-    };
-
     Ok(Json(LiveMetricsResponse {
-        metrics,
-        scope,
+        metrics: live_metrics_snapshot(&claims),
+        scope: if is_admin { "global" } else { "self" },
         ts: now_sec(),
     }))
 }

@@ -14,6 +14,7 @@ const { Text } = Typography;
 // 子规则名称映射
 const RULE_LABELS: Record<string, string> = {
   standard: '标准计费',
+  glm_5_3: 'glm 5.3',
   multimodal: '多模态计费',
   gpt_billing: 'GPT图片计费',
   tiered: '阶梯计费',
@@ -26,9 +27,12 @@ const RULE_LABELS: Record<string, string> = {
   fixed: '固定按次',
   per_image: '按张收费',
   image_resolution: '按分辨率K',
+  image_resolution_io: '按分辨率K(输入/生成)',
   image_size_pixel: '按分辨率像素',
   video_resolution: '按分辨率阶梯',
   minimax_h3: '视频秒价+输入图',
+  video_seconds_io: '视频秒价(输入/生成)+输入图',
+  fal_ref_video: 'fal H3-MAX 视频',
   video_quality: '按画质帧率阶梯',
   kling_video: '可灵视频',
   vidu_video: 'Vidu 视频',
@@ -238,10 +242,10 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
           </div>
         );
       }
-      // standard
+      // standard / glm 5.3
       const cacheStr = rule.cached_rate && rule.cached_rate > 0 ? ` Cache: ${fp(rule.cached_rate)}/1M` : '';
-      const ccCreate = (rule as any).claude_cache_creation_rate;
-      const ccRead = (rule as any).claude_cache_read_rate;
+      const ccCreate = rule.billing_rule !== 'glm_5_3' ? (rule as any).claude_cache_creation_rate : 0;
+      const ccRead = rule.billing_rule !== 'glm_5_3' ? (rule as any).claude_cache_read_rate : 0;
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
           <Text type="secondary" style={s}>P: {fp(rule.prompt_rate)}/1M  C: {fp(rule.completion_rate)}/1M{cacheStr}</Text>
@@ -271,6 +275,19 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
           </div>
         );
       }
+      if (rule.billing_rule === 'image_resolution_io') {
+        const activeTiers = tiers.filter(t => t.enabled !== false);
+        if (activeTiers.length === 0) return <Text type="secondary" style={s}>按分辨率K(输入/生成) (无有效配置)</Text>;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {activeTiers.map((t, idx) => (
+              <Text key={idx} type="secondary" style={s}>
+                {t.resolution}: 输入 {fp(t.input_rate)} / 张 · 生成 {fp(t.rate)} / 张
+              </Text>
+            ))}
+          </div>
+        );
+      }
       if (rule.billing_rule === 'image_size_pixel') {
         const activeTiers = tiers.filter(t => t.enabled !== false);
         if (activeTiers.length === 0) return <Text type="secondary" style={s}>按分辨率像素 (无有效配置){multiplierStr}</Text>;
@@ -297,7 +314,9 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
             </Text>
             {activeTiers.map((t, idx) => (
               <Text key={idx} type="secondary" style={s}>
-                输出 &lt;= {t.max_pixels_wan}万像素: {fp(t.rate)} / 张
+                {Number(t.layer_rate) > 0
+                  ? `输出 <= ${t.max_pixels_wan}万像素: 单图 ${fp(t.rate)} / 张 · 图层 ${fp(t.layer_rate)} / 张`
+                  : `输出 <= ${t.max_pixels_wan}万像素: ${fp(t.rate)} / 张`}
               </Text>
             ))}
           </div>
@@ -317,14 +336,12 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
     // duration
     if (rule.billing_rule === 'video_resolution') {
         const activeTiers = tiers.filter(t => t.enabled !== false);
-        if (activeTiers.length === 0) return <Text type="secondary" style={s}>按视频分辨率阶梯 (无有效配置)</Text>;
-
+        if (activeTiers.length === 0) return <Text type="secondary" style={s}>按视频时长及生成分辨率计费 (无有效配置)</Text>;
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            <Text type="secondary" style={s}>按视频时长及生成分辨率计费</Text>
             {activeTiers.map((t, idx) => (
-              <Text key={idx} type="secondary" style={s}>
-                {t.resolution}: {fp(t.rate)} / s
-              </Text>
+              <Text key={idx} type="secondary" style={s}>{t.resolution} {fp(t.rate)}/秒</Text>
             ))}
           </div>
         );
@@ -337,25 +354,50 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
           <Text type="secondary" style={s}>
             {freeCount} 张以内免费，超出部分 {fp(rule.prompt_rate)}/张
           </Text>
-          {activeTiers.length === 0
-            ? <Text type="secondary" style={s}>分辨率阶梯 (无有效配置)</Text>
-            : activeTiers.map((t, idx) => (
-              <Text key={idx} type="secondary" style={s}>
-                {t.resolution}: {fp(t.rate)} / s
-              </Text>
-            ))}
+          <Text type="secondary" style={s}>按视频时长及生成分辨率计费</Text>
+          {activeTiers.map((t, idx) => (
+            <Text key={idx} type="secondary" style={s}>{t.resolution} {fp(t.rate)}/秒</Text>
+          ))}
+        </div>
+      );
+    }
+    if (rule.billing_rule === 'video_seconds_io') {
+      const activeTiers = tiers.filter(t => t.enabled !== false);
+      const freeCount = resolveFreeImageCount(ext.free_image_count, 'video_seconds_io');
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <Text type="secondary" style={s}>
+            {freeCount} 张以内免费，超出部分 {fp(rule.prompt_rate)}/张
+          </Text>
+          <Text type="secondary" style={s}>按输入/生成视频时长及分辨率分别计费</Text>
+          {activeTiers.map((t, idx) => (
+            <Text key={idx} type="secondary" style={s}>
+              {t.resolution} 输入:{fp(t.input_rate ?? 0)}/秒 生成:{fp(t.rate)}/秒
+            </Text>
+          ))}
+        </div>
+      );
+    }
+    if (rule.billing_rule === 'fal_ref_video') {
+      const freeTokens = ext.free_ref_tokens ?? 4096;
+      const refRatePer1k = ext.ref_token_rate_per_1k ?? 0.02;
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          <Text type="secondary" style={s}>成片生成：{fp(rule.duration_rate)}/秒</Text>
+          <Text type="secondary" style={s}>
+            参考素材：免 {freeTokens} Token，超出 {fp(refRatePer1k)}/千Token
+          </Text>
         </div>
       );
     }
     if (rule.billing_rule === 'video_quality') {
         const activeTiers = tiers.filter(t => t.enabled !== false);
         if (activeTiers.length === 0) return <Text type="secondary" style={s}>按视频画质及帧率阶梯 (无有效配置)</Text>;
-
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
             {activeTiers.map((t, idx) => (
               <Text key={idx} type="secondary" style={s}>
-                {t.resolution} | {t.fps_range === '<=30' ? '≤30fps' : t.fps_range === '>30' ? '>30fps' : t.fps_range}: {fp(t.rate)} / s
+                {t.resolution} | {t.fps_range === '<=30' ? '≤30fps' : t.fps_range === '>30' ? '>30fps' : t.fps_range}: {fp(t.rate)}/秒
               </Text>
             ))}
           </div>
@@ -388,7 +430,7 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
           if (eVideo) dims.push('参考视频');
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              <Text type="secondary" style={s}>精确查表: {fp(min)}~{fp(max)}/s</Text>
+              <Text type="secondary" style={s}>精确查表: {fp(min)}~{fp(max)}/秒</Text>
               {dims.length > 0 && <Text type="secondary" style={s}>维度: {dims.join('+')}</Text>}
             </div>
           );
@@ -400,7 +442,7 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
       const vm = ext.video_ref_multipliers || {};
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          <Text type="secondary" style={s}>基准: {fp(rule.duration_rate)}/s</Text>
+          <Text type="secondary" style={s}>基准: {fp(rule.duration_rate)}/秒</Text>
           <Text type="secondary" style={s}>mode: 标准×{mm.std ?? 1} / 高品质×{mm.pro ?? 1.33} / 4k×{mm['4k'] ?? 2}</Text>
           <Text type="secondary" style={s}>sound: off×{sm.off ?? 1} / on×{sm.on ?? 1.5}</Text>
           <Text type="secondary" style={s}>参考视频: 无×{vm.no ?? 1} / 有×{vm.yes ?? 1.5}</Text>
@@ -417,7 +459,7 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
     if (rule.billing_rule === 'volc_enhance_cascade') {
       return renderPriceTableSummary('s');
     }
-    return <Text type="secondary" style={s}>{fp(rule.duration_rate)}/s</Text>;
+    return <Text type="secondary" style={s}>{fp(rule.duration_rate)}/秒</Text>;
   };
 
   const hasTimeMultipliers = ext?.enable_time_multipliers && Array.isArray(ext.time_multipliers) && ext.time_multipliers.length > 0;
@@ -444,7 +486,7 @@ const RateDisplay: React.FC<RateDisplayProps> = ({ rule, currencySymbol, formatP
         )}
       </div>
       {renderDetails()}
-      {rule.billing_type === 'tokens' && ext.web_search_rate !== undefined && ext.web_search_rate > 0 && (
+      {rule.billing_type === 'tokens' && rule.billing_rule !== 'glm_5_3' && ext.web_search_rate !== undefined && ext.web_search_rate > 0 && (
         <Text type="secondary" style={{ ...s, marginTop: 2 }}>联网搜索: {fp(ext.web_search_rate)}/千次</Text>
       )}
     </div>

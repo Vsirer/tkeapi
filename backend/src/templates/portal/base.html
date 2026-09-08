@@ -359,7 +359,7 @@ body.dark .invert-dark,
     </div>
     <nav class="hdr-nav">
       {% if nav.items %}{% for item in nav.items %}{% if item.enabled != false %}
-      <a href="{{ item.path | default(value='#') | safe }}"{% if current_page is defined and item.key is defined and current_page == item.key %} class="on"{% endif %} {% if item.key %}data-i18n-title="nav_{{ item.key }}" title="{{ item.label }}"{% endif %}>
+      <a href="{{ item.path | default(value='#') | safe }}"{% if current_page is defined and item.key is defined and current_page == item.key %} class="on"{% endif %} {% if item.key %}data-i18n-title="nav_{{ item.key }}" title="{{ item.label }}"{% endif %}{% if item.target_blank is defined and item.target_blank %} target="_blank" rel="noopener noreferrer"{% endif %}>
         {% if item.icon %}
           {{ item.icon | safe }}
         {% else %}

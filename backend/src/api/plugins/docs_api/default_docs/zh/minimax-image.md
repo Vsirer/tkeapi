@@ -45,9 +45,47 @@ curl -X POST https://{{domain}}/v1/images/generations \
   }'
 ```
 
-### C. 使用 `subject_reference`
+### C. 多图主体参考
 
-也可直接传 `subject_reference`（与 B 同时传时以此为准）。
+多张参考图可用于角色外形 + 场景/道具等组合（`image-01` 通常以首张人物为主，其余辅助场景或风格）。
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "image-01",
+    "prompt": "参考图一人物身份与图二街景氛围，人物自然行走，电影感跟拍构图",
+    "image_urls": [
+      "https://example.com/character_face.jpg",
+      "https://example.com/street_scene.jpg"
+    ],
+    "ratio": "16:9",
+    "n": 2
+  }'
+```
+
+多主体时也可使用 `subject_reference` 数组（每项一张参考图）：
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "image-01",
+    "prompt": "两位参考图中人物同框对话，室内暖光",
+    "subject_reference": [
+      { "type": "character", "image_file": "https://example.com/person_a.jpg" },
+      { "type": "character", "image_file": "https://example.com/person_b.jpg" }
+    ],
+    "aspect_ratio": "16:9",
+    "n": 1
+  }'
+```
+
+### D. 使用 `subject_reference`（单图）
+
+也可直接传 `subject_reference`（与 B 同时传时以此为准；多图见上一节 C）。
 
 ```bash
 curl -X POST https://{{domain}}/v1/images/generations \
@@ -67,7 +105,7 @@ curl -X POST https://{{domain}}/v1/images/generations \
   }'
 ```
 
-### D. image-01-live 画风控制（仅 live 模型）
+### E. image-01-live 画风控制（仅 live 模型）
 
 ```bash
 curl -X POST https://{{domain}}/v1/images/generations \

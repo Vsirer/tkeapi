@@ -104,9 +104,9 @@ pub async fn login(
     }
     let result = (async {
         let (query_str, err_msg) = match request.login_type.as_deref() {
-            Some("email") => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.email = ?", "未找到该邮箱对应的账号"),
-            Some("mobile") => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.mobile = ?", "未找到该手机号对应的账号"),
-            _ => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.username = ?", "未找到此账号，请检查用户名"),
+            Some("email") => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.email = ?", "未找到该邮箱对应的账号"),
+            Some("mobile") => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.mobile = ?", "未找到该手机号对应的账号"),
+            _ => ("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.username = ?", "未找到此账号，请检查用户名"),
         };
 
         let user: User = sqlx::query_as(&state.db.format_query(query_str))
@@ -160,7 +160,7 @@ pub async fn admin_login(
     }
     let result = (async {
         let mut user: User = sqlx::query_as(
-            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.username = ? OR u.email = ?")
+            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.username = ? OR u.email = ?")
         )
         .bind(&request.username)
         .bind(&request.username)
@@ -190,20 +190,7 @@ pub async fn admin_login(
                 .await?;
         }
 
-        // Fetch permissions
-        let permissions = if let Some(group_id) = user.admin_group_id {
-            let row: Option<String> = sqlx::query_scalar(&state.db.format_query("SELECT permissions FROM admin_groups WHERE id = ?"))
-                .bind(group_id)
-                .fetch_optional(&state.db.pool)
-                .await?;
-
-            row.and_then(|p| serde_json::from_str::<Vec<String>>(&p).ok())
-               .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
-        user.permissions = Some(permissions);
+        crate::admin_permission::hydrate_user_admin_permissions(&state, &mut user).await?;
 
         let token = auth::create_token(&user.id, &user.username, &user.role, &state.config.jwt_secret)?;
 
@@ -304,7 +291,7 @@ pub async fn init_admin(
         .await?;
 
         let user: User = sqlx::query_as(
-            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?")
+            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?")
         )
         .bind(&id)
         .fetch_one(&state.db.pool)
@@ -508,7 +495,7 @@ pub async fn register(
         // 团队邀请码：注册后自动加入团队
         if let Some(ref team_code) = request.team {
             if !team_code.trim().is_empty() {
-                #[cfg(feature = "commercial_plugins")]
+                #[cfg(all(feature = "commercial_plugins", plugin_team_marketing))]
                 let _ = crate::api::plugins::team_marketing::add_user_to_team_by_invite_code(&state, &user_id, team_code.trim()).await;
             }
         }
@@ -827,7 +814,7 @@ pub async fn register_email(
         // 团队邀请码：注册后自动加入团队
         if let Some(ref team_code) = request.team {
             if !team_code.trim().is_empty() {
-                #[cfg(feature = "commercial_plugins")]
+                #[cfg(all(feature = "commercial_plugins", plugin_team_marketing))]
                 let _ = crate::api::plugins::team_marketing::add_user_to_team_by_invite_code(&state, &user_id, team_code.trim()).await;
             }
         }
@@ -1017,7 +1004,7 @@ pub async fn register_mobile(
         // 团队邀请码：注册后自动加入团队
         if let Some(ref team_code) = request.team {
             if !team_code.trim().is_empty() {
-                #[cfg(feature = "commercial_plugins")]
+                #[cfg(all(feature = "commercial_plugins", plugin_team_marketing))]
                 let _ = crate::api::plugins::team_marketing::add_user_to_team_by_invite_code(&state, &user_id, team_code.trim()).await;
             }
         }
@@ -1378,7 +1365,7 @@ async fn finalize_oauth_invite_side_effects(
 
     if let Some(ref team_code) = invite.team {
         if !team_code.trim().is_empty() {
-            #[cfg(feature = "commercial_plugins")]
+            #[cfg(all(feature = "commercial_plugins", plugin_team_marketing))]
             let _ = crate::api::plugins::team_marketing::add_user_to_team_by_invite_code(
                 state,
                 user_id,

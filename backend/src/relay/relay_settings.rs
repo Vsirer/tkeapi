@@ -5,20 +5,24 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-//! Relay 热路径配置缓存：分槽 TTL；写穿 `put`；miss 回填不盖未过期值。
-//! 业务判定（档位/限额）在 [`RelaySettings`]，本模块只做读写缓存。
+//! Relay 热路径缓存：站点/HA 等配置分槽 TTL（默认 1 天）；API Key 鉴权 DashMap 短 TTL（60s）。
+//! 写路径写穿或按 key 失效；miss 回填不盖未过期值。
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
-use crate::models::RelaySettings;
+use crate::models::{ApiToken, InflightCat, RelaySettings};
+use crate::relay::ha_rule::HaRulesBundle;
 use crate::time_system::DEFAULT_TIMEDISPLAY;
+use dashmap::DashMap;
 use std::future::Future;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-const CACHE_TTL: Duration = Duration::from_secs(60);
+/// 读路径 TTL。管理端保存走 `put_*` 写穿，不必等过期；本值主要兜底「直改库 / 多副本」。
+const CACHE_TTL: Duration = Duration::from_secs(86400);
+const API_TOKEN_TTL: Duration = Duration::from_secs(60);
 pub const HA_PLUGIN_NAME: &str = "high_availability_channel";
-const VIDEO_INFLIGHT_MSG: &str = "当前余额较低，任务过多，请充值";
+const INFLIGHT_MSG: &str = "当前余额较低，任务过多，请充值";
 
 struct TtlCell<T> {
     value: T,
@@ -102,9 +106,12 @@ async fn setting_value(db: &Database, key: &str) -> Option<String> {
 static RELAY_SETTINGS: CacheSlot<Arc<RelaySettings>> = CacheSlot::new();
 static SITE_TZ: CacheSlot<Arc<str>> = CacheSlot::new();
 static HA_ENABLED: CacheSlot<bool> = CacheSlot::new();
+static HA_RULES: CacheSlot<Arc<HaRulesBundle>> = CacheSlot::new();
 
 pub fn put_cached_relay_settings(settings: RelaySettings) {
-    RELAY_SETTINGS.put(Arc::new(settings.prepared()));
+    let s = settings.prepared();
+    crate::debug_log::RELAY.set(s.enable_debug_log);
+    RELAY_SETTINGS.put(Arc::new(s));
 }
 
 pub async fn get_cached_relay_settings(db: &Database) -> Arc<RelaySettings> {
@@ -114,7 +121,9 @@ pub async fn get_cached_relay_settings(db: &Database) -> Arc<RelaySettings> {
                 .await
                 .and_then(|v| serde_json::from_str::<RelaySettings>(&v).ok())
                 .unwrap_or_default();
-            Arc::new(s.prepared())
+            let s = s.prepared();
+            crate::debug_log::RELAY.set(s.enable_debug_log);
+            Arc::new(s)
         })
         .await
 }
@@ -140,10 +149,105 @@ pub fn put_cached_ha_enabled(enabled: bool) {
     HA_ENABLED.put(enabled);
 }
 
+pub fn put_cached_ha_rules(bundle: Arc<HaRulesBundle>) {
+    HA_RULES.put(bundle);
+}
+
+pub fn invalidate_ha() {
+    HA_ENABLED.clear();
+    HA_RULES.clear();
+}
+
+pub async fn get_cached_ha_rules(db: &Database) -> Arc<HaRulesBundle> {
+    HA_RULES
+        .get_or_load(async { Arc::new(crate::relay::ha_rule::load_from_db(db).await) })
+        .await
+}
+
 pub fn invalidate_all() {
     RELAY_SETTINGS.clear();
     SITE_TZ.clear();
-    HA_ENABLED.clear();
+    invalidate_ha();
+    clear_api_token_cache();
+    crate::debug_log::RELAY.set(false);
+}
+
+// ── API Key 鉴权缓存（按 token_key，60s TTL；更新/删除令牌时按 key 失效）──
+
+struct ApiTokenEntry {
+    token: ApiToken,
+    at: Instant,
+}
+
+struct ApiTokenCache {
+    by_key: DashMap<Arc<str>, ApiTokenEntry>,
+}
+
+impl ApiTokenCache {
+    fn new() -> Self {
+        Self {
+            by_key: DashMap::new(),
+        }
+    }
+
+    async fn lookup(
+        &self,
+        db: &Database,
+        api_key: &str,
+    ) -> Result<Option<ApiToken>, sqlx::Error> {
+        let key: Arc<str> = Arc::from(api_key);
+        if let Some(entry) = self.by_key.get(&key) {
+            if entry.at.elapsed() < API_TOKEN_TTL {
+                return Ok(Some(entry.token.clone()));
+            }
+        }
+
+        let token: Option<ApiToken> = sqlx::query_as(
+            &db.format_query("SELECT * FROM api_tokens WHERE token_key = ?"),
+        )
+        .bind(api_key)
+        .fetch_optional(&db.pool)
+        .await?;
+
+        if let Some(ref t) = token {
+            self.by_key.insert(
+                key,
+                ApiTokenEntry {
+                    token: t.clone(),
+                    at: Instant::now(),
+                },
+            );
+        }
+        Ok(token)
+    }
+
+    fn invalidate_key(&self, token_key: &str) {
+        self.by_key.remove(&Arc::<str>::from(token_key));
+    }
+
+    fn clear(&self) {
+        self.by_key.clear();
+    }
+}
+
+fn api_token_cache() -> &'static ApiTokenCache {
+    static CACHE: OnceLock<ApiTokenCache> = OnceLock::new();
+    CACHE.get_or_init(ApiTokenCache::new)
+}
+
+pub async fn lookup_api_token(
+    db: &Database,
+    api_key: &str,
+) -> Result<Option<ApiToken>, sqlx::Error> {
+    api_token_cache().lookup(db, api_key).await
+}
+
+pub fn invalidate_api_token_key(token_key: &str) {
+    api_token_cache().invalidate_key(token_key);
+}
+
+pub fn clear_api_token_cache() {
+    api_token_cache().clear();
 }
 
 pub async fn get_cached_ha_enabled(db: &Database) -> bool {
@@ -162,30 +266,32 @@ pub async fn get_cached_ha_enabled(db: &Database) -> bool {
         .await
 }
 
-pub async fn enforce_video_inflight_gate(
+/// 低余额在途门禁：限额读内存配置；DB 仅在启用时查「是否已有 ≥max 条在途」（OFFSET 触顶即停）
+pub async fn enforce_inflight_gate(
     db: &Database,
     user_id: &str,
     available: f64,
+    action_type: &str,
 ) -> AppResult<()> {
-    let Some(max) = get_cached_relay_settings(db)
-        .await
-        .max_video_inflight(available)
-    else {
+    let settings = get_cached_relay_settings(db).await;
+    let cat = InflightCat::of(action_type);
+    let Some(max) = settings.inflight_limits.get(cat).max_inflight(available) else {
         return Ok(());
     };
-    let n: i64 = sqlx::query_scalar(
-        &db.format_query(
-            "SELECT COUNT(*) FROM logs \
-             WHERE user_id = ? AND is_completed = 0 \
-             AND billing_detail LIKE '%冻结%' \
-             AND action_type LIKE '%视频%'",
-        ),
-    )
+    let cat_sql = cat.count_sql();
+    let over: bool = sqlx::query_scalar(&db.format_query(&format!(
+        "SELECT EXISTS (
+             SELECT 1 FROM logs \
+             WHERE user_id = ? AND is_completed = 0 AND status_code IN (0, 200) {cat_sql} \
+             OFFSET ? LIMIT 1
+         )"
+    )))
     .bind(user_id)
+    .bind(i64::from(max.saturating_sub(1)))
     .fetch_one(&db.pool)
     .await?;
-    if n >= i64::from(max) {
-        return Err(AppError::TooManyRequests(VIDEO_INFLIGHT_MSG.to_string()));
+    if over {
+        return Err(AppError::TooManyRequests(INFLIGHT_MSG.to_string()));
     }
     Ok(())
 }

@@ -380,7 +380,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
         }
       }
     } catch (error) {
-      message.error(t('msg_fetch_list_failed'));
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -417,7 +417,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
       }
     } catch (error) {
       if (reqSeq !== selectReqSeqRef.current) return;
-      message.error(t('msg_fetch_detail_failed'));
+      console.error(error);
     } finally {
       if (reqSeq === selectReqSeqRef.current) {
         setDetailLoading(false);
@@ -449,7 +449,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
       message.success(t('msg_save_success'));
       fetchDocs();
     } catch (error) {
-      message.error(t('msg_save_failed'));
+      console.error(error);
     }
   };
 
@@ -514,7 +514,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
 
       message.success({ content: t('translate_success'), key: 'translate-status', duration: 3 });
     } catch (error: any) {
-      message.error({ content: `${t('translate_failed')}: ${error?.message || 'unknown error'}`, key: 'translate-status', duration: 3 });
+      console.error(error);
     } finally {
       setTranslating(false);
     }
@@ -530,7 +530,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
       }
       fetchDocs();
     } catch (error) {
-      message.error(t('msg_delete_failed'));
+      console.error(error);
     }
   };
 
@@ -547,7 +547,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
         await fetchCategories();
       }
     } catch (error) {
-      message.error(t('msg_reset_failed'));
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -566,13 +566,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
         await fetchCategories();
       }
     } catch (error: any) {
-      const status = error?.response?.status;
-      const serverMsg = error?.response?.data?.error?.message || error?.response?.data?.message;
-      if (status === 404 || status === 405 || status === 400) {
-        message.error('清空接口不可用，请重启后端后再试');
-      } else {
-        message.error(serverMsg || t('clear_failed', '清空数据失败'));
-      }
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -617,8 +611,8 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
       setCreateModalVisible(false);
       fetchDocs();
     } catch (error: any) {
-      if (error?.errorFields) return; // 表单校验失败，不提示「添加失败」
-      message.error(t('msg_add_failed'));
+      if (error?.errorFields) return;
+      console.error(error);
     }
   };
 
@@ -745,7 +739,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
       }
       fetchDocs();
     } catch (error) {
-      message.error(t('msg_drag_failed'));
+      console.error(error);
     }
   };
 
@@ -1544,7 +1538,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
                 categoryForm.resetFields();
                 fetchCategories();
               } catch (e) {
-                message.error('操作失败');
+                console.error(e);
               }
             }}
           >
@@ -1583,8 +1577,8 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
                           await request.post(`${apiPrefix}/docs/categories/${c.id}/set-default`);
                           message.success('已设为默认分类');
                           fetchCategories();
-                        } catch {
-                          message.error('设置失败');
+                        } catch (e) {
+                          console.error(e);
                         }
                       }}>设为默认</Button>
                     )}
@@ -1598,7 +1592,7 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
                         message.success('删除成功');
                         fetchCategories();
                       } catch (e) {
-                        message.error('删除失败');
+                        console.error(e);
                       }
                     }}>
                       <Button type="link" size="small" danger>删除</Button>

@@ -1,54 +1,90 @@
-# Common Error Codes and Troubleshooting
+# Gateway Error Codes & Troubleshooting
 
-When using the API gateway to access large model services, if a request exception occurs, the gateway will return the error to the client via the corresponding HTTP status code along with a JSON error response body that complies with OpenAI standards.
+Failed API calls return an **HTTP status code** plus a **JSON error body**. The HTTP code **matches `status_code` in call logs** for the same request (`log_id` traceability).
 
-### 1. Unified Error Response Format
-When a request fails, the gateway always returns a standard JSON error body:
+---
+
+## 1. Unified error response
+
+### Platform-local rejections (auth, balance, rate limits)
+
 ```json
 {
   "error": {
-    "message": "错误原因详细描述...",
-    "type": "invalid_request_error",
-    "code": "context_length_exceeded",
-    "param": null
+    "message": "账户余额不足0.5元",
+    "type": "api_error",
+    "code": "402"
   }
 }
 ```
 
-### 2. Status Codes and Troubleshooting Guide
+| Field | Meaning |
+| :--- | :--- |
+| `error.message` | Failure reason (URLs and `sk-` keys redacted for clients) |
+| `error.type` | `api_error` for platform-local errors |
+| `error.code` | **HTTP status as string** (e.g. `"402"`), not semantic OpenAI codes |
 
-* **400 Bad Request (Invalid Request Format)**
-  * **Possible Causes**: The request payload is not valid JSON; required parameters (such as `model` or `messages`) are missing; parameter types are incorrect.
-  * **Troubleshooting**: Check the HTTP request Body sent, align with the vendor's standard parameters (such as `max_tokens`, etc.), and check field spelling.
+### Upstream pass-through
 
-* **401 Unauthorized (Unauthorized/Authentication Failed)**
-  * **Possible Causes**: The request header does not contain `Authorization` or the Bearer Token is missing; the API key (Token) is invalid or has been deleted by the system; the Token string contains spaces, line breaks, or extra suffixes.
-  * **Troubleshooting**: Confirm the request header format is `Authorization: Bearer sk-xxxxx` and check if the token is activated in the admin backend.
+Valid upstream JSON may be returned **as-is** (vendor `type` / `code`); HTTP status still aligns with logs.
 
-* **403 Forbidden (No Permission/Quota Exhausted)**
-  * **Possible Causes**: The token's available quota or user's available balance is exhausted; the current token does not have permission to invoke the requested model; the token has been disabled by the administrator or system.
-  * **Troubleshooting**: Log into the system frontend to view the token balance; check the "Available Model List" in the token list to see if it includes the currently requested model.
+---
 
-* **404 Not Found (Endpoint or Route Does Not Exist)**
-  * **Possible Causes**: The requested URL path has a spelling error; the model has no active channel, or all channels are disabled.
-  * **Troubleshooting**: Check the API path (such as `/v1/chat/completions`); confirm the model is associated with active channels in the backend.
+## 2. Status code quick reference
 
-* **429 Too Many Requests (Rate Limit Triggered)**
-  * **Possible Causes**: Token rate limits (RPM / TPM) or server-side rate limiting was triggered.
-  * **Troubleshooting**: Implement exponential backoff retry logic in your code; confirm the token's rate limit settings or contact the administrator to increase the rate limit.
+| HTTP | Meaning | Example `message` |
+| :---: | :--- | :--- |
+| **400** | Invalid params, type mismatch, **content / copyright filter** | param errors; `PolicyViolation` / copyright restrictions |
+| **401** | Auth failure | `Missing Authorization Header` / `Invalid API Key` |
+| **402** | **Insufficient balance** | `账户余额不足…` / `余额不足` |
+| **403** | Token / IP / model allow-list / token quota | `Token disabled` / `Model xxx not allowed` / quota exhausted |
+| **404** | No upstream channel, or resource missing | `No available channels found for model xxx`; message contains `status 404` |
+| **429** | **Rate limit or in-flight cap** | `RPS limit exceeded` / `RPM limit exceeded` / low-balance in-flight message |
+| **500** | Internal platform error | `Internal server error` |
+| **502** | Upstream unavailable / connection failure | upstream text |
+| **504** | Timeout / gateway | contains `timeout`, `gateway`, etc. |
 
-* **500 Internal Error (Gateway Internal Exception)**
-  * **Possible Causes**: The gateway database connection is disconnected or timed out; an unhandled code panic occurred within the platform.
-  * **Troubleshooting**: Contact the system administrator and check the backend service container logs to locate the cause of the exception.
+> **Note**: insufficient balance is **402**, not 429.
 
-* **502 Bad Gateway (Service Temporarily Unavailable)**
-  * **Possible Causes**: Downstream connection timeout, network interruption, or temporary unavailability.
-  * **Troubleshooting**: Check the `message` in the JSON response; retry later or contact the administrator.
+---
 
-* **504 Gateway Timeout (Gateway Response Timeout)**
-  * **Possible Causes**: The requested model generation takes a very long time, resulting in an HTTP connection timeout.
-  * **Troubleshooting**: For highly time-consuming tasks such as video generation or super-resolution enhancement, submit them using asynchronous interfaces (such as `/v1/video/generations`) and then poll the task status interface to retrieve results.
+## 3. Troubleshooting by scenario
 
-### 3. Notes
-1. **Automatic retry**: With multiple channels configured, brief failures may be retried on another route transparently.
-2. **Logs**: Duration, billing, and related details are available in your usage logs.
+See sections 400–504 in the Chinese doc for the same mapping. Key fixes:
+
+- **402**: recharge; POST blocked when overdrawn, GET poll / DELETE may still work.
+- **400**: bad request **or** upstream content/copyright filter — not a token permission issue (that's 403).
+- **403**: token settings, IP whitelist, model allow-list — not account balance (402), not content policy (400).
+- **429**: backoff retry; reduce concurrent async jobs or raise RPS/RPM limits.
+- **404**: model ID and channel/HA availability; or input URL returning 404.
+- **502/504**: retry; HA failover may retry on another channel transparently.
+
+---
+
+## 4. Async tasks
+
+Submit/poll for video/long jobs may return HTTP **200** with `"status": "failed"` in the body. Check body `status` and log `status_code`, not HTTP 200 alone.
+
+---
+
+## 5. Logs & HA
+
+1. Every request logs `log_id`, `status_code`, `error_message`, latency, and billing.
+2. HA groups may retry on alternate channels after 502/504.
+3. Pending async jobs may show `status_code=0` until completion.
+
+---
+
+## 6. By capability (shared with example docs)
+
+| Area | Typical case | Code / note |
+| :--- | :--- | :--- |
+| **Chat** | Context / param errors | Upstream OpenAI-style `error` may pass through |
+| **Image** | Wrong endpoint for model type | **400** |
+| **Qwen image** | Invalid `size` or reference URL | **400**; `1024x1024` auto-converts to `1024*1024` |
+| **Video (async)** | Poll returns `status: failed` | Poll HTTP **200**; see §4 |
+| **Wan video** | Mixing first/last frame with reference media; audio-only refs | **400** |
+| **Wan video** | `files` / `links` mixed with first/last-frame roles | **400** |
+| **Native routes** | Wrong DashScope/Volc path | **404** or upstream **400** |
+
+Add new error scenarios **only in this article** (`error-codes`); example appendices link here.

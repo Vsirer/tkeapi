@@ -15,7 +15,9 @@ pub struct Announcement {
     pub title: String,
     pub content: String,
     pub is_pinned: i32,
+    pub is_popup: i32,
     pub is_active: i32,
+    pub sort_order: i32,
     pub created_at: DbTs,
     pub updated_at: DbTs,
 }
@@ -25,7 +27,9 @@ pub struct CreateAnnouncementReq {
     pub title: String,
     pub content: String,
     pub is_pinned: i32,
+    pub is_popup: Option<i32>,
     pub is_active: i32,
+    pub sort_order: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,5 +37,7 @@ pub struct UpdateAnnouncementReq {
     pub title: Option<String>,
     pub content: Option<String>,
     pub is_pinned: Option<i32>,
+    pub is_popup: Option<i32>,
     pub is_active: Option<i32>,
+    pub sort_order: Option<i32>,
 }

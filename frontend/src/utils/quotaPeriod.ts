@@ -153,7 +153,7 @@ function getQuotaDayKeyWithCutover(
   return now.startOf('day').subtract(maxBack, 'day').format('YYYY-MM-DD');
 }
 
-export function getEffectiveChannelPeriodUsed(
+function getEffectiveChannelPeriodUsed(
   record: {
     last_reset_day?: string | null;
     last_reset_week?: string | null;
@@ -180,6 +180,89 @@ export function getEffectiveChannelPeriodUsed(
     weeklyUsed: record.last_reset_week === nowWeek ? (record.weekly_quota_used || 0) : 0,
     monthlyUsed: record.last_reset_month === nowMonth ? (record.monthly_quota_used || 0) : 0,
   };
+}
+
+/** 列表额度排序：档位 + 指标，扩展时只加指标表项 */
+export type QuotaSortPeriod = 'auto' | 'total' | 'month' | 'week' | 'day';
+export type QuotaSortMetric = 'rate' | 'used' | 'remain' | 'limit';
+
+export const QUOTA_SORT_METRICS = [
+  { key: 'rate', label: '使用率' },
+  { key: 'used', label: '已用' },
+  { key: 'remain', label: '剩余' },
+  { key: 'limit', label: '限额' },
+] as const satisfies readonly { key: QuotaSortMetric; label: string }[];
+
+type QuotaSortRecord = Parameters<typeof getEffectiveChannelPeriodUsed>[0] & {
+  quota_used?: number | null;
+  quota_limit?: number | null;
+  daily_quota_limit?: number | null;
+  weekly_quota_limit?: number | null;
+  monthly_quota_limit?: number | null;
+};
+
+const QUOTA_PERIODS = [
+  { key: 'total', label: '总' },
+  { key: 'month', label: '月' },
+  { key: 'week', label: '周' },
+  { key: 'day', label: '日' },
+] as const;
+
+export const QUOTA_RING_BLUE = {
+  total: '#1d4ed8',
+  month: '#2563eb',
+  week: '#3b82f6',
+  day: '#60a5fa',
+} as const;
+
+export function quotaRingPercent(used: number, limit: number) {
+  if (limit < 0) return 0;
+  if (limit === 0) return used > 0 ? 100 : 0;
+  return Math.min(100, Math.round((used / limit) * 100));
+}
+
+function quotaMetricOf(used: number, limit: number, metric: QuotaSortMetric): number {
+  if (metric === 'used') return used;
+  if (limit < 0) return metric === 'rate' ? -1 : Number.POSITIVE_INFINITY;
+  if (metric === 'limit') return limit;
+  if (metric === 'remain') return Math.max(0, limit - used);
+  return limit === 0 ? (used > 0 ? Number.POSITIVE_INFINITY : 0) : used / limit;
+}
+
+function quotaSlices(r: QuotaSortRecord, tz?: string) {
+  const { dailyUsed, weeklyUsed, monthlyUsed } = getEffectiveChannelPeriodUsed(r, tz);
+  return {
+    total: { used: r.quota_used || 0, limit: r.quota_limit ?? -1 },
+    month: { used: monthlyUsed, limit: r.monthly_quota_limit ?? -1 },
+    week: { used: weeklyUsed, limit: r.weekly_quota_limit ?? -1 },
+    day: { used: dailyUsed, limit: r.daily_quota_limit ?? -1 },
+  };
+}
+
+export function quotaPeriodItems(r: QuotaSortRecord, tz?: string) {
+  const slices = quotaSlices(r, tz);
+  return QUOTA_PERIODS.map((p) => ({ ...p, ...slices[p.key] }));
+}
+
+export function compareChannelQuota(
+  a: QuotaSortRecord,
+  b: QuotaSortRecord,
+  period: QuotaSortPeriod,
+  metric: QuotaSortMetric,
+  tz?: string,
+): number {
+  const valueOf = (r: QuotaSortRecord) => {
+    const slices = quotaSlices(r, tz);
+    if (period !== 'auto') return quotaMetricOf(slices[period].used, slices[period].limit, metric);
+    if (metric === 'used') return slices.total.used;
+    const configured = Object.values(slices).filter((s) => s.limit >= 0);
+    if (configured.length === 0) {
+      return metric === 'rate' ? slices.total.used : Number.POSITIVE_INFINITY;
+    }
+    const vals = configured.map((s) => quotaMetricOf(s.used, s.limit, metric));
+    return metric === 'rate' ? Math.max(...vals) : Math.min(...vals);
+  };
+  return valueOf(a) - valueOf(b);
 }
 
 /**

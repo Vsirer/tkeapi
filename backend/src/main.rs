@@ -7,10 +7,12 @@
 
 use std::sync::Arc;
 
+mod admin_permission;
 mod api;
 mod auth;
 mod config;
 mod db;
+mod debug_log;
 mod error;
 mod middleware;
 mod models;
@@ -35,19 +37,11 @@ pub struct AppState {
     pub rate_limiter: middleware::rate_limit::GlobalRateLimiter,
     /// OAuth / 代入登录一次性兑换码：code → (jwt, expires_at)
     pub login_codes: dashmap::DashMap<String, (String, std::time::Instant)>,
+    #[cfg(feature = "plugin_site_icons")]
     pub icon_sync_progress: api::plugins::site_icons::SyncProgress,
     pub dashboard_cache: dashmap::DashMap<String, DashboardCacheEntry>,
-    // 高可用熔断与配置缓存
+    /// 高可用运行时熔断表（配置在 relay_settings HA_RULES）
     pub failed_channels: dashmap::DashMap<String, std::time::Instant>,
-    pub ha_max_retries: std::sync::atomic::AtomicI64,
-    pub ha_cooldown_429: std::sync::atomic::AtomicI64,
-    pub ha_cooldown_network: std::sync::atomic::AtomicI64,
-    pub ha_cooldown_auth: std::sync::atomic::AtomicI64,
-    pub ha_cooldown_404: std::sync::atomic::AtomicI64,
-    /// HA 整次请求墙钟预算（秒）；0=自动 min(540, 上游超时-60)
-    pub ha_total_timeout_secs: std::sync::atomic::AtomicI64,
-    pub ha_meltdown_whitelist: std::sync::RwLock<Vec<String>>,
-    pub ha_meltdown_blacklist: std::sync::RwLock<Vec<String>>,
     /// 级联阶段二进行中互斥（log_id → ()），防并发轮询重复裁剪/超分
     pub cascade_s2_inflight: dashmap::DashMap<i64, ()>,
     /// 日限额内存拦截器（DashMap + DB hydration）
@@ -119,17 +113,10 @@ async fn main() -> anyhow::Result<()> {
         http_client: services::http_client::build_outbound_client(),
         rate_limiter: middleware::rate_limit::GlobalRateLimiter::new(),
         login_codes: dashmap::DashMap::new(),
+        #[cfg(feature = "plugin_site_icons")]
         icon_sync_progress: api::plugins::site_icons::SyncProgress::new(),
         dashboard_cache: dashmap::DashMap::new(),
         failed_channels: dashmap::DashMap::new(),
-        ha_max_retries: std::sync::atomic::AtomicI64::new(3),
-        ha_cooldown_429: std::sync::atomic::AtomicI64::new(60),
-        ha_cooldown_network: std::sync::atomic::AtomicI64::new(300),
-        ha_cooldown_auth: std::sync::atomic::AtomicI64::new(1800),
-        ha_cooldown_404: std::sync::atomic::AtomicI64::new(3),
-        ha_total_timeout_secs: std::sync::atomic::AtomicI64::new(0),
-        ha_meltdown_whitelist: std::sync::RwLock::new(Vec::new()),
-        ha_meltdown_blacklist: std::sync::RwLock::new(Vec::new()),
         cascade_s2_inflight: dashmap::DashMap::new(),
         quota_memory: relay::quota_memory::MemoryQuotaGuard::new(),
         billing_ingress,
@@ -140,29 +127,22 @@ async fn main() -> anyhow::Result<()> {
     // 1. 启动时恢复：处理上次中断遗留的"处理中"日志，退还预扣费（直接同步执行）
     relay::proxy::recover_interrupted_logs(&state).await;
 
-    // 启动时预热：从数据库加载火山方舟视频监控的调试日志开关状态
-    #[cfg(feature = "commercial_plugins")]
-    crate::services::volc_ark_monitor::load_debug_log_config(&state).await;
-
-    // 2. 异步加载高可用配置
-    bg_handles.push({
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = state_clone.load_ha_configs().await {
-                tracing::error!("加载高可用插件配置失败: {}", e);
-            }
-        })
-    });
-
-    // 3. 启动后台异步任务轮询器（周期见 RelaySettings.poll_tick_secs，缓存；检查未结算视频/图片任务）
+    // 2. 启动后台异步任务轮询器（周期见 RelaySettings.poll_tick_secs，缓存；检查未结算视频/图片任务）
     bg_handles.push(relay::task::start(state.clone(), shutdown_rx.clone()));
 
-    // 4. 实时指标冷用户清理（每 5 分钟，空闲 >1h 剔除）
+    // 2b. ComfyUI 提交 worker：accept 后 admit→审图→/prompt；notify + 5s 扫库；随进程 shutdown 退出
+    #[cfg(feature = "plugin_comfyui")]
+    bg_handles.push(api::plugins::comfyui_bridge::start_submit_worker(
+        state.clone(),
+        shutdown_rx.clone(),
+    ));
+
+    // 3. 实时指标冷用户清理（每 5 分钟，空闲 >1h 剔除）
     bg_handles.push(tokio::spawn(middleware::live_metrics::run_cleanup_loop(
         shutdown_rx.clone(),
     )));
 
-    // 4b. 看板缓存 TTL 清理（每 5 分钟，条目 >30min 剔除）
+    // 3b. 看板缓存 TTL 清理（每 5 分钟，条目 >30min 剔除）
     bg_handles.push(tokio::spawn(
         api::dashboard::run_dashboard_cache_cleanup_loop(state.clone(), shutdown_rx.clone()),
     ));
@@ -177,7 +157,18 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
-    // 5. 启动孤儿日志清理定时任务（每 5 分钟检查 status_code=0 超过 30 分钟的日志）
+    #[cfg(feature = "plugin_data_sync")]
+    bg_handles.push(spawn_cron_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        60,
+        "DataSyncAuto",
+        |s| async move {
+            api::plugins::data_sync::run_auto_sync_tick(s).await;
+        },
+    ));
+
+    // 4. 启动孤儿日志清理定时任务（每 5 分钟检查 status_code=0 超过 30 分钟的日志）
     bg_handles.push(spawn_cron_task(
         state.clone(),
         shutdown_rx.clone(),
@@ -188,13 +179,15 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
-    // 6. 每日维护（下一次 UTC 03:00）：日志大字段清理/归档 + TOS 过期 + 火山素材保留清理
+    // 5. 每日维护（站点时区 03:00）：日志大字段清理/归档 + TOS 过期 + 火山素材保留清理
     bg_handles.push({
         let state_clone = state.clone();
         let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
-                let wait = duration_until_next_utc_hms(3, 0, 0);
+                let tz_name =
+                    relay::relay_settings::get_cached_site_timezone(&state_clone.db).await;
+                let wait = time_system::duration_until_next_local_hms(&tz_name, 3, 0, 0);
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {
                         cleanup_log_content(&state_clone).await;
@@ -209,20 +202,22 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    // 7. 创作中心画布中断节点自动恢复（每 5 分钟；两版画布同 tick）
+    // 6. 创作中心画布中断节点自动恢复与 3 分钟过期失败记录清理（每 60 秒）
     #[cfg(feature = "commercial_plugins")]
     bg_handles.push(spawn_cron_task(
         state.clone(),
         shutdown_rx.clone(),
-        300,
-        "PlaygroundNodesCleanup",
+        60,
+        "PlaygroundCleanup",
         |s| async move {
             api::plugins::playground::cleanup_stale_playground_nodes(&s).await;
             api::plugins::playground_2026::cleanup_stale_playground_2026_nodes(&s).await;
+            api::plugins::playground_2026::cleanup_failed_playground_2026_assets(&s).await;
         },
     ));
 
-    // 8. 启动时检查站点图标文件完整性，缺失则自动恢复（一次性任务）
+    // 7. 启动时检查站点图标文件完整性，缺失则自动恢复（一次性任务）
+    #[cfg(feature = "plugin_site_icons")]
     bg_handles.push({
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -230,7 +225,7 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    // 9. 启动时在后台静默执行历史数据回填落地（一次性任务）
+    // 8. 启动时在后台静默执行历史数据回填落地（一次性任务）
     bg_handles.push({
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -239,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
             if let Err(e) =
                 relay::usage_stats::backfill_usage_daily_stats_on_startup(&state_clone).await
             {
-                tracing::error!(
+                tracing::warn!(
                     "❌ [StartupBackfill] 启动初始化使用量每日统计表失败: {:?}",
                     e
                 );
@@ -247,13 +242,13 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    // 10. 每日日志增量统计（睡到站点时区次日 00:00，避免每 5 分钟空转）
+    // 9. 每日日志增量统计（睡到站点时区次日 00:00，避免每 5 分钟空转）
     bg_handles.push(tokio::spawn(relay::usage_stats::run_daily_stats_loop(
         state.clone(),
         shutdown_rx.clone(),
     )));
 
-    // 11. 火山方舟视频监控：同步视频列表 + 分账账单 + 超额熔断（每 1 分钟）
+    // 10. 火山方舟视频监控：同步视频列表 + 分账账单 + 超额熔断（每 1 分钟）
     #[cfg(feature = "commercial_plugins")]
     bg_handles.push(spawn_cron_task(
         state.clone(),
@@ -261,8 +256,8 @@ async fn main() -> anyhow::Result<()> {
         60,
         "VolcArkMonitorSync",
         |s| async move {
-            if let Err(e) = services::volc_ark_monitor::run_sync(s).await {
-                tracing::error!("❌ [CronArkMonitor] 火山方舟视频监控同步失败: {:?}", e);
+            if let Err(e) = api::plugins::volc_ark_monitor::service::run_sync(s).await {
+                tracing::warn!("❌ [CronArkMonitor] 火山方舟视频监控同步失败: {:?}", e);
             }
         },
     ));
@@ -364,25 +359,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn fetch_storage_settings(state: &AppState) -> models::StorageSettings {
-    match sqlx::query_scalar::<_, String>(
-        &state
-            .db
-            .format_query("SELECT value FROM settings WHERE key = ?"),
-    )
-    .bind("storage_settings")
-    .fetch_optional(&state.db.pool)
-    .await
-    {
-        Ok(Some(val)) => serde_json::from_str::<models::StorageSettings>(&val).unwrap_or_default(),
-        _ => models::StorageSettings::default(),
-    }
+async fn fetch_log_cleanup_settings(state: &AppState) -> models::LogCleanupSettings {
+    crate::api::settings::load_log_cleanup_settings(state)
+        .await
+        .unwrap_or_default()
 }
 
 /// 清理超期日志的大字段内容（request_content / response_content / upstream_req_content）
 /// 仅置 NULL，不删除日志记录，统计数据不受影响
 async fn cleanup_log_content(state: &AppState) {
-    let retention_days = fetch_storage_settings(state).await.log_retention_days;
+    let retention_days = fetch_log_cleanup_settings(state).await.log_retention_days;
     if retention_days <= 0 {
         return;
     }
@@ -419,7 +405,7 @@ async fn cleanup_log_content(state: &AppState) {
                 }
             }
             Err(e) => {
-                tracing::error!("日志清理失败: {}", e);
+                tracing::warn!("日志清理失败: {}", e);
                 break;
             }
         }
@@ -429,7 +415,7 @@ async fn cleanup_log_content(state: &AppState) {
 /// 将超期日志行迁入 logs_archive 并从热表删除（分批；`log_row_retention_days<=0` 时跳过）。
 /// jsonb 按列名填充，热表加列后无需再给 archive 做列序体操。
 async fn archive_old_logs(state: &AppState) {
-    let row_days = fetch_storage_settings(state).await.log_row_retention_days;
+    let row_days = fetch_log_cleanup_settings(state).await.log_row_retention_days;
     if row_days <= 0 {
         return;
     }
@@ -476,7 +462,7 @@ async fn archive_old_logs(state: &AppState) {
                 }
             }
             Err(e) => {
-                tracing::error!("日志归档失败: {}", e);
+                tracing::warn!("日志归档失败: {}", e);
                 break;
             }
         }
@@ -529,68 +515,6 @@ pub(crate) async fn sync_registration_settings(db: &Database, register_enabled: 
 }
 
 impl AppState {
-    pub async fn load_ha_configs(&self) -> anyhow::Result<()> {
-        let configs: Vec<(String, String)> = match sqlx::query_as(
-            "SELECT config_key, config_value FROM plugin_configs WHERE plugin_name = 'high_availability_channel'"
-        )
-        .fetch_all(&self.db.pool)
-        .await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("获取高可用配置失败，使用默认配置: {}", e);
-                return Ok(());
-            }
-        };
-
-        for (key, val) in configs {
-            if key == "ha_meltdown_whitelist" || key == "ha_meltdown_blacklist" {
-                // 名单：JSON 数组 → trim + 小写；解析失败视为空（避免脏数据残留）
-                let lowered = serde_json::from_str::<Vec<String>>(&val)
-                    .map(|list| {
-                        list.into_iter()
-                            .map(|s| s.trim().to_lowercase())
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let slot = if key == "ha_meltdown_whitelist" {
-                    &self.ha_meltdown_whitelist
-                } else {
-                    &self.ha_meltdown_blacklist
-                };
-                if let Ok(mut guard) = slot.write() {
-                    *guard = lowered;
-                }
-                continue;
-            }
-            if let Ok(parsed_val) = val.parse::<i64>() {
-                match key.as_str() {
-                    "ha_max_retries" => self
-                        .ha_max_retries
-                        .store(parsed_val, std::sync::atomic::Ordering::Relaxed),
-                    "ha_cooldown_429" => self
-                        .ha_cooldown_429
-                        .store(parsed_val, std::sync::atomic::Ordering::Relaxed),
-                    "ha_cooldown_network" => self
-                        .ha_cooldown_network
-                        .store(parsed_val, std::sync::atomic::Ordering::Relaxed),
-                    "ha_cooldown_auth" => self
-                        .ha_cooldown_auth
-                        .store(parsed_val, std::sync::atomic::Ordering::Relaxed),
-                    "ha_cooldown_404" => self
-                        .ha_cooldown_404
-                        .store(parsed_val, std::sync::atomic::Ordering::Relaxed),
-                    "ha_total_timeout_secs" => self
-                        .ha_total_timeout_secs
-                        .store(parsed_val.max(0), std::sync::atomic::Ordering::Relaxed),
-                    _ => {}
-                }
-            }
-        }
-        tracing::info!("高可用插件配置加载成功");
-        Ok(())
-    }
-
     /// 清空数据库后：丢掉旧业务内存态，不杀进程，前端可立刻进入全新安装
     pub async fn reset_runtime_after_db_wipe(&self) {
         self.login_codes.clear();
@@ -599,50 +523,7 @@ impl AppState {
         self.cascade_s2_inflight.clear();
         self.quota_memory.clear_all();
         crate::relay::relay_settings::invalidate_all();
-        self.ha_max_retries
-            .store(3, std::sync::atomic::Ordering::Relaxed);
-        self.ha_cooldown_429
-            .store(60, std::sync::atomic::Ordering::Relaxed);
-        self.ha_cooldown_network
-            .store(300, std::sync::atomic::Ordering::Relaxed);
-        self.ha_cooldown_auth
-            .store(1800, std::sync::atomic::Ordering::Relaxed);
-        self.ha_cooldown_404
-            .store(3, std::sync::atomic::Ordering::Relaxed);
-        self.ha_total_timeout_secs
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-        if let Ok(mut g) = self.ha_meltdown_whitelist.write() {
-            g.clear();
-        }
-        if let Ok(mut g) = self.ha_meltdown_blacklist.write() {
-            g.clear();
-        }
-        if let Err(e) = self.load_ha_configs().await {
-            tracing::warn!("清空数据库后重新加载高可用配置失败: {e}");
-        }
     }
-}
-
-/// 距下一次 UTC 整点时刻的等待时长（至少 1 秒）。
-fn duration_until_next_utc_hms(hour: u32, min: u32, sec: u32) -> std::time::Duration {
-    let now = chrono::Utc::now();
-    let today = now
-        .date_naive()
-        .and_hms_opt(hour, min, sec)
-        .unwrap()
-        .and_utc();
-    let next = if now < today {
-        today
-    } else {
-        (now.date_naive() + chrono::Duration::days(1))
-            .and_hms_opt(hour, min, sec)
-            .unwrap()
-            .and_utc()
-    };
-    (next - now)
-        .to_std()
-        .unwrap_or(std::time::Duration::from_secs(60))
-        .max(std::time::Duration::from_secs(1))
 }
 
 /// 抽象的高可用定时任务派发器，统一接管定时休眠、异常捕捉以及优雅退出监听

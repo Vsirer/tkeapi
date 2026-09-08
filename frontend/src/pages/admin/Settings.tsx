@@ -17,43 +17,64 @@ import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import { enterFreshSetup } from '../../utils/freshSetup';
 import { toCalendarDateParam } from '../../utils/dateRangeParams';
+import { DEFAULT_TOS_ZH, DEFAULT_TOS_EN, DEFAULT_PRIVACY_ZH, DEFAULT_PRIVACY_EN, DEFAULT_AGREEMENT_SETTINGS } from '../../constants/agreements';
+import { StorageConfigPanel } from '../../components/Storage';
 import dayjs from 'dayjs';
 
 const { Text } = Typography;
 
-/** 系统支持的所有语言定义 — 后续新增语言只需在此添加一行 */
-// 火山引擎 TOS 对象存储地域配置
-const TOS_REGION_GROUPS = [
-  {
-    group: '🇨🇳 国内版 - 火山引擎',
-    regions: [
-      { label: '华北2（北京）', region: 'cn-beijing', endpointExternal: 'https://tos-cn-beijing.volces.com', endpointInternal: 'https://tos-cn-beijing.ivolces.com' },
-      { label: '华南1（广州）', region: 'cn-guangzhou', endpointExternal: 'https://tos-cn-guangzhou.volces.com', endpointInternal: 'https://tos-cn-guangzhou.ivolces.com' },
-      { label: '华东2（上海）', region: 'cn-shanghai', endpointExternal: 'https://tos-cn-shanghai.volces.com', endpointInternal: 'https://tos-cn-shanghai.ivolces.com' },
-      { label: '中国香港', region: 'cn-hongkong', endpointExternal: 'https://tos-cn-hongkong.volces.com', endpointInternal: 'https://tos-cn-hongkong.ivolces.com' },
-      { label: '亚太东南（柔佛）', region: 'ap-southeast-1', endpointExternal: 'https://tos-ap-southeast-1.volces.com', endpointInternal: 'https://tos-ap-southeast-1.ivolces.com' },
-      { label: '亚太东南（雅加达）', region: 'ap-southeast-3', endpointExternal: 'https://tos-ap-southeast-3.volces.com', endpointInternal: 'https://tos-ap-southeast-3.ivolces.com' },
-    ]
-  },
-  {
-    group: '🌏 海外版 - BytePlus',
-    regions: [
-      { label: '亚太地区（柔佛）', region: 'bp-ap-southeast-1', endpointExternal: 'https://tos-ap-southeast-1.bytepluses.com', endpointInternal: 'https://tos-ap-southeast-1.ibytepluses.com' },
-      { label: '中国（香港）', region: 'bp-cn-hongkong', endpointExternal: 'https://tos-cn-hongkong.bytepluses.com', endpointInternal: 'https://tos-cn-hongkong.ibytepluses.com' },
-      { label: '亚太地区（雅加达）', region: 'bp-ap-southeast-3', endpointExternal: 'https://tos-ap-southeast-3.bytepluses.com', endpointInternal: 'https://tos-ap-southeast-3.ibytepluses.com' },
-      { label: '中国（北京）', region: 'bp-cn-beijing', endpointExternal: 'https://tos-cn-beijing.bytepluses.com.cn', endpointInternal: 'https://tos-cn-beijing.ibytepluses.com.cn' },
-      { label: '中国（广州）', region: 'bp-cn-guangzhou', endpointExternal: 'https://tos-cn-guangzhou.bytepluses.com.cn', endpointInternal: 'https://tos-cn-guangzhou.ibytepluses.com.cn' },
-      { label: '中国（上海）', region: 'bp-cn-shanghai', endpointExternal: 'https://tos-cn-shanghai.bytepluses.com.cn', endpointInternal: 'https://tos-cn-shanghai.ibytepluses.com.cn' },
-    ]
-  }
-];
-const ALL_TOS_REGIONS = TOS_REGION_GROUPS.flatMap(g => g.regions);
-
-/** 低余额视频在途默认档（与后端对齐） */
-const DEFAULT_VIDEO_INFLIGHT_TIERS: { max_available: number | null; max_inflight: number }[] = [
+/** 低余额在途默认档（与后端对齐） */
+const DEFAULT_INFLIGHT_TIERS = [
   { max_available: 20, max_inflight: 1 },
   { max_available: 50, max_inflight: 3 },
 ];
+
+const INFLIGHT_CATS: { key: 'video' | 'image' | 'chat' | 'other'; label: string; hint?: string }[] = [
+  { key: 'video', label: '视频', hint: '含视频增强' },
+  { key: 'image', label: '图片' },
+  { key: 'chat', label: '聊天' },
+  { key: 'other', label: '其它', hint: '音频 / 向量 / 排序等' },
+];
+
+function normalizeInflightCat(raw: any) {
+  const tiers =
+    Array.isArray(raw?.tiers) && raw.tiers.length > 0
+      ? raw.tiers.map((t: any) => ({
+          max_available: t?.max_available ?? null,
+          max_inflight: typeof t?.max_inflight === 'number' ? t.max_inflight : 1,
+        }))
+      : DEFAULT_INFLIGHT_TIERS.map((t) => ({ ...t }));
+  return { enabled: raw?.enabled === true, tiers };
+}
+
+/** 后台已 prepared（含旧配置迁移），前端直接读 inflight_limits */
+function loadInflightLimits(relay: any) {
+  const lim = relay?.inflight_limits || {};
+  return {
+    video: normalizeInflightCat(lim.video),
+    image: normalizeInflightCat(lim.image),
+    chat: normalizeInflightCat(lim.chat),
+    other: normalizeInflightCat(lim.other),
+  };
+}
+
+function dumpInflightLimits(values: any) {
+  const out: Record<string, { enabled: boolean; tiers: { max_available: number | null; max_inflight: number }[] }> = {};
+  for (const { key } of INFLIGHT_CATS) {
+    const cat = values?.inflight_limits?.[key] || {};
+    out[key] = {
+      enabled: cat.enabled === true,
+      tiers: (cat.tiers || []).map((t: any) => ({
+        max_available:
+          t?.max_available === undefined || t?.max_available === null || t?.max_available === ''
+            ? null
+            : Number(t.max_available),
+        max_inflight: Math.max(0, Number(t?.max_inflight) || 0),
+      })),
+    };
+  }
+  return out;
+}
 
 /** 后台轮询周期：与后端 RelaySettings 对齐（5–300，默认 30） */
 const clampPollTickSecs = (v: unknown) => Math.min(300, Math.max(5, Number(v) || 30));
@@ -128,10 +149,17 @@ const timezoneOptions = (() => {
 const Settings: React.FC = () => {
   const { t, i18n } = useTranslation();
   const { settings, updateStoreSettings } = useSettingsStore();
+  const currencyUnit = settings?.currency?.currency_unit || '元';
   const adminPath = settings?.site?.admin_path || 'admin1688';
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const tab = searchParams.get('tab') || 'basic';
+  const rawTab = searchParams.get('tab') || 'basic';
+  const rawSubTab = searchParams.get('subtab') || searchParams.get('sub_tab');
+  
+  // 兼容直接使用 ?tab=storage 或 ?tab=database 路由
+  const tab = rawTab === 'storage' || rawTab === 'cleanup' ? 'database' : rawTab;
+  const initialDbSubTab = rawTab === 'storage' ? 'storage' : rawTab === 'cleanup' ? 'cleanup' : (rawSubTab || 'db');
+  const initialBasicSubTab = rawSubTab || 'site';
 
   const [form] = Form.useForm();
   const enableMultilingual = Form.useWatch('enable_multilingual', form);
@@ -142,10 +170,20 @@ const Settings: React.FC = () => {
 
   const [loading, setLoading] = useState(false);
   const [serverUtcTime, setServerUtcTime] = useState<string | null>(null);
-  const [basicSubTab, setBasicSubTab] = useState('site');
-  const [dbSubTab, setDbSubTab] = useState('db');
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [basicSubTab, setBasicSubTab] = useState(initialBasicSubTab);
+  const [dbSubTab, setDbSubTab] = useState(initialDbSubTab);
+
+  // 当 URL searchParams 变化时同步子标签
+  useEffect(() => {
+    if (rawTab === 'storage') {
+      setDbSubTab('storage');
+    } else if (rawTab === 'cleanup') {
+      setDbSubTab('cleanup');
+    } else if (rawSubTab) {
+      if (tab === 'database') setDbSubTab(rawSubTab);
+      if (tab === 'basic') setBasicSubTab(rawSubTab);
+    }
+  }, [rawTab, rawSubTab, tab]);
   const [syncDates, setSyncDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [syncingStats, setSyncingStats] = useState(false);
   const [dbVerifying, setDbVerifying] = useState(false);
@@ -178,7 +216,6 @@ const Settings: React.FC = () => {
       }
     } catch (e) {
       console.error(e);
-      message.error('启动后台同步任务失败');
     } finally {
       setSyncingStats(false);
     }
@@ -245,7 +282,6 @@ const Settings: React.FC = () => {
     }
   };
 
-  const [tosNetworkType, setTosNetworkType] = useState<'external' | 'internal'>('external');
   const [userLevels, setUserLevels] = useState<any[]>([]);
   const [menuItems, setMenuItems] = useState<any[]>([]);
   const [loadingMenu, setLoadingMenu] = useState(true);
@@ -287,16 +323,26 @@ const Settings: React.FC = () => {
         request.get('/user_levels') as any,
         request.get('/plugins') as any
       ]);
-      const { site, currency, login, registration, smtp, database: backendDatabase, agreement, storage, menu_config, relay, server_time } = response;
+      const { site, currency, login, registration, smtp, database: backendDatabase, agreement, storage, log_cleanup, menu_config, relay, server_time } = response;
       if (server_time) {
         setServerUtcTime(server_time);
       }
       const defaultDatabase = { db_type: 'postgres', host: 'postgres', port: 5432, database: 'tokensapi', username: 'tokensapi', password: 'tokensapi', ssl_mode: false };
       const loadedDatabase = { ...defaultDatabase, ...backendDatabase };
-      const defaultAgreement = {
-        tos_mode: 'link', tos_mode_en: 'link', tos_content: '', tos_content_en: '', tos_link: '', tos_link_en: '',
-        privacy_mode: 'link', privacy_mode_en: 'link', privacy_content: '', privacy_content_en: '', privacy_link: '', privacy_link_en: '',
-        tos_enabled: false, privacy_enabled: false
+      const defaultAgreement = { ...DEFAULT_AGREEMENT_SETTINGS };
+      const loadedAgreement = {
+        tos_mode: agreement?.tos_mode || defaultAgreement.tos_mode,
+        tos_mode_en: agreement?.tos_mode_en || defaultAgreement.tos_mode_en,
+        tos_content: (agreement?.tos_content !== undefined && agreement?.tos_content !== '') ? agreement.tos_content : defaultAgreement.tos_content,
+        tos_content_en: (agreement?.tos_content_en !== undefined && agreement?.tos_content_en !== '') ? agreement.tos_content_en : defaultAgreement.tos_content_en,
+        tos_link: agreement?.tos_link || '',
+        tos_link_en: agreement?.tos_link_en || '',
+        privacy_mode: agreement?.privacy_mode || defaultAgreement.privacy_mode,
+        privacy_mode_en: agreement?.privacy_mode_en || defaultAgreement.privacy_mode_en,
+        privacy_content: (agreement?.privacy_content !== undefined && agreement?.privacy_content !== '') ? agreement.privacy_content : defaultAgreement.privacy_content,
+        privacy_content_en: (agreement?.privacy_content_en !== undefined && agreement?.privacy_content_en !== '') ? agreement.privacy_content_en : defaultAgreement.privacy_content_en,
+        tos_enabled: agreement?.tos_enabled !== undefined ? agreement.tos_enabled : defaultAgreement.tos_enabled,
+        privacy_enabled: agreement?.privacy_enabled !== undefined ? agreement.privacy_enabled : defaultAgreement.privacy_enabled,
       };
       
       const allLevels = Array.isArray(levelsResponse) ? levelsResponse : (levelsResponse.data || levelsResponse.levels || []);
@@ -379,18 +425,17 @@ const Settings: React.FC = () => {
         },
         smtp,
         database: loadedDatabase,
-        storage: storage || {},
-        agreement: agreement || defaultAgreement,
+        storage: {
+          ...(storage || {}),
+          default_provider: storage?.default_provider || 'tos',
+        },
+        log_cleanup: log_cleanup || { log_retention_days: 30, log_row_retention_days: 0 },
+        agreement: loadedAgreement,
         relay: {
           manual_poll_upstream: relay?.manual_poll_upstream !== false,
           poll_tick_secs: clampPollTickSecs(relay?.poll_tick_secs),
-          video_inflight_enabled: relay?.video_inflight_enabled === true,
-          video_inflight_tiers: Array.isArray(relay?.video_inflight_tiers) && relay.video_inflight_tiers.length > 0
-            ? relay.video_inflight_tiers.map((t: any) => ({
-                max_available: t.max_available ?? null,
-                max_inflight: typeof t.max_inflight === 'number' ? t.max_inflight : 1,
-              }))
-            : DEFAULT_VIDEO_INFLIGHT_TIERS.map((t) => ({ ...t })),
+          enable_debug_log: relay?.enable_debug_log === true,
+          inflight_limits: loadInflightLimits(relay),
         },
       });
     } catch (error) {
@@ -401,60 +446,6 @@ const Settings: React.FC = () => {
     }
   };
 
-  const handleRepairFailedLogs = () => {
-    Modal.confirm({
-      title: '异常计费订单自动订正',
-      content: '系统将扫描最近5000条计费状态为200成功且计费明细包含“冻结”字样、但实际上上游返回失败的异常模型订单。确认要一键退还用户余额，并扣减对应的令牌、渠道用量吗？此操作包含并发防重锁定，不会重复扣减或退费。',
-      okText: '确认订正',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          const r = await (request.post('/settings/repair-logs') as any);
-          if (r.success) {
-            Modal.success({
-              title: '自动订正成功',
-              width: 650,
-              content: (
-                <div>
-                  <div style={{ marginBottom: 16 }}>
-                    共计修复异常失败账单: <strong>{r.repaired_count}</strong> 笔，已退回用户普通余额: <strong>{r.refunded_balance}</strong>，退回赠送余额: <strong>{r.refunded_gift_balance}</strong>。同时已自动回滚对应的渠道与令牌的已用额度占用。
-                  </div>
-                  {r.details && r.details.length > 0 && (
-                    <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: '8px 12px', background: '#fafafa' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                        <thead>
-                          <tr style={{ borderBottom: '2px solid #e8e8e8', color: '#595959', fontWeight: 600 }}>
-                            <th style={{ padding: '6px 4px', textAlign: 'left' }}>用户 ID</th>
-                            <th style={{ padding: '6px 4px', textAlign: 'left' }}>退回余额</th>
-                            <th style={{ padding: '6px 4px', textAlign: 'left' }}>退回赠送</th>
-                            <th style={{ padding: '6px 4px', textAlign: 'left' }}>异常原因</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {r.details.map((detail: any, idx: number) => (
-                            <tr key={idx} style={{ borderBottom: '1px solid #e8e8e8' }}>
-                              <td style={{ padding: '6px 4px', fontFamily: 'monospace', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={detail.user_id}>{detail.user_id}</td>
-                              <td style={{ padding: '6px 4px', color: '#52c41a', fontWeight: 'bold' }}>+{detail.refund_balance.toFixed(6)}</td>
-                              <td style={{ padding: '6px 4px', color: '#1890ff', fontWeight: 'bold' }}>+{detail.refund_gift.toFixed(6)}</td>
-                              <td style={{ padding: '6px 4px', color: '#ff4d4f', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={detail.error_message}>{detail.error_message}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )
-            });
-          } else {
-            message.error(r.message || '订正失败');
-          }
-        } catch (e) {
-          message.error('请求接口失败');
-        }
-      }
-    });
-  };
 
   const handleSave = async () => {
     try {
@@ -518,22 +509,22 @@ const Settings: React.FC = () => {
         payload.relay = {
           manual_poll_upstream: values.relay?.manual_poll_upstream !== false,
           poll_tick_secs: clampPollTickSecs(values.relay?.poll_tick_secs),
-          video_inflight_enabled: values.relay?.video_inflight_enabled === true,
-          video_inflight_tiers: (values.relay?.video_inflight_tiers || []).map((t: any) => ({
-            max_available: t?.max_available === undefined || t?.max_available === null || t?.max_available === ''
-              ? null
-              : Number(t.max_available),
-            max_inflight: Math.max(0, Number(t?.max_inflight) || 0),
-          })),
+          enable_debug_log: values.relay?.enable_debug_log === true,
+          inflight_limits: dumpInflightLimits(values.relay),
         };
       } else if (tab === 'database') {
         if (dbSubTab === 'db') {
           return;
         }
-        if (dbSubTab === 'storage' || dbSubTab === 'cleanup') {
+        if (dbSubTab === 'storage') {
           payload.storage = {
             ...settings?.storage,
             ...values.storage,
+          };
+        } else if (dbSubTab === 'cleanup') {
+          payload.log_cleanup = {
+            ...settings?.log_cleanup,
+            ...values.log_cleanup,
           };
         }
       }
@@ -561,21 +552,6 @@ const Settings: React.FC = () => {
   const GoLink: React.FC<{ to: string; text: string }> = ({ to, text }) => (
     <Button type="link" size="small" onClick={() => navigate(to)} style={{ padding: 0, height: 'auto' }}>{text}</Button>
   );
-
-
-  const handleTestConnection = async () => {
-    try {
-      setTesting(true);
-      setTestResult(null);
-      const values = form.getFieldsValue(true);
-      const res = await (request.post(`/settings/storage/test`, values.storage) as any);
-      setTestResult(res);
-    } catch (error: any) {
-      setTestResult({ success: false, message: error?.response?.data?.error?.message || '测试失败' });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const siteSettingsContent = (
     <div style={{ maxWidth: 680 }}>
@@ -816,160 +792,6 @@ const Settings: React.FC = () => {
           );
         }}
       </Form.Item>
-    </div>
-  );
-
-  const relaySettingsContent = (
-    <div style={{ maxWidth: 720 }}>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 14 }}
-        message="手动轮询仅影响客户端 GET；后台自动轮询与计费不变。低余额视频限制与「余额不足」区分；保存后即时生效。"
-      />
-      <Form.Item
-        label="手动轮询请求上游"
-        name={['relay', 'manual_poll_upstream']}
-        valuePropName="checked"
-        extra={<Text type="secondary">开：未完成任务打上游。关：优先返回 logs 缓存；无缓存再兜底上游</Text>}
-      >
-        <Switch />
-      </Form.Item>
-      <Form.Item
-        label="后台自动轮询周期"
-        name={['relay', 'poll_tick_secs']}
-        extra={<Text type="secondary">TaskPoller 间隔（秒），建议 15–60，范围 5–300，默认 30</Text>}
-        rules={[{ required: true, message: '必填' }]}
-      >
-        <InputNumber min={5} max={300} step={5} addonAfter="秒" style={{ width: 180 }} />
-      </Form.Item>
-
-      <Divider style={{ margin: '16px 0 12px' }}>低余额限制未完成视频</Divider>
-      <Form.Item
-        label="启用限制"
-        name={['relay', 'video_inflight_enabled']}
-        valuePropName="checked"
-        extra={<Text type="secondary">开启后按可用额限制未完成视频路数；可用额低于填金额，路数 0=不限制</Text>}
-      >
-        <Switch />
-      </Form.Item>
-      <Form.List name={['relay', 'video_inflight_tiers']}>
-        {(fields, { add, remove }) => (
-          <>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 4, paddingRight: 32 }}>
-              <Text type="secondary" style={{ fontSize: 12, width: 160 }}>可用额低于（元）</Text>
-              <Text type="secondary" style={{ fontSize: 12, width: 180 }}>最大未完成视频路数</Text>
-            </div>
-            {fields.map((field) => (
-              <div key={field.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
-                <Form.Item
-                  {...field}
-                  name={[field.name, 'max_available']}
-                  style={{ marginBottom: 0, width: 160 }}
-                >
-                  <InputNumber min={0} step={1} style={{ width: '100%' }} placeholder="其余则留空" />
-                </Form.Item>
-                <Form.Item
-                  {...field}
-                  name={[field.name, 'max_inflight']}
-                  style={{ marginBottom: 0, width: 180 }}
-                  rules={[{ required: true, message: '必填' }]}
-                >
-                  <InputNumber min={0} step={1} style={{ width: '100%' }} placeholder="0=不限制" />
-                </Form.Item>
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  disabled={fields.length <= 1}
-                  onClick={() => remove(field.name)}
-                  style={{ marginTop: 2 }}
-                />
-              </div>
-            ))}
-            <Button
-              type="dashed"
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={() => add({ max_available: 20, max_inflight: 1 })}
-              style={{ marginTop: 2 }}
-            >
-              新增档
-            </Button>
-          </>
-        )}
-      </Form.List>
-    </div>
-  );
-
-  const loginSettingsContent = (
-    <div style={{ maxWidth: 680 }}>
-      <Form.Item label="登录页标题" name="login_title" extra={<Text type="secondary">留空则使用站点名称</Text>}>
-        <Input placeholder="例如：Tkeapi" />
-      </Form.Item>
-      <Form.Item
-        label="登录页标题链接"
-        name="login_title_url"
-        extra={<Text type="secondary">配置后标题和 Logo 可点击跳转；留空则使用「控制台 Logo 标题链接」</Text>}
-      >
-        <Input placeholder="留空则使用控制台 Logo 标题链接" />
-      </Form.Item>
-      <Form.Item label="登录页副标题" name="login_subtitle" extra={<Text type="secondary">留空则使用默认文字</Text>}>
-        <Input placeholder="例如：Next-gen LLM API Gateway" />
-      </Form.Item>
-      <Form.Item label="登录页风格" name="login_style" extra={<Text type="secondary">经典居中将表单直接居中；左右风格为双栏布局</Text>}>
-        <LoginStyleSelector />
-      </Form.Item>
-
-      <Form.Item noStyle shouldUpdate={(prevValues, currentValues) => prevValues.login_style !== currentValues.login_style}>
-        {({ getFieldValue }) => {
-          const style = getFieldValue('login_style') || 'split';
-          if (style !== 'split') return null;
-          return (
-            <Form.Item 
-              label="左下角广告语" 
-              name="login_quote" 
-              extra={<Text type="secondary">左右风格左侧宣传语，留空使用系统默认</Text>}
-            >
-              <Input.TextArea rows={2} placeholder="配置登录页左侧大背景底部所展示的宣传语" />
-            </Form.Item>
-          );
-        }}
-      </Form.Item>
-
-      <Divider style={{ margin: '16px 0 12px' }}>第三方与登录方式</Divider>
-
-      <Form.Item label={t('settings.enable_username_login')} name={['login', 'enable_username_login']} valuePropName="checked">
-        <Switch />
-      </Form.Item>
-      <Form.Item label={t('settings.enable_mobile_login')} name={['login', 'enable_mobile_login']} valuePropName="checked"
-        extra={<Text type="secondary">{t('settings.login_hint_sms')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
-        <Switch />
-      </Form.Item>
-      <Form.Item label={t('settings.enable_email_login')} name={['login', 'enable_email_login']} valuePropName="checked"
-        extra={<Text type="secondary">{t('settings.login_hint_email')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
-        <Switch />
-      </Form.Item>
-      <Form.Item label={t('settings.enable_wechat_login')} name={['login', 'enable_wechat_login']} valuePropName="checked"
-        extra={<Text type="secondary">{t('settings.login_hint_oauth')}，<GoLink to={`/${adminPath}/oauth-settings`} text={t('settings.goto_settings')} /></Text>}>
-        <Switch />
-      </Form.Item>
-      <Form.Item label={t('settings.enable_google_login')} name={['login', 'enable_google_login']} valuePropName="checked"
-        extra={<Text type="secondary">{t('settings.login_hint_oauth')}，<GoLink to={`/${adminPath}/oauth-settings`} text={t('settings.goto_settings')} /></Text>}>
-        <Switch />
-      </Form.Item>
-    </div>
-  );
-
-  const registrationSettingsContent = (
-    <div style={{ maxWidth: 680 }}>
-      <Form.Item label={t('settings.enable_username_reg')} name={['registration', 'enable_username_registration']} valuePropName="checked"><Switch /></Form.Item>
-      <Form.Item label={t('settings.enable_email_reg')} name={['registration', 'enable_email_registration']} valuePropName="checked"><Switch /></Form.Item>
-      <Form.Item label={t('settings.enable_mobile_registration')} name={['registration', 'enable_mobile_registration']} valuePropName="checked"
-        extra={<Text type="secondary">{t('settings.login_hint_sms')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
-        <Switch />
-      </Form.Item>
-      <Form.Item label={t('settings.enable_password_recovery')} name={['registration', 'enable_password_recovery']} valuePropName="checked"><Switch /></Form.Item>
 
       <Divider style={{ margin: '16px 0 12px' }}>用户实名认证 (KYC)</Divider>
       <Form.Item
@@ -1067,8 +889,237 @@ const Settings: React.FC = () => {
     </div>
   );
 
+  const relaySettingsContent = (
+    <div style={{ maxWidth: 720 }}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 14 }}
+        message="手动轮询仅影响客户端 GET；后台自动轮询与计费不变。低余额在途限制与「余额不足」区分；可按视频/图片/聊天/其它分别开关；保存后即时生效。"
+      />
+      <Form.Item
+        label="手动轮询请求上游"
+        name={['relay', 'manual_poll_upstream']}
+        valuePropName="checked"
+        extra={<Text type="secondary">开：未完成任务打上游。关：优先返回 logs 缓存；无缓存再兜底上游</Text>}
+      >
+        <Switch />
+      </Form.Item>
+      <Form.Item
+        label="后台自动轮询周期"
+        name={['relay', 'poll_tick_secs']}
+        extra={<Text type="secondary">TaskPoller 间隔（秒），建议 15–60，范围 5–300，默认 30</Text>}
+        rules={[{ required: true, message: '必填' }]}
+      >
+        <InputNumber min={5} max={300} step={5} addonAfter="秒" style={{ width: 180 }} />
+      </Form.Item>
+      <Form.Item
+        label="调试日志"
+        name={['relay', 'enable_debug_log']}
+        valuePropName="checked"
+        extra={<Text type="secondary">开：模型调用过程输出到控制台；关：不输出。保存后即时生效</Text>}
+      >
+        <Switch />
+      </Form.Item>
+
+      <Divider style={{ margin: '16px 0 12px' }}>低余额限制未完成任务</Divider>
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+        按类别分别限制在途路数；可用额低于填金额时生效，路数 0=不限制。各类互不影响。
+      </Text>
+      {INFLIGHT_CATS.map(({ key, label, hint }) => (
+        <div
+          key={key}
+          style={{
+            marginBottom: 14,
+            padding: '10px 12px',
+            border: '1px solid rgba(128,128,128,0.18)',
+            borderRadius: 8,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <Text strong style={{ minWidth: 36 }}>{label}</Text>
+            {hint ? <Text type="secondary" style={{ fontSize: 12 }}>{hint}</Text> : null}
+            <Form.Item name={['relay', 'inflight_limits', key, 'enabled']} valuePropName="checked" noStyle>
+              <Switch checkedChildren="开" unCheckedChildren="关" />
+            </Form.Item>
+          </div>
+          <Form.List name={['relay', 'inflight_limits', key, 'tiers']}>
+            {(fields, { add, remove }) => (
+              <>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 4, paddingRight: 32 }}>
+                  <Text type="secondary" style={{ fontSize: 12, width: 160 }}>可用额低于（{currencyUnit}）</Text>
+                  <Text type="secondary" style={{ fontSize: 12, width: 180 }}>最大未完成路数</Text>
+                </div>
+                {fields.map((field) => (
+                  <div key={field.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 6 }}>
+                    <Form.Item {...field} name={[field.name, 'max_available']} style={{ marginBottom: 0, width: 160 }}>
+                      <InputNumber min={0} step={1} style={{ width: '100%' }} placeholder="其余则留空" />
+                    </Form.Item>
+                    <Form.Item
+                      {...field}
+                      name={[field.name, 'max_inflight']}
+                      style={{ marginBottom: 0, width: 180 }}
+                      rules={[{ required: true, message: '必填' }]}
+                    >
+                      <InputNumber min={0} step={1} style={{ width: '100%' }} placeholder="0=不限制" />
+                    </Form.Item>
+                    <Button
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      disabled={fields.length <= 1}
+                      onClick={() => remove(field.name)}
+                      style={{ marginTop: 2 }}
+                    />
+                  </div>
+                ))}
+                <Button
+                  type="dashed"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  onClick={() => add({ max_available: 20, max_inflight: 1 })}
+                  style={{ marginTop: 2 }}
+                >
+                  新增档
+                </Button>
+              </>
+            )}
+          </Form.List>
+        </div>
+      ))}
+    </div>
+  );
+
+  const loginSettingsContent = (
+    <div style={{ maxWidth: 680 }}>
+      <Form.Item label="登录页标题" name="login_title" extra={<Text type="secondary">留空则使用站点名称</Text>}>
+        <Input placeholder="例如：Tkeapi" />
+      </Form.Item>
+      <Form.Item
+        label="登录页标题链接"
+        name="login_title_url"
+        extra={<Text type="secondary">配置后标题和 Logo 可点击跳转；留空则使用「控制台 Logo 标题链接」</Text>}
+      >
+        <Input placeholder="留空则使用控制台 Logo 标题链接" />
+      </Form.Item>
+      <Form.Item label="登录页副标题" name="login_subtitle" extra={<Text type="secondary">留空则使用默认文字</Text>}>
+        <Input placeholder="例如：Next-gen LLM API Gateway" />
+      </Form.Item>
+      <Form.Item label="登录页风格" name="login_style" extra={<Text type="secondary">经典居中将表单直接居中；左右风格为双栏布局</Text>}>
+        <LoginStyleSelector />
+      </Form.Item>
+
+      <Form.Item noStyle shouldUpdate={(prevValues, currentValues) => prevValues.login_style !== currentValues.login_style}>
+        {({ getFieldValue }) => {
+          const style = getFieldValue('login_style') || 'split';
+          if (style !== 'split') return null;
+          return (
+            <Form.Item 
+              label="左下角广告语" 
+              name="login_quote" 
+              extra={<Text type="secondary">左右风格左侧宣传语，留空使用系统默认</Text>}
+            >
+              <Input.TextArea rows={2} placeholder="配置登录页左侧大背景底部所展示的宣传语" />
+            </Form.Item>
+          );
+        }}
+      </Form.Item>
+
+      <Divider style={{ margin: '16px 0 12px' }}>第三方与登录方式</Divider>
+
+      <Form.Item label={t('settings.enable_username_login')} name={['login', 'enable_username_login']} valuePropName="checked">
+        <Switch />
+      </Form.Item>
+      <Form.Item label={t('settings.enable_mobile_login')} name={['login', 'enable_mobile_login']} valuePropName="checked"
+        extra={<Text type="secondary">{t('settings.login_hint_sms')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
+        <Switch />
+      </Form.Item>
+      <Form.Item label={t('settings.enable_email_login')} name={['login', 'enable_email_login']} valuePropName="checked"
+        extra={<Text type="secondary">{t('settings.login_hint_email')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
+        <Switch />
+      </Form.Item>
+      <Form.Item label={t('settings.enable_wechat_login')} name={['login', 'enable_wechat_login']} valuePropName="checked"
+        extra={<Text type="secondary">{t('settings.login_hint_oauth')}，<GoLink to={`/${adminPath}/oauth-settings`} text={t('settings.goto_settings')} /></Text>}>
+        <Switch />
+      </Form.Item>
+      <Form.Item label={t('settings.enable_google_login')} name={['login', 'enable_google_login']} valuePropName="checked"
+        extra={<Text type="secondary">{t('settings.login_hint_oauth')}，<GoLink to={`/${adminPath}/oauth-settings`} text={t('settings.goto_settings')} /></Text>}>
+        <Switch />
+      </Form.Item>
+    </div>
+  );
+
+  const registrationSettingsContent = (
+    <div style={{ maxWidth: 680 }}>
+      <Form.Item label={t('settings.enable_username_reg')} name={['registration', 'enable_username_registration']} valuePropName="checked"><Switch /></Form.Item>
+      <Form.Item label={t('settings.enable_email_reg')} name={['registration', 'enable_email_registration']} valuePropName="checked"><Switch /></Form.Item>
+      <Form.Item label={t('settings.enable_mobile_registration')} name={['registration', 'enable_mobile_registration']} valuePropName="checked"
+        extra={<Text type="secondary">{t('settings.login_hint_sms')}，<GoLink to={`/${adminPath}/message-notification`} text={t('settings.goto_settings')} /></Text>}>
+        <Switch />
+      </Form.Item>
+      <Form.Item label={t('settings.enable_password_recovery')} name={['registration', 'enable_password_recovery']} valuePropName="checked"><Switch /></Form.Item>
+    </div>
+  );
+
+  const handleFillDefaultAgreements = (target: 'all' | 'zh' | 'en' | 'tos_zh' | 'tos_en' | 'privacy_zh' | 'privacy_en') => {
+    const current = form.getFieldValue('agreement') || {};
+    let updated = { ...current };
+    if (target === 'all') {
+      updated = {
+        ...updated,
+        tos_mode: 'text',
+        tos_content: DEFAULT_TOS_ZH,
+        privacy_mode: 'text',
+        privacy_content: DEFAULT_PRIVACY_ZH,
+        tos_mode_en: 'text',
+        tos_content_en: DEFAULT_TOS_EN,
+        privacy_mode_en: 'text',
+        privacy_content_en: DEFAULT_PRIVACY_EN,
+        tos_enabled: true,
+        privacy_enabled: true,
+      };
+    } else if (target === 'zh') {
+      updated.tos_mode = 'text';
+      updated.tos_content = DEFAULT_TOS_ZH;
+      updated.privacy_mode = 'text';
+      updated.privacy_content = DEFAULT_PRIVACY_ZH;
+    } else if (target === 'en') {
+      updated.tos_mode_en = 'text';
+      updated.tos_content_en = DEFAULT_TOS_EN;
+      updated.privacy_mode_en = 'text';
+      updated.privacy_content_en = DEFAULT_PRIVACY_EN;
+    } else if (target === 'tos_zh') {
+      updated.tos_mode = 'text';
+      updated.tos_content = DEFAULT_TOS_ZH;
+    } else if (target === 'tos_en') {
+      updated.tos_mode_en = 'text';
+      updated.tos_content_en = DEFAULT_TOS_EN;
+    } else if (target === 'privacy_zh') {
+      updated.privacy_mode = 'text';
+      updated.privacy_content = DEFAULT_PRIVACY_ZH;
+    } else if (target === 'privacy_en') {
+      updated.privacy_mode_en = 'text';
+      updated.privacy_content_en = DEFAULT_PRIVACY_EN;
+    }
+    form.setFieldsValue({ agreement: updated });
+    message.success('已填入标准预设协议内容');
+  };
+
   const agreementSettingsContent = (
     <div style={{ maxWidth: 780 }}>
+      <Alert
+        message="预设协议说明"
+        description="系统内置契合 AI 模型中继分发、API 令牌调度、创作中心与计费审计的标准中英文《服务条款》和《隐私协议》。无需修改即可直接使用；您也可以点击下方按钮一键填入或重置为预设模板。"
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        action={
+          <Button size="small" type="primary" ghost onClick={() => handleFillDefaultAgreements('all')}>
+            一键填入全套预设模板
+          </Button>
+        }
+      />
+
       <div style={{ display: 'flex', gap: 32, marginBottom: 16 }}>
         <Form.Item label="启用服务条款" name={['agreement', 'tos_enabled']} valuePropName="checked" style={{ marginBottom: 0 }}>
           <Switch />
@@ -1078,13 +1129,26 @@ const Settings: React.FC = () => {
         </Form.Item>
       </div>
 
-      <Tabs defaultActiveKey="zh">
+      <Tabs 
+        defaultActiveKey="zh"
+        tabBarExtraContent={
+          <Space>
+            <Button size="small" onClick={() => handleFillDefaultAgreements('zh')}>填入中文预设模板</Button>
+            <Button size="small" onClick={() => handleFillDefaultAgreements('en')}>Fill English Presets</Button>
+          </Space>
+        }
+      >
         <Tabs.TabPane tab="简体中文 (默认)" key="zh">
-          <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>服务条款 (Terms of Service)</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>服务条款 (Terms of Service)</Text>
+            <Button size="small" type="link" style={{ padding: 0 }} onClick={() => handleFillDefaultAgreements('tos_zh')}>
+              填入预设服务条款
+            </Button>
+          </div>
           <Form.Item label="显示方式" name={['agreement', 'tos_mode']}>
             <Radio.Group buttonStyle="solid">
+              <Radio.Button value="text">站内富文本 (默认)</Radio.Button>
               <Radio.Button value="link">网页链接</Radio.Button>
-              <Radio.Button value="text">站内富文本</Radio.Button>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle dependencies={[['agreement', 'tos_mode']]}>
@@ -1094,16 +1158,21 @@ const Settings: React.FC = () => {
               </Form.Item>
             ) : (
               <Form.Item label="条款内容" name={['agreement', 'tos_content']}>
-                <ReactQuill theme="snow" style={{ height: 220, marginBottom: 42, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
+                <ReactQuill theme="snow" style={{ height: 260, marginBottom: 48, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
               </Form.Item>
             )}
           </Form.Item>
 
-          <Text strong style={{ fontSize: 13, display: 'block', marginTop: 20, marginBottom: 8 }}>隐私协议 (Privacy Policy)</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>隐私协议 (Privacy Policy)</Text>
+            <Button size="small" type="link" style={{ padding: 0 }} onClick={() => handleFillDefaultAgreements('privacy_zh')}>
+              填入预设隐私协议
+            </Button>
+          </div>
           <Form.Item label="显示方式" name={['agreement', 'privacy_mode']}>
             <Radio.Group buttonStyle="solid">
+              <Radio.Button value="text">站内富文本 (默认)</Radio.Button>
               <Radio.Button value="link">网页链接</Radio.Button>
-              <Radio.Button value="text">站内富文本</Radio.Button>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle dependencies={[['agreement', 'privacy_mode']]}>
@@ -1113,18 +1182,23 @@ const Settings: React.FC = () => {
               </Form.Item>
             ) : (
               <Form.Item label="协议内容" name={['agreement', 'privacy_content']}>
-                <ReactQuill theme="snow" style={{ height: 220, marginBottom: 42, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
+                <ReactQuill theme="snow" style={{ height: 260, marginBottom: 48, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
               </Form.Item>
             )}
           </Form.Item>
         </Tabs.TabPane>
 
         <Tabs.TabPane tab="English" key="en">
-          <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>Terms of Service</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>Terms of Service</Text>
+            <Button size="small" type="link" style={{ padding: 0 }} onClick={() => handleFillDefaultAgreements('tos_en')}>
+              Fill Preset Terms
+            </Button>
+          </div>
           <Form.Item label="Display Mode" name={['agreement', 'tos_mode_en']}>
             <Radio.Group buttonStyle="solid">
+              <Radio.Button value="text">Rich Text (Default)</Radio.Button>
               <Radio.Button value="link">Link URL</Radio.Button>
-              <Radio.Button value="text">Rich Text</Radio.Button>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle dependencies={[['agreement', 'tos_mode_en']]}>
@@ -1134,16 +1208,21 @@ const Settings: React.FC = () => {
               </Form.Item>
             ) : (
               <Form.Item label="Content (English)" name={['agreement', 'tos_content_en']}>
-                <ReactQuill theme="snow" style={{ height: 220, marginBottom: 42, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
+                <ReactQuill theme="snow" style={{ height: 260, marginBottom: 48, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
               </Form.Item>
             )}
           </Form.Item>
 
-          <Text strong style={{ fontSize: 13, display: 'block', marginTop: 20, marginBottom: 8 }}>Privacy Policy</Text>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>Privacy Policy</Text>
+            <Button size="small" type="link" style={{ padding: 0 }} onClick={() => handleFillDefaultAgreements('privacy_en')}>
+              Fill Preset Privacy Policy
+            </Button>
+          </div>
           <Form.Item label="Display Mode" name={['agreement', 'privacy_mode_en']}>
             <Radio.Group buttonStyle="solid">
+              <Radio.Button value="text">Rich Text (Default)</Radio.Button>
               <Radio.Button value="link">Link URL</Radio.Button>
-              <Radio.Button value="text">Rich Text</Radio.Button>
             </Radio.Group>
           </Form.Item>
           <Form.Item noStyle dependencies={[['agreement', 'privacy_mode_en']]}>
@@ -1153,7 +1232,7 @@ const Settings: React.FC = () => {
               </Form.Item>
             ) : (
               <Form.Item label="Content (English)" name={['agreement', 'privacy_content_en']}>
-                <ReactQuill theme="snow" style={{ height: 220, marginBottom: 42, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
+                <ReactQuill theme="snow" style={{ height: 260, marginBottom: 48, backgroundColor: 'var(--ant-color-bg-container)', color: 'var(--ant-color-text)' }} />
               </Form.Item>
             )}
           </Form.Item>
@@ -1330,35 +1409,26 @@ const Settings: React.FC = () => {
         type="info"
         showIcon
         style={{ marginBottom: 14 }}
-        message="日志清理只清空请求/响应大字段；行归档将超期行迁入 logs_archive。火山素材清理转换素材缓存（本地+云端每日维护）。"
+        message="日志清理只清空请求/响应大字段；行归档将超期行迁入 logs_archive。转换素材缓存保留天数与清理请在各素材插件页面配置。每日维护在站点时区 03:00 执行（默认北京凌晨 3 点）。"
       />
 
       <Row gutter={16}>
-        <Col span={8}>
+        <Col span={12}>
           <Form.Item
             label="日志详情保留天数"
-            name={['storage', 'log_retention_days']}
+            name={['log_cleanup', 'log_retention_days']}
             extra={<Text type="secondary">0 永不清理，默认 30</Text>}
           >
             <InputNumber min={0} max={3650} style={{ width: '100%' }} addonAfter="天" placeholder="30" />
           </Form.Item>
         </Col>
-        <Col span={8}>
+        <Col span={12}>
           <Form.Item
             label="日志行归档天数"
-            name={['storage', 'log_row_retention_days']}
+            name={['log_cleanup', 'log_row_retention_days']}
             extra={<Text type="secondary">0 不归档，建议 90</Text>}
           >
             <InputNumber min={0} max={3650} style={{ width: '100%' }} addonAfter="天" placeholder="0" />
-          </Form.Item>
-        </Col>
-        <Col span={8}>
-          <Form.Item
-            label="火山素材保留天数"
-            name={['storage', 'volc_asset_retention_days']}
-            extra={<Text type="secondary">转换素材缓存，默认 30</Text>}
-          >
-            <InputNumber min={0} max={365} style={{ width: '100%' }} addonAfter="天" placeholder="30" />
           </Form.Item>
         </Col>
       </Row>
@@ -1368,7 +1438,7 @@ const Settings: React.FC = () => {
       <div style={{ marginBottom: 16 }}>
         <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>历史使用数据每日统计校准与补录</Text>
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-          每天凌晨自动增量同步历史日志到汇总表。若发现特定日期统计有偏差或需补录，可手动触发后台异步校准。
+          每天站点时区 00:00 自动增量同步历史日志到汇总表。若发现特定日期统计有偏差或需补录，可手动触发后台异步校准。
         </Text>
         <Space wrap>
           <DatePicker.RangePicker
@@ -1388,124 +1458,11 @@ const Settings: React.FC = () => {
           </Button>
         </Space>
       </div>
-
-      <Divider style={{ margin: '14px 0 16px' }} />
-
-      <div>
-        <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>异常计费订正</Text>
-        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-          扫描最近 5000 条「状态 200 含冻结但上游失败」的订单并退款回滚用量。未确认账单异常请勿执行。
-        </Text>
-        <Button danger onClick={handleRepairFailedLogs}>执行异常计费订正</Button>
-      </div>
     </div>
   );
 
   const storageSettingsContent = (
-    <div style={{ maxWidth: 760 }}>
-      {testResult && (
-        <Alert
-          type={testResult.success ? 'success' : 'error'}
-          showIcon
-          style={{ marginBottom: 14 }}
-          message={testResult.success ? '连接成功' : '连接失败'}
-          description={testResult.message}
-        />
-      )}
-
-      <Row gutter={16}>
-        <Col span={12}>
-          <Form.Item label="Access Key" name={['storage', 'tos_access_key']} rules={[{ required: true, message: '请输入 Access Key' }]}>
-            <Input placeholder="火山引擎 Access Key" />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label="Secret Key" name={['storage', 'tos_secret_key']} rules={[{ required: true, message: '请输入 Secret Key' }]}>
-            <Input.Password placeholder="火山引擎 Secret Key" />
-          </Form.Item>
-        </Col>
-
-        <Col span={12}>
-          <Form.Item label="数据地域" name={['storage', 'tos_region']} rules={[{ required: true, message: '请选择数据地域' }]}>
-            <Select
-              placeholder="选择数据地域"
-              showSearch
-              optionFilterProp="label"
-              onChange={(value: string) => {
-                const found = ALL_TOS_REGIONS.find(r => r.region === value);
-                if (found) {
-                  const ep = tosNetworkType === 'internal' ? found.endpointInternal : found.endpointExternal;
-                  form.setFieldsValue({ storage: { ...form.getFieldValue('storage'), tos_endpoint: ep } });
-                }
-              }}
-            >
-              {TOS_REGION_GROUPS.map(g => (
-                <Select.OptGroup key={g.group} label={<span style={{ fontWeight: 600, fontSize: 13 }}>{g.group}</span>}>
-                  {g.regions.map(r => (
-                    <Select.Option key={r.region} value={r.region} label={`${r.label} ${r.region}`}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>{r.label}</span>
-                        <span style={{ color: 'var(--ant-color-text-secondary)', fontSize: 12 }}>{r.region.replace(/^bp-/, '')}</span>
-                      </div>
-                    </Select.Option>
-                  ))}
-                </Select.OptGroup>
-              ))}
-            </Select>
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label="网络类型">
-            <Radio.Group
-              value={tosNetworkType}
-              onChange={(e) => {
-                const newType = e.target.value as 'external' | 'internal';
-                setTosNetworkType(newType);
-                const currentRegion = form.getFieldValue(['storage', 'tos_region']);
-                if (currentRegion) {
-                  const found = ALL_TOS_REGIONS.find(r => r.region === currentRegion);
-                  if (found) {
-                    const ep = newType === 'internal' ? found.endpointInternal : found.endpointExternal;
-                    form.setFieldsValue({ storage: { ...form.getFieldValue('storage'), tos_endpoint: ep } });
-                  }
-                }
-              }}
-              optionType="button"
-              buttonStyle="solid"
-            >
-              <Radio.Button value="external">外网</Radio.Button>
-              <Radio.Button value="internal">内网</Radio.Button>
-            </Radio.Group>
-          </Form.Item>
-        </Col>
-
-        <Col span={12}>
-          <Form.Item label="Endpoint" name={['storage', 'tos_endpoint']} rules={[{ required: true, message: '请选择地域后自动填充' }]}>
-            <Input placeholder="选择地域后自动填充" />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label="Bucket 存储桶" name={['storage', 'tos_bucket']} rules={[{ required: true, message: '请输入 Bucket 名称' }]}>
-            <Input placeholder="对象存储桶名称" />
-          </Form.Item>
-        </Col>
-
-        <Col span={12}>
-          <Form.Item label="路径前缀" name={['storage', 'tos_path_prefix']} extra={<Text type="secondary">选填，如 assets/</Text>}>
-            <Input placeholder="如 assets/" />
-          </Form.Item>
-        </Col>
-        <Col span={12}>
-          <Form.Item label="自定义域名" name={['storage', 'tos_custom_domain']} extra={<Text type="secondary">选填，CDN 加速域名</Text>}>
-            <Input placeholder="如 https://cdn.example.com" />
-          </Form.Item>
-        </Col>
-      </Row>
-
-      <Space style={{ marginTop: 4, marginBottom: 8 }}>
-        <Button onClick={handleTestConnection} loading={testing}>测试 TOS 连接</Button>
-      </Space>
-    </div>
+    <StorageConfigPanel form={form} namePrefix={['storage']} />
   );
 
   const dbSettingsContent = (
@@ -1645,20 +1602,26 @@ const Settings: React.FC = () => {
         initialValues={{ database: { db_type: 'postgres', host: 'postgres', port: 5432, database: 'tokensapi', username: 'tokensapi', password: 'tokensapi', ssl_mode: false } }}>
 
         {tab === 'basic' && (
-          <Tabs activeKey={basicSubTab} onChange={setBasicSubTab} items={[
+          <Tabs activeKey={basicSubTab} onChange={(k) => {
+            setBasicSubTab(k);
+            navigate(`/${adminPath}/settings?tab=basic&subtab=${k}`, { replace: true });
+          }} items={[
             { key: 'site', label: '站点信息', children: siteSettingsContent },
             { key: 'security', label: '站点安全', children: securitySettingsContent },
             { key: 'login', label: '登录设置', children: loginSettingsContent },
             { key: 'registration', label: '注册设置', children: registrationSettingsContent },
             { key: 'agreement', label: '站点协议', children: agreementSettingsContent },
             { key: 'menu', label: '菜单配置', children: menuSettingsContent },
-            { key: 'relay', label: '模型调用设置', children: relaySettingsContent },
+            { key: 'relay', label: '模型调用安全', children: relaySettingsContent },
           ]} />
         )}
 
 
         {tab === 'database' && (
-          <Tabs activeKey={dbSubTab} onChange={setDbSubTab} items={[
+          <Tabs activeKey={dbSubTab} onChange={(k) => {
+            setDbSubTab(k);
+            navigate(`/${adminPath}/settings?tab=database&subtab=${k}`, { replace: true });
+          }} items={[
             { key: 'db', label: '数据库设置', children: dbSettingsContent },
             { key: 'storage', label: '存储设置', children: storageSettingsContent },
             { key: 'cleanup', label: '数据清理', children: dataCleanupContent },

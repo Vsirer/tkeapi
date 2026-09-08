@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Table, Card, Typography, Space, Input, Button, Tag, Select, DatePicker, Grid, List } from 'antd';
 import { SyncOutlined, SearchOutlined, WalletOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import { formatApiDateTime } from '../../utils/timedisplay';
@@ -38,6 +39,7 @@ const RechargeRecords: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.site?.admin_path || 'admin1688';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [data, setData] = useState<RechargeRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -106,12 +108,22 @@ const RechargeRecords: React.FC = () => {
     {
       title: t('finance.user_info'),
       key: 'user',
-        render: (record: RechargeRecord) => (
-          <Space direction="vertical" size={0}>
+      render: (record: RechargeRecord) => (
+        <Space direction="vertical" size={0}>
+          {record.uid ? (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ color: 'inherit' }}>
+              <Text strong style={{ cursor: 'pointer' }}>{record.username}</Text>
+            </Link>
+          ) : (
             <Text strong>{record.username}</Text>
-            <Text type="secondary" style={{ fontSize: '12px' }}>UID: {record.uid}</Text>
-          </Space>
-        ),
+          )}
+          {record.uid && (
+            <Link to={`/${adminPath}/users/${record.uid}/basic`}>
+              <Text type="secondary" style={{ fontSize: '12px', cursor: 'pointer' }}>UID: {record.uid}</Text>
+            </Link>
+          )}
+        </Space>
+      ),
     },
     {
       title: t('finance.amount'),
@@ -138,8 +150,12 @@ const RechargeRecords: React.FC = () => {
         if (!record.referrer_uid) return '-';
         return (
           <Space direction="vertical" size={0}>
-            <Text strong>{record.referrer_username}</Text>
-            <Text type="secondary" style={{ fontSize: '12px' }}>UID: {record.referrer_uid}</Text>
+            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ color: 'inherit' }}>
+              <Text strong style={{ cursor: 'pointer' }}>{record.referrer_username}</Text>
+            </Link>
+            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`}>
+              <Text type="secondary" style={{ fontSize: '12px', cursor: 'pointer' }}>UID: {record.referrer_uid}</Text>
+            </Link>
           </Space>
         );
       },
@@ -236,12 +252,26 @@ const RechargeRecords: React.FC = () => {
                 <Card 
                   size="small" 
                   style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-                  title={<Text strong>{record.username}</Text>}
+                  title={
+                    record.uid ? (
+                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
+                        {record.username}
+                      </Link>
+                    ) : (
+                      <Text strong>{record.username}</Text>
+                    )
+                  }
                   extra={<Tag color={color}>{label}</Tag>}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
-                    <Text style={{ fontSize: 12 }}>{record.uid}</Text>
+                    {record.uid ? (
+                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12 }}>
+                        {record.uid}
+                      </Link>
+                    ) : (
+                      <Text style={{ fontSize: 12 }}>-</Text>
+                    )}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>金额</Text>
@@ -257,8 +287,12 @@ const RechargeRecords: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>用户推荐人</Text>
                     <Space direction="vertical" size={0} align="end">
-                      <Text strong style={{ fontSize: 12 }}>{record.referrer_username}</Text>
-                      <Text type="secondary" style={{ fontSize: 10 }}>UID: {record.referrer_uid}</Text>
+                      <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 12, fontWeight: 600 }}>
+                        {record.referrer_username}
+                      </Link>
+                      <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 10, color: 'rgba(0, 0, 0, 0.45)' }}>
+                        UID: {record.referrer_uid}
+                      </Link>
                     </Space>
                   </div>
                   )}

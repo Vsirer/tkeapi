@@ -19,6 +19,7 @@ import { Button, Tooltip, Grid } from 'antd';
 import toast from './PlaygroundToast';
 import { usePlayground } from '../context/PlaygroundContext';
 import { useThemeStore } from '../../../../store/theme';
+import { copyToClipboard } from '../../../../utils/clipboard';
 
 const { useBreakpoint } = Grid;
 
@@ -35,20 +36,10 @@ const ChatPanel: React.FC = React.memo(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages.length, streamingContent]);
 
-  const copyText = useCallback((text: string) => {
-    navigator.clipboard.writeText(text).then(
-      () => toast.success('已复制'),
-      () => {
-        // fallback
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        toast.success('已复制');
-      }
-    );
+  const copyText = useCallback(async (text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) toast.success('已复制');
+    else toast.error('复制失败');
   }, []);
 
   const allMessages = [...chatMessages];

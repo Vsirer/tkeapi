@@ -7,10 +7,12 @@ Call the following endpoints with your platform API Key:
 | :--- | :--- | :--- | :--- |
 | OpenAI Chat Completions | `/v1/chat/completions` | `POST` | OpenAI Compatible |
 | OpenAI Official Native Passthrough | `/v1/responses` | `POST` | OpenAI Compatible |
+| Text Embeddings | `/v1/embeddings` | `POST` | OpenAI Compatible |
 | Image Generation (Text2Image) | `/v1/images/generations` | `POST` | OpenAI Compatible |
 | Image Editing (Image Edit) | `/v1/images/edits` | `POST` | OpenAI Compatible |
 | Async Video Task Submission | `/v1/video/generations` | `POST` | OpenAI Compatible |
 | Async Video Task Status Query | `/v1/video/generations/{task_id}` | `GET` | OpenAI Compatible |
+| Async Video Task Cancellation | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI Compatible |
 | Text-to-Speech (TTS) | `/v1/audio/speech` | `POST` | OpenAI Compatible |
 | Token Balance Query | `/v1/balance` | `GET` | Account Info |
 | Total Account Balance Query | `/v1/user/balance` | `GET` | Account Info |
@@ -21,6 +23,7 @@ Call the following endpoints with your platform API Key:
 | :--- | :--- | :--- | :--- |
 | Chat Completions (OpenAI Compatible) | `/api/v3/chat/completions` | `POST` | Volcengine Ark |
 | Native Response (Responses) | `/api/v3/responses` | `POST` | Volcengine Ark |
+| Multimodal Embeddings | `/api/v3/embeddings/multimodal` | `POST` | Volcengine Ark |
 | Image Generation (Generations) | `/api/v3/images/generations` | `POST` | Volcengine Ark |
 | Async Video Task Submission | `/api/v3/contents/generations/tasks` | `POST` | Volcengine Ark |
 | Async Video Task Query | `/api/v3/contents/generations/tasks/{task_id}` | `GET` | Volcengine Ark |
@@ -41,9 +44,11 @@ Call the following endpoints with your platform API Key:
 | Alibaba Bailian | Async Task Query (Generic) | `/api/v1/tasks/{task_id}` | `GET` |
 | Alibaba Bailian | Text Embeddings | `/compatible-mode/v1/embeddings` | `POST` |
 | Alibaba Bailian | Document Reranking (Rerank) | `/compatible-api/v1/reranks` | `POST` |
+| Alibaba Bailian | Document Reranking (Native) | `/api/v1/services/rerank/text-rerank/text-rerank` | `POST` |
 | Kling AI | Text-to-Video (Kling) | `/v1/videos/text2video` | `POST` |
 | Kling AI | Image-to-Video (Kling) | `/v1/videos/image2video` | `POST` |
 | Kling AI | Task Status Query (Video/Image) | `/v1/videos/{endpoint}/{task_id}` | `GET` |
 | Google | Gemini Text Generation | `/v1beta/models/{model}:generateContent` | `POST` |
 | Google | Gemini Stream Text Generation | `/v1beta/models/{model}:streamGenerateContent` | `POST` |
 | Anthropic | Claude Native Messages | `/v1/messages` | `POST` |
+| MiniMax | Anthropic-Compatible Messages | `/anthropic/v1/messages` | `POST` |

@@ -1,6 +1,6 @@
 # Giao diện Tạo và Chỉnh sửa Hình ảnh
 
-Giao diện tạo hình ảnh của Gateway tương thích hoàn hảo với đặc tả tạo hình ảnh tiêu chuẩn của OpenAI. Phía sau hệ thống tích hợp nhiều kênh tạo hình ảnh phổ biến như Dall-E-3, Gemini Imagen, Volcengine, Tencent Hunyuan, Alibaba Wanxiang, Jimeng AI, v.v., đồng thời tự động căn chỉnh và phân tích cú pháp các tham số đặc trưng của từng nhà cung cấp.
+API ảnh tương thích OpenAI. Ảnh Qwen (`qwen-image-3.0-pro`): xem **`wan-image`**.
 
 ### 1. Tạo Hình ảnh (Image Generations)
 * **Đường dẫn**: `/v1/images/generations`
@@ -9,7 +9,7 @@ Giao diện tạo hình ảnh của Gateway tương thích hoàn hảo với đ�
 #### Giải thích các tham số yêu cầu chính
 | Tên tham số | Kiểu dữ liệu | Bắt buộc | Mô tả |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | Có | Tên mô hình tạo hình ảnh, ví dụ `dall-e-3` (OpenAI), `wanx-v1` (Alibaba Wanxiang), `seedream-5.0-lite` (Jimeng) |
+| `model` | `string` | Có | Tên mô hình tạo hình ảnh, ví dụ `dall-e-3` (OpenAI), `qwen-image-3.0-pro`, `seedream-5.0-lite` (Jimeng) |
 | `prompt` | `string` | Có | Câu lệnh gợi ý (prompt) dạng văn bản mô tả hình ảnh |
 | `n` | `integer` | Không | Số lượng hình ảnh mong muốn tạo ra (mặc định là `1`).  |
 | `size` | `string` | Không | Độ phân giải (ví dụ `1024x1024`). Hệ thống sẽ tự động chuyển dịch kích thước sang thông số tiêu chuẩn được hỗ trợ bởi nhà cung cấp tương ứng |

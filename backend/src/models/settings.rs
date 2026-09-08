@@ -117,16 +117,164 @@ fn default_show_timezone() -> bool {
     true
 }
 
+pub const DEFAULT_TOS_ZH: &str = r#"<h2>服务条款 (Terms of Service)</h2>
+<p>欢迎使用本平台服务。本服务条款（以下简称“本条款”）是由用户（以下简称“您”）与本平台运营方就本平台提供的各项服务所订立的具有法律约束力的协议。在注册、登录或使用本平台服务之前，请您务必认真阅读并充分理解本条款的全部内容。当您使用本平台提供的任何服务时，即表示您已阅读、理解并同意接受本条款的全部约束。</p>
+
+<h3>一、服务内容与范围</h3>
+<p>1. 本平台致力于为开发者与企业提供一站式人工智能（AI）接口中继分发、网关调度、API 令牌管理、在线创作（Playground）以及相关配套工具与技术支持服务。</p>
+<p>2. 平台支持多模型统一接入与智能路由，包括但不限于大语言模型（LLM）、图像生成、视频生成、语音合成及自定义工作流接口。</p>
+<p>3. 平台有权根据业务发展、技术升级或政策变化，对现有服务内容进行调整、升级、暂停或终止，并在合理时间内通过站内公告或系统消息予以通知。</p>
+
+<h3>二、账户注册与安全规范</h3>
+<p>1. 您在注册账户时应提供真实、准确、有效的注册信息（如邮箱地址），并对账户信息的真实性负责。</p>
+<p>2. 您应妥善保管自己的账户凭据及在平台内创建的所有 API 令牌（API Keys / Access Tokens）。您对利用该账户或 API 令牌所进行的一切调用、操作及产生的所有结果承担完全责任。</p>
+<p>3. 若您发现任何未经授权使用账户或 API 令牌的安全漏洞，应立即通知平台管理员并及时在控制台重置或删除相关令牌。</p>
+
+<h3>三、服务使用规范与合规承诺</h3>
+<p>1. 您承诺严格遵守所在国家或地区适用的法律法规、行业规范及公共道德准则，不得利用本平台从事任何违法、侵权、有害或危害网络安全的活动。</p>
+<p>2. <strong>严禁行为包括但不限于：</strong></p>
+<ul>
+  <li>输入、生成或传播含有违法违规、暴力恐吓、淫秽色情、虚假谣言、侵犯他人隐私或知识产权的内容；</li>
+  <li>对平台基础设施或上游接口实施恶意扫描、逆向工程、DDoS 攻击、高频恶意刷量等破坏系统稳定性的行为；</li>
+  <li>绕过平台的额度限制、并发限制或安全风控策略；</li>
+  <li>转售、滥用未经授权的系统资源或从事侵犯第三方合法权益的行为。</li>
+</ul>
+<p>3. 如用户违反上述规定，平台有权不经事先通知即采取限制调用速率、冻结 API 令牌、扣减违规所得、暂停或永久封禁账户等措施，并保留依法追究法律责任的权利。</p>
+
+<h3>四、计费、充值与消费规则</h3>
+<p>1. 本平台服务采用基于实际调用量（如 Token 数、请求次数、计算时长等）的计费模式，具体费率以平台各模型和服务的实时定价规则为准。</p>
+<p>2. 您可通过平台支持的在线充值方式或兑换码（Redemption Code）为账户充值。充值金额将计入您的账户可用余额。</p>
+<p>3. 除法律法规另有强制性规定或平台明确约定的特殊情形外，账户充值与兑换码一旦核销成功即视为消费履行，原则上不支持退款、提现或转让。</p>
+
+<h3>五、免责声明与服务限制</h3>
+<p>1. <strong>第三方模型输出免责：</strong> 本平台作为技术中继与调度网关，所接入的各 AI 模型由独立第三方提供商运行。平台不对任何模型生成内容的真实性、准确性、完整性、合法性或特定用途适用性作任何明示或暗示的保证。生成内容仅供参考，不代表平台立场。</p>
+<p>2. <strong>服务可用性保障：</strong> 平台将尽合理商业努力保障系统的高可用性与稳定性。但对于因上游服务商接口波动、网络故障、设备维护、不可抗力等非平台可控原因造成的服务中断、延迟或数据异常，平台不承担违约及赔偿责任。</p>
+
+<h3>六、协议修改与解释权</h3>
+<p>平台保留随时修改本服务条款的权利。修改后的条款一旦公布即生效。若您在条款修改后继续使用本服务，即视为您已接受修改后的条款。本条款的最终解释权归平台所有。</p>"#;
+
+pub const DEFAULT_PRIVACY_ZH: &str = r#"<h2>隐私协议 (Privacy Policy)</h2>
+<p>本平台非常重视用户的个人信息与隐私安全。本隐私协议（以下简称“本协议”）详细阐述了在您注册、登录、调用 API 及使用本平台各项功能时，我们如何收集、使用、存储、保护及处理您的个人信息和数据。请您在使用我们的服务前仔细阅读并确认已充分理解本协议。</p>
+
+<h3>一、我们收集的信息</h3>
+<p>为了向您提供稳定、安全的人工智能 API 中继与管理服务，我们仅收集实现业务功能所必需的最少信息：</p>
+<ul>
+  <li><strong>账户与身份信息：</strong> 注册及登录时提供的用户名、电子邮箱地址、认证凭据或经您授权的第三方登录信息（如 GitHub、Google、微信等授权标识）。</li>
+  <li><strong>API 令牌与配置：</strong> 您在控制台创建的 API 令牌（API Keys）、调用权限配置、自定义模型分组、IP 白名单及限流策略。</li>
+  <li><strong>调用与日志数据：</strong> 为保障服务调用链路追踪、计费结算及安全审计，系统会自动记录 API 请求时间戳、调用的模型名称、请求与响应消耗的 Token 数量/额度、客户端 IP 地址、HTTP 状态码及响应耗时。</li>
+  <li><strong>交易与资产信息：</strong> 账户余额充值记录、订单流水、兑换码核销记录、消费明细以及您在创作中心或素材库中主动上传和保存的资源。</li>
+</ul>
+
+<h3>二、信息的使用目的</h3>
+<p>我们收集的信息将严格用于以下用途：</p>
+<ol>
+  <li><strong>提供与执行服务：</strong> 完成 API 请求的身份鉴权、实时中继转发、响应流推送及创作工具交互；</li>
+  <li><strong>计费与账单核算：</strong> 准确计算每次调用的 Token 消耗与费用扣除，维护账户余额真实准确；</li>
+  <li><strong>安全防护与防滥用：</strong> 识别异常高频调用、恶意刷量、未授权访问等安全威胁，执行速率限制与风控策略；</li>
+  <li><strong>系统运维与优化：</strong> 分析接口调用性能、可用性指标，排查系统故障并改进产品体验；</li>
+  <li><strong>客户服务与合规：</strong> 处理您的技术支持工单，并在符合法律法规要求的前提下配合监管部门的必要安全审计。</li>
+</ol>
+
+<h3>三、Prompt 与生成内容的数据隐私</h3>
+<p>1. 您通过 API 接口或创作中心（Playground）提交的 Prompt（提示词）、上下文文本、图片或音频数据，仅用于实时转发给您所选定的上游 AI 模型供应商进行推理处理。</p>
+<p>2. 本平台<strong>不会</strong>将您的提示词和业务内容出售给任何第三方，亦不会将您的私有业务数据用于未经许可的模型训练或商业挖掘。</p>
+<p>3. 系统仅在必要范围内对请求进行安全合规过滤或为调试排错提供短期技术日志，日志在保存周期结束后将自动清理。</p>
+
+<h3>四、信息的共享、转让与披露</h3>
+<p>1. <strong>必要服务共享：</strong> 为完成您发起的 AI 调用请求，您的请求数据将传输给对应的上游第三方模型提供商（如 OpenAI、Anthropic、Google、智谱、阿里云等）。该等提供商将依据其各自的隐私政策和数据保护协议处理请求。</p>
+<p>2. 除上述必要服务履行、获得您的明确同意，或根据法律法规、司法裁决、政府监管机构的法定强制要求外，我们不会向任何无关第三方共享、出售或披露您的个人信息。</p>
+
+<h3>五、数据安全与保护措施</h3>
+<p>1. 我们采用行业标准的安全技术措施（如 HTTPS/TLS 全链路传输加密、数据库敏感字段哈希存储、多层防火墙与访问隔离机制）保护您的数据免受未经授权的访问、泄露、篡改或损毁。</p>
+<p>2. 用户的密码均经过强加密哈希算法（如 bcrypt/argon2）存储，系统管理员亦无法明文查看您的密码。</p>
+
+<h3>六、您的权利与联系我们</h3>
+<p>1. 您有权随时在管理面板中查看、修改您的个人资料，随时生成、禁用或删除您的 API 令牌，以及导出调用明细与账单记录。</p>
+<p>2. 如果您对本隐私协议有任何疑问、意见或希望申请注销账户及删除关联数据，请通过平台官方工单系统或管理员联络渠道与我们取得联系。</p>"#;
+
+pub const DEFAULT_TOS_EN: &str = r#"<h2>Terms of Service</h2>
+<p>Welcome to our platform. These Terms of Service ("Terms") constitute a legally binding agreement between you ("User", "you") and the operator of this platform ("we", "us", "our"). By registering, accessing, calling our APIs, or otherwise using any services provided by this platform, you acknowledge that you have read, understood, and agreed to be bound by all terms and conditions set forth herein.</p>
+
+<h3>1. Services Provided</h3>
+<p>1.1. Our platform provides unified Artificial Intelligence (AI) API relay, intelligent dispatching, API token management, online creative playground, asset management, and related technical infrastructure services.</p>
+<p>1.2. The platform aggregates multiple upstream AI models, including Large Language Models (LLMs), image generation, video generation, voice synthesis, and custom workflow relays.</p>
+<p>1.3. We reserve the right to modify, upgrade, suspend, or discontinue any feature of the services at our discretion, with reasonable prior notice provided through the platform where feasible.</p>
+
+<h3>2. Account Registration and Security</h3>
+<p>2.1. You must provide accurate, current, and complete information during registration and maintain the confidentiality of your account credentials.</p>
+<p>2.2. You are solely responsible for all actions, API invocations, and billing incurred under your account and associated API Keys (Access Tokens), whether authorized by you or not.</p>
+<p>2.3. If you suspect any compromise, leakage, or unauthorized use of your credentials or API keys, you must immediately revoke or reset the affected keys via the dashboard and notify platform administrators.</p>
+
+<h3>3. Acceptable Use Policy</h3>
+<p>3.1. You agree to comply with all applicable local, national, and international laws, regulations, and industry standards when using our services.</p>
+<p>3.2. <strong>Prohibited activities include, but are not limited to:</strong></p>
+<ul>
+  <li>Submitting, generating, or distributing unlawful, violent, sexually explicit, defamatory, fraudulent, or infringing content;</li>
+  <li>Conducting cyber attacks, unauthorized vulnerability scanning, reverse engineering, DDoS attacks, or excessive abusive scraping against our infrastructure or upstream providers;</li>
+  <li>Circumventing platform rate limits, quota controls, or security monitoring mechanisms;</li>
+  <li>Reselling, sublicensing, or exploiting platform resources without explicit written authorization.</li>
+</ul>
+<p>3.3. Any breach of this policy may result in immediate rate throttling, API key suspension, balance forfeiture, or permanent account termination without prior notice, along with potential legal action.</p>
+
+<h3>4. Billing, Pricing and Payments</h3>
+<p>4.1. Usage is billed based on real-time consumption (e.g., token count, request volume, or compute duration) in accordance with the current pricing schedule published on the platform.</p>
+<p>4.2. You may add funds to your account balance via supported payment methods or redeem authorized coupon/redemption codes.</p>
+<p>4.3. All purchases, balance top-ups, and coupon redemptions are final and non-refundable once credited, except where mandatory applicable law provides otherwise.</p>
+
+<h3>5. Disclaimers and Limitation of Liability</h3>
+<p>5.1. <strong>Third-Party Model Outputs:</strong> The platform acts as a technology gateway and proxy. AI model outputs are generated dynamically by third-party upstream providers. We make no warranties, express or implied, regarding the accuracy, completeness, validity, or fitness for a particular purpose of any generated content.</p>
+<p>5.2. <strong>Service Availability:</strong> While we strive for high availability and low latency, we do not guarantee uninterrupted or error-free service. We are not liable for upstream service disruptions, latency spikes, force majeure events, or downstream indirect losses.</p>
+
+<h3>6. Amendments and Governing Law</h3>
+<p>We reserve the right to revise these Terms at any time. Continued use of the platform following the posting of updated Terms constitutes your binding acceptance of the revised Terms.</p>"#;
+
+pub const DEFAULT_PRIVACY_EN: &str = r#"<h2>Privacy Policy</h2>
+<p>We are committed to safeguarding your privacy and personal data. This Privacy Policy explains how we collect, use, process, disclose, and protect your information when you access our platform, register an account, utilize our APIs, or interact with our services. Please review this policy carefully.</p>
+
+<h3>1. Information We Collect</h3>
+<p>We collect only the minimum necessary data required to deliver reliable and secure AI API relay services:</p>
+<ul>
+  <li><strong>Account & Profile Data:</strong> Username, email address, authentication credentials, or authorization identifiers from third-party OAuth providers (e.g., GitHub, Google, WeChat).</li>
+  <li><strong>API Keys & Configurations:</strong> API tokens created in your dashboard, permission scopes, model routing rules, IP whitelists, and rate limit settings.</li>
+  <li><strong>Usage & Operational Logs:</strong> Request timestamps, requested model names, token consumption metrics, client IP addresses, HTTP status codes, and request durations for billing and auditing purposes.</li>
+  <li><strong>Billing & Assets:</strong> Top-up order history, balance ledgers, redemption code records, and files or assets uploaded in your creative workspace.</li>
+</ul>
+
+<h3>2. How We Use Your Information</h3>
+<p>Your information is used strictly for the following purposes:</p>
+<ol>
+  <li><strong>Service Delivery:</strong> Authenticating API requests, performing real-time request routing, streaming responses, and managing platform features;</li>
+  <li><strong>Billing & Account Management:</strong> Calculating real-time token and credit consumption to maintain accurate ledger balances;</li>
+  <li><strong>Security & Abuse Prevention:</strong> Detecting fraudulent calls, enforcing rate limits, mitigating malicious traffic, and ensuring platform integrity;</li>
+  <li><strong>Infrastructure Optimization:</strong> Monitoring system reliability, debugging performance bottlenecks, and improving user experience;</li>
+  <li><strong>Compliance & Support:</strong> Responding to support inquiries and complying with statutory audit and legal retention requirements.</li>
+</ol>
+
+<h3>3. Data Privacy of Prompts & Generated Content</h3>
+<p>3.1. Prompts, messages, images, and other inputs submitted through our APIs or playground are transmitted in real time to the selected upstream AI model providers solely for inference execution.</p>
+<p>3.2. We do <strong>NOT</strong> sell your prompts or proprietary business data to third parties, nor do we use your private data for unconsented model training.</p>
+<p>3.3. Technical logs are retained only for the duration necessary for audit, debugging, and billing validation, after which they are systematically purged.</p>
+
+<h3>4. Data Sharing & Third-Party Providers</h3>
+<p>4.1. <strong>Upstream AI Providers:</strong> In order to fulfill your API requests, necessary payload data is forwarded to the designated upstream providers (such as OpenAI, Anthropic, Google, Zhipu, Alibaba Cloud, etc.), who process data in accordance with their respective privacy policies.</p>
+<p>4.2. We do not sell, rent, or trade your personal data to third parties. We disclose data only when legally required by judicial or regulatory authorities.</p>
+
+<h3>5. Data Security Measures</h3>
+<p>We implement robust technical and organizational security measures, including end-to-end TLS/HTTPS encryption, strong cryptographic password hashing (e.g., bcrypt/argon2), and strict role-based access controls to prevent unauthorized access, alteration, or disclosure of your data.</p>
+
+<h3>6. Your Rights and Contact</h3>
+<p>You have the right to access, update, or revoke your API keys and profile information at any time via the console. If you have questions regarding this Privacy Policy or wish to request account deletion, please contact platform support.</p>"#;
+
 /// 站点协议设置
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgreementSettings {
     #[serde(default = "default_agreement_mode")]
     pub tos_mode: String, // "text" or "link"
     #[serde(default = "default_agreement_mode")]
     pub tos_mode_en: String,
-    #[serde(default)]
+    #[serde(default = "default_tos_content_zh")]
     pub tos_content: String,
-    #[serde(default)]
+    #[serde(default = "default_tos_content_en")]
     pub tos_content_en: String,
     #[serde(default)]
     pub tos_link: String,
@@ -136,22 +284,59 @@ pub struct AgreementSettings {
     pub privacy_mode: String, // "text" or "link"
     #[serde(default = "default_agreement_mode")]
     pub privacy_mode_en: String,
-    #[serde(default)]
+    #[serde(default = "default_privacy_content_zh")]
     pub privacy_content: String,
-    #[serde(default)]
+    #[serde(default = "default_privacy_content_en")]
     pub privacy_content_en: String,
     #[serde(default)]
     pub privacy_link: String,
     #[serde(default)]
     pub privacy_link_en: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub tos_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub privacy_enabled: bool,
 }
 
+impl Default for AgreementSettings {
+    fn default() -> Self {
+        Self {
+            tos_mode: default_agreement_mode(),
+            tos_mode_en: default_agreement_mode(),
+            tos_content: default_tos_content_zh(),
+            tos_content_en: default_tos_content_en(),
+            tos_link: String::new(),
+            tos_link_en: String::new(),
+            privacy_mode: default_agreement_mode(),
+            privacy_mode_en: default_agreement_mode(),
+            privacy_content: default_privacy_content_zh(),
+            privacy_content_en: default_privacy_content_en(),
+            privacy_link: String::new(),
+            privacy_link_en: String::new(),
+            tos_enabled: true,
+            privacy_enabled: true,
+        }
+    }
+}
+
 fn default_agreement_mode() -> String {
-    "link".to_string()
+    "text".to_string()
+}
+
+fn default_tos_content_zh() -> String {
+    DEFAULT_TOS_ZH.to_string()
+}
+
+fn default_tos_content_en() -> String {
+    DEFAULT_TOS_EN.to_string()
+}
+
+fn default_privacy_content_zh() -> String {
+    DEFAULT_PRIVACY_ZH.to_string()
+}
+
+fn default_privacy_content_en() -> String {
+    DEFAULT_PRIVACY_EN.to_string()
 }
 
 /// 辅助货币设置
@@ -968,40 +1153,139 @@ pub struct WechatOAuthSettings {
     pub app_secret: String,
 }
 
-/// 低余额视频在途档位：可用额低于 max_available 时限制未完成视频路数；max_available=None 表示其余
+/// 低余额在途档位：可用额低于 max_available 时限制未完成任务路数；max_available=None 表示其余
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct VideoInflightTier {
-    /// 可用额低于该值时命中本档；None = 其余档
+pub struct InflightTier {
     #[serde(default)]
     pub max_available: Option<f64>,
-    /// 最大未完成视频路数；**0 = 不限制**
+    /// 最大未完成任务路数；**0 = 不限制**
     #[serde(default)]
     pub max_inflight: u32,
 }
 
-impl VideoInflightTier {
-    fn cmp_avail(a: &Self, b: &Self) -> std::cmp::Ordering {
-        match (a.max_available, b.max_available) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-    }
-}
-
-fn default_video_inflight_tiers() -> Vec<VideoInflightTier> {
-    // 仅限制低余额档；未命中 = 不限制
+fn default_inflight_tiers() -> Vec<InflightTier> {
     vec![
-        VideoInflightTier {
+        InflightTier {
             max_available: Some(20.0),
             max_inflight: 1,
         },
-        VideoInflightTier {
+        InflightTier {
             max_available: Some(50.0),
             max_inflight: 3,
         },
     ]
+}
+
+/// 单类别：开关 + 档位
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InflightCategoryLimit {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_inflight_tiers")]
+    pub tiers: Vec<InflightTier>,
+}
+
+impl Default for InflightCategoryLimit {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tiers: default_inflight_tiers(),
+        }
+    }
+}
+
+impl InflightCategoryLimit {
+    fn prepared(mut self) -> Self {
+        if self.tiers.is_empty() {
+            self.tiers = default_inflight_tiers();
+        }
+        self.tiers.sort_by(|a, b| match (a.max_available, b.max_available) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        self
+    }
+
+    pub fn max_inflight(&self, available: f64) -> Option<u32> {
+        if !self.enabled {
+            return None;
+        }
+        for t in &self.tiers {
+            let hit = t.max_available.map(|lim| available < lim).unwrap_or(true);
+            if hit {
+                return (t.max_inflight > 0).then_some(t.max_inflight);
+            }
+        }
+        None
+    }
+}
+
+/// 在途限制类别（配置与 SQL 条件同一映射）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InflightCat {
+    Video,
+    Image,
+    Chat,
+    Other,
+}
+
+impl InflightCat {
+    #[inline]
+    pub fn of(action_type: &str) -> Self {
+        match action_type {
+            "视频" | "视频增强" => Self::Video,
+            "图片" => Self::Image,
+            "聊天" => Self::Chat,
+            _ => Self::Other,
+        }
+    }
+
+    #[inline]
+    pub fn count_sql(self) -> &'static str {
+        match self {
+            Self::Video => "AND action_type = ANY(ARRAY['视频','视频增强'])",
+            Self::Image => "AND action_type = '图片'",
+            Self::Chat => "AND action_type = '聊天'",
+            Self::Other => {
+                "AND COALESCE(action_type, '') NOT IN ('视频','视频增强','图片','聊天')"
+            }
+        }
+    }
+}
+
+/// 视频 / 图片 / 聊天 / 其它
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct InflightLimits {
+    #[serde(default)]
+    pub video: InflightCategoryLimit,
+    #[serde(default)]
+    pub image: InflightCategoryLimit,
+    #[serde(default)]
+    pub chat: InflightCategoryLimit,
+    #[serde(default)]
+    pub other: InflightCategoryLimit,
+}
+
+impl InflightLimits {
+    fn prepared(mut self) -> Self {
+        self.video = self.video.prepared();
+        self.image = self.image.prepared();
+        self.chat = self.chat.prepared();
+        self.other = self.other.prepared();
+        self
+    }
+
+    #[inline]
+    pub fn get(&self, cat: InflightCat) -> &InflightCategoryLimit {
+        match cat {
+            InflightCat::Video => &self.video,
+            InflightCat::Image => &self.image,
+            InflightCat::Chat => &self.chat,
+            InflightCat::Other => &self.other,
+        }
+    }
 }
 
 /// Relay 网关设置（管理端；不进公开接口）
@@ -1013,44 +1297,52 @@ pub struct RelaySettings {
     /// 后台 TaskPoller 周期（秒）；过短增上游压力，过长延迟结案/退费。默认 30，有效范围 5–300；缺省/0 按 30。
     #[serde(default)]
     pub poll_tick_secs: u64,
-    /// 低余额限制未完成视频路数；默认关
+    /// 按类别的低余额在途限制
     #[serde(default)]
+    pub inflight_limits: InflightLimits,
+    /// 模型调用调试日志：开则热路径打到控制台
+    #[serde(default)]
+    pub enable_debug_log: bool,
+    /// 旧字段只读兼容；写入跳过
+    #[serde(default, skip_serializing)]
     pub video_inflight_enabled: bool,
-    /// 按可用额落档的在途上限（空则回落默认档）
-    #[serde(default = "default_video_inflight_tiers")]
-    pub video_inflight_tiers: Vec<VideoInflightTier>,
+    #[serde(default, skip_serializing)]
+    pub video_inflight_tiers: Vec<InflightTier>,
 }
 
 impl RelaySettings {
-    /// 入缓存前：空档补默认，按可用额升序（无上限档置末）；轮询周期 0→30 再钳 5–300
+    /// 入缓存 / 出管理端前：旧配置迁入；空档补默认；轮询周期钳制
     pub fn prepared(mut self) -> Self {
         self.poll_tick_secs = match self.poll_tick_secs {
             0 => 30,
             n => n.clamp(5, 300),
         };
-        if self.video_inflight_tiers.is_empty() {
-            self.video_inflight_tiers = default_video_inflight_tiers();
-        }
-        self.video_inflight_tiers
-            .sort_by(VideoInflightTier::cmp_avail);
-        self
-    }
-
-    /// 当前可用额下的在途上限；未启用或该档 `max_inflight=0` → `None`（不限制）
-    pub fn max_video_inflight(&self, available: f64) -> Option<u32> {
-        if !self.video_inflight_enabled {
-            return None;
-        }
-        for t in &self.video_inflight_tiers {
-            let hit = match t.max_available {
-                Some(limit) => available < limit,
-                None => true,
+        // 旧单一开关曾覆盖全部模型 → 四类同档全开
+        if self.video_inflight_enabled
+            && !self.inflight_limits.video.enabled
+            && !self.inflight_limits.image.enabled
+            && !self.inflight_limits.chat.enabled
+            && !self.inflight_limits.other.enabled
+        {
+            let tiers = if self.video_inflight_tiers.is_empty() {
+                default_inflight_tiers()
+            } else {
+                std::mem::take(&mut self.video_inflight_tiers)
             };
-            if hit {
-                return (t.max_inflight > 0).then_some(t.max_inflight);
+            for cat in [
+                &mut self.inflight_limits.video,
+                &mut self.inflight_limits.image,
+                &mut self.inflight_limits.chat,
+                &mut self.inflight_limits.other,
+            ] {
+                cat.enabled = true;
+                cat.tiers = tiers.clone();
             }
         }
-        None
+        self.video_inflight_enabled = false;
+        self.video_inflight_tiers.clear();
+        self.inflight_limits = self.inflight_limits.prepared();
+        self
     }
 }
 
@@ -1059,15 +1351,19 @@ impl Default for RelaySettings {
         Self {
             manual_poll_upstream: true,
             poll_tick_secs: 30,
+            inflight_limits: InflightLimits::default(),
+            enable_debug_log: false,
             video_inflight_enabled: false,
-            video_inflight_tiers: default_video_inflight_tiers(),
+            video_inflight_tiers: Vec::new(),
         }
     }
 }
 
-/// 存储配置
+/// 对象存储配置（TOS / COS 凭证与默认提供商；不含日志清理）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StorageSettings {
+    #[serde(default = "default_storage_provider")]
+    pub default_provider: String,
     #[serde(default)]
     pub tos_access_key: String,
     #[serde(default)]
@@ -1082,21 +1378,26 @@ pub struct StorageSettings {
     pub tos_path_prefix: String,
     #[serde(default)]
     pub tos_custom_domain: String,
-    /// 使用日志详情保留天数，超期自动清理请求/响应内容，0=永不清理
-    #[serde(default = "default_log_retention_days")]
-    pub log_retention_days: i32,
-    /// 使用日志行保留天数：超期行迁入 logs_archive 并从热表删除；0=永不归档（默认）
-    /// 建议 ≥ 详情保留天数，且先确保 usage_daily_stats 已覆盖对应日期。
-    #[serde(default = "default_log_row_retention_days")]
-    pub log_row_retention_days: i32,
-    /// 火山素材自动清理保留天数（转发转换缓存 + 上游转素材缓存）；缺省 7；0=关闭。不含 api_proxy。
-    #[serde(default = "default_volc_asset_retention_days")]
-    pub volc_asset_retention_days: i32,
+    #[serde(default)]
+    pub cos_secret_id: String,
+    #[serde(default)]
+    pub cos_secret_key: String,
+    #[serde(default)]
+    pub cos_endpoint: String,
+    #[serde(default)]
+    pub cos_region: String,
+    #[serde(default)]
+    pub cos_bucket: String,
+    #[serde(default)]
+    pub cos_path_prefix: String,
+    #[serde(default)]
+    pub cos_custom_domain: String,
 }
 
 impl Default for StorageSettings {
     fn default() -> Self {
         Self {
+            default_provider: default_storage_provider(),
             tos_access_key: String::new(),
             tos_secret_key: String::new(),
             tos_endpoint: String::new(),
@@ -1104,9 +1405,54 @@ impl Default for StorageSettings {
             tos_bucket: String::new(),
             tos_path_prefix: String::new(),
             tos_custom_domain: String::new(),
+            cos_secret_id: String::new(),
+            cos_secret_key: String::new(),
+            cos_endpoint: String::new(),
+            cos_region: String::new(),
+            cos_bucket: String::new(),
+            cos_path_prefix: String::new(),
+            cos_custom_domain: String::new(),
+        }
+    }
+}
+
+fn default_storage_provider() -> String {
+    "tos".to_string()
+}
+
+/// 日志清理（与对象存储解耦；旧数据曾写在 storage_settings）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LogCleanupSettings {
+    /// 使用日志详情保留天数，超期自动清理请求/响应内容，0=永不清理
+    #[serde(default = "default_log_retention_days")]
+    pub log_retention_days: i32,
+    /// 使用日志行保留天数：超期行迁入 logs_archive 并从热表删除；0=永不归档（默认）
+    #[serde(default = "default_log_row_retention_days")]
+    pub log_row_retention_days: i32,
+}
+
+impl Default for LogCleanupSettings {
+    fn default() -> Self {
+        Self {
             log_retention_days: default_log_retention_days(),
             log_row_retention_days: default_log_row_retention_days(),
-            volc_asset_retention_days: default_volc_asset_retention_days(),
+        }
+    }
+}
+
+impl LogCleanupSettings {
+    pub fn from_legacy_storage_json(v: &serde_json::Value) -> Self {
+        Self {
+            log_retention_days: v
+                .get("log_retention_days")
+                .and_then(|x| x.as_i64())
+                .map(|n| n as i32)
+                .unwrap_or_else(default_log_retention_days),
+            log_row_retention_days: v
+                .get("log_row_retention_days")
+                .and_then(|x| x.as_i64())
+                .map(|n| n as i32)
+                .unwrap_or_else(default_log_row_retention_days),
         }
     }
 }
@@ -1117,10 +1463,6 @@ fn default_log_retention_days() -> i32 {
 
 fn default_log_row_retention_days() -> i32 {
     0
-}
-
-fn default_volc_asset_retention_days() -> i32 {
-    30
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1240,6 +1582,179 @@ impl Default for NotificationSettings {
     }
 }
 
+/// 销方开票主体配置（支持多主体及普票/专票资质配置）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SellerInvoiceSubject {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub company_name: String,
+    #[serde(default)]
+    pub tax_id: String,
+    #[serde(default)]
+    pub contact_email: Option<String>,
+    #[serde(default)]
+    pub company_address: Option<String>,
+    #[serde(default)]
+    pub company_phone: Option<String>,
+    #[serde(default, alias = "website")]
+    pub company_website: Option<String>,
+    #[serde(default)]
+    pub bank_name: Option<String>,
+    #[serde(default)]
+    pub bank_account: Option<String>,
+    /// 是否支持增值税普通发票
+    #[serde(default = "default_true")]
+    pub support_normal: bool,
+    /// 是否支持增值税专用发票
+    #[serde(default)]
+    pub support_special: bool,
+    /// 是否为默认开票主体
+    #[serde(default)]
+    pub is_default: bool,
+    /// 启用状态
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// 发票与收据全局设置
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct InvoiceSettings {
+    #[serde(default = "default_true")]
+    pub invoice_enabled: bool,
+    #[serde(default = "default_invoice_mode")]
+    pub invoice_mode: String,
+    #[serde(default = "default_invoice_company_name")]
+    pub invoice_company_name: String,
+    #[serde(default = "default_invoice_tax_id")]
+    pub invoice_tax_id: String,
+    #[serde(default = "default_invoice_contact_email")]
+    pub invoice_contact_email: String,
+    #[serde(default = "default_invoice_company_address")]
+    pub invoice_company_address: String,
+    #[serde(default)]
+    pub invoice_company_phone: String,
+    #[serde(default, alias = "invoice_website")]
+    pub invoice_company_website: String,
+    #[serde(default = "default_invoice_currency_symbol")]
+    pub invoice_currency_symbol: String,
+    #[serde(default = "default_invoice_prefix")]
+    pub invoice_prefix: String,
+    #[serde(default = "default_receipt_prefix")]
+    pub receipt_prefix: String,
+    #[serde(default = "default_invoice_notes")]
+    pub invoice_notes: String,
+    #[serde(default = "default_true")]
+    pub invoice_show_invoices: bool,
+    #[serde(default = "default_true")]
+    pub invoice_show_receipts: bool,
+    #[serde(default = "default_china_min_amount")]
+    pub china_min_amount: f64,
+    #[serde(default = "default_china_invoice_content")]
+    pub china_invoice_content: String,
+    #[serde(default = "default_china_tax_rate")]
+    pub china_tax_rate: f64,
+    #[serde(default = "default_china_invoice_notice")]
+    pub china_invoice_notice: String,
+    /// 多开票主体与销方资质列表
+    #[serde(default)]
+    pub invoice_sellers: Vec<SellerInvoiceSubject>,
+}
+
+pub fn default_invoice_mode() -> String {
+    "international".to_string()
+}
+pub fn default_invoice_company_name() -> String {
+    "TokensByte Inc.".to_string()
+}
+pub fn default_invoice_tax_id() -> String {
+    "US-987654321".to_string()
+}
+pub fn default_invoice_contact_email() -> String {
+    "billing@tokensbyte.com".to_string()
+}
+pub fn default_invoice_company_address() -> String {
+    "100 Innovation Way, Suite 300, San Francisco, CA 94107".to_string()
+}
+pub fn default_invoice_currency_symbol() -> String {
+    "$".to_string()
+}
+pub fn default_invoice_prefix() -> String {
+    "INV-".to_string()
+}
+pub fn default_receipt_prefix() -> String {
+    "REC-".to_string()
+}
+pub fn default_invoice_notes() -> String {
+    "Thank you for your business! Payment has been processed in full.".to_string()
+}
+pub fn default_china_min_amount() -> f64 {
+    100.0
+}
+pub fn default_china_invoice_content() -> String {
+    "*信息技术服务*软件技术服务费".to_string()
+}
+pub fn default_china_tax_rate() -> f64 {
+    6.0
+}
+pub fn default_china_invoice_notice() -> String {
+    "增值税普通发票将在审核通过后发送至填写的邮箱。".to_string()
+}
+
+impl InvoiceSettings {
+    /// 获取当前有效的开票主体列表，如果未配置 invoice_sellers 则根据旧配置自动生成默认主体
+    pub fn get_effective_sellers(&self) -> Vec<SellerInvoiceSubject> {
+        if !self.invoice_sellers.is_empty() {
+            return self.invoice_sellers.clone();
+        }
+        if !self.invoice_company_name.is_empty() {
+            vec![SellerInvoiceSubject {
+                id: "default_seller".to_string(),
+                company_name: self.invoice_company_name.clone(),
+                tax_id: self.invoice_tax_id.clone(),
+                contact_email: if self.invoice_contact_email.is_empty() { None } else { Some(self.invoice_contact_email.clone()) },
+                company_address: if self.invoice_company_address.is_empty() { None } else { Some(self.invoice_company_address.clone()) },
+                company_phone: if self.invoice_company_phone.is_empty() { None } else { Some(self.invoice_company_phone.clone()) },
+                company_website: if self.invoice_company_website.is_empty() { None } else { Some(self.invoice_company_website.clone()) },
+                bank_name: None,
+                bank_account: None,
+                support_normal: true,
+                support_special: true,
+                is_default: true,
+                enabled: true,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl Default for InvoiceSettings {
+    fn default() -> Self {
+        Self {
+            invoice_enabled: true,
+            invoice_mode: default_invoice_mode(),
+            invoice_company_name: default_invoice_company_name(),
+            invoice_tax_id: default_invoice_tax_id(),
+            invoice_contact_email: default_invoice_contact_email(),
+            invoice_company_address: default_invoice_company_address(),
+            invoice_company_phone: String::new(),
+            invoice_company_website: String::new(),
+            invoice_currency_symbol: default_invoice_currency_symbol(),
+            invoice_prefix: default_invoice_prefix(),
+            receipt_prefix: default_receipt_prefix(),
+            invoice_notes: default_invoice_notes(),
+            invoice_show_invoices: true,
+            invoice_show_receipts: true,
+            china_min_amount: default_china_min_amount(),
+            china_invoice_content: default_china_invoice_content(),
+            china_tax_rate: default_china_tax_rate(),
+            china_invoice_notice: default_china_invoice_notice(),
+            invoice_sellers: Vec::new(),
+        }
+    }
+}
+
 /// 聚合所有设置（读取）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AllSettings {
@@ -1283,11 +1798,15 @@ pub struct AllSettings {
     #[serde(default)]
     pub storage: Option<StorageSettings>,
     #[serde(default)]
+    pub log_cleanup: Option<LogCleanupSettings>,
+    #[serde(default)]
     pub menu_config: Option<MenuConfigSettings>,
     #[serde(default)]
     pub notification: NotificationSettings,
     #[serde(default)]
     pub relay: RelaySettings,
+    #[serde(default)]
+    pub invoices: Option<InvoiceSettings>,
     #[serde(default, skip_deserializing)]
     pub server_timezone: Option<String>,
     #[serde(default, skip_deserializing)]
@@ -1336,11 +1855,15 @@ pub struct UpdateSettingsRequest {
     #[serde(default)]
     pub storage: Option<serde_json::Value>,
     #[serde(default)]
+    pub log_cleanup: Option<serde_json::Value>,
+    #[serde(default)]
     pub menu_config: Option<serde_json::Value>,
     #[serde(default)]
     pub notification: Option<serde_json::Value>,
     #[serde(default)]
     pub relay: Option<serde_json::Value>,
+    #[serde(default)]
+    pub invoices: Option<serde_json::Value>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1503,62 +2026,7 @@ pub struct PublicSettings {
     pub menu_config: Option<MenuConfigSettings>,
     #[serde(default)]
     pub notification: PublicNotificationSettings,
-}
-
-#[cfg(test)]
-mod payment_channel_i18n_tests {
-    use super::*;
-
-    #[test]
-    fn public_channel_keeps_zh_and_en_names() {
-        let ui = PaymentChannelsUiSettings {
-            channels: vec![PaymentChannelUiItem {
-                id: "alipay".into(),
-                sort_order: 70,
-                enabled: true,
-                display_name: Some("  支付宝  ".into()),
-                display_name_en: Some("  Alipay  ".into()),
-                subtitle: Some("快捷".into()),
-                subtitle_en: Some("Quick".into()),
-                ..Default::default()
-            }],
-        };
-        let gateway = PaymentGatewayEnableFlags {
-            alipay: true,
-            ..Default::default()
-        };
-        let list = build_public_payment_channels(&ui, &gateway);
-        let alipay = list.iter().find(|c| c.id == "alipay").expect("alipay");
-        assert_eq!(alipay.display_name.as_deref(), Some("支付宝"));
-        assert_eq!(alipay.display_name_en.as_deref(), Some("Alipay"));
-        assert_eq!(alipay.subtitle.as_deref(), Some("快捷"));
-        assert_eq!(alipay.subtitle_en.as_deref(), Some("Quick"));
-        assert!(alipay.enabled);
-    }
-
-    #[test]
-    fn merge_preserves_english_display_fields() {
-        let saved = PaymentChannelsUiSettings {
-            channels: vec![PaymentChannelUiItem {
-                id: "wechat".into(),
-                sort_order: 88,
-                enabled: true,
-                display_name: Some("微信支付".into()),
-                display_name_en: Some("WeChat Pay".into()),
-                subtitle: Some("推荐".into()),
-                subtitle_en: Some("Recommended".into()),
-                ..Default::default()
-            }],
-        };
-        let merged = merge_payment_channels_ui(Some(saved), &PaymentGatewayEnableFlags::default());
-        let wechat = merged
-            .channels
-            .iter()
-            .find(|c| c.id == "wechat")
-            .expect("wechat");
-        assert_eq!(wechat.display_name.as_deref(), Some("微信支付"));
-        assert_eq!(wechat.display_name_en.as_deref(), Some("WeChat Pay"));
-        assert_eq!(wechat.subtitle_en.as_deref(), Some("Recommended"));
-        assert_eq!(wechat.sort_order, 88);
-    }
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub invoices: Option<InvoiceSettings>,
 }

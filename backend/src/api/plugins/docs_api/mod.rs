@@ -87,6 +87,20 @@ static MINIMAX_VID_ZH: LazyLock<String> = LazyLock::new(|| {
         include_str!("default_docs/zh/common-errors.md")
     )
 });
+static WAN_IMG_ZH: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\n\n{}",
+        include_str!("default_docs/zh/wan-image.md"),
+        include_str!("default_docs/zh/common-errors.md")
+    )
+});
+static WAN_VID_ZH: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\n\n{}",
+        include_str!("default_docs/zh/wan-video.md"),
+        include_str!("default_docs/zh/common-errors.md")
+    )
+});
 use crate::{
     auth,
     error::{AppError, AppResult},
@@ -789,7 +803,7 @@ pub fn get_default_docs_data() -> Vec<(
                     "开放端点一览表",
                     "endpoints",
                     20,
-                    "# 开放端点一览表\n\n使用本平台 API 密钥即可调用以下端点：\n\n### 1. OpenAI 协议路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| OpenAI 聊天对话 | `/v1/chat/completions` | `POST` | OpenAI 兼容 |\n| Responses | `/v1/responses` | `POST` | OpenAI 兼容 |\n| 图像生成 (Text2Image) | `/v1/images/generations` | `POST` | OpenAI 兼容 |\n| 图像编辑 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 兼容 |\n| 异步视频任务提交 | `/v1/video/generations` | `POST` | OpenAI 兼容 |\n| 异步视频任务状态查询 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 兼容 |\n| 文本语音合成 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 兼容 |\n| 令牌可用额度查询 | `/v1/balance` | `GET` | 账户信息 |\n| 账户总余额查询 | `/v1/user/balance` | `GET` | 账户信息 |\n| 可用模型列表 | `/v1/models` | `GET` | 账户信息 |\n\n### 2. 火山方舟 (Volcengine) 路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| 聊天对话 (OpenAI 兼容) | `/api/v3/chat/completions` | `POST` | 火山方舟 |\n| 原生响应 (Responses) | `/api/v3/responses` | `POST` | 火山方舟 |\n| 图像生成 (Generations) | `/api/v3/images/generations` | `POST` | 火山方舟 |\n| 异步视频任务提交 | `/api/v3/contents/generations/tasks` | `POST` | 火山方舟 |\n| 异步视频任务查询 | `/api/v3/contents/generations/tasks/{task_id}` | `GET` | 火山方舟 |\n| 异步视频任务取消 | `/api/v3/contents/generations/tasks/{task_id}` | `DELETE` | 火山方舟 |\n| 语音合成 (SSE 文本流) | `/api/v3/tts/unidirectional/sse` | `POST` | 火山方舟 |\n| 语音合成 (Chunked 二进制) | `/api/v3/tts/unidirectional` | `POST` | 火山方舟 |\n| 视频画质增强 (标准/专业) | `/api/v1/tools/enhance-video` | `POST` | 火山 MediaKit |\n| 视频画质增强 (极速版) | `/api/v1/tools/enhance-video-fast` | `POST` | 火山 MediaKit |\n| 视频画质增强 (大模型版) | `/api/v1/tools/enhance-video-generative` | `POST` | 火山 MediaKit |\n| 视频字幕擦除 | `/api/v1/tools/erase-video-subtitle` | `POST` | 火山 MediaKit |\n| 媒体任务状态查询 | `/api/v1/tasks/{task_id}` | `GET` | 火山 MediaKit |\n\n### 3. 其他厂商原生路由\n| 厂商名称 | 端点名称 | 路径 (Path) | 请求方式 |\n| :--- | :--- | :--- | :--- |\n| 阿里百炼 | 万相视频生成 (提交) | `/api/v1/services/aigc/video-generation/video-synthesis` | `POST` |\n| 阿里百炼 | 万相生图任务 (提交) | `/api/v1/services/aigc/multimodal-generation/generation` | `POST` |\n| 阿里百炼 | 异步任务查询 (通用) | `/api/v1/tasks/{task_id}` | `GET` |\n| 阿里百炼 | 文本向量化 | `/compatible-mode/v1/embeddings` | `POST` |\n| 阿里百炼 | 文档重排序 (Rerank) | `/compatible-api/v1/reranks` | `POST` |\n| 可灵 AI | 文生视频 (Kling) | `/v1/videos/text2video` | `POST` |\n| 可灵 AI | 图生视频 (Kling) | `/v1/videos/image2video` | `POST` |\n| 可灵 AI | 任务状态查询 (视频/图片) | `/v1/videos/{endpoint}/{task_id}` | `GET` |\n| Google | Gemini 文本生成 | `/v1beta/models/{model}:generateContent` | `POST` |\n| Google | Gemini 流式文本生成 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |\n| Anthropic | Claude 原生消息 | `/v1/messages` | `POST` |"
+                    "# 开放端点一览表\n\n使用本平台 API 密钥即可调用以下端点：\n\n### 1. OpenAI 协议路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| OpenAI 聊天对话 | `/v1/chat/completions` | `POST` | OpenAI 兼容 |\n| Responses | `/v1/responses` | `POST` | OpenAI 兼容 |\n| 向量化 (Embeddings) | `/v1/embeddings` | `POST` | OpenAI 兼容 |\n| 图像生成 (Text2Image) | `/v1/images/generations` | `POST` | OpenAI 兼容 |\n| 图像编辑 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 兼容 |\n| 异步视频任务提交 | `/v1/video/generations` | `POST` | OpenAI 兼容 |\n| 异步视频任务状态查询 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 兼容 |\n| 异步视频任务取消 | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI 兼容 |\n| 文本语音合成 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 兼容 |\n| 令牌可用额度查询 | `/v1/balance` | `GET` | 账户信息 |\n| 账户总余额查询 | `/v1/user/balance` | `GET` | 账户信息 |\n| 可用模型列表 | `/v1/models` | `GET` | 账户信息 |\n\n### 2. 火山方舟 (Volcengine) 路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| 聊天对话 (OpenAI 兼容) | `/api/v3/chat/completions` | `POST` | 火山方舟 |\n| 原生响应 (Responses) | `/api/v3/responses` | `POST` | 火山方舟 |\n| 多模态向量化 (Multimodal Embeddings) | `/api/v3/embeddings/multimodal` | `POST` | 火山方舟 |\n| 图像生成 (Generations) | `/api/v3/images/generations` | `POST` | 火山方舟 |\n| 异步视频任务提交 | `/api/v3/contents/generations/tasks` | `POST` | 火山方舟 |\n| 异步视频任务查询 | `/api/v3/contents/generations/tasks/{task_id}` | `GET` | 火山方舟 |\n| 异步视频任务取消 | `/api/v3/contents/generations/tasks/{task_id}` | `DELETE` | 火山方舟 |\n| 语音合成 (SSE 文本流) | `/api/v3/tts/unidirectional/sse` | `POST` | 火山方舟 |\n| 语音合成 (Chunked 二进制) | `/api/v3/tts/unidirectional` | `POST` | 火山方舟 |\n| 视频画质增强 (标准/专业) | `/api/v1/tools/enhance-video` | `POST` | 火山 MediaKit |\n| 视频画质增强 (极速版) | `/api/v1/tools/enhance-video-fast` | `POST` | 火山 MediaKit |\n| 视频画质增强 (大模型版) | `/api/v1/tools/enhance-video-generative` | `POST` | 火山 MediaKit |\n| 视频字幕擦除 | `/api/v1/tools/erase-video-subtitle` | `POST` | 火山 MediaKit |\n| 媒体任务状态查询 | `/api/v1/tasks/{task_id}` | `GET` | 火山 MediaKit |\n\n### 3. 其他厂商原生路由\n| 厂商名称 | 端点名称 | 路径 (Path) | 请求方式 |\n| :--- | :--- | :--- | :--- |\n| 阿里百炼 | 万相视频生成 (提交) | `/api/v1/services/aigc/video-generation/video-synthesis` | `POST` |\n| 阿里百炼 | 万相生图任务 (提交) | `/api/v1/services/aigc/multimodal-generation/generation` | `POST` |\n| 阿里百炼 | 异步任务查询 (通用) | `/api/v1/tasks/{task_id}` | `GET` |\n| 阿里百炼 | 文本向量化 | `/compatible-mode/v1/embeddings` | `POST` |\n| 阿里百炼 | 文档重排序 (Rerank) | `/compatible-api/v1/reranks` | `POST` |\n| 可灵 AI | 文生视频 (Kling) | `/v1/videos/text2video` | `POST` |\n| 可灵 AI | 图生视频 (Kling) | `/v1/videos/image2video` | `POST` |\n| 可灵 AI | 任务状态查询 (视频/图片) | `/v1/videos/{endpoint}/{task_id}` | `GET` |\n| Google | Gemini 文本生成 | `/v1beta/models/{model}:generateContent` | `POST` |\n| Google | Gemini 流式文本生成 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |\n| Anthropic | Claude 原生消息 | `/v1/messages` | `POST` |\n| MiniMax | Anthropic 兼容 Messages | `/anthropic/v1/messages` | `POST` |"
                 )
             ]
         ),
@@ -806,6 +820,8 @@ pub fn get_default_docs_data() -> Vec<(
                 ("Seedance 视频生成", "volc-video", 50, &*VOLC_VID_ZH),
                 ("Kling-v3 图像生成", "kling-image", 60, &*KLING_IMG_ZH),
                 ("Kling-v3 视频生成", "kling-video", 70, &*KLING_VID_ZH),
+                ("千问 图像生成", "wan-image", 75, &*WAN_IMG_ZH),
+                ("万相 视频生成", "wan-video", 76, &*WAN_VID_ZH),
                 ("MiniMax 图像生成", "minimax-image", 80, &*MINIMAX_IMG_ZH),
                 ("MiniMax 视频生成", "minimax-video", 90, &*MINIMAX_VID_ZH),
             ]
@@ -836,7 +852,7 @@ OpenAI 兼容生图接口。按下方参数与示例调用即可。
 #### 主要请求参数说明
 | 参数名 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | 是 | 图像生成模型名，如 `dall-e-3` (OpenAI), `wanx-v1` (阿里万相), `seedream-5.0-lite` (即梦) |
+| `model` | `string` | 是 | 图像生成模型名，如 `dall-e-3` (OpenAI), `qwen-image-3.0-pro` (阿里千问), `seedream-5.0-lite` (即梦) |
 | `prompt` | `string` | 是 | 描述画面的文本提示词 |
 | `n` | `integer` | 否 | 生成张数（默认 `1`） |
 | `size` | `string` | 否 | 分辨率（例如 `1024x1024`），可与 `resolution` 二选一 |
@@ -844,10 +860,12 @@ OpenAI 兼容生图接口。按下方参数与示例调用即可。
 | `response_format` | `string` | 否 | `url`（默认）或 `b64_json` |
 | `output_format` | `string` | 否 | 图片编码，如 `png` / `jpeg` / `webp` |
 | `watermark` | `boolean` | 否 | 是否加水印 |
-| `web_search` | `boolean` | 否 | 是否启用联网搜索（默认 `false`） |
+| `web_search` | `boolean` | 否 | 是否启用联网搜索（默认 `false`；火山/Gemini 等生效，万相忽略） |
 | `ratio` | `string` | 否 | 宽高比选项（如 `16:9`, `3:4`，主要用于 Gemini 等支持比例的生图模型） |
 | `image` | `string / array` | 否 | 图生图参考图 URL 或 URL 数组 (OpenAI 协议扩展，可传入网络图片链接，支持单张或多张) |
 | `image_urls` | `array` | 否 | 图生图参考图 URL 数组。用于指定多个参考图时使用，必须为数组格式 |
+
+> 阿里千问图像（`qwen-image-3.0-pro`）详见 **「千问 图像生成」**（slug: `wan-image`）。
 
 #### Curl 生图调用示例 (文生图)
 ```bash
@@ -971,19 +989,23 @@ OpenAI 兼容异步视频接口 `/v1/video/generations`。多数视频模型为�
 #### 核心参数说明
 | 参数名 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | 是 | 视频生成模型名称，如 `doubao-seedance-2-0`, `kling-v3-omni`, `wanx-v1` |
+| `model` | `string` | 是 | 视频生成模型名称，如 `doubao-seedance-2-5`, `kling-v3-omni`, `wan3.0-video` (阿里万相) |
 | `prompt` | `string` | 是 | 描述视频 motion 与画面的提示词文本 |
 | `negative_prompt` | `string` | 否 | 负向提示词，用于规避不需要的画面元素 |
 | `images` / `image_urls` | `array` | 否 | 参考底图对象/链接数组（`image_urls` 与 `images` 效果完全相同）。支持 HTTP URL 或 Base64。单张通常作为首帧，双张支持指定首尾帧，三张及以上用于多图参考（可灵/火山等） |
 | `videos` | `array` | 否 | 参考视频链接数组，用于视频生成视频或视频控制（如可灵 Omni 视频参考/Bytefor 视频参考） |
 | `audios` | `array` | 否 | 参考音频链接数组，用于提供配乐或参考音频（如火山方舟/Bytefor等） |
+| `files` | `array` | 否 | 参考文件 URL（万相等；默认 role `file`） |
+| `links` | `array` | 否 | 参考网页 URL（万相等；默认 role `link`） |
 | `resolution` | `string` | 否 | 目标分辨率（如 `1080p`, `720p`, `480p`），系统会自动将尺寸传译并适配到对应厂商支持的规格（如可灵 `1080p` 自动映射为 `pro` 模式，`720p` 映射为 `std` 模式） |
-| `ratio` | `string` | 否 | 宽高比选项（如 `16:9`, `9:16`, `4:3`, `3:4`, `1:1`），系统将自适应转换为对应厂商参数 |
-| `duration` | `integer` | 否 | 生成视频时长（秒），例如 `5` 或 `10` |
+| `ratio` | `string` | 否 | 宽高比（如 `16:9`, `9:16`, `adaptive`）。Seedance 2.5 首帧/编辑/延长须 `adaptive` |
+| `duration` | `integer` | 否 | 时长（秒）。Seedance 2.5 为 `4`–`30` 或 `-1`；2.0 为 `4`–`15` 或 `-1` |
 | `generate_audio` | `boolean` | 否 | 是否同步生成匹配的视频背景音效/配音（默认 `false`） |
 | `watermark` | `boolean` | 否 | 是否在生成的视频中添加水印（支持火山方舟、阿里百炼等部分通道） |
-| `web_search` | `boolean` | 否 | 是否启用联网搜索（默认 `false`） |
+| `web_search` | `boolean` | 否 | 是否启用联网搜索（默认 `false`；火山/Gemini 等生效，万相忽略） |
 | `seed` | `integer` | 否 | 随机数种子（用于控制视频生成的确定性） |
+
+> 阿里万相视频（`wan3.0-video`）及 `files`/`links` 详见 **「万相 视频生成」**（slug: `wan-video`）。
 
 #### 提交任务示例
 ```bash
@@ -1026,7 +1048,17 @@ curl -X POST https://{{domain}}/v1/video/generations \
 }
 ```
 
-### 3. 多模态图片（images）指定图片类型说明
+### 3. 取消视频任务
+* **路径**: `/v1/video/generations/{task_id}` 或 `/v1/tasks/{task_id}`
+* **请求方式**: `DELETE`
+* **说明**: 取消尚未完成的任务。本站 ComfyUI：须节点确认已停掉且尚未出片才会退还冻结预扣；若已经生成成功，取消失败并照常扣费。火山方舟请使用原生 `DELETE /api/v3/contents/generations/tasks/{task_id}`
+
+```bash
+curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
+  -H "Authorization: Bearer sk-your_token"
+```
+
+### 4. 多模态图片（images）指定图片类型说明
 在进行「图生视频」或「多图参考视频」时，网关提供了极具弹性的 OpenAI 兼容多模态接口。您可以通过 `images`（或 `image_urls`）参数输入单张或多张图片，并支持以下两种方式来指定图片在视频生成中的角色（如首帧、尾帧、参考图）：
 
 #### ① 智能数量推断模式（极简模式）
@@ -1091,7 +1123,7 @@ curl -X POST https://{{domain}}/v1/video/generations \
                     "火山方舟原生API接入",
                     "volcengine-api",
                     10,
-                    "# 火山方舟 (Volcengine) 原生接口说明\n\n若客户端已使用火山方舟请求路径，将 Base URL 指向本平台并使用本平台 API 密钥即可，无需改写为 OpenAI 格式。\n\n### 1. 原生聊天与对话 (Chat & Responses)\n* **对话端点**: `/api/v3/chat/completions`\n* **原生响应端点**: `/api/v3/responses`\n* **请求方式**: `POST`\n\n支持火山方舟 Request Payload。参数规范见 [火山方舟官方文档](https://www.volcengine.com/docs/82379/1298454)。\n\n### 2. 原生生图接口 (Image Generations)\n* **端点**: `/api/v3/images/generations`\n* **请求方式**: `POST`\n\n完美对齐方舟文生图接口，支持指定图片宽高比、提示词智能改写、水印等原生参数。\n\n### 3. 原生视频生成任务 (Video Studio)\n* **提交任务**: `/api/v3/contents/generations/tasks` (`POST`)\n* **任务状态查询**: `/api/v3/contents/generations/tasks/{task_id}` (`GET`)\n* **取消/删除任务**: `/api/v3/contents/generations/tasks/{task_id}` (`DELETE`)\n* **列出任务历史**: `/api/v3/contents/generations/tasks` (`GET`)\n\n### 4. 语音合成接口 (TTS)\n* **事件流模式 (SSE)**: `/api/v3/tts/unidirectional/sse` (`POST`)\n* **非流式 HTTP 模式**: `/api/v3/tts/unidirectional` (`POST`)\n\n请求头需采用火山原生的 `X-Api-Key: sk-your_token` 形式，模型可用 `X-Api-Resource-Id` 头指定或写在 `model` 请求体中。网关将返回火山标准的 JSON 数据（包含 Base64 编码的音频帧）。"
+                    include_str!("default_docs/zh/volcengine-api.md"),
                 ),
                 (
                     "火山MediaKit媒体处理增强",
@@ -1110,13 +1142,19 @@ curl -X POST https://{{domain}}/v1/video/generations \
                     "阿里百炼(DashScope)原生接入",
                     "ali-dashscope",
                     10,
-                    "# 阿里百炼 (DashScope) 原生接口说明\n\n阿里云百炼（DashScope）兼容路径。使用本平台 API 密钥调用即可。\n\n### 1. 万相视频生成 (Submit Video)\n* **路径**: `/api/v1/services/aigc/video-generation/video-synthesis`\n* **请求方式**: `POST`\n\n#### 请求示例\n```json\n{\n  \"model\": \"wanx-v1\",\n  \"input\": {\n    \"prompt\": \"一只金毛寻回犬在金色的秋天落叶中奔跑\"\n  },\n  \"parameters\": {\n    \"resolution\": \"1280*720\",\n    \"duration\": 5\n  }\n} \n```\n异步任务需包含请求头 `X-DashScope-Async: enable`（若客户端未自动添加请自行附带）。\n\n### 2. 万相图像生成 (Submit Image)\n* **路径**: `/api/v1/services/aigc/multimodal-generation/generation`\n* **请求方式**: `POST`\n\n格式与视频类似，可传 seed、size 等参数。\n\n### 3. 异步任务状态查询\n* **路径**: `/api/v1/tasks/{task_id}`\n* **请求方式**: `GET`\n\n使用返回的 `task_id` 轮询；任务进入 `succeeded` 或 `failed` 后结算用量。\n\n### 4. 文本向量化 (Embeddings) 与 Rerank\n* **向量化接口**: `/compatible-mode/v1/embeddings` (`POST`)\n  支持通义千问官方向量化模型（如 `text-embedding-v4`），按总 Token 数量计费。\n* **文档重排接口 (Rerank)**:\n  * 兼容路径（用于 qwen3-rerank 等）: `/compatible-api/v1/reranks`\n  * 原生路径（用于 gte-rerank-v2 等）: `/api/v1/services/rerank/text-rerank/text-rerank`"
+                    "# 阿里百炼 (DashScope) 原生接口说明\n\n阿里云百炼兼容路径。OpenAI 兼容示例见 **`wan-image`（千问 图像生成）**、**`wan-video`（万相 视频生成）**；此处仅列原生路径与其它能力。\n\n### 1. 图像 / 视频原生路径\n| 能力 | 路径 |\n| :--- | :--- |\n| 图像提交 | `POST /api/v1/services/aigc/multimodal-generation/generation` |\n| 视频提交 | `POST /api/v1/services/aigc/video-generation/video-synthesis` |\n| 任务查询 | `GET /api/v1/tasks/{task_id}` |\n\n异步任务需请求头 `X-DashScope-Async: enable`。请求体含 `input`/`parameters` 时网关原样透传。\n\n### 2. 文本向量化 (Embeddings) 与 Rerank\n* **向量化**: `/compatible-mode/v1/embeddings` (`POST`)，如 `text-embedding-v4`\n* **重排**:\n  * 兼容路径: `/compatible-api/v1/reranks`（如 qwen3-rerank）\n  * 原生路径: `/api/v1/services/rerank/text-rerank/text-rerank`（如 gte-rerank-v2）"
                 ),
                 (
                     "可灵AI(Kling)原生接入",
                     "kling-ai",
                     20,
                     "# 可灵 AI (Kling) 原生协议说明\n\n可灵兼容路径。使用本平台 API 密钥调用即可。 \n\n### 1. 视频模型接口\n* **文生视频**: `/v1/videos/text2video` (`POST`)\n* **图生视频**: `/v1/videos/image2video` (`POST`)\n* **多图生视频**: `/v1/videos/multi-image2video` (`POST`)\n* **Omni 视频参考生视频**: `/v1/videos/omni-video` (`POST`)\n* **任务状态查询**: `/v1/videos/{endpoint}/{task_id}` (`GET`)\n\n*注：在查询接口中，`{endpoint}` 对应您提交任务时所用的服务类型（如 `text2video`、`image2video` 等）。*\n\n### 2. 图像模型接口\n* **标准文/图生图**: `/v1/images/generations` (`POST`)\n* **多图生图**: `/v1/images/multi-image2image` (`POST`)\n* **Omni 生图**: `/v1/images/omni-image` (`POST`)\n* **任务状态查询**: `/v1/images/{endpoint}/{task_id}` (`GET`)\n\n### 3. 可灵官方文档参考\n详细的请求载荷结构（例如 `camera_control` 镜头控制、`aspect_ratio` 比例控制、首尾帧图片等）请对照官方标准。您可以从这里跳转官方文档说明：\n* [可灵 OmniVideo 官方规范](https://klingai.com/document-api/apiReference/model/OmniVideo)\n* [可灵 OmniImage 官方规范](https://klingai.com/document-api/apiReference/model/OmniImage)"
+                ),
+                (
+                    "MiniMax 视频原生接入",
+                    "minimax-native",
+                    30,
+                    "# MiniMax 视频原生接口说明\n\n若客户端已使用 MiniMax 官方视频请求体，可直接把 Base URL 改为本平台，并继续使用 MiniMax 的原生路径与字段。\n\n### 1. 提交视频任务\n* **路径**: `/v2/video_generation`\n* **请求方式**: `POST`\n\n支持官方 `content` 多模态数组，以及 `resolution`、`ratio`、`duration`、`callback_url`、`aigc_watermark` 等原生字段。\n\n### 2. 查询任务状态\n* **路径**: `/v2/query/video_generation/{task_id}`\n* **请求方式**: `GET`\n\n### 3. 兼容说明\n* 若您使用 OpenAI SDK，继续走 `/v1/video/generations`\n* 若您已接入 MiniMax 官方 SDK / 请求体，直接走 `/v2/video_generation`\n* 两种入口复用同一套模型权限、渠道路由、计费与日志"
                 )
             ]
         ),
@@ -1148,7 +1186,7 @@ curl -X POST https://{{domain}}/v1/video/generations \
                     "网关常见错误码与排查",
                     "error-codes",
                     10,
-                    "# 常见错误码与问题排查\n\n在使用 API 网关访问大模型服务时，如果请求发生异常，网关会通过相应的 HTTP 状态码（Status Code）以及符合 OpenAI 标准规范 of JSON 错误响应体返回给客户端。\n\n### 1. 统一错误响应格式\n当请求出错时，网关一律返回标准的 JSON 格式错误体：\n```json\n{\n  \"error\": {\n    \"message\": \"错误原因详细描述...\",\n    \"type\": \"invalid_request_error\",\n    \"code\": \"context_length_exceeded\",\n    \"param\": null\n  }\n}\n```\n\n### 2. 状态码与故障排查指南\n\n* **400 Bad Request (请求格式非法)**\n  * **可能诱因**: 请求载荷（Payload）不是合法的 JSON；缺少必填参数（如 `model` 或 `messages`）；参数类型不正确。\n  * **排查方法**: 检查发送 of HTTP 请求 Body，对齐厂商接口标准参数（如 `max_tokens` 等）排查字段拼写。\n\n* **401 Unauthorized (未授权/身份验证失败)**\n  * **可能诱因**: 请求头未附带 `Authorization` 或 Bearer Token 缺失；密钥（Token）无效或已被系统删除；Token 字符串有空格、换行或多余后缀。\n  * **排查方法**: 确认请求头格式为 `Authorization: Bearer sk-xxxxx`，并检查管理后台该令牌是否激活。\n\n* **403 Forbidden (无权限/额度受限)**\n  * **可能诱因**: 令牌可用配额（Quota）或用户可用余额已耗尽；当前令牌没有勾选调用当前请求模型的权限；令牌已被管理员或系统禁用。\n  * **排查方法**: 登录系统前台查看令牌余额；在令牌列表中检查“可用模型列表”是否包含当前请求的模型。\n\n* **404 Not Found (接口或路由不存在)**\n  * **可能诱因**: 请求 URL 路径拼写错误；模型未配置可用渠道或渠道均已禁用。\n  * **排查方法**: 检查调用路径（如 `/v1/chat/completions`）；确认该模型已关联活跃渠道。\n\n* **429 Too Many Requests (触发限频/频控)**\n  * **可能诱因**: 触发了令牌限频（RPM / TPM）或服务端频控。\n  * **排查方法**: 增加指数退避重试；检查令牌限频或联系管理员。\n\n* **500 Internal Error (网关内部异常)**\n  * **可能诱因**: 网关数据库连接断开或超时；平台内部发生未捕获 of 代码 Panic 异常。\n  * **排查方法**: 联系系统管理员，查看后端服务容器日志以定位异常原因。\n\n* **502 Bad Gateway (服务暂时不可用)**\n  * **可能诱因**: 下游服务连接超时、网络中断或暂时不可用。\n  * **排查方法**: 查看响应 `message`；稍后重试或联系管理员。\n\n* **504 Gateway Timeout (网关响应超时)**\n  * **可能诱因**: 请求 of 模型生成耗时极长，导致 HTTP 连接超时。\n  * **排查方法**: 对于视频生成或画质超分等极度耗时 of 任务，使用异步接口（如 `/v1/video/generations`）提交，随后通过轮询任务状态接口获取结果。\n\n### 3. 说明\n1. **自动重试**: 多渠道配置下，短暂故障可能自动换路重试，对调用端透明。\n2. **日志**: 请求耗时、扣费等信息可在使用日志中查看。"
+                    include_str!("default_docs/zh/error-codes.md"),
                 )
             ]
         ),

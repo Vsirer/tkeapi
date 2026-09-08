@@ -33,6 +33,7 @@ import { useCanvas, usePlayground } from '../context/PlaygroundContext';
 import ImageEditorModal from './ImageEditorModal';
 import VideoEditorModal from './VideoEditorModal';
 import { getResultDisplayUrl } from '../utils/resultExtractor';
+import { downloadFileByUrl } from '../utils/downloadFile';
 import { useThemeStore } from '../../../../store/theme';
 import { ErrorBoundary } from './ErrorBoundary';
 import request from '../../../../utils/request';
@@ -140,7 +141,7 @@ const RichPromptView = React.memo(({ node, isLight }: { node: any, isLight: bool
 
   allUrls.forEach((url: string) => {
     if (!url || typeof url !== 'string') return;
-    const isVideo = url.match(/\.(mp4|mov|webm|avi|mkv)$/i) || node?.type === 'video';
+    const isVideo = url.match(/\.(mp4|mov|webm|avi|mkv)$/i);
     const isAudio = url.match(/\.(mp3|wav|aac|flac|ogg|m4a)$/i);
     const typeKey = isAudio ? 'audio' : isVideo ? 'video' : 'image';
     counts[typeKey]++;
@@ -148,7 +149,9 @@ const RichPromptView = React.memo(({ node, isLight }: { node: any, isLight: bool
     assetMap[label] = { url, type: typeKey };
   });
 
-  const labels = Object.keys(assetMap).map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const labels = Object.keys(assetMap)
+    .sort((a, b) => b.length - a.length)
+    .map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   if (labels.length === 0) return <>{rawPrompt}</>;
 
   const regex = new RegExp(`(@(?:${labels.join('|')}))(?:\\u200B \\u3000 \\u200B)?`, 'g');
@@ -486,7 +489,7 @@ const GenerationLogWidget: React.FC = React.memo(() => {
 
     if (urlsToRestore.length > 0) {
       const recoveredAssets = urlsToRestore.filter((u: any) => u && typeof u === 'string').map((url: string, index: number) => {
-        const isVideo = url.match(/\.(mp4|mov|webm|avi|mkv)$/i) || selectedNode.type === 'video';
+        const isVideo = url.match(/\.(mp4|mov|webm|avi|mkv)$/i);
         const isAudio = url.match(/\.(mp3|wav|aac|flac|ogg|m4a)$/i);
         const typeKey = isAudio ? 'audio' : isVideo ? 'video' : 'image';
         return {
@@ -517,19 +520,16 @@ const GenerationLogWidget: React.FC = React.memo(() => {
       return;
     }
     try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      const ext = selectedNode.type === 'video' ? 'mp4' : 'png';
-      a.download = `creation_${Date.now()}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-    } catch {
-      // fallback: 直接打开
-      window.open(url, '_blank');
+      const mediaType =
+        selectedNode.type === 'video' || selectedNode.type === 'audio' || selectedNode.type === 'image'
+          ? selectedNode.type
+          : 'image';
+      await downloadFileByUrl(url, {
+        filename: `creation_${Date.now()}`,
+        mediaType,
+      });
+    } catch (e: any) {
+      toast.error(e?.message || '下载失败');
     }
   }, [selectedNode, getResultUrl]);
 

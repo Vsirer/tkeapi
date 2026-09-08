@@ -56,11 +56,13 @@ import {
 import Redemptions from './pages/Redemptions/Redemptions';
 import Profile from './pages/Profile/Profile';
 import NotificationSubscription from './pages/Profile/NotificationSubscription';
+import Invoices from './pages/Invoices/Invoices';
 import Wallet from './pages/Wallet/Wallet';
 import RechargeRecords from './pages/Finance/RechargeRecords';
 import GiftRecords from './pages/Finance/GiftRecords';
 import FinanceDataAnalysis from './pages/Finance/FinanceDataAnalysis';
 import OrderDetails from './pages/Finance/OrderDetails';
+import InvoiceAudit from './pages/Finance/InvoiceAudit';
 import Settings from './pages/admin/Settings';
 import PaymentSettings from './pages/admin/PaymentSettings';
 import MessageNotification from './pages/admin/MessageNotification';
@@ -179,7 +181,7 @@ const AdminSetupGate = ({ children }: { children: React.ReactNode }) => {
       <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#666' }}>
         {awaitingSetup ? (
           <div style={{ textAlign: 'center', lineHeight: 1.7 }}>
-            <Spin style={{ marginBottom: 16 }} />
+            <Spin size="large" style={{ marginBottom: 16 }} />
             <div>服务准备中，即将进入全新安装…</div>
             <div style={{ opacity: 0.75 }}>Preparing service, entering fresh setup…</div>
             {waitHint && (
@@ -189,7 +191,9 @@ const AdminSetupGate = ({ children }: { children: React.ReactNode }) => {
               </div>
             )}
           </div>
-        ) : 'Loading...'}
+        ) : (
+          <Spin size="large" />
+        )}
       </div>
     );
   }
@@ -438,7 +442,17 @@ const App: React.FC = () => {
           element={
             <PrivateRoute>
               <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/works" replace />
+                <Navigate to="/playground-2026/images" replace />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/assets/all"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
               </PluginRoute>
             </PrivateRoute>
           }
@@ -766,6 +780,8 @@ const App: React.FC = () => {
           <Route path="ark-video-monitor" element={<PluginRoute pluginName="volcengine_ark_monitor"><ArkUserDashboard /></PluginRoute>} />
           <Route path="profile" element={<Profile />} />
           <Route path="profile/notifications" element={<NotificationSubscription />} />
+          <Route path="invoices" element={<Invoices />} />
+          <Route path="profile/invoices" element={<Navigate to="/invoices" replace />} />
         </Route>
 
         {/* System End Routes：index 为管理登录页，子路由需管理员鉴权 */}
@@ -799,7 +815,15 @@ const App: React.FC = () => {
 
             <Route path="redemptions" element={<Redemptions />} />
             <Route path="users" element={<Users />} />
+            <Route path="users/:actionId" element={<Users />} />
+            <Route path="users/:actionId/:tab" element={<Users />} />
+            <Route path="users/edit/:actionId" element={<Users />} />
+            <Route path="users/edit/:actionId/:tab" element={<Users />} />
             <Route path="admins" element={<Users />} />
+            <Route path="admins/:actionId" element={<Users />} />
+            <Route path="admins/:actionId/:tab" element={<Users />} />
+            <Route path="admins/edit/:actionId" element={<Users />} />
+            <Route path="admins/edit/:actionId/:tab" element={<Users />} />
             <Route path="user-levels" element={<UserLevels />} />
             <Route path="user-levels/:actionId" element={<UserLevelEdit />} />
             <Route path="admin-groups" element={<AdminGroups />} />
@@ -807,6 +831,7 @@ const App: React.FC = () => {
             <Route path="finance/recharges" element={<RechargeRecords />} />
             <Route path="finance/gifts" element={<GiftRecords />} />
             <Route path="finance/orders" element={<OrderDetails />} />
+            <Route path="finance/invoices" element={<InvoiceAudit />} />
             <Route path="finance/analysis" element={<FinanceDataAnalysis />} />
             <Route path="settings" element={<Settings />} />
             <Route path="payment-settings" element={<PaymentSettings />} />

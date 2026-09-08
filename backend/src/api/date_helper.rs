@@ -159,11 +159,6 @@ pub fn push_timestamptz_bound_default(
     push_timestamptz_bound(sql, binds, field, raw, is_end, default_timedisplay_tz());
 }
 
-/// 使用默认 timedisplay 的半开谓词。
-pub fn timestamptz_bound_pred_default(field: &str, raw: &str, is_end: bool) -> (String, String) {
-    timestamptz_bound_pred(field, raw, is_end, default_timedisplay_tz())
-}
-
 /// 将可选日期字符串安全解析为 NaiveDate（ISO/带偏移 → timedisplay 当地日；纯日期原样）。
 pub fn parse_to_naive_date(
     raw_date: Option<&str>,
@@ -223,8 +218,7 @@ pub async fn resolve_user_timezone(
     user_id: &str,
     header_tz: &str,
 ) -> Result<chrono_tz::Tz, sqlx::Error> {
-    let default_site_tz =
-        crate::relay::relay_settings::get_cached_site_timezone(db).await;
+    let default_site_tz = crate::relay::relay_settings::get_cached_site_timezone(db).await;
 
     let user_tz: Option<String> = if user_id.is_empty() {
         None

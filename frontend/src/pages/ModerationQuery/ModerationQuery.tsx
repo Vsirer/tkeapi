@@ -23,6 +23,7 @@ import {
 import { CopyOutlined, SearchOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
+import { copyWithFeedback } from '../../utils/clipboard';
 import { useThemeStore } from '../../store/theme';
 
 const { Text } = Typography;
@@ -83,12 +84,7 @@ const ModerationQuery: React.FC<{ pluginNs: string }> = ({ pluginNs }) => {
     code ? t(`moderation_query.${prefix}_${code}`, { defaultValue: code }) : '-';
 
   const copyText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      message.success(t('moderation_query.copy_success'));
-    } catch {
-      message.error(t('moderation_query.copy_failed'));
-    }
+    await copyWithFeedback(text, t('moderation_query.copy_success'), t('moderation_query.copy_failed'));
   };
 
   const onQuery = async (values: { id: string; type: IdType }) => {

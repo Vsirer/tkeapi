@@ -37,6 +37,12 @@ fn audio_content_type(format: &str) -> &'static str {
     }
 }
 
+struct AudioRaw {
+    headers: axum::http::HeaderMap,
+    content_type: String,
+    body: axum::body::Bytes,
+}
+
 // ── 火山 TTS V3 SSE 响应结构 ───────────────────────────────────
 
 /// 火山 TTS V3 SSE 事件 JSON 结构
@@ -98,9 +104,12 @@ pub async fn audio_speech(
 
     // ── 3. 渠道选择 + HA failover ──
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
+    let mut billing_rule_cache = None;
+    let mut access_cache = None;
 
     while ha.cont() {
         let start_time = std::time::Instant::now();
+        let mut ha_pool = None;
         let channel = match proxy::select_channel_for_model(
             &state,
             &token,
@@ -111,27 +120,41 @@ pub async fn audio_speech(
             &ha.exclude_aids,
             !ha.had_upstream,
             Some("音频"),
+            &mut ha_pool,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                ha.note_pool(ha_pool);
+                ha.on_channel(&c);
+                c
+            }
             Err(e) => {
+                ha.note_pool(ha_pool);
                 ha.on_select_err(e);
                 break;
             }
         };
 
         // ── 4. 预扣费检查（category = "音频"） ──
-        let (pre_deduction, db_model, resolved_cat) =
-            match proxy::check_access(&state, &token, model, &ctx, Some("音频"), Some(&channel))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    ha.on_access_err(e);
-                    break;
-                }
-            };
+        let (pre_deduction, db_model, resolved_cat) = match proxy::check_access_with_model(
+            &state,
+            &token,
+            model,
+            &ctx,
+            Some("音频"),
+            &channel,
+            None,
+            &mut access_cache,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                ha.on_access_err(e);
+                break;
+            }
+        };
 
         // ── 5. 转发规则解析（category = "音频"） ──
         let mut resolved = match forward::resolve_forward_rule(
@@ -167,9 +190,15 @@ pub async fn audio_speech(
         let (final_resolved_model, mapping_source) =
             router::resolve_model(&channel, model, db_model.as_ref(), None);
 
-        // 查询计费规则（供计费阶段使用）
-        let mut db_rule =
-            proxy::get_model_billing_rule(&state, model, Some(&channel), db_model.as_ref()).await;
+        // 查询计费规则（同 billing_rule_id 复用，供计费阶段使用）
+        let mut db_rule = proxy::get_model_billing_rule(
+            &state,
+            model,
+            Some(&channel),
+            db_model.as_ref(),
+            &mut billing_rule_cache,
+        )
+        .await;
 
         // ── 6. 请求体转换 ──
         let mut upstream_body: serde_json::Value = forward::transform_request_body(
@@ -228,7 +257,7 @@ pub async fn audio_speech(
                 .replace("${model}", &final_resolved_model)
         );
 
-        tracing::info!(
+        crate::relay_debug!(
             "[Audio] 模型={} 目标类型={} URL={} 文本字符数={}",
             model,
             resolved.target_type,
@@ -248,7 +277,6 @@ pub async fn audio_speech(
                     request_content: Some(&request_content_str),
                     upstream_url: Some(&url),
                     channel: &channel,
-                    billing_model_hint: None,
                     plugin_tag: None,
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
@@ -334,7 +362,7 @@ pub async fn audio_speech(
                 }
 
                 // 根据 target_type 和路由类型分发响应处理
-                let (resp_body, text_characters, resp_summary) = if resolved.target_type
+                let (raw, text_characters, resp_summary) = if resolved.target_type
                     == "volcengine_tts"
                 {
                     // 在所有权被 raw_response 消耗前提取响应头
@@ -372,12 +400,11 @@ pub async fn audio_speech(
                             )
                             .await;
 
-                            let body = upstream_headers::with_content_type(
-                                &upstream_hdrs,
-                                &upstream_ct,
-                                raw_response,
-                            );
-                            return Ok(body);
+                            return Ok(AudioRaw {
+                                headers: upstream_hdrs,
+                                content_type: upstream_ct,
+                                body: raw_response.into(),
+                            });
                         } else {
                             let display_err = if let Ok(event) =
                                 serde_json::from_str::<VolcTtsEvent>(&err_json)
@@ -418,25 +445,24 @@ pub async fn audio_speech(
                             raw_response.len(),
                             chars
                         );
-                        let body = upstream_headers::with_content_type(
-                            &upstream_hdrs,
-                            &upstream_ct,
-                            raw_response.clone(),
-                        );
-                        (body, chars, summary)
+                        let raw = AudioRaw {
+                            headers: upstream_hdrs,
+                            content_type: upstream_ct,
+                            body: raw_response.into(),
+                        };
+                        (raw, chars, summary)
                     } else {
                         // OpenAI 兼容路由：解析 SSE 事件流 → Base64 解码 → 返回二进制音频流
                         match consume_volcengine_tts_sse(&raw_response, request_text_chars) {
                             Ok((bytes, chars)) => {
                                 let summary =
                                     format!("音频数据 {} bytes, {}字符", bytes.len(), chars);
-                                let content_type = audio_content_type(&response_format);
-                                let body = upstream_headers::with_content_type(
-                                    &upstream_hdrs,
-                                    content_type,
-                                    bytes,
-                                );
-                                (body, chars, summary)
+                                let raw = AudioRaw {
+                                    headers: upstream_hdrs,
+                                    content_type: audio_content_type(&response_format).to_string(),
+                                    body: bytes.into(),
+                                };
+                                (raw, chars, summary)
                             }
                             Err(err_msg) => {
                                 // SSE 事件级错误（HTTP 200 但业务失败，如 Invalid X-Api-Key）
@@ -467,9 +493,12 @@ pub async fn audio_speech(
                         .to_string();
                     let bytes = resp.bytes().await.unwrap_or_default();
                     let summary = format!("音频数据 {} bytes", bytes.len());
-                    let body =
-                        upstream_headers::with_content_type(&upstream_hdrs, upstream_ct, bytes);
-                    (body, request_text_chars, summary)
+                    let raw = AudioRaw {
+                        headers: upstream_hdrs,
+                        content_type: upstream_ct,
+                        body: bytes,
+                    };
+                    (raw, request_text_chars, summary)
                 };
 
                 let pre_deduct_gift = proxy::pre_deduct_or_intercept(
@@ -521,67 +550,51 @@ pub async fn audio_speech(
                 billing_detail = format!("语音合成 {}字符 | {}", text_characters, billing_detail);
 
                 proxy::record_and_bill_inner(proxy::BillRecord {
-                    state: &state,
-                    token: &token,
+                    ctx: crate::relay::ha::HaBillCtx::new(&state, &token, &model, &ep)
+                        .category(resolved_cat.as_str())
+                        .db(db_model.as_ref()),
                     channel: &channel,
-                    model: &model,
-                    prompt_tokens: 0,
-                    completion_tokens: text_characters,
-                    cached_tokens: 0,
-                    cost: cost,
+                    log_id: pending_log_id,
+                    usage: usage_tokens,
+                    cost,
                     pre_deducted: pre_deduction,
-                    pre_deduct_gift: pre_deduct_gift,
-                    status_code: 200,
-                    endpoint: &ep,
-                    error_msg: None,
-                    latency_ms: latency_ms,
+                    pre_deduct_gift,
+                    latency_ms,
                     is_stream: 0,
-                    request_content: Some(request_content_str),
-                    response_content: Some(resp_summary),
-                    upstream_req_content: Some(upstream_body.to_string()),
-                    billing_detail: Some(billing_detail),
-                    hint_category: Some(resolved_cat.as_str()),
-                    pending_log_id: pending_log_id,
-                    billing_model_hint: None,
-                    plugin_tag: None,
-                    db_model: db_model.as_ref(),
+                    status_code: 200,
+                    error_msg: None,
+                    request: Some(request_content_str),
+                    response: Some(resp_summary),
+                    upstream_req: Some(upstream_body.to_string()),
+                    detail: Some(billing_detail),
+                    features: Some(features),
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                    plugin_tag: None,
                 })
                 .await;
 
-                Ok(resp_body)
+                Ok(raw)
             }
         });
 
-        match result_rx.await {
-            Ok(result) => match result {
-                Ok(resp) => {
-                    let ms = start_time.elapsed().as_millis() as u32;
-                    ha.ok(&state, &channel, &url, ms).await;
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    if ha
-                        .fail(
-                            &crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
-                                .category(resolved_cat.as_str())
-                                .db(db_model.as_ref()),
-                            &channel,
-                            e,
-                            Some(&url),
-                        )
-                        .await
-                    {
-                        ha.bump();
-                        continue;
-                    }
-                    break;
-                }
-            },
-            Err(_) => {
-                ha.last_err = AppError::Internal("请求处理任务异常终止".into());
-                break;
+        let bill_ctx = crate::relay::ha::HaBillCtx::new(&state, &token, model, &ep)
+            .category(resolved_cat.as_str())
+            .db(db_model.as_ref());
+        match super::join_protected(&mut ha, result_rx, &bill_ctx, &channel, Some(&url)).await {
+            super::ProtectJoin::Ok(raw) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &url, ms).await;
+                return Ok(upstream_headers::with_content_type(
+                    &raw.headers,
+                    raw.content_type,
+                    raw.body,
+                ));
             }
+            super::ProtectJoin::Retry => {
+                ha.bump();
+                continue;
+            }
+            super::ProtectJoin::Stop => break,
         }
     } // end while
 
@@ -754,7 +767,6 @@ async fn record_volcengine_tts_error(
                 .unwrap_or("音频"),
         ),
         pending_log_id,
-        billing_model_hint: None,
         db_model,
         client_msg: Some(err_msg),
         pre_deducted: pre_deduction,

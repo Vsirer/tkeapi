@@ -552,7 +552,7 @@ pub async fn sync_from_github(
     let state_clone = state.clone();
     tokio::spawn(async move {
         if let Err(e) = do_sync(state_clone).await {
-            tracing::error!("图标同步任务失败: {}", e);
+            tracing::warn!("图标同步任务失败: {}", e);
         }
     });
 
@@ -887,7 +887,7 @@ pub async fn auto_recover_on_startup(state: Arc<AppState>) {
             // 等待 5 秒让服务完全就绪
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             if let Err(e) = do_sync(state_clone).await {
-                tracing::error!("图标自动恢复同步失败: {}", e);
+                tracing::warn!("图标自动恢复同步失败: {}", e);
             }
         });
     } else {

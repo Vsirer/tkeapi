@@ -10,6 +10,42 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+fn format_commit_date(raw_date: &str) -> String {
+    let trimmed = raw_date.trim();
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+    if trimmed.contains("(UTC") || trimmed.ends_with("UTC") {
+        return trimmed.to_string();
+    }
+    if let Some((dt, tz)) = trimmed.rsplit_once(' ') {
+        if (tz.starts_with('+') || tz.starts_with('-')) && (tz.len() == 5 || tz.len() == 6) {
+            let sign = &tz[0..1];
+            let rest = &tz[1..];
+            let parts: Vec<&str> = if rest.contains(':') {
+                rest.split(':').collect()
+            } else if rest.len() == 4 {
+                vec![&rest[0..2], &rest[2..4]]
+            } else {
+                vec![]
+            };
+            if parts.len() == 2 {
+                let hours: u32 = parts[0].parse().unwrap_or(0);
+                let minutes: u32 = parts[1].parse().unwrap_or(0);
+                let tz_suffix = if hours == 0 && minutes == 0 {
+                    "(UTC)".to_string()
+                } else if minutes == 0 {
+                    format!("(UTC{}{})", sign, hours)
+                } else {
+                    format!("(UTC{}{}:{:02})", sign, hours, minutes)
+                };
+                return format!("{} {}", dt, tz_suffix);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 fn main() {
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("git_commits.json");
@@ -21,7 +57,7 @@ fn main() {
             "log",
             "-10",
             "--format=%H\x1F%h\x1F%an\x1F%cd\x1F%s",
-            "--date=format:%Y-%m-%d %H:%M:%S",
+            "--date=format:%Y-%m-%d %H:%M:%S %z",
         ])
         .output()
     {
@@ -67,7 +103,7 @@ fn main() {
                 } else {
                     raw_author
                 };
-                let date = parts.get(3).unwrap_or(&"").to_string();
+                let date = format_commit_date(parts.get(3).unwrap_or(&""));
                 let message = parts.get(4).unwrap_or(&"").replace("\n", " ");
 
                 commits.push(serde_json::json!({
@@ -117,7 +153,7 @@ fn main() {
         ("src/models/redemption.rs", "plugin_redemptions_model"),
         ("src/api/plugins/finance", "plugin_finance"),
         ("src/api/plugins/team_marketing", "plugin_team_marketing"),
-        ("src/services/payment", "plugin_payment"),
+        ("src/api/plugins/pay/payment", "plugin_payment"),
         ("src/api/plugins/pay", "plugin_pay"),
     ];
 

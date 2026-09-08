@@ -73,8 +73,8 @@ pub async fn create_user_level(
     }
 
     let id = sqlx::query(
-        &state.db.format_query(r#"INSERT INTO user_levels (name, group_key, discount, discount_type, commission_ratio, invite_reward_inviter, invite_reward_invitee, daily_invite_limit, marketing_enabled, is_default, max_token_count, allow_view_log_details, description, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        &state.db.format_query(r#"INSERT INTO user_levels (name, group_key, discount, discount_type, commission_ratio, invite_reward_inviter, invite_reward_invitee, daily_invite_limit, marketing_enabled, is_default, max_token_count, allow_view_log_details, description, sort_order, invoice_enabled, invoice_mode, invoice_config)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id"#)
     )
     .bind(&req.name)
@@ -91,6 +91,9 @@ pub async fn create_user_level(
     .bind(req.allow_view_log_details.unwrap_or(1))
     .bind(req.description.unwrap_or_default())
     .bind(req.sort_order.unwrap_or(0))
+    .bind(req.invoice_enabled.unwrap_or(0))
+    .bind(req.invoice_mode.as_deref().unwrap_or("international"))
+    .bind(req.invoice_config.as_deref().unwrap_or("{}"))
     .fetch_one(&state.db.pool)
     .await?
     .get::<i64, _>("id");
@@ -286,6 +289,39 @@ pub async fn update_user_level(
                 .format_query("UPDATE user_levels SET sort_order = ? WHERE id = ?"),
         )
         .bind(sort_order)
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(invoice_enabled) = req.invoice_enabled {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET invoice_enabled = ? WHERE id = ?"),
+        )
+        .bind(invoice_enabled)
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(ref invoice_mode) = req.invoice_mode {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET invoice_mode = ? WHERE id = ?"),
+        )
+        .bind(invoice_mode)
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(ref invoice_config) = req.invoice_config {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET invoice_config = ? WHERE id = ?"),
+        )
+        .bind(invoice_config)
         .bind(id)
         .execute(&state.db.pool)
         .await?;

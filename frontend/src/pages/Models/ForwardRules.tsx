@@ -186,7 +186,6 @@ const ForwardRules: React.FC = () => {
       setItems(resp);
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
     } finally {
       setLoading(false);
     }
@@ -263,7 +262,6 @@ const ForwardRules: React.FC = () => {
       fetchItems();
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
     }
   };
 
@@ -274,7 +272,6 @@ const ForwardRules: React.FC = () => {
       fetchItems();
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
     }
   };
 
@@ -347,7 +344,6 @@ const ForwardRules: React.FC = () => {
       fetchItems();
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
     }
   };
 
@@ -510,10 +506,14 @@ const ForwardRules: React.FC = () => {
       body: <>
         <CText>target_type</CText>：目标协议类型。常用 <CText>openai</CText>、<CText>anthropic</CText>、
         <CText>gemini</CText>、<CText>volcengine</CText>、<CText>dashscope</CText>、<CText>kling</CText>、<CText>kling_video</CText>、
-        <CText>minimax_image</CText>、<CText>minimax_video</CText>、
-        <CText>tencent_vod_video</CText>、<CText>tencent_vod_image</CText> 等。
+        <CText>minimax_image</CText>、<CText>minimax_video</CText>、<CText>fal_video</CText>、
+        <CText>tencent_vod_video</CText>、<CText>tencent_vod_image</CText>、<CText>tencent_mps_image</CText> 等。
         <CText>kling_video</CText> 渠道密钥填官方 API Key（Bearer 直传，不生成 JWT）；
         <CText>kling</CText> 仍为 <CText>access_key:secret_key</CText> 自动签 JWT。
+        <CText>fal_video</CText> 配合 <CText>auth_type=key</CText>（<CText>Authorization: Key</CText>，非厂商绑定），
+        渠道 base 用 <CText>https://queue.fal.run</CText>；提交路径{' '}
+        <CText>{`/minimax/\${model}/reference-to-video`}</CText>，模型 ID 填变体名（如 <CText>h3-max</CText>）；
+        需配置 <CText>poll_path</CText> 如 <CText>{`/minimax/\${model}/requests/\${task_id}/status`}</CText>。
       </>,
     },
     {
@@ -529,13 +529,22 @@ const ForwardRules: React.FC = () => {
             <CText>/api/v3/contents/generations/tasks</CText>
           </ParamNo>
         </div>
+        <div style={{ marginTop: 6 }}>
+          <CText>path_passthrough</CText>：字符串数组，命中任一入口则上游路径=入口路径且 body 仅换 model（不再做 old→new）；聊天透传示例{' '}
+          <CText>{`["/v1/chat/completions","/v1/responses","/v1/messages","/anthropic/v1/messages"]`}</CText>。
+        </div>
+        <div style={{ marginTop: 6 }}>
+          <CText>path_accept</CText>：字符串数组，命中则规则可匹配，上游仍走 <CText>path_rewrite.new</CText>（与 passthrough 不同）。Portrait 转素材示例{' '}
+          <CText>{`["/api/v3/contents/generations/tasks"]`}</CText> → <CText>/tenant/seedance/infer</CText>。
+        </div>
       </>,
     },
     {
       n: '3',
       body: <>
         <CText>auth_type</CText>：鉴权方式，默认 <CText>bearer</CText>。可选{' '}
-        <CText>query_key</CText>、<CText>x-api-key</CText>、<CText>tencent_vod</CText>、<CText>volcengine_tts</CText>。
+        <CText>query_key</CText>、<CText>x-api-key</CText>、<CText>key</CText>（Authorization: Key）、
+        <CText>tencent_vod</CText>、<CText>tencent_mps</CText>、<CText>volcengine_tts</CText>。
       </>,
     },
     {
@@ -543,6 +552,7 @@ const ForwardRules: React.FC = () => {
       body: <>
         <CText>poll_path</CText>：异步轮询路径，如 <CText>{`/api/v1/tasks/\${task_id}`}</CText>。
         支持 <CText>{`\${task_id}`}</CText>、<CText>{`\${model}`}</CText>。
+        fal 示例 <CText>{`/minimax/\${model}/requests/\${task_id}/status`}</CText>，完成后自动再拉结果。
       </>,
     },
     {
@@ -790,7 +800,7 @@ const ForwardRules: React.FC = () => {
           </Form.Item>
 
           <Form.Item name="rule_type" label="映射厂商及模式 (类型标识)" rules={[{ required: true }]}>
-            <Input placeholder="如: openai, anthropic, gemini, kling, kling_video, minimax, passthrough" />
+            <Input placeholder="如: openai, anthropic, gemini, kling, tencent, minimax, fal, passthrough" />
           </Form.Item>
 
           <Form.Item name="category" label={'模型分类属类'} rules={[{ required: true }]} initialValue={['聊天']}>

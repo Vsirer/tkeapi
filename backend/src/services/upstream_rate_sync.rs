@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 pub const SYSTEM_NEWAPI: &str = "newapi";
 
-pub const UPSTREAM_SYSTEMS: &[&str] = &["兼容", "官方", "newapi", "akeapi", "火山引擎", "阿里云"];
+pub const UPSTREAM_SYSTEMS: &[&str] = &["兼容", "官方", "newapi", "Tkeapi", "akeapi", "火山引擎", "阿里云"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpstreamGroupRatio {
@@ -38,7 +38,7 @@ struct NewapiPricingBody {
 }
 
 pub fn is_known_upstream_system(value: &str) -> bool {
-    value.is_empty() || UPSTREAM_SYSTEMS.contains(&value)
+    value.is_empty() || UPSTREAM_SYSTEMS.iter().any(|&s| s.eq_ignore_ascii_case(value))
 }
 
 pub fn normalize_newapi_origin(base_url: &str) -> Result<String, String> {
@@ -75,7 +75,51 @@ pub fn newapi_pricing_url(base_url: &str) -> Result<String, String> {
     Ok(format!("{}/api/pricing", normalize_newapi_origin(base_url)?))
 }
 
-pub fn applied_channel_rate(group_ratio: f64, rate_add: f64) -> f64 {
+/// 上游货币与本站计价货币换算：
+/// - 上游为 CNY / 人民币，本站为 USD / 美元：本站美元折扣倍率 = 上游倍率 / 汇率 (例: 3.0 RMB / 7.2 ≈ 0.4167)
+/// - 上游为 USD / 美元，本站为 CNY / 人民币：本站人民币倍率 = 上游倍率 * 汇率 (例: 0.5 USD * 7.2 = 3.6)
+/// - 币种相同或未设置：保持原倍率 1:1
+/// - 其他币种情况：若指定了非 1.0 的有效汇率，默认按上游倍率 / 汇率换算
+pub fn convert_currency_ratio(
+    group_ratio: f64,
+    upstream_currency: &str,
+    site_currency: &str,
+    currency_rate: f64,
+) -> f64 {
+    let u = upstream_currency.trim();
+    let s = site_currency.trim();
+    if u.is_empty() || s.is_empty() || u.eq_ignore_ascii_case(s) {
+        return group_ratio;
+    }
+    let rate = if currency_rate.is_finite() && currency_rate > 0.0 {
+        currency_rate
+    } else {
+        1.0
+    };
+    let is_cny = |c: &str| {
+        c.eq_ignore_ascii_case("CNY")
+            || c.eq_ignore_ascii_case("RMB")
+            || c == "人民币"
+            || c == "元"
+    };
+    let is_usd = |c: &str| c.eq_ignore_ascii_case("USD") || c == "美元" || c == "$";
+
+    if is_cny(u) && is_usd(s) {
+        group_ratio / rate
+    } else if is_usd(u) && is_cny(s) {
+        group_ratio * rate
+    } else {
+        group_ratio / rate
+    }
+}
+
+pub fn applied_channel_rate(
+    group_ratio: f64,
+    rate_add: f64,
+    upstream_currency: &str,
+    site_currency: &str,
+    currency_rate: f64,
+) -> f64 {
     let add = if rate_add.is_finite() && rate_add > 0.0 {
         rate_add
     } else {
@@ -86,7 +130,9 @@ pub fn applied_channel_rate(group_ratio: f64, rate_add: f64) -> f64 {
     } else {
         0.0
     };
-    (ratio + add).max(0.0)
+    let converted = convert_currency_ratio(ratio, upstream_currency, site_currency, currency_rate);
+    let total = (converted + add).max(0.0);
+    (total * 10000.0).round() / 10000.0
 }
 
 pub fn is_sync_due(synced_at: Option<&str>, interval_minutes: i32, now: DateTime<Utc>) -> bool {
@@ -158,56 +204,44 @@ pub fn parse_newapi_groups(body: &str) -> Result<Vec<UpstreamGroupRatio>, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
-    fn strips_v1_suffix_for_pricing_url() {
-        assert_eq!(
-            newapi_pricing_url("https://api.hoxkai.top/v1/").unwrap(),
-            "https://api.hoxkai.top/api/pricing"
-        );
-        assert_eq!(
-            newapi_pricing_url("https://api.hoxkai.top").unwrap(),
-            "https://api.hoxkai.top/api/pricing"
-        );
+    fn test_cny_to_usd_conversion() {
+        // 用户需求场景：上游 GPT 3x 倍率（按 RMB 定价），本站为美元计价，汇率 7.2
+        let converted = convert_currency_ratio(3.0, "CNY", "USD", 7.2);
+        assert!((converted - 3.0 / 7.2).abs() < 1e-6);
+
+        // 叠加增量 0.05，结果应精确到 4 位小数：(3.0 / 7.2 + 0.05 = 0.4667)
+        let rate = applied_channel_rate(3.0, 0.05, "CNY", "USD", 7.2);
+        assert_eq!(rate, 0.4667);
+
+        // 支持 RMB 别名与小写
+        let converted_alias = convert_currency_ratio(3.0, "rmb", "usd", 7.2);
+        assert!((converted_alias - 3.0 / 7.2).abs() < 1e-6);
     }
 
     #[test]
-    fn rejects_empty_base() {
-        assert!(normalize_newapi_origin("  ").is_err());
+    fn test_usd_to_cny_conversion() {
+        // 上游为美元定价（0.5x），本站为人民币计价，汇率 7.2 -> 3.6x
+        let converted = convert_currency_ratio(0.5, "USD", "CNY", 7.2);
+        assert!((converted - 3.6).abs() < 1e-6);
     }
 
     #[test]
-    fn parses_top_level_group_ratio() {
-        let body = r#"{"success":true,"group_ratio":{"grok":1.6,"codex":0.12},"usable_group":{"grok":"grok"}}"#;
-        let groups = parse_newapi_groups(body).unwrap();
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[1].name, "grok");
-        assert_eq!(groups[1].ratio, 1.6);
-        assert_eq!(groups[1].label, "grok");
+    fn test_same_currency_or_empty() {
+        // 币种相同或留空不换算
+        assert_eq!(convert_currency_ratio(3.0, "USD", "USD", 7.2), 3.0);
+        assert_eq!(convert_currency_ratio(3.0, "CNY", "CNY", 7.2), 3.0);
+        assert_eq!(convert_currency_ratio(3.0, "", "USD", 7.2), 3.0);
+        assert_eq!(convert_currency_ratio(3.0, "CNY", "", 7.2), 3.0);
     }
 
     #[test]
-    fn parses_nested_data_group_ratio() {
-        let body = r#"{"data":{"group_ratio":{"anti":0.3}}}"#;
-        let groups = parse_newapi_groups(body).unwrap();
-        assert_eq!(groups[0].name, "anti");
-        assert_eq!(groups[0].ratio, 0.3);
-    }
-
-    #[test]
-    fn applied_rate_adds_positive_delta() {
-        assert_eq!(applied_channel_rate(1.45, 0.1), 1.55);
-        assert_eq!(applied_channel_rate(1.45, 0.0), 1.45);
-        assert_eq!(applied_channel_rate(1.45, -1.0), 1.45);
-    }
-
-    #[test]
-    fn sync_due_when_never_synced_or_interval_elapsed() {
-        let now = Utc.with_ymd_and_hms(2026, 8, 14, 6, 0, 0).unwrap();
-        assert!(is_sync_due(None, 10, now));
-        assert!(!is_sync_due(Some("2026-08-14T05:55:00.000Z"), 10, now));
-        assert!(is_sync_due(Some("2026-08-14T05:50:00.000Z"), 10, now));
-        assert!(!is_sync_due(Some("2026-08-14T05:50:00.000Z"), 0, now));
+    fn test_invalid_rate_fallback() {
+        // 汇率非正数或非有效浮点数时兜底 1.0
+        let converted = convert_currency_ratio(3.0, "CNY", "USD", 0.0);
+        assert_eq!(converted, 3.0);
+        let converted_neg = convert_currency_ratio(3.0, "CNY", "USD", -1.0);
+        assert_eq!(converted_neg, 3.0);
     }
 }

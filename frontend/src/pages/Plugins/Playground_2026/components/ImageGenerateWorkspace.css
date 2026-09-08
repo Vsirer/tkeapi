@@ -1,0 +1,1548 @@
+/*
+ * tokensbyte opensource
+ * (c) 2026 tokensbyte.ai
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tokensbyte.ai/)
+ */
+
+.hf-ig-embedded {
+  border-radius: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Higgsfield-inspired: gallery + bottom prompt dock */
+
+.hf-ig-root {
+  /* Imagine.art /image 令牌 */
+  --hf-bg: #0f0f0f;
+  --hf-surface: #171717;
+  --hf-surface-2: #212121;
+  --hf-border: rgba(255, 255, 255, 0.08);
+  --hf-border-strong: rgba(255, 255, 255, 0.14);
+  --hf-text: #ffffff;
+  --hf-muted: #bdbdbd;
+  --hf-faint: rgba(255, 255, 255, 0.5);
+  --hf-accent: #8a3ffc;
+  --hf-accent-hover: #a56eff;
+  --hf-accent-text: #ffffff;
+  --hf-yellow: #f5e64a;
+  --hf-font: 'Inter', 'Inter Fallback', 'PingFang SC', system-ui, sans-serif;
+  --hf-dock-max: 960px;
+
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--hf-bg);
+  color: var(--hf-text);
+  font-family: var(--hf-font);
+  overflow: hidden;
+  position: relative;
+}
+
+.hf-ig-topbar {
+  height: 56px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--hf-border);
+  background: rgba(15, 15, 15, 0.85);
+  backdrop-filter: blur(12px);
+  z-index: 5;
+}
+
+@media (max-width: 768px) {
+  .hf-ig-topbar {
+    height: 48px;
+    padding: 0 12px;
+  }
+}
+
+.hf-ig-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hf-ig-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--hf-muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.hf-ig-back:hover {
+  color: var(--hf-text);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--hf-border);
+}
+
+.hf-ig-nav-active {
+  color: var(--hf-yellow);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+.hf-ig-gallery {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+  padding: 20px 22px 220px;
+  background: var(--hf-bg);
+}
+
+.hf-ig-gallery::-webkit-scrollbar {
+  width: 6px;
+}
+.hf-ig-gallery::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.hf-ig-empty {
+  min-height: calc(100% - 40px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  color: var(--hf-muted);
+  padding: 48px 24px;
+}
+
+.hf-ig-empty-orb {
+  width: auto;
+  height: auto;
+  background: none;
+  border: none;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 80px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.35);
+  margin-bottom: 12px;
+}
+
+.hf-ig-empty-orb .anticon,
+.hf-ig-empty-orb svg {
+  font-size: inherit;
+  width: 1em;
+  height: 1em;
+  display: block;
+}
+
+.hf-ig-empty h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--hf-text);
+  letter-spacing: -0.02em;
+}
+
+.hf-ig-empty p {
+  margin: 0;
+  max-width: 340px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--hf-muted);
+}
+
+.hf-ig-day-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.hf-ig-day-group {
+  width: 100%;
+}
+
+.hf-ig-day-label {
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--hf-text);
+  line-height: 1.25;
+}
+
+.hf-ig-composer {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hf-ig-composer.has-refs {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.hf-ig-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  min-height: 0;
+  padding: 0;
+  line-height: 0;
+}
+
+.hf-ig-composer:not(.has-refs) .hf-ig-ref-row {
+  padding-top: 1.5px;
+  align-self: flex-start;
+}
+
+.hf-ig-composer.has-refs .hf-ig-ref-row {
+  padding: 0;
+}
+
+.hf-ig-ref-thumb-wrap {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  flex-shrink: 0;
+}
+
+.hf-ig-ref-thumb-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  background: #1e1e20;
+  overflow: hidden;
+  cursor: zoom-in;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hf-ig-ref-thumb-btn:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.hf-ig-ref-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+  border-radius: 16px;
+}
+
+.hf-ig-ref-clear {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid #171717;
+  border-radius: 50%;
+  background: #27272a;
+  color: #f4f4f5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+  z-index: 10;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.8);
+  transition: opacity 0.18s ease, transform 0.18s ease, background 0.15s ease, color 0.15s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.hf-ig-ref-thumb-wrap:hover .hf-ig-ref-clear {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.hf-ig-ref-clear:hover {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.hf-ig-ref-lightbox {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  background: transparent;
+  cursor: zoom-out;
+  transform: none;
+  filter: none;
+}
+
+.hf-ig-ref-lightbox::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(0, 0, 0, 0.92);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+  pointer-events: none;
+  transform: none;
+  filter: none;
+}
+
+.hf-ig-ref-lightbox-img {
+  position: relative;
+  z-index: 1;
+  max-width: min(92vw, 1200px);
+  max-height: min(88vh, 900px);
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
+.hf-ig-ref-lightbox-close {
+  position: absolute;
+  z-index: 1;
+  top: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.15s ease;
+}
+
+.hf-ig-ref-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.hf-ig-ref-add {
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  border: 1px solid #292929;
+  background: transparent;
+  color: var(--hf-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+}
+
+.hf-ig-ref-add .anticon,
+.hf-ig-ref-add svg {
+  display: block;
+  line-height: 1;
+  width: 20px;
+  height: 20px;
+}
+
+.hf-ig-ref-add:hover:not(:disabled),
+.hf-ig-ref-add.is-open {
+  border-color: #3d3d3d;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hf-ig-ref-add:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.hf-ig-ref-label {
+  font-size: 12px;
+  color: var(--hf-muted);
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.hf-ig-card {
+  position: relative;
+  width: 100%;
+  border-radius: 5px;
+  /* 卡片本体不裁切，避免三点菜单被 overflow 吃掉；圆角裁切放到 media */
+  overflow: visible;
+  background: transparent !important;
+  border: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transition: transform 0.2s ease;
+}
+
+.hf-ig-card:hover,
+.hf-ig-card:focus-within {
+  transform: translateY(-2px);
+  background: transparent !important;
+  border: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.hf-ig-card-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 5px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--hf-faint);
+}
+
+.hf-ig-card:hover .hf-ig-card-media,
+.hf-ig-card-media:hover {
+  background: transparent !important;
+  border: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.hf-ig-card-media img,
+.hf-ig-card-media video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 5px;
+}
+
+.hf-ig-card-media .pg-ig-badge {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 2;
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  pointer-events: none;
+}
+
+.hf-ig-card-placeholder {
+  text-align: center;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hf-ig-card-placeholder-title {
+  font-size: 12px;
+  color: var(--hf-muted);
+  line-height: 1.35;
+  max-width: 12em;
+}
+
+.hf-ig-card-placeholder-sub {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.hf-ig-card-placeholder-error .hf-ig-card-placeholder-title {
+  color: #f87171;
+}
+
+.hf-ig-card-meta {
+  padding: 10px 12px 12px;
+}
+
+.hf-ig-card-prompt {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--hf-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hf-ig-card-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--hf-faint);
+}
+
+.hf-ig-card-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.hf-ig-card:hover .hf-ig-card-actions {
+  opacity: 1;
+}
+
+.hf-ig-icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--hf-border);
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--hf-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  text-decoration: none;
+}
+
+.hf-ig-icon-btn:hover {
+  border-color: var(--hf-border-strong);
+  background: rgba(0, 0, 0, 0.85);
+}
+
+/* ===== Bottom dock — 对齐 imagine.art prompt box（960×120 / p-3 / gap-4） ===== */
+.hf-ig-dock-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: center;
+  padding: 0 16px 32px;
+  pointer-events: none;
+  background: none;
+}
+
+.hf-ig-dock {
+  width: min(100%, var(--hf-dock-max));
+  max-width: var(--hf-dock-max);
+  min-height: 135px;
+  pointer-events: auto;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #171717;
+  box-shadow:
+    inset 0 0 0 1px #212121,
+    0 12px 28px rgba(0, 0, 0, 0.4);
+  padding: 12px 12px 6px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  overflow: visible;
+  transition: border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+              background 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hf-ig-dock:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: #1c1c1e;
+}
+
+.hf-ig-dock:focus-within {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: #1c1c1e;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.hf-ig-dock-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 111px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  overflow: visible;
+}
+
+.hf-ig-dock-prompt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hf-ig-dock-prompt {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  min-height: 47px;
+  max-height: 160px;
+  resize: none;
+  overflow-y: auto;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--hf-text);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0;
+  font-family: inherit;
+  font-weight: 400;
+  /* 与 32px「+」按钮垂直居中：上下各 6px */
+  padding: 6px 0;
+  field-sizing: content;
+  box-sizing: border-box;
+}
+
+.hf-ig-composer.has-refs .hf-ig-dock-prompt {
+  min-height: 47px;
+  padding: 6px 0;
+}
+
+.hf-ig-dock-prompt::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.hf-ig-dock-prompt:focus::placeholder {
+  opacity: 0 !important;
+  color: transparent !important;
+}
+
+.hf-ig-dock-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+  overflow: visible;
+  min-height: 36px;
+  margin-top: auto;
+}
+
+.hf-ig-dock-toolbar-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-bottom: 2px;
+}
+
+/* 快捷栏跟在模型选择后面：同一行胶囊，不占满宽三列 */
+.hf-ig-dock-toolbar-start .pg-qbar {
+  display: flex;
+  flex-wrap: wrap;
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 8px;
+}
+
+.hf-ig-dock-toolbar-start .pg-qbar-chip {
+  width: auto;
+  max-width: 168px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid #292929;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.hf-ig-dock-toolbar-start .pg-qbar-chip:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #3d3d3d;
+}
+
+.hf-ig-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 1px solid #292929;
+  background: transparent;
+  color: var(--hf-text);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  line-height: normal;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  position: relative;
+  flex-shrink: 0;
+  pointer-events: auto;
+  z-index: 1;
+  box-sizing: border-box;
+}
+
+.hf-ig-chip:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: #3d3d3d;
+}
+
+.hf-ig-chip.active-pop {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
+  z-index: 5;
+}
+
+.hf-ig-chip-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: linear-gradient(145deg, #d6ff3c, #f5e64a);
+  box-shadow: 0 0 8px rgba(214, 255, 60, 0.35);
+}
+
+.hf-ig-chip-caret,
+.hf-ig-chip .anticon,
+.hf-ig-chip svg {
+  display: block;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.hf-ig-chip-caret {
+  font-size: 10px;
+  color: var(--hf-muted);
+  margin-left: 0;
+}
+
+.hf-ig-chip-shape {
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.85;
+  color: var(--hf-muted);
+}
+
+.hf-msp-trigger-logo,
+.hf-ig-chip img {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+.hf-msp-trigger-text {
+  line-height: 20px;
+  display: block;
+}
+
+/* Imagine Create：紫底、叠色底座、高 38、圆角 15px；内容严格垂直居中 */
+.hf-ig-generate {
+  --hf-ig-generate-h: 38px;
+  width: auto;
+  min-width: 116px;
+  height: var(--hf-ig-generate-h);
+  min-height: var(--hf-ig-generate-h);
+  max-height: var(--hf-ig-generate-h);
+  padding: 0 32px;
+  align-self: auto;
+  border: none;
+  border-radius: 15px;
+  background: #854cf7;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-bottom: 2px;
+  box-shadow: 0 4px 0 0 #4f1db0, 0 6px 14px rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+  transition: filter 0.15s ease, transform 0.12s ease, box-shadow 0.12s ease, opacity 0.15s;
+}
+
+.hf-ig-generate-icon {
+  width: 15px;
+  height: 15px;
+  display: block;
+  flex-shrink: 0;
+}
+
+.hf-ig-generate-label {
+  line-height: 1;
+  white-space: nowrap;
+  display: block;
+}
+
+.hf-ig-generate .anticon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.hf-ig-generate:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 0 0 #4f1db0, 0 8px 18px rgba(133, 76, 247, 0.45);
+}
+
+.hf-ig-generate:active:not(:disabled) {
+  transform: translateY(2px);
+  filter: none;
+  box-shadow: 0 2px 0 0 #4f1db0, 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+
+.hf-ig-generate:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+  box-shadow: 0 3px 0 0 #3b1784;
+}
+
+/* Model / popover menus */
+.hf-ig-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 14px;
+  border: 1px solid var(--hf-border-strong);
+  background: #161618;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  padding: 6px;
+  z-index: 40;
+  pointer-events: auto;
+}
+
+.hf-ig-pop.align-right {
+  left: auto;
+  right: 0;
+}
+
+.hf-ig-pop-title {
+  padding: 8px 10px 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hf-faint);
+}
+
+.hf-ig-pop-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--hf-text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+
+.hf-ig-pop-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hf-ig-pop-item.selected {
+  background: rgba(214, 255, 60, 0.1);
+}
+
+.hf-ig-pop-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.hf-ig-pop-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.hf-ig-pop-item-desc {
+  font-size: 11px;
+  color: var(--hf-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hf-ig-pop-check {
+  color: var(--hf-accent);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.hf-ig-pop-aspect {
+  min-width: 196px;
+  max-width: 240px;
+  max-height: min(420px, 55vh);
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.hf-ig-aspect-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.hf-ig-aspect-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 11px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--hf-text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+
+.hf-ig-aspect-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hf-ig-aspect-item.selected {
+  background: rgba(214, 255, 60, 0.12);
+}
+
+/* 固定槽位，横/竖比例框居中，文字左缘对齐 */
+.hf-ig-aspect-item-slot {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hf-ig-aspect-item-shape {
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  color: var(--hf-muted);
+  flex-shrink: 0;
+  opacity: 0.85;
+  box-sizing: border-box;
+}
+
+.hf-ig-aspect-item.selected .hf-ig-aspect-item-shape {
+  color: var(--hf-accent);
+  opacity: 1;
+}
+
+.hf-ig-aspect-item-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+}
+
+.hf-ig-aspect-item.selected .hf-ig-aspect-item-label {
+  color: var(--hf-text);
+}
+
+.hf-ig-chip-warn {
+  border-color: rgba(248, 113, 113, 0.45) !important;
+  color: #fca5a5;
+}
+
+.hf-ig-chip-wrap {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.hf-ig-chip-wrap.is-open {
+  z-index: 50;
+}
+
+.hf-ig-count-chip {
+  cursor: default;
+}
+
+.hf-ig-count-step {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hf-text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  padding: 0;
+}
+
+.hf-ig-count-step:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hf-ig-count-step:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Generating shimmer card - 黑白灰极简现代风 */
+.hf-ig-generating {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  overflow: hidden;
+  background: #141416;
+}
+
+.hf-ig-generating::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 25%,
+    rgba(255, 255, 255, 0.02) 37%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0.02) 63%,
+    transparent 75%
+  );
+  background-size: 200% 100%;
+  animation: hf-ig-shimmer 1.6s linear infinite;
+}
+
+.hf-ig-generating-ring {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255, 255, 255, 0.12);
+  border-top-color: rgba(255, 255, 255, 0.9);
+  animation: hf-ig-spin 0.85s linear infinite;
+  position: relative;
+  z-index: 1;
+}
+
+.hf-ig-generating-text {
+  position: relative;
+  z-index: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.72);
+  letter-spacing: 0.02em;
+}
+
+@keyframes hf-ig-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes hf-ig-spin {
+  to { transform: rotate(360deg); }
+}
+
+.hf-ig-pending {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  animation: hf-ig-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes hf-ig-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (max-width: 768px) {
+  .hf-ig-gallery {
+    padding: 12px 10px 148px;
+  }
+
+  .hf-ig-empty {
+    padding: 28px 16px;
+    gap: 10px;
+  }
+
+  .hf-ig-empty h2 {
+    font-size: 18px;
+  }
+
+  .hf-ig-dock-wrap {
+    padding: 0;
+    background: none;
+    pointer-events: none;
+  }
+
+  .hf-ig-dock {
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+    border-radius: 20px 20px 0 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: none;
+    background: #171717;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
+      0 -8px 32px rgba(0, 0, 0, 0.5);
+    padding: 12px 14px max(14px, env(safe-area-inset-bottom));
+    gap: 0;
+    position: relative;
+  }
+
+  .hf-ig-dock:hover,
+  .hf-ig-dock:focus-within {
+    border-top-color: rgba(255, 255, 255, 0.18);
+    background: #1c1c1e;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
+      0 -8px 32px rgba(0, 0, 0, 0.55);
+  }
+
+  .hf-ig-dock-main {
+    min-height: 0;
+    gap: 8px;
+  }
+
+  .hf-ig-dock-prompt {
+    min-height: 28px;
+    max-height: 96px;
+    font-size: 14px;
+    line-height: 20px;
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .hf-ig-dock-prompt:focus,
+  .hf-ig-dock-prompt:focus-within {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+  }
+
+  .hf-ig-composer:not(.has-refs) .hf-ig-ref-row {
+    position: absolute;
+    left: 14px;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    z-index: 3;
+    min-height: 40px;
+  }
+
+  .hf-ig-composer:not(.has-refs) .hf-ig-ref-add {
+    width: 40px;
+    height: 40px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .hf-ig-composer:not(.has-refs) .hf-ig-ref-add:active {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .hf-ig-composer:not(.has-refs) + .hf-ig-dock-toolbar .hf-ig-dock-toolbar-start {
+    padding-left: 50px;
+  }
+
+  .hf-ig-dock-toolbar {
+    gap: 8px;
+    min-height: 40px;
+    align-items: center;
+  }
+
+  .hf-ig-dock-toolbar-start {
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    overflow: visible;
+    align-items: center;
+  }
+
+  .hf-ig-dock-toolbar-start .pg-qbar {
+    display: none;
+  }
+
+  .hf-ig-dock-toolbar-start .hf-tsp-trigger,
+  .hf-ig-dock-toolbar-start .hf-msp-trigger {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    padding: 0;
+    gap: 0;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.05);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .hf-ig-dock-toolbar-start .hf-tsp-trigger:active,
+  .hf-ig-dock-toolbar-start .hf-msp-trigger:active {
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .hf-ig-dock-toolbar-start .hf-msp-trigger,
+  .hf-ig-dock-toolbar-start .hf-msp-trigger.active-pop {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .hf-ig-dock-toolbar-start .hf-tsp-trigger-label,
+  .hf-ig-dock-toolbar-start .hf-tsp-caret,
+  .hf-ig-dock-toolbar-start .hf-msp-trigger-text,
+  .hf-ig-dock-toolbar-start .hf-ig-chip-caret {
+    display: none;
+  }
+
+  .hf-ig-generate {
+    --hf-ig-generate-h: 38px;
+    min-width: 92px;
+    width: auto;
+    padding: 0 20px;
+    border-radius: 15px;
+    background: #854cf7;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    gap: 6px;
+    box-shadow: 0 4px 0 0 #4f1db0, 0 6px 14px rgba(0, 0, 0, 0.35);
+    margin-bottom: 2px;
+  }
+
+  .hf-ig-generate:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 4px 0 0 #4f1db0, 0 8px 18px rgba(133, 76, 247, 0.45);
+  }
+
+  .hf-ig-generate:active:not(:disabled) {
+    transform: translateY(2px);
+    filter: none;
+    box-shadow: 0 2px 0 0 #4f1db0, 0 3px 6px rgba(0, 0, 0, 0.3);
+  }
+
+  .hf-ig-generate:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    filter: none;
+    box-shadow: 0 3px 0 0 #3b1784;
+  }
+
+  .hf-ig-card,
+  .hf-ig-card-media,
+  .hf-ig-card-media img,
+  .hf-ig-card-media video {
+    border-radius: 5px !important;
+  }
+
+  .hf-ig-gallery .pg-ig-uniform-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  .hf-ig-dock .hf-mpf-resize-handle {
+    display: none;
+  }
+}
+
+/* 浅色模式适配 */
+[data-theme='light'] .hf-ig-root,
+.hf-ig-root[data-theme='light'],
+body[data-theme='light'] .hf-ig-root,
+html[data-theme='light'] .hf-ig-root {
+  --hf-bg: #f8f9fa;
+  --hf-surface: #ffffff;
+  --hf-surface-2: #f4f4f5;
+  --hf-border: rgba(0, 0, 0, 0.08);
+  --hf-border-strong: rgba(0, 0, 0, 0.15);
+  --hf-text: #09090b;
+  --hf-muted: #52525b;
+  --hf-faint: #a1a1aa;
+  --hf-accent: #8a3ffc;
+  --hf-accent-hover: #7c3aed;
+  --hf-accent-text: #ffffff;
+  --hf-yellow: #d97706;
+}
+
+[data-theme='light'] .hf-ig-gallery,
+body[data-theme='light'] .hf-ig-gallery {
+  background: var(--hf-bg);
+}
+[data-theme='light'] .hf-ig-gallery::-webkit-scrollbar-thumb,
+body[data-theme='light'] .hf-ig-gallery::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .hf-ig-topbar,
+body[data-theme='light'] .hf-ig-topbar {
+  background: rgba(255, 255, 255, 0.85);
+  border-bottom-color: var(--hf-border);
+}
+
+[data-theme='light'] .hf-ig-back:hover,
+body[data-theme='light'] .hf-ig-back:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='light'] .hf-ig-card,
+body[data-theme='light'] .hf-ig-card {
+  box-shadow: none;
+  border: none;
+  background: transparent;
+}
+[data-theme='light'] .hf-ig-card:hover,
+body[data-theme='light'] .hf-ig-card:hover {
+  box-shadow: none;
+}
+
+[data-theme='light'] .hf-ig-dock-wrap,
+body[data-theme='light'] .hf-ig-dock-wrap {
+  background: none;
+}
+
+[data-theme='light'] .hf-ig-dock,
+body[data-theme='light'] .hf-ig-dock {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.04),
+    0 12px 32px rgba(0, 0, 0, 0.1);
+}
+[data-theme='light'] .hf-ig-dock:hover,
+body[data-theme='light'] .hf-ig-dock:hover {
+  border-color: rgba(0, 0, 0, 0.18);
+  background: #ffffff;
+}
+[data-theme='light'] .hf-ig-dock:focus-within,
+body[data-theme='light'] .hf-ig-dock:focus-within {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.22);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.04),
+    0 12px 32px rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .hf-ig-dock-prompt,
+body[data-theme='light'] .hf-ig-dock-prompt,
+html.light .hf-ig-dock-prompt,
+.light .hf-ig-dock-prompt {
+  color: #09090b !important;
+}
+[data-theme='light'] .hf-ig-dock-prompt::placeholder,
+body[data-theme='light'] .hf-ig-dock-prompt::placeholder,
+html.light .hf-ig-dock-prompt::placeholder,
+.light .hf-ig-dock-prompt::placeholder {
+  color: #a1a1aa !important;
+}
+
+[data-theme='light'] .hf-ig-chip,
+body[data-theme='light'] .hf-ig-chip,
+html.light .hf-ig-chip,
+.light .hf-ig-chip {
+  background: #f4f4f5;
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #09090b;
+}
+[data-theme='light'] .hf-ig-chip:hover,
+body[data-theme='light'] .hf-ig-chip:hover,
+html.light .hf-ig-chip:hover,
+.light .hf-ig-chip:hover {
+  background: #e4e4e7;
+  border-color: rgba(0, 0, 0, 0.15);
+}
+[data-theme='light'] .hf-ig-chip.active-pop,
+body[data-theme='light'] .hf-ig-chip.active-pop,
+html.light .hf-ig-chip.active-pop,
+.light .hf-ig-chip.active-pop {
+  border-color: rgba(0, 0, 0, 0.25);
+  background: #e4e4e7;
+}
+
+[data-theme='light'] .hf-ig-pop,
+body[data-theme='light'] .hf-ig-pop,
+html.light .hf-ig-pop,
+.light .hf-ig-pop {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
+  color: #09090b;
+}
+
+[data-theme='light'] .hf-ig-ref-add,
+body[data-theme='light'] .hf-ig-ref-add,
+html.light .hf-ig-ref-add,
+.light .hf-ig-ref-add {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: #09090b;
+  background: #f4f4f5;
+}
+[data-theme='light'] .hf-ig-ref-add:hover:not(:disabled),
+body[data-theme='light'] .hf-ig-ref-add.is-open,
+html.light .hf-ig-ref-add:hover:not(:disabled),
+.light .hf-ig-ref-add.is-open {
+  border-color: rgba(0, 0, 0, 0.25);
+  background: #e4e4e7;
+  color: #09090b;
+}
+
+[data-theme='light'] .hf-ig-ref-label,
+body[data-theme='light'] .hf-ig-ref-label,
+html.light .hf-ig-ref-label,
+.light .hf-ig-ref-label {
+  color: #71717a;
+}
+[data-theme='light'] .hf-ig-ref-thumb-btn,
+body[data-theme='light'] .hf-ig-ref-thumb-btn,
+html.light .hf-ig-ref-thumb-btn,
+.light .hf-ig-ref-thumb-btn {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: #f4f4f5;
+}
+
+[data-theme='light'] .hf-ig-ref-clear,
+body[data-theme='light'] .hf-ig-ref-clear {
+  border-color: #ffffff;
+}
+
+[data-theme='light'] .hf-ig-empty-orb,
+body[data-theme='light'] .hf-ig-empty-orb,
+html.light .hf-ig-empty-orb,
+.light .hf-ig-empty-orb {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: rgba(0, 0, 0, 0.35);
+}
+
+[data-theme='light'] .hf-ig-generating,
+body[data-theme='light'] .hf-ig-generating,
+html.light .hf-ig-generating,
+.light .hf-ig-generating {
+  background: #f4f4f5;
+}
+
+[data-theme='light'] .hf-ig-generating-ring,
+body[data-theme='light'] .hf-ig-generating-ring,
+html.light .hf-ig-generating-ring,
+.light .hf-ig-generating-ring {
+  border: 2.5px solid rgba(0, 0, 0, 0.1);
+  border-top-color: rgba(0, 0, 0, 0.85);
+}
+
+[data-theme='light'] .hf-ig-generating-text,
+body[data-theme='light'] .hf-ig-generating-text,
+html.light .hf-ig-generating-text,
+.light .hf-ig-generating-text {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+[data-theme='light'] .hf-ig-pending,
+body[data-theme='light'] .hf-ig-pending,
+html.light .hf-ig-pending,
+.light .hf-ig-pending {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+@media (max-width: 768px) {
+  [data-theme='light'] .hf-ig-dock,
+  body[data-theme='light'] .hf-ig-dock {
+    background: #ffffff;
+    border-top-color: rgba(0, 0, 0, 0.08);
+    border-left-color: rgba(0, 0, 0, 0.06);
+    border-right-color: rgba(0, 0, 0, 0.06);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+  }
+
+  [data-theme='light'] .hf-ig-composer:not(.has-refs) .hf-ig-ref-add,
+  [data-theme='light'] .hf-ig-dock-toolbar-start .hf-tsp-trigger,
+  [data-theme='light'] .hf-ig-dock-toolbar-start .hf-msp-trigger {
+    background: #f4f4f5;
+    border-color: rgba(0, 0, 0, 0.08);
+    color: #09090b;
+  }
+}
+
+

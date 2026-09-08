@@ -14,10 +14,13 @@
 //! - HA 中间失败不 UPDATE `logs`；环结束一次记账；插件表 `ha_usage_logs` 记全量子渠过程
 //! - 展示用 YID：读路径 JOIN `channel_configs`，日志表不落 `yid` 列
 //! - 展示用 HA：写路径快照 `logs.is_ha`（见 [`channel_is_ha_flag`]），禁止 JOIN 当前 `channels.provider_type`
-//! - **墙钟预算**（仅 failover 开启）：备渠切换受 `ha_total_timeout_secs` 约束，避免嵌套转发被入口 Nginx 切成 504 HTML
+//! - **墙钟预算**（仅 failover 开启）：备渠切换受规则 `budget` 约束，避免嵌套转发被入口 Nginx 切成 504 HTML
+//! - **终态错误**：规则 `err=first` 对外首败；`err=last` 对外末次上游失败；`ha_usage_logs` 仍记全过程
+//! - **停切原因**：写入末次 `attempts[].end`（无新列），解释未打满最大尝试的原因
 
 use crate::error::AppError;
 use crate::models::{ApiToken, Channel};
+use crate::relay::ha_rule::{parse_rule_id, default_rule_arc, HaRule, HaRulesBundle};
 use crate::AppState;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
@@ -29,28 +32,15 @@ const MIN_RETRY_BUDGET: Duration = Duration::from_secs(5);
 /// send 时剩余预算不足仍给极短超时，便于快速失败
 const MIN_REQ_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// 一次解析：`(failover_on, max_attempts)`，供选渠开环前调用。
-pub async fn policy(state: &AppState, token_ha: i32) -> (bool, usize) {
-    let plugin_on = super::relay_settings::get_cached_ha_enabled(&state.db).await;
-    let on = plugin_on && token_ha != 0;
-    let attempts = if on {
-        state
-            .ha_max_retries
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .max(1) as usize
-    } else {
-        1
-    };
-    (on, attempts)
+/// 选渠是否允许 HA 组（尝试次数由 [`HaAttempt`] 绑定的规则决定）
+pub async fn policy(state: &AppState, token_ha: i32) -> bool {
+    super::relay_settings::get_cached_ha_enabled(&state.db).await && token_ha != 0
 }
 
 /// HA 整次墙钟预算秒数。`0`=自动 `min(540, 上游超时-60)`（为常见 Nginx 600s 留回写裕量）。
-fn resolve_budget_secs(state: &AppState) -> u64 {
-    let configured = state
-        .ha_total_timeout_secs
-        .load(std::sync::atomic::Ordering::Relaxed);
+fn resolve_budget_secs(configured: u64) -> u64 {
     if configured > 0 {
-        configured as u64
+        configured
     } else {
         let upstream = crate::services::http_client::upstream_timeout_duration().as_secs();
         upstream.saturating_sub(60).min(540).max(60)
@@ -283,7 +273,6 @@ pub struct HaBillCtx<'a> {
     pub model: &'a str,
     pub ep: &'a str,
     pub hint_category: Option<&'a str>,
-    pub billing_model_hint: Option<&'a str>,
     pub db_model: Option<&'a crate::models::Model>,
 }
 
@@ -296,7 +285,6 @@ impl<'a> HaBillCtx<'a> {
             model,
             ep,
             hint_category: None,
-            billing_model_hint: None,
             db_model: None,
         }
     }
@@ -308,19 +296,34 @@ impl<'a> HaBillCtx<'a> {
     }
 
     #[inline]
-    pub fn billing_model(mut self, m: &'a str) -> Self {
-        self.billing_model_hint = Some(m);
-        self
-    }
-
-    #[inline]
     pub fn db(mut self, m: Option<&'a crate::models::Model>) -> Self {
         self.db_model = m;
         self
     }
 }
 
-/// 插件 attempts 精简字段
+fn u16_zero(v: &u16) -> bool {
+    *v == 0
+}
+
+/// HA 子渠池快照（过滤项为 0 不落库）
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HaPoolSnap {
+    pub bind: u16,
+    pub live: u16,
+    #[serde(skip_serializing_if = "u16_zero")]
+    pub off: u16,
+    #[serde(skip_serializing_if = "u16_zero")]
+    pub melt: u16,
+    #[serde(skip_serializing_if = "u16_zero")]
+    pub quota: u16,
+    #[serde(skip_serializing_if = "u16_zero")]
+    pub excl: u16,
+    #[serde(skip_serializing_if = "u16_zero")]
+    pub gone: u16,
+}
+
+/// 插件 attempts 精简字段（末次可带 `end`=停切原因，无新表字段）
 #[derive(Debug, Clone, Serialize)]
 struct HaSnap {
     n: u16,
@@ -331,10 +334,18 @@ struct HaSnap {
     status: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// 上游返回的错误码（如 InvalidParameter），命中黑名单时可溯源
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     url: String,
     ms: u32,
     ok: u8,
+    /// 停切原因（仅写在收口那次；运营解释「为何未打满最大尝试」）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pool: Option<HaPoolSnap>,
 }
 
 /// 首败快照：渠 + 对外文案 + 落库账单 + 首败 endpoint（中间续试不覆盖）
@@ -363,22 +374,37 @@ pub struct HaAttempt {
     group_aid: Option<String>,
     billed: bool,
     saved: bool,
+    bundle: Option<Arc<HaRulesBundle>>,
+    rule: Arc<HaRule>,
+    pool: Option<HaPoolSnap>,
 }
 
 impl HaAttempt {
     /// 开环：解析 HA 策略，初始化排除列表与终态错误占位
     pub async fn begin(state: &AppState, token_ha: i32) -> Self {
-        let (failover_on, max_attempts) = policy(state, token_ha).await;
-        let budget_secs = resolve_budget_secs(state);
-        let budget = failover_on.then(|| Duration::from_secs(budget_secs));
-        if failover_on {
-            tracing::info!(
-                "[HA] 开始 最大尝试={} 令牌HA={} 墙钟预算={}s",
+        let plugin_on = super::relay_settings::get_cached_ha_enabled(&state.db).await;
+        let failover_on = plugin_on && token_ha != 0;
+        let (bundle, rule, max_attempts, budget) = if failover_on {
+            let bundle = super::relay_settings::get_cached_ha_rules(&state.db).await;
+            let rule = bundle.resolve_arc(None);
+            let max_attempts = rule.retries as usize;
+            let budget_secs = resolve_budget_secs(rule.budget);
+            crate::relay_debug!(
+                "[HA] 开始 规则={} 最大尝试={} 令牌HA={} 墙钟预算={}s",
+                rule.id,
                 max_attempts,
                 token_ha,
                 budget_secs
             );
-        }
+            (
+                Some(bundle),
+                rule,
+                max_attempts,
+                Some(Duration::from_secs(budget_secs)),
+            )
+        } else {
+            (None, default_rule_arc(), 1, None)
+        };
         Self {
             exclude_aids: vec![],
             attempt: 0,
@@ -395,7 +421,51 @@ impl HaAttempt {
             group_aid: None,
             billed: false,
             saved: false,
+            bundle,
+            rule,
+            pool: None,
         }
+    }
+
+    /// 选渠侧写入的子渠池快照（仅 HA 组有值）
+    #[inline]
+    pub fn note_pool(&mut self, pool: Option<HaPoolSnap>) {
+        if let Some(p) = pool {
+            self.pool = Some(p);
+        }
+    }
+
+    /// 选中 HA 组后绑定该组规则（未选 rule 则用默认）
+    pub fn on_channel(&mut self, channel: &Channel) {
+        if !self.failover_on {
+            return;
+        }
+        let Some(bundle) = &self.bundle else {
+            return;
+        };
+        let Some(aid) = channel.group_aid.as_deref() else {
+            return;
+        };
+        if !is_ha_aid(aid) {
+            return;
+        }
+        let rid = parse_rule_id(&channel.config);
+        self.apply_rule(bundle.resolve_arc(rid.as_deref()));
+    }
+
+    fn apply_rule(&mut self, rule: Arc<HaRule>) {
+        if self.rule.id == rule.id {
+            return;
+        }
+        self.max_attempts = rule.retries as usize;
+        self.budget = Some(Duration::from_secs(resolve_budget_secs(rule.budget)));
+        crate::relay_debug!(
+            "[HA] 绑定规则={} 最大尝试={} 墙钟预算={}s",
+            rule.id,
+            self.max_attempts,
+            self.budget_secs()
+        );
+        self.rule = rule;
     }
 
     /// 供 spawn 克隆，写入 [`FailBill`]
@@ -456,7 +526,7 @@ impl HaAttempt {
         }
         // 首次尝试不受墙钟预算限制；备渠需剩余预算
         if self.attempt > 0 && !self.has_budget_for_retry() {
-            tracing::info!(
+            crate::relay_debug!(
                 "[HA] 墙钟预算耗尽 已耗时={}s 预算={}s 尝试={}/{}，收口首败",
                 self.started_at.elapsed().as_secs(),
                 self.budget_secs(),
@@ -468,21 +538,26 @@ impl HaAttempt {
         true
     }
 
-    /// 本轮上游超时（立即计算；spawn 内用 [`timeout_ctx`] 在 send 前再 resolve）
+    /// 末次 snap 记停切原因（无新列）
     #[inline]
-    pub fn attempt_timeout(&self) -> Duration {
-        self.timeout_ctx().resolve()
+    fn mark_end(&mut self, reason: impl Into<String>) {
+        if let Some(s) = self.snaps.last_mut() {
+            s.end = Some(reason.into());
+        }
     }
 
     /// 选渠失败：尚无上游交互时用选渠错误作为对外文案
     pub fn on_select_err(&mut self, e: AppError) {
         if !self.had_upstream {
             self.last_err = e;
+        } else {
+            self.mark_end("无可用子渠（已排除或熔断）");
         }
     }
 
     /// 权限/余额等不可 failover 错误
     pub fn on_access_err(&mut self, e: AppError) {
+        self.mark_end("业务侧停止（权限/余额等）");
         self.last_err = e;
     }
 
@@ -497,7 +572,7 @@ impl HaAttempt {
     ) -> bool {
         if is_access_side_err(&err) {
             let _ = self.take_bill();
-            tracing::info!(
+            crate::relay_debug!(
                 "[HA] 业务侧停止 状态码={} 上游YID={} 尝试={}/{}",
                 err.http_status(),
                 yid_label(channel.yid.as_deref()),
@@ -517,6 +592,11 @@ impl HaAttempt {
         let masked = url.map(|u| super::forward::mask_key_in_string(u, &channel.api_key));
 
         self.had_upstream = true;
+        self.last_err = err;
+        // err_code 在 bill.take() 之前提取，否则首败 bill 被 move 后拿不到
+        let err_code = bill
+            .as_ref()
+            .and_then(|b| extract_err_code(&b.response_body));
         // 首败账单 move 进快照；后续失败账单留局部（退预扣 / 并入预扣额）
         let mut bill = bill;
         if self.first.is_none() {
@@ -527,15 +607,13 @@ impl HaAttempt {
                 bill: bill.take(),
                 endpoint: ctx.ep.to_string(),
             });
-            self.last_err = err;
-        } else {
-            let _ = err;
         }
 
         self.push_snap(
             channel,
             fail_status,
             Some(super::proxy::extract_error_message(&msg)),
+            err_code,
             masked.as_deref().unwrap_or(""),
             latency_ms,
             false,
@@ -546,18 +624,33 @@ impl HaAttempt {
             return true;
         }
 
-        // 末次：未退预扣并入首败后一次落库
-        if let Some(last) = bill {
+        // 末次：按终态策略决定落库数据来源
+        if self.rule.err_last() {
+            // err=last：用末败的渠道/端点/错误信息落库，使日志 upstream_url 和 error_message 反映真实末败上游
+            // 中间子渠预扣已由 refund_continue 退款，末败预扣额取末败账单
             if let Some(f) = self.first.as_mut() {
-                if let Some(b) = f.bill.as_mut() {
-                    b.pre_deducted = last.pre_deducted;
-                    b.pre_deduct_gift = last.pre_deduct_gift;
-                } else if last.pre_deducted > 0.0 || last.pre_deduct_gift > 0.0 {
-                    f.bill = Some(FailBill {
-                        pre_deducted: last.pre_deducted,
-                        pre_deduct_gift: last.pre_deduct_gift,
-                        ..Default::default()
-                    });
+                f.channel = channel.clone();
+                f.endpoint = ctx.ep.to_string();
+                f.status = fail_status;
+                f.message = msg.clone();
+                if let Some(last) = bill {
+                    f.bill = Some(last);
+                }
+            }
+        } else {
+            // err=first：保留首败账单，仅将末败预扣额并入一次落库
+            if let Some(last) = bill {
+                if let Some(f) = self.first.as_mut() {
+                    if let Some(b) = f.bill.as_mut() {
+                        b.pre_deducted = last.pre_deducted;
+                        b.pre_deduct_gift = last.pre_deduct_gift;
+                    } else if last.pre_deducted > 0.0 || last.pre_deduct_gift > 0.0 {
+                        f.bill = Some(FailBill {
+                            pre_deducted: last.pre_deducted,
+                            pre_deduct_gift: last.pre_deduct_gift,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
@@ -592,7 +685,7 @@ impl HaAttempt {
     pub async fn ok(&mut self, state: &AppState, channel: &Channel, url: &str, ms: u32) {
         self.billed = true;
         let masked = super::forward::mask_key_in_string(url, &channel.api_key);
-        self.push_snap(channel, 200, None, &masked, ms, true);
+        self.push_snap(channel, 200, None, None, &masked, ms, true);
         self.save(state).await;
     }
 
@@ -609,6 +702,9 @@ impl HaAttempt {
         let Some(log_id) = self.pending_log_id else {
             return;
         };
+        if let Some(s) = self.snaps.last_mut() {
+            s.pool = self.pool.clone();
+        }
         let attempts = match serde_json::to_value(&self.snaps) {
             Ok(v) => v,
             Err(e) => {
@@ -666,7 +762,7 @@ impl HaAttempt {
 
     /// 环结束：补记仍为处理中的首败 → 写插件表 → 返回对外错误
     pub async fn finish(mut self, ctx: &HaBillCtx<'_>) -> AppError {
-        tracing::info!(
+        crate::relay_debug!(
             "[HA] 结束 已尝试={} 最大={} 已耗时={}s 预算={}s 已排除={:?}",
             self.attempt,
             self.max_attempts,
@@ -686,13 +782,11 @@ impl HaAttempt {
         if is_access_side_err(&self.last_err) {
             return self.last_err;
         }
+        if self.rule.err_last() {
+            return self.last_err;
+        }
         match self.first {
-            Some(f) => match self.last_err {
-                AppError::UpstreamHttpError(s, m, h) if s == f.status => {
-                    AppError::UpstreamHttpError(s, m, h)
-                }
-                _ => super::proxy::upstream_fail(f.status, &f.message, None),
-            },
+            Some(f) => super::proxy::upstream_fail(f.status, &f.message, None),
             None => self.last_err,
         }
     }
@@ -703,7 +797,7 @@ impl HaAttempt {
             return;
         }
         if self.pending_log_id.is_none() {
-            tracing::error!(
+            tracing::warn!(
                 "[HA] 终态记账缺少 pending_log_id，放弃落库以防双日志 上游YID={}",
                 self.first
                     .as_ref()
@@ -785,7 +879,6 @@ impl HaAttempt {
             billing_detail: detail,
             hint_category: ctx.hint_category,
             pending_log_id: self.pending_log_id,
-            billing_model_hint: ctx.billing_model_hint,
             db_model: ctx.db_model,
             client_msg: Some(&client),
             pre_deducted: pre,
@@ -800,6 +893,7 @@ impl HaAttempt {
         channel: &Channel,
         status: u16,
         error: Option<String>,
+        code: Option<String>,
         url: &str,
         ms: u32,
         ok: bool,
@@ -824,13 +918,16 @@ impl HaAttempt {
             name: channel.name.clone(),
             status,
             error,
+            code,
             url: url.to_string(),
             ms,
             ok: u8::from(ok),
+            end: None,
+            pool: None,
         });
     }
 
-    /// 熔断 / exclude；返回是否续试
+    /// 熔断 / exclude；返回是否续试（停切时写入末次 snap.end）
     fn try_switch(
         &mut self,
         state: &Arc<AppState>,
@@ -842,7 +939,7 @@ impl HaAttempt {
         let yid = yid_label(channel.yid.as_deref());
         let n = self.attempt + 1;
 
-        let mut cont = try_failover(
+        if let Some(reason) = try_failover(
             state,
             self.failover_on,
             channel.group_aid.as_deref(),
@@ -850,44 +947,10 @@ impl HaAttempt {
             fail_status,
             msg,
             &mut self.exclude_aids,
-        );
-        if cont && !self.has_budget_for_retry() {
-            tracing::info!(
-                "[HA] 切换取消(预算不足) 状态码={} 上游YID={} 子渠标识={} 已耗时={}s 预算={}s",
-                fail_status,
-                yid,
-                aid,
-                self.started_at.elapsed().as_secs(),
-                self.budget_secs()
-            );
-            cont = false;
-        }
-        // 本轮已是最后一次尝试：必须在 fail 内 settle，避免落到弱 finish 上下文
-        if cont && n >= self.max_attempts {
-            tracing::info!(
-                "[HA] 切换取消(已达最大尝试) 状态码={} 上游YID={} 子渠标识={} 尝试={}/{}",
-                fail_status,
-                yid,
-                aid,
-                n,
-                self.max_attempts
-            );
-            cont = false;
-        }
-
-        if cont {
-            tracing::info!(
-                "[HA] 切换 状态码={} 上游YID={} 子渠标识={} 尝试={}/{} 已排除={} 剩余预算={}s",
-                fail_status,
-                yid,
-                aid,
-                n,
-                self.max_attempts,
-                self.exclude_aids.len(),
-                self.remaining_budget().map(|d| d.as_secs()).unwrap_or(0)
-            );
-        } else {
-            tracing::info!(
+            &self.rule,
+        ) {
+            self.mark_end(reason);
+            crate::relay_debug!(
                 "[HA] 停止无切换 状态码={} 上游YID={} 子渠标识={} 尝试={}/{}",
                 fail_status,
                 yid,
@@ -895,8 +958,42 @@ impl HaAttempt {
                 n,
                 self.max_attempts
             );
+            return false;
         }
-        cont
+        if !self.has_budget_for_retry() {
+            let elapsed_s = self.started_at.elapsed().as_secs();
+            let budget_s = self.budget_secs();
+            crate::relay_debug!(
+                "[HA] 切换取消(预算不足) 状态码={} 上游YID={} 子渠标识={} 已耗时={}s 预算={}s",
+                fail_status, yid, aid, elapsed_s, budget_s
+            );
+            self.mark_end(format!("墙钟预算不足（已用{elapsed_s}s/{budget_s}s）"));
+            return false;
+        }
+        if n >= self.max_attempts {
+            crate::relay_debug!(
+                "[HA] 切换取消(已达最大尝试) 状态码={} 上游YID={} 子渠标识={} 尝试={}/{}",
+                fail_status,
+                yid,
+                aid,
+                n,
+                self.max_attempts
+            );
+            self.mark_end(format!("已达最大尝试 {n}/{}", self.max_attempts));
+            return false;
+        }
+
+        crate::relay_debug!(
+            "[HA] 切换 状态码={} 上游YID={} 子渠标识={} 尝试={}/{} 已排除={} 剩余预算={}s",
+            fail_status,
+            yid,
+            aid,
+            n,
+            self.max_attempts,
+            self.exclude_aids.len(),
+            self.remaining_budget().map(|d| d.as_secs()).unwrap_or(0)
+        );
+        true
     }
 }
 
@@ -954,7 +1051,7 @@ fn status_msg(err: &AppError) -> (u16, String) {
     match err {
         AppError::UpstreamHttpError(s, m, _) => (*s, m.clone()),
         AppError::UpstreamError(m) => (502, m.clone()),
-        other => (other.http_status(), other.to_string()),
+        other => (other.http_status(), other.message()),
     }
 }
 
@@ -991,13 +1088,8 @@ fn is_access_side_err(err: &AppError) -> bool {
     }
 }
 
-/// 上游客户端侧 HTTP：仍切换，但不熔断
-#[inline]
-fn is_client_side_http_status(status: u16) -> bool {
-    matches!(status, 400 | 402 | 403 | 422)
-}
-
-/// 仅 HA 子渠且策略开启时 exclude（并可能熔断）；黑名单命中则停止切换；400/402/403/422 只切换不熔断
+/// 仅 HA 子渠且策略开启时 exclude（并可能熔断）；黑名单命中则停止切换；未配置熔断码只切换不熔断
+/// `None`=可续试；`Some(reason)`=停切原因
 fn try_failover(
     state: &Arc<AppState>,
     failover_on: bool,
@@ -1006,59 +1098,41 @@ fn try_failover(
     status: u16,
     err_msg: &str,
     exclude_aids: &mut Vec<String>,
-) -> bool {
+    rule: &HaRule,
+) -> Option<String> {
     if !failover_on {
-        return false;
+        return Some("未启用切换".into());
     }
     let Some(aid) = group_aid.filter(|a| is_ha_aid(a)) else {
-        return false;
+        return Some("非高可用子渠".into());
     };
     let yid_disp = yid_label(yid);
 
-    if let Some(pattern) = match_err_keywords(err_msg, &state.ha_meltdown_blacklist) {
-        tracing::info!(
+    if let Some(pattern) = match_err_keywords(err_msg, &rule.deny) {
+        crate::relay_debug!(
             "[HA] 黑名单停止切换 状态码={} 上游YID={} 子渠标识={} 关键词={}",
             status,
             yid_disp,
             aid,
             pattern
         );
-        return false;
+        return Some(format!("命中错误黑名单「{pattern}」"));
     }
 
-    if is_client_side_http_status(status) {
-        tracing::info!(
-            "[HA] 切换跳过熔断 状态码={} 上游YID={} 子渠标识={}（上游客户端侧错误）",
-            status,
-            yid_disp,
-            aid
-        );
-    } else {
-        trigger_ha_meltdown(state, aid, status, err_msg, yid);
-    }
+    trigger_ha_meltdown(state, aid, status, err_msg, yid, rule);
     if !exclude_aids.iter().any(|a| a == aid) {
         exclude_aids.push(aid.to_string());
     }
-    true
+    None
 }
 
-fn match_err_keywords(
-    error_message: &str,
-    list: &std::sync::RwLock<Vec<String>>,
-) -> Option<String> {
-    if error_message.is_empty() {
-        return None;
-    }
-    let Ok(patterns) = list.read() else {
-        return None;
-    };
-    if patterns.is_empty() {
+fn match_err_keywords(error_message: &str, list: &[String]) -> Option<String> {
+    if error_message.is_empty() || list.is_empty() {
         return None;
     }
     let err_lower = error_message.to_lowercase();
-    patterns
-        .iter()
-        .find(|p| !p.is_empty() && err_lower.contains(p.as_str()))
+    list.iter()
+        .find(|p| err_lower.contains(&p.to_lowercase()))
         .cloned()
 }
 
@@ -1068,17 +1142,12 @@ fn trigger_ha_meltdown(
     status_code: u16,
     error_message: &str,
     yid: Option<&str>,
+    rule: &HaRule,
 ) {
-    if !is_ha_aid(group_aid) {
-        return;
-    }
-
-    use std::sync::atomic::Ordering;
-
     let yid = yid_label(yid);
 
-    if let Some(pattern) = match_err_keywords(error_message, &state.ha_meltdown_whitelist) {
-        tracing::info!(
+    if let Some(pattern) = match_err_keywords(error_message, &rule.allow) {
+        crate::relay_debug!(
             "[HA] 白名单跳过熔断 上游YID={} 子渠标识={} 关键词={}",
             yid,
             group_aid,
@@ -1087,19 +1156,13 @@ fn trigger_ha_meltdown(
         return;
     }
 
-    let cooldown = match status_code {
-        429 => state.ha_cooldown_429.load(Ordering::Relaxed),
-        401 | 402 => state.ha_cooldown_auth.load(Ordering::Relaxed),
-        404 => state.ha_cooldown_404.load(Ordering::Relaxed),
-        _ => state.ha_cooldown_network.load(Ordering::Relaxed),
-    };
-
+    let cooldown = rule.melt_secs(status_code);
     if cooldown > 0 {
-        let block_until = Instant::now() + Duration::from_secs(cooldown.max(0) as u64);
+        let block_until = Instant::now() + Duration::from_secs(cooldown as u64);
         state
             .failed_channels
             .insert(group_aid.to_string(), block_until);
-        tracing::info!(
+        crate::relay_debug!(
             "[HA] 熔断 上游YID={} 子渠标识={} 状态码={} 冷却={}秒",
             yid,
             group_aid,
@@ -1109,8 +1172,16 @@ fn trigger_ha_meltdown(
     }
 
     static CLEANUP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = CLEANUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let n = CLEANUP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n % 32 == 0 || state.failed_channels.len() > 2048 {
         scrub_failed_channels(state);
     }
+}
+
+/// 从上游响应体 JSON 中提取 error.code（如 `InvalidParameter`），用于 snap 溯源。
+/// 复用 `response_formatter::extract_error_code_from_value`，无匹配返回 `None`。
+fn extract_err_code(body: &str) -> Option<String> {
+    let raw = body.find('{').map(|i| &body[i..]).unwrap_or(body);
+    let v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    super::response_formatter::extract_error_code_from_value(&v)
 }

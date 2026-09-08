@@ -20,6 +20,10 @@ fn default_status() -> i32 {
     1
 }
 
+fn default_currency_rate() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChannelConfig {
     pub id: i64,
@@ -77,7 +81,7 @@ pub struct ChannelConfig {
     /// 上游分类（复用 channel_categories）
     #[sqlx(default)]
     pub category_id: Option<i64>,
-    /// 上游系统：兼容 / 官方 / newapi / akeapi / 火山引擎 / 阿里云，空=未选
+    /// 上游系统：兼容 / 官方 / newapi / Tkeapi / 火山引擎 / 阿里云，空=未选
     #[sqlx(default)]
     pub upstream_system: String,
     /// 已选同步分组名
@@ -89,6 +93,15 @@ pub struct ChannelConfig {
     /// 同步时叠加到分组倍率的增量，0=不叠加
     #[sqlx(default)]
     pub upstream_sync_rate_add: f64,
+    /// 上游计价货币单位，如 CNY/USD，空=同本站
+    #[sqlx(default)]
+    pub upstream_currency: String,
+    /// 本站计价货币单位，如 USD/CNY，空=同系统
+    #[sqlx(default)]
+    pub site_currency: String,
+    /// 货币换算汇率，如 7.2
+    #[sqlx(default)]
+    pub upstream_currency_rate: f64,
     /// 上次成功同步时间
     #[sqlx(default)]
     pub upstream_synced_at: Option<DbTs>,
@@ -165,6 +178,12 @@ pub struct CreateChannelConfigRequest {
     pub upstream_sync_interval_minutes: i32,
     #[serde(default)]
     pub upstream_sync_rate_add: f64,
+    #[serde(default)]
+    pub upstream_currency: String,
+    #[serde(default)]
+    pub site_currency: String,
+    #[serde(default = "default_currency_rate")]
+    pub upstream_currency_rate: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,12 +219,24 @@ pub struct UpdateChannelConfigRequest {
     pub upstream_group: Option<String>,
     pub upstream_sync_interval_minutes: Option<i32>,
     pub upstream_sync_rate_add: Option<f64>,
+    pub upstream_currency: Option<String>,
+    pub site_currency: Option<String>,
+    pub upstream_currency_rate: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ChannelConfigListResponse {
     pub data: Vec<ChannelConfigSafe>,
     pub total: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BoundChannelSummary {
+    pub id: i64,
+    pub name: String,
+    pub group_aid: Option<String>,
+    pub is_ha: bool,
+    pub status: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,7 +275,14 @@ pub struct ChannelConfigSafe {
     pub upstream_group: String,
     pub upstream_sync_interval_minutes: i32,
     pub upstream_sync_rate_add: f64,
+    pub upstream_currency: String,
+    pub site_currency: String,
+    pub upstream_currency_rate: f64,
     pub upstream_synced_at: Option<String>,
+    #[serde(default)]
+    pub bound_channel_count: i64,
+    #[serde(default)]
+    pub bound_channels: Vec<BoundChannelSummary>,
 }
 
 impl ChannelConfigSafe {
@@ -292,7 +330,12 @@ impl ChannelConfigSafe {
             upstream_group: c.upstream_group,
             upstream_sync_interval_minutes: c.upstream_sync_interval_minutes,
             upstream_sync_rate_add: c.upstream_sync_rate_add,
+            upstream_currency: c.upstream_currency,
+            site_currency: c.site_currency,
+            upstream_currency_rate: c.upstream_currency_rate,
             upstream_synced_at: c.upstream_synced_at.map(|t| t.into_string()),
+            bound_channel_count: 0,
+            bound_channels: Vec::new(),
         }
     }
 }

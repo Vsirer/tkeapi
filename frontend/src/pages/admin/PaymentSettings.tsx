@@ -8,17 +8,21 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Card, Form, Input, Button, message, Typography, Tabs, Switch, Alert, Divider,
-  InputNumber, Table, Space, Image, Row, Col,
+  InputNumber, Table, Space, Image, Row, Col, Tag, Radio, Badge, Popconfirm, Tooltip,
+  Modal, Checkbox,
 } from 'antd';
 import {
   WechatOutlined, AlipayCircleOutlined, LinkOutlined, SafetyCertificateOutlined,
   DollarOutlined, CreditCardOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined,
   SettingOutlined, BankOutlined, ArrowLeftOutlined, EditOutlined, CheckOutlined, CloseOutlined,
+  FileTextOutlined, CheckCircleOutlined, ReloadOutlined, StopOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
+import type { SellerInvoiceSubject } from '../../types';
 import {
   getChannelMeta,
   mergeChannelList,
@@ -27,7 +31,7 @@ import {
   type PaymentChannelUiItem,
 } from '../../constants/paymentChannels';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const PaymentSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -35,17 +39,60 @@ const PaymentSettings: React.FC = () => {
   const { themeMode } = useThemeStore();
   const isLight = themeMode === 'light';
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState(urlTab || 'currency');
+
+  useEffect(() => {
+    if (urlTab && urlTab !== activeTab) {
+      setActiveTab(urlTab);
+    }
+  }, [urlTab]);
+
+  const handleTabChange = (key: string) => {
+    setActiveTab(key);
+    setSearchParams({ tab: key }, { replace: true });
+  };
+
   const [formCurrency] = Form.useForm();
   const [formDisplay] = Form.useForm();
   const [formGateway] = Form.useForm();
+  const [formInvoices] = Form.useForm();
+  const [formSeller] = Form.useForm();
+  const [fullSettings, setFullSettings] = useState<any>(null);
+  const watchedInvoiceEnabled = Form.useWatch('invoice_enabled', formInvoices);
+  const isInvoiceServiceEnabled = watchedInvoiceEnabled !== undefined
+    ? !!watchedInvoiceEnabled
+    : (fullSettings?.invoices?.invoice_enabled !== false);
+  const watchedInvoiceMode = Form.useWatch('invoice_mode', formInvoices);
+  const isChinaMode = (watchedInvoiceMode !== undefined
+    ? watchedInvoiceMode
+    : fullSettings?.invoices?.invoice_mode) === 'china';
+
+  const [sellerModalOpen, setSellerModalOpen] = useState(false);
+  const [editingSeller, setEditingSeller] = useState<SellerInvoiceSubject | null>(null);
+  const [sellerSubjects, setSellerSubjects] = useState<SellerInvoiceSubject[]>([]);
+  const [savingSellerModal, setSavingSellerModal] = useState(false);
 
   const [loadingCurrency, setLoadingCurrency] = useState(false);
   const [loadingChannels, setLoadingChannels] = useState(false);
+  const [savingInvoices, setSavingInvoices] = useState(false);
+  const [userLevels, setUserLevels] = useState<any[]>([]);
+  const [loadingUserLevels, setLoadingUserLevels] = useState(false);
+  const [updatingLevelId, setUpdatingLevelId] = useState<number | null>(null);
+  const [batchUpdating, setBatchUpdating] = useState(false);
+  const [selectedLevelKeys, setSelectedLevelKeys] = useState<React.Key[]>([]);
+
+  const totalLevelsCount = userLevels.length;
+  const enabledLevelsCount = useMemo(
+    () => userLevels.filter((l) => l.invoice_enabled === 1).length,
+    [userLevels]
+  );
+  const allLevelsEnabled = totalLevelsCount > 0 && enabledLevelsCount === totalLevelsCount;
+  const noneLevelsEnabled = totalLevelsCount > 0 && enabledLevelsCount === 0;
   const [savingDrawer, setSavingDrawer] = useState(false);
   const [channels, setChannels] = useState<PaymentChannelUiItem[]>([]);
-  const [fullSettings, setFullSettings] = useState<any>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('currency');
   const [editingSubtitleField, setEditingSubtitleField] = useState<string | null>(null);
   const [editingSubtitleVal, setEditingSubtitleVal] = useState<string>('');
 
@@ -54,9 +101,25 @@ const PaymentSettings: React.FC = () => {
 
   useEffect(() => { fetchSettings(); }, []);
 
+  const fetchUserLevels = async () => {
+    setLoadingUserLevels(true);
+    try {
+      const resp = await (request.get('/user_levels') as any);
+      const list = resp?.data || resp || [];
+      if (Array.isArray(list)) {
+        setUserLevels(list);
+      }
+    } catch (e) {
+      console.error('Failed to fetch user levels:', e);
+    } finally {
+      setLoadingUserLevels(false);
+    }
+  };
+
   const fetchSettings = async () => {
     setLoadingChannels(true);
     try {
+      fetchUserLevels();
       const response = await (request.get('/settings/full') as any);
       setFullSettings(response);
       if (response?.currency) {
@@ -66,6 +129,86 @@ const PaymentSettings: React.FC = () => {
           quick_amounts: amountsStr,
           min_recharge_amount: response.currency.min_recharge_amount ?? 5,
         });
+      }
+      if (response?.invoices) {
+        formInvoices.setFieldsValue({
+          ...response.invoices,
+          invoice_enabled: response.invoices.invoice_enabled !== false,
+          invoice_show_invoices: response.invoices.invoice_show_invoices !== false,
+          invoice_show_receipts: response.invoices.invoice_show_receipts !== false,
+        });
+        if (response.invoices.invoice_sellers && Array.isArray(response.invoices.invoice_sellers) && response.invoices.invoice_sellers.length > 0) {
+          setSellerSubjects(response.invoices.invoice_sellers);
+        } else if (response.invoices.invoice_company_name) {
+          setSellerSubjects([
+            {
+              id: 'seller_default',
+              company_name: response.invoices.invoice_company_name,
+              tax_id: response.invoices.invoice_tax_id || '',
+              contact_email: response.invoices.invoice_contact_email || '',
+              company_address: response.invoices.invoice_company_address || '',
+              company_phone: '',
+              bank_name: '',
+              bank_account: '',
+              support_normal: true,
+              support_special: true,
+              is_default: true,
+              enabled: true,
+            },
+          ]);
+        } else {
+          setSellerSubjects([
+            {
+              id: 'seller_default',
+              company_name: 'TokensByte Inc.',
+              tax_id: 'US-987654321',
+              contact_email: 'billing@tokensbyte.com',
+              company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
+              company_phone: '',
+              bank_name: '',
+              bank_account: '',
+              support_normal: true,
+              support_special: true,
+              is_default: true,
+              enabled: true,
+            },
+          ]);
+        }
+      } else {
+        formInvoices.setFieldsValue({
+          invoice_enabled: true,
+          invoice_mode: 'international',
+          invoice_company_name: 'TokensByte Inc.',
+          invoice_company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
+          invoice_tax_id: 'US-987654321',
+          invoice_contact_email: 'billing@tokensbyte.com',
+          invoice_currency_symbol: '$',
+          invoice_prefix: 'INV-',
+          receipt_prefix: 'REC-',
+          invoice_notes: 'Thank you for your business! Payment has been processed in full.',
+          invoice_show_invoices: true,
+          invoice_show_receipts: true,
+          china_min_amount: 100,
+          china_invoice_content: '*信息技术服务*软件技术服务费',
+          china_tax_rate: 6,
+          china_invoice_notice: '增值税普通发票将在审核通过后发送至填写的邮箱。',
+        });
+        setSellerSubjects([
+          {
+            id: 'seller_default',
+            company_name: 'TokensByte Inc.',
+            tax_id: 'US-987654321',
+            contact_email: 'billing@tokensbyte.com',
+            company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
+            company_phone: '',
+            bank_name: '',
+            bank_account: '',
+            support_normal: true,
+            support_special: true,
+            is_default: true,
+            enabled: true,
+          },
+        ]);
       }
       setChannels(mergeChannelList(response?.payment_channels_ui?.channels));
     } catch (error) {
@@ -122,7 +265,6 @@ const PaymentSettings: React.FC = () => {
       message.success(enabled ? '已开启' : '已关闭');
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
       await fetchSettings();
     }
   };
@@ -134,7 +276,6 @@ const PaymentSettings: React.FC = () => {
       await persistChannels(next);
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
       await fetchSettings();
     }
   };
@@ -168,7 +309,6 @@ const PaymentSettings: React.FC = () => {
       await persistChannels(next);
     } catch (e) {
       console.error(e);
-      message.error(t('common.error'));
       await fetchSettings();
     }
   };
@@ -315,7 +455,6 @@ const PaymentSettings: React.FC = () => {
     } catch (error: any) {
       if (error?.errorFields) return;
       console.error('Save channel error:', error);
-      message.error(t('common.error'));
     } finally {
       setSavingDrawer(false);
     }
@@ -347,7 +486,6 @@ const PaymentSettings: React.FC = () => {
       updateStoreSettings(updatedSettings);
     } catch (error) {
       console.error('Save currency error:', error);
-      message.error(t('common.error'));
     } finally {
       setLoadingCurrency(false);
     }
@@ -784,12 +922,368 @@ const PaymentSettings: React.FC = () => {
     },
   ];
 
+  const handleToggleLevelInvoice = async (record: any, checked: boolean) => {
+    setUpdatingLevelId(record.id);
+    const targetVal = checked ? 1 : 0;
+    try {
+      await request.put(`/user_levels/${record.id}`, {
+        invoice_enabled: targetVal,
+      });
+      message.success(`已${checked ? '开启' : '关闭'}等级「${record.name}」的发票与收据权限`);
+      setUserLevels((prev) =>
+        prev.map((l) => (l.id === record.id ? { ...l, invoice_enabled: targetVal } : l))
+      );
+    } catch (e: any) {
+      console.error('Failed to toggle invoice enabled for user level:', e);
+      message.error(e?.message || '更新用户等级发票权限失败');
+    } finally {
+      setUpdatingLevelId(null);
+    }
+  };
+
+  const handleToggleAllLevels = async (enable: boolean) => {
+    if (userLevels.length === 0) return;
+    const targetVal = enable ? 1 : 0;
+    const needUpdate = userLevels.filter((l) => (l.invoice_enabled ?? 0) !== targetVal);
+    if (needUpdate.length === 0) {
+      message.info(enable ? '所有用户等级已全部处于开启状态' : '所有用户等级已全部处于关闭状态');
+      return;
+    }
+
+    setBatchUpdating(true);
+    try {
+      // 乐观更新前端状态
+      setUserLevels((prev) => prev.map((l) => ({ ...l, invoice_enabled: targetVal })));
+      // 并发持久化至后端数据库
+      await Promise.all(
+        needUpdate.map((l) =>
+          request.put(`/user_levels/${l.id}`, {
+            invoice_enabled: targetVal,
+          })
+        )
+      );
+      message.success(
+        enable
+          ? `已成功开启全部用户等级的发票与收据权限（共 ${totalLevelsCount} 个等级）`
+          : `已成功关闭全部用户等级的发票与收据权限（共 ${totalLevelsCount} 个等级）`
+      );
+    } catch (e: any) {
+      console.error('Failed to toggle all user levels invoice permission:', e);
+      message.error(e?.message || '批量更新用户等级开票权限失败，正在重新获取最新状态');
+      await fetchUserLevels();
+    } finally {
+      setBatchUpdating(false);
+    }
+  };
+
+  const handleBatchToggleSelectedLevels = async (enable: boolean) => {
+    if (selectedLevelKeys.length === 0) {
+      message.warning('请先勾选需要批量操作的用户等级');
+      return;
+    }
+    const targetVal = enable ? 1 : 0;
+    const selectedLevels = userLevels.filter((l) => selectedLevelKeys.includes(l.id));
+    const needUpdate = selectedLevels.filter((l) => (l.invoice_enabled ?? 0) !== targetVal);
+
+    if (needUpdate.length === 0) {
+      message.info(enable ? '所选等级已全部处于开启状态' : '所选等级已全部处于关闭状态');
+      return;
+    }
+
+    setBatchUpdating(true);
+    try {
+      setUserLevels((prev) =>
+        prev.map((l) => (selectedLevelKeys.includes(l.id) ? { ...l, invoice_enabled: targetVal } : l))
+      );
+      await Promise.all(
+        needUpdate.map((l) =>
+          request.put(`/user_levels/${l.id}`, {
+            invoice_enabled: targetVal,
+          })
+        )
+      );
+      message.success(
+        enable
+          ? `已批量开启所选 ${selectedLevelKeys.length} 个等级的发票权限`
+          : `已批量关闭所选 ${selectedLevelKeys.length} 个等级的发票权限`
+      );
+      setSelectedLevelKeys([]);
+    } catch (e: any) {
+      console.error('Failed to batch toggle selected levels invoice permission:', e);
+      message.error(e?.message || '批量更新选中等级开票权限失败');
+      await fetchUserLevels();
+    } finally {
+      setBatchUpdating(false);
+    }
+  };
+
+  // ── 多开票主体（销方资质）管理 ──
+  const handleOpenAddSeller = () => {
+    setEditingSeller(null);
+    formSeller.resetFields();
+    formSeller.setFieldsValue({
+      contact_email: '',
+      company_phone: '',
+      company_address: '',
+      company_website: '',
+      support_normal: true,
+      support_special: !isChinaMode,
+      is_default: sellerSubjects.length === 0,
+      enabled: true,
+    });
+    setSellerModalOpen(true);
+  };
+
+  const handleOpenEditSeller = (seller: SellerInvoiceSubject) => {
+    setEditingSeller(seller);
+    formSeller.setFieldsValue({
+      company_name: seller.company_name,
+      tax_id: seller.tax_id,
+      contact_email: seller.contact_email || '',
+      company_phone: seller.company_phone || '',
+      company_address: seller.company_address || '',
+      company_website: seller.company_website || seller.website || '',
+      support_normal: seller.support_normal !== false,
+      support_special: !!seller.support_special,
+      is_default: !!seller.is_default,
+      enabled: seller.enabled !== false,
+    });
+    setSellerModalOpen(true);
+  };
+
+  const persistSellerSubjects = async (nextList: SellerInvoiceSubject[]) => {
+    const currentInvoicesValues = formInvoices.getFieldsValue();
+    const defaultSeller = nextList.find((s) => s.is_default) || nextList[0];
+    const payload = {
+      invoices: {
+        ...(fullSettings?.invoices || {}),
+        ...currentInvoicesValues,
+        invoice_enabled: currentInvoicesValues.invoice_enabled !== false,
+        invoice_sellers: nextList,
+        invoice_company_name: defaultSeller?.company_name || '',
+        invoice_tax_id: defaultSeller?.tax_id || '',
+        invoice_contact_email: defaultSeller?.contact_email || '',
+        invoice_company_address: defaultSeller?.company_address || '',
+        invoice_company_phone: defaultSeller?.company_phone || '',
+        invoice_company_website: defaultSeller?.company_website || defaultSeller?.website || '',
+      },
+    };
+    const updatedSettings = await (request.post('/settings', payload) as any);
+    updateStoreSettings(updatedSettings);
+    setFullSettings((prev: any) => ({
+      ...(prev || {}),
+      invoices: payload.invoices,
+    }));
+    setSellerSubjects(nextList);
+    return updatedSettings;
+  };
+
+  const handleSaveSellerModal = async () => {
+    try {
+      const vals = await formSeller.validateFields();
+      if (isChinaMode && !vals.support_normal && !vals.support_special) {
+        message.error('请至少选择支持一种发票类型（普通发票或专用发票）');
+        return;
+      }
+      setSavingSellerModal(true);
+      const isDef = !!vals.is_default || sellerSubjects.length === 0;
+      const normalizedVals = {
+        ...vals,
+        contact_email: vals.contact_email?.trim() || '',
+        company_phone: vals.company_phone?.trim() || '',
+        company_address: vals.company_address?.trim() || '',
+        company_website: (vals.company_website || vals.website)?.trim() || '',
+        support_normal: isChinaMode ? !!vals.support_normal : true,
+        support_special: isChinaMode ? !!vals.support_special : true,
+      };
+      let nextList: SellerInvoiceSubject[];
+      if (editingSeller) {
+        nextList = sellerSubjects.map((s) => {
+          if (s.id === editingSeller.id) {
+            return {
+              ...s,
+              ...normalizedVals,
+              id: s.id,
+              is_default: isDef,
+            };
+          }
+          return isDef ? { ...s, is_default: false } : s;
+        });
+      } else {
+        const newSubject: SellerInvoiceSubject = {
+          id: `seller_${Date.now()}`,
+          ...normalizedVals,
+          is_default: isDef,
+        };
+        nextList = isDef
+          ? [...sellerSubjects.map((s) => ({ ...s, is_default: false })), newSubject]
+          : [...sellerSubjects, newSubject];
+      }
+
+      await persistSellerSubjects(nextList);
+      setSellerModalOpen(false);
+      message.success(editingSeller ? '开票主体已保存' : '开票主体已添加并保存');
+    } catch (err: any) {
+      if (err?.errorFields) return;
+      console.error(err);
+      message.error(err?.message || '保存失败');
+    } finally {
+      setSavingSellerModal(false);
+    }
+  };
+
+  const handleDeleteSeller = async (id: string) => {
+    if (sellerSubjects.length <= 1) {
+      message.warning('系统需保留至少一个开票主体');
+      return;
+    }
+    const deleted = sellerSubjects.find((s) => s.id === id);
+    let next = sellerSubjects.filter((s) => s.id !== id);
+    if (deleted?.is_default && next.length > 0) {
+      next[0].is_default = true;
+    }
+    try {
+      await persistSellerSubjects(next);
+      message.success('已移除开票主体');
+    } catch (e: any) {
+      console.error(e);
+      message.error(e?.message || '删除失败');
+    }
+  };
+
+  const handleSetDefaultSeller = async (id: string) => {
+    const next = sellerSubjects.map((s) => ({ ...s, is_default: s.id === id }));
+    try {
+      await persistSellerSubjects(next);
+    } catch (e: any) {
+      console.error(e);
+      message.error(e?.message || '切换失败');
+    }
+  };
+
+  const handleSaveInvoices = async (values: any) => {
+    setSavingInvoices(true);
+    try {
+      const defaultSeller = sellerSubjects.find((s) => s.is_default) || sellerSubjects[0];
+      const payload = {
+        invoices: {
+          ...values,
+          invoice_enabled: values.invoice_enabled !== false,
+          invoice_show_invoices: values.invoice_show_invoices !== false,
+          invoice_show_receipts: values.invoice_show_receipts !== false,
+          invoice_sellers: sellerSubjects,
+          // 兼容旧字段
+          invoice_company_name: defaultSeller?.company_name || values.invoice_company_name || '',
+          invoice_tax_id: defaultSeller?.tax_id || values.invoice_tax_id || '',
+          invoice_contact_email: defaultSeller?.contact_email || values.invoice_contact_email || '',
+          invoice_company_address: defaultSeller?.company_address || values.invoice_company_address || '',
+        },
+      };
+      const updatedSettings = await (request.post('/settings', payload) as any);
+      updateStoreSettings(updatedSettings);
+      setFullSettings((prev: any) => ({
+        ...(prev || {}),
+        invoices: payload.invoices,
+      }));
+      message.success('Invoices 发票与收据全局配置保存成功');
+    } catch (e: any) {
+      console.error('Failed to save invoices settings:', e);
+      message.error(e?.message || '保存发票设置失败');
+    } finally {
+      setSavingInvoices(false);
+    }
+  };
+
+  const userLevelColumns = [
+    {
+      title: 'ID',
+      dataIndex: 'id',
+      key: 'id',
+      width: 70,
+    },
+    {
+      title: '用户等级名称',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string, record: any) => (
+        <Space>
+          <span style={{ fontWeight: 600 }}>{name}</span>
+          {record.is_default === 1 && <Tag color="green">默认等级</Tag>}
+        </Space>
+      ),
+    },
+    {
+      title: '分组标识 (group_key)',
+      dataIndex: 'group_key',
+      key: 'group_key',
+      render: (val: string) => <Tag color="blue">{val}</Tag>,
+    },
+    {
+      title: '专属折扣',
+      dataIndex: 'discount',
+      key: 'discount',
+      render: (val: number, record: any) => (
+        <span>{val}{record.discount_type === 1 ? '%' : '折'}</span>
+      ),
+    },
+    {
+      title: '发票开具权限状态',
+      dataIndex: 'invoice_enabled',
+      key: 'invoice_enabled',
+      width: 160,
+      render: (enabled: number) => {
+        const isOk = enabled === 1;
+        return (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '2px 10px',
+              borderRadius: 9999,
+              fontSize: 12,
+              fontWeight: 500,
+              backgroundColor: isOk ? 'rgba(16, 185, 129, 0.1)' : 'rgba(148, 163, 184, 0.12)',
+              color: isOk ? '#059669' : '#64748b',
+              border: `1px solid ${isOk ? 'rgba(16, 185, 129, 0.28)' : 'rgba(148, 163, 184, 0.25)'}`,
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                backgroundColor: isOk ? '#10b981' : '#94a3b8',
+              }}
+            />
+            {isOk ? '已开通使用' : '已关闭隐藏'}
+          </span>
+        );
+      },
+    },
+    {
+      title: '快捷开启/关闭发票功能',
+      key: 'action',
+      width: 180,
+      render: (_: any, record: any) => (
+        <Switch
+          checked={record.invoice_enabled === 1}
+          disabled={!isInvoiceServiceEnabled}
+          loading={updatingLevelId === record.id || batchUpdating}
+          checkedChildren="已开启"
+          unCheckedChildren="已关闭"
+          onChange={(checked) => handleToggleLevelInvoice(record, checked)}
+        />
+      ),
+    },
+  ];
+
   const tabItems = [
     {
       key: 'currency',
-      label: <span><DollarOutlined style={{ color: '#faad14' }} /> {t('menu.currency_settings', '货币设置')}</span>,
+      label: t('menu.currency_settings', '货币设置'),
       children: (
-        <div style={{ maxWidth: 640, marginTop: 16 }}>
+        <div style={{ maxWidth: 640 }}>
           <Form form={formCurrency} layout="vertical" onFinish={onFinishCurrency} autoComplete="off">
             <Form.Item label={t('settings.default_currency', '默认货币代码')} name="default_currency" rules={[{ required: true }]}><Input placeholder="CNY" /></Form.Item>
             <Form.Item label={t('settings.currency_symbol', '货币符号')} name="currency_symbol" rules={[{ required: true }]}><Input placeholder="¥" /></Form.Item>
@@ -861,8 +1355,8 @@ const PaymentSettings: React.FC = () => {
               <InputNumber style={{ width: '100%' }} min={0} step={1} />
             </Form.Item>
 
-            <Form.Item>
-              <Button type="primary" htmlType="submit" loading={loadingCurrency} size="large" style={{ borderRadius: 8 }}>
+            <Form.Item style={{ marginTop: 16 }}>
+              <Button type="primary" htmlType="submit" loading={loadingCurrency}>
                 {t('common.save', '保存设置')}
               </Button>
             </Form.Item>
@@ -872,9 +1366,9 @@ const PaymentSettings: React.FC = () => {
     },
     {
       key: 'channels',
-      label: <span><BankOutlined style={{ color: '#1677ff' }} /> 支付渠道</span>,
+      label: '支付渠道',
       children: (
-        <div style={{ marginTop: 16 }}>
+        <div>
           <Alert
             type="info"
             showIcon
@@ -893,27 +1387,634 @@ const PaymentSettings: React.FC = () => {
         </div>
       ),
     },
+    {
+      key: 'invoices',
+      label: '收据与发票',
+      children: (
+        <div>
+          {/* 1. 发票与收据全局参数设置 */}
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <FileTextOutlined style={{ color: '#722ed1', fontSize: 16 }} />
+                <span style={{ fontWeight: 600, fontSize: 14 }}>发票与收据全局业务参数配置</span>
+              </div>
+            </div>
+            <Form
+              form={formInvoices}
+              layout="vertical"
+              onFinish={handleSaveInvoices}
+              autoComplete="off"
+            >
+              <div style={{ marginBottom: 20, padding: '14px 16px', background: 'var(--ant-color-fill-quaternary)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid var(--ant-color-border-secondary)' }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>开启 Invoices 收据与发票服务</div>
+                </div>
+                <Form.Item name="invoice_enabled" valuePropName="checked" noStyle>
+                  <Switch checkedChildren="已开启" unCheckedChildren="已关闭" />
+                </Form.Item>
+              </div>
+
+              <Form.Item
+                name="invoice_mode"
+                label="发票模式选择"
+                rules={[{ required: true, message: '请选择发票模式' }]}
+              >
+                <Radio.Group optionType="button" buttonStyle="solid">
+                  <Radio.Button value="international">🌐 国际模式 (海外模式 - Invoices & Receipts)</Radio.Button>
+                  <Radio.Button value="china">🇨🇳 中国大陆境内模式 (增值税发票申请)</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+
+              <Divider style={{ margin: '24px 0 20px' }} />
+
+              {/* 2. 各用户等级开票权限快捷配置（实时双向同步） */}
+          <div style={{ opacity: isInvoiceServiceEnabled ? 1 : 0.65, transition: 'opacity 0.2s ease-in-out', marginBottom: 28 }}>
+            {!isInvoiceServiceEnabled && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16, borderRadius: 8 }}
+                message="发票与收据全局服务未开启"
+                description="需在上方开启「Invoices 收据与发票服务」总开关，下方方可配置各用户等级的开票权限。"
+              />
+            )}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 12,
+                marginBottom: 14,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <CheckCircleOutlined style={{ color: '#10b981', fontSize: 16 }} />
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>各用户等级开票权限配置（实时双向同步）</span>
+                </div>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '1px 8px',
+                    borderRadius: 9999,
+                    fontSize: 12,
+                    fontWeight: 500,
+                    backgroundColor: allLevelsEnabled
+                      ? 'rgba(16, 185, 129, 0.1)'
+                      : noneLevelsEnabled
+                      ? 'rgba(148, 163, 184, 0.12)'
+                      : 'rgba(59, 130, 246, 0.1)',
+                    color: allLevelsEnabled ? '#059669' : noneLevelsEnabled ? '#64748b' : '#2563eb',
+                    border: `1px solid ${
+                      allLevelsEnabled
+                        ? 'rgba(16, 185, 129, 0.28)'
+                        : noneLevelsEnabled
+                        ? 'rgba(148, 163, 184, 0.25)'
+                        : 'rgba(59, 130, 246, 0.28)'
+                    }`,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      backgroundColor: allLevelsEnabled ? '#10b981' : noneLevelsEnabled ? '#94a3b8' : '#3b82f6',
+                    }}
+                  />
+                  已开启 {enabledLevelsCount} / {totalLevelsCount} 个等级
+                </span>
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                开启后，属于该等级的用户登录后即可在左侧「用户设置」访问「财务发票」二级菜单
+              </span>
+            </div>
+            {/* 顶部总控栏 (shadcn 风格) */}
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '12px 16px',
+                marginBottom: 16,
+                background: 'var(--ant-color-fill-quaternary)',
+                border: '1px solid var(--ant-color-border-secondary)',
+                borderRadius: 8,
+              }}
+            >
+              {/* 左侧：全部等级统一开关 + 状态 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>全部等级统一开启</span>
+                  <Switch
+                    checked={allLevelsEnabled}
+                    loading={batchUpdating}
+                    disabled={!isInvoiceServiceEnabled}
+                    checkedChildren="已全开"
+                    unCheckedChildren="未全开"
+                    onChange={(checked) => handleToggleAllLevels(checked)}
+                  />
+                </div>
+              </div>
+
+              {/* 右侧：一键全部开启 / 一键全部关闭 快捷操作组 */}
+              <Space size={8} wrap>
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<CheckCircleOutlined />}
+                  loading={batchUpdating}
+                  disabled={!isInvoiceServiceEnabled || allLevelsEnabled || totalLevelsCount === 0}
+                  onClick={() => handleToggleAllLevels(true)}
+                  style={{
+                    backgroundColor: '#10b981',
+                    borderColor: '#10b981',
+                    borderRadius: 6,
+                    fontWeight: 500,
+                  }}
+                >
+                  一键全部开启
+                </Button>
+
+                <Popconfirm
+                  title="确认关闭全部用户等级的发票权限？"
+                  description="关闭后，所有等级的普通用户将无法在个人中心使用发票与交易凭单功能（管理员不受影响）。"
+                  okText="确定关闭"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  disabled={!isInvoiceServiceEnabled || noneLevelsEnabled || totalLevelsCount === 0 || batchUpdating}
+                  onConfirm={() => handleToggleAllLevels(false)}
+                >
+                  <Button
+                    size="small"
+                    danger
+                    icon={<StopOutlined />}
+                    loading={batchUpdating}
+                    disabled={!isInvoiceServiceEnabled || noneLevelsEnabled || totalLevelsCount === 0}
+                    style={{ borderRadius: 6, fontWeight: 500 }}
+                  >
+                    一键全部关闭
+                  </Button>
+                </Popconfirm>
+
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={loadingUserLevels || batchUpdating}
+                  onClick={fetchUserLevels}
+                  style={{ borderRadius: 6 }}
+                >
+                  刷新列表
+                </Button>
+              </Space>
+            </div>
+
+            {/* 多选批量操作工具栏 */}
+            {selectedLevelKeys.length > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 14px',
+                  marginBottom: 12,
+                  background: 'rgba(59, 130, 246, 0.08)',
+                  border: '1px solid rgba(59, 130, 246, 0.25)',
+                  borderRadius: 8,
+                }}
+              >
+                <span style={{ fontSize: 13, color: '#2563eb', fontWeight: 500 }}>
+                  已勾选 {selectedLevelKeys.length} 个用户等级
+                </span>
+                <Space size={8}>
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<CheckOutlined />}
+                    loading={batchUpdating}
+                    disabled={!isInvoiceServiceEnabled}
+                    onClick={() => handleBatchToggleSelectedLevels(true)}
+                    style={{ borderRadius: 6, fontSize: 12 }}
+                  >
+                    批量开启所选
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    icon={<CloseOutlined />}
+                    loading={batchUpdating}
+                    disabled={!isInvoiceServiceEnabled}
+                    onClick={() => handleBatchToggleSelectedLevels(false)}
+                    style={{ borderRadius: 6, fontSize: 12 }}
+                  >
+                    批量关闭所选
+                  </Button>
+                  <Button
+                    size="small"
+                    type="text"
+                    onClick={() => setSelectedLevelKeys([])}
+                    style={{ fontSize: 12 }}
+                  >
+                    取消选择
+                  </Button>
+                </Space>
+              </div>
+            )}
+
+            <Table
+              rowKey="id"
+              loading={loadingUserLevels || batchUpdating}
+              dataSource={userLevels}
+              columns={userLevelColumns}
+              pagination={false}
+              size="middle"
+              rowSelection={{
+                selectedRowKeys: selectedLevelKeys,
+                onChange: (keys) => setSelectedLevelKeys(keys),
+                getCheckboxProps: () => ({
+                  disabled: !isInvoiceServiceEnabled,
+                }),
+              }}
+            />
+          </div>
+
+              <Divider style={{ margin: '24px 0 20px' }} />
+
+              {/* 🏢 开票主体与销方基础信息 (支持多主体及普票/专票资质配置) */}
+              <div
+                style={{
+                  background: 'var(--ant-color-bg-container)',
+                  border: '1px solid var(--ant-color-border-secondary)',
+                  borderRadius: 8,
+                  padding: '16px 18px',
+                  marginTop: 14,
+                  marginBottom: 16,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: 10,
+                    marginBottom: 14,
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 14 }}>
+                      <BankOutlined style={{ color: '#1677ff' }} />
+                      <span>{isChinaMode ? '开票主体与销方基础信息 (Company & Seller Info)' : '开票主体信息 (Issuer / Seller Info)'}</span>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 'normal',
+                          color: 'var(--ant-color-text-secondary)',
+                          marginLeft: 4,
+                        }}
+                      >
+                        （共 {sellerSubjects.length} 个主体）
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)', marginTop: 2 }}>
+                      {isChinaMode
+                        ? '配置对外开票的销方主体。支持增设多个主体，并独立配置是否支持开具增值税普通发票与增值税专用发票资质。'
+                        : '配置对外开具 Receipt & Invoice 的收款销方主体，支持增设多个主体并设置默认开票主体。'}
+                    </div>
+                  </div>
+
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={handleOpenAddSeller}
+                    style={{
+                      borderRadius: 6,
+                      background: isLight ? '#09090b' : '#fafafa',
+                      color: isLight ? '#fafafa' : '#09090b',
+                    }}
+                  >
+                    添加开票主体
+                  </Button>
+                </div>
+
+                {/* 主体列表 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {sellerSubjects.map((seller) => {
+                    const isDef = !!seller.is_default;
+                    return (
+                      <div
+                        key={seller.id}
+                        style={{
+                          padding: '12px 16px',
+                          borderRadius: 6,
+                          border: isDef
+                            ? (isLight ? '1px solid #10b981' : '1px solid #059669')
+                            : '1px solid var(--ant-color-border-secondary)',
+                          background: isDef
+                            ? (isLight ? 'rgba(16, 185, 129, 0.04)' : 'rgba(16, 185, 129, 0.08)')
+                            : 'var(--ant-color-fill-quaternary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: 12,
+                        }}
+                      >
+                        {/* 左侧主体信息与资质标签 */}
+                        <div style={{ flex: 1, minWidth: 260 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                            <span style={{ fontWeight: 600, fontSize: 14 }}>{seller.company_name}</span>
+                            {isDef && (
+                              <Tag color="success" style={{ borderRadius: 4, fontSize: 11, margin: 0 }}>
+                                默认主体
+                              </Tag>
+                            )}
+                            {/* 境内模式展示普票/专票支持资质标签 */}
+                            {isChinaMode && (
+                              <>
+                                <Tag
+                                  style={{
+                                    borderRadius: 4,
+                                    fontSize: 11,
+                                    margin: 0,
+                                    background: seller.support_normal
+                                      ? (isLight ? '#eff6ff' : '#1e293b')
+                                      : (isLight ? '#f4f4f5' : '#27272a'),
+                                    color: seller.support_normal ? '#2563eb' : '#a1a1aa',
+                                    border: seller.support_normal
+                                      ? '1px solid #bfdbfe'
+                                      : '1px solid var(--ant-color-border-secondary)',
+                                  }}
+                                >
+                                  {seller.support_normal ? '✓ 增值税普通发票' : '✕ 不支持普票'}
+                                </Tag>
+                                <Tag
+                                  style={{
+                                    borderRadius: 4,
+                                    fontSize: 11,
+                                    margin: 0,
+                                    background: seller.support_special
+                                      ? (isLight ? '#faf5ff' : '#3b0764')
+                                      : (isLight ? '#f4f4f5' : '#27272a'),
+                                    color: seller.support_special ? '#9333ea' : '#a1a1aa',
+                                    border: seller.support_special
+                                      ? '1px solid #e9d5ff'
+                                      : '1px solid var(--ant-color-border-secondary)',
+                                  }}
+                                >
+                                  {seller.support_special ? '★ 增值税专用发票' : '✕ 不支持专票'}
+                                </Tag>
+                              </>
+                            )}
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 16,
+                              fontSize: 12,
+                              color: 'var(--ant-color-text-secondary)',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <span>
+                              {isChinaMode ? '税号: ' : '营业执照号码: '}
+                              <Text code style={{ fontSize: 11 }}>{seller.tax_id || '未配置'}</Text>
+                            </span>
+                            {seller.contact_email && (
+                              <span>
+                                邮箱: <Text style={{ fontSize: 12 }}>{seller.contact_email}</Text>
+                              </span>
+                            )}
+                            {seller.company_phone && (
+                              <span>
+                                电话: <Text style={{ fontSize: 12 }}>{seller.company_phone}</Text>
+                              </span>
+                            )}
+                            {seller.company_address && (
+                              <span>
+                                地址: <Text style={{ fontSize: 12 }}>{seller.company_address}</Text>
+                              </span>
+                            )}
+                            {(seller.company_website || (seller as any).website) && (
+                              <span>
+                                网站: <Text style={{ fontSize: 12 }}>{seller.company_website || (seller as any).website}</Text>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* 右侧操作按钮组 */}
+                        <Space size={8}>
+                          {!isDef && (
+                            <Button
+                              size="small"
+                              onClick={() => handleSetDefaultSeller(seller.id)}
+                              style={{ borderRadius: 4, fontSize: 12 }}
+                            >
+                              设为默认
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            icon={<EditOutlined />}
+                            onClick={() => handleOpenEditSeller(seller)}
+                            style={{ borderRadius: 4, fontSize: 12 }}
+                          >
+                            编辑
+                          </Button>
+                          <Popconfirm
+                            title="确定删除此开票主体？"
+                            description="删除后，该主体将从开票主体列表中移除。"
+                            okText="删除"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={() => handleDeleteSeller(seller.id)}
+                          >
+                            <Button
+                              size="small"
+                              danger
+                              type="text"
+                              icon={<DeleteOutlined />}
+                              disabled={sellerSubjects.length <= 1}
+                              style={{ borderRadius: 4, fontSize: 12 }}
+                            />
+                          </Popconfirm>
+                        </Space>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Form.Item noStyle dependencies={['invoice_mode']}>
+                {({ getFieldValue }) => {
+                  const mode = getFieldValue('invoice_mode') || 'international';
+                  if (mode === 'china') {
+                    return (
+                      <Card size="small" title="🇨🇳 中国大陆境内发票设置 (China Domestic Invoice Settings)" style={{ background: 'var(--ant-color-bg-container)', marginTop: 12, marginBottom: 16 }}>
+                        <Row gutter={16}>
+                          <Col xs={24} md={12}>
+                            <Form.Item
+                              name="china_min_amount"
+                              label="最低开票金额限制 (元)"
+                              extra="单次申请开票的最低充值消费金额门槛"
+                            >
+                              <InputNumber style={{ width: '100%' }} min={0} step={10} precision={2} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} md={12}>
+                            <Form.Item
+                              name="china_tax_rate"
+                              label="发票税率 (%)"
+                              extra="通常为 6% 或 3%"
+                            >
+                              <InputNumber style={{ width: '100%' }} min={0} max={100} step={1} precision={2} />
+                            </Form.Item>
+                          </Col>
+                        </Row>
+                        <Form.Item
+                          name="china_invoice_content"
+                          label="发票内容 / 货物或应税劳务名称"
+                          extra="如：*信息技术服务*软件技术服务费"
+                        >
+                          <Input placeholder="*信息技术服务*软件技术服务费" />
+                        </Form.Item>
+                        <Form.Item
+                          name="china_invoice_notice"
+                          label="开票说明与注意事项"
+                          extra="展示在用户端申请开票界面的温馨提示"
+                        >
+                          <Input.TextArea rows={3} placeholder="增值税普通发票将在审核通过后发送至填写的邮箱..." />
+                        </Form.Item>
+                      </Card>
+                    );
+                  }
+
+                  return (
+                    <Card size="small" title="🌐 国际模式凭单与展示配置 (International Format & Card Settings)" style={{ background: 'var(--ant-color-bg-container)', marginTop: 12, marginBottom: 16 }}>
+                      <div style={{ marginBottom: 16, fontSize: 13, color: 'var(--ant-color-text-secondary)' }}>
+                        💡 以下配置信息将直接呈现在用户端商业发票（Commercial Invoice）与付款收据（Payment Receipt）的打印/预览文件中。
+                      </div>
+                      <Row gutter={16}>
+                        <Col xs={24} md={8}>
+                          <Form.Item
+                            name="invoice_currency_symbol"
+                            label="货币符号 (Currency Symbol)"
+                          >
+                            <Input placeholder="$" />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item
+                            name="invoice_prefix"
+                            label="发票编号前缀 (Invoice No. Prefix)"
+                          >
+                            <Input placeholder="INV-" />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={8}>
+                          <Form.Item
+                            name="receipt_prefix"
+                            label="收据编号前缀 (Receipt No. Prefix)"
+                          >
+                            <Input placeholder="REC-" />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                      <Form.Item
+                        name="invoice_notes"
+                        label="底部附言与条款 (Default Notes & Terms)"
+                        extra="将显示在发票和收据底部的感谢语或业务须知"
+                      >
+                        <Input.TextArea rows={2} placeholder="Thank you for your business! Payment has been processed in full." />
+                      </Form.Item>
+                      <Space size={24} style={{ marginTop: 8 }}>
+                        <Form.Item
+                          name="invoice_show_invoices"
+                          label="展示 Invoices 账单列表卡片"
+                          valuePropName="checked"
+                        >
+                          <Switch />
+                        </Form.Item>
+                        <Form.Item
+                          name="invoice_show_receipts"
+                          label="展示 Receipts 交易凭证卡片"
+                          valuePropName="checked"
+                        >
+                          <Switch />
+                        </Form.Item>
+                      </Space>
+                    </Card>
+                  );
+                }}
+              </Form.Item>
+
+              <Form.Item style={{ marginTop: 16 }}>
+                <Button type="primary" htmlType="submit" loading={savingInvoices}>
+                  {t('common.save', '保存发票全局设置')}
+                </Button>
+              </Form.Item>
+            </Form>
+          </div>
+        </div>
+      ),
+    },
   ];
 
-  return (
-    <Card bordered={false} style={{ borderRadius: 12 }}>
-      {!editingId ? (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-            <SafetyCertificateOutlined style={{ fontSize: 24, color: '#52c41a' }} />
-            <Title level={3} style={{ margin: 0 }}>在线支付设置</Title>
-          </div>
-          <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
-        </>
-      ) : (
-        <div style={{ animation: 'fadeIn 0.3s' }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16, gap: 16, flexWrap: 'wrap' }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={closeEditor}>返回</Button>
-            <Title level={3} style={{ margin: 0 }}>
-              配置支付渠道 · {editingMeta?.defaultName || editingId}
-            </Title>
-          </div>
+  const getPageTitle = () => {
+    if (editingId) {
+      return (
+        <Space size={12}>
+          <Button icon={<ArrowLeftOutlined />} onClick={closeEditor} size="small">
+            返回
+          </Button>
+          <span>配置支付渠道 · {editingMeta?.defaultName || editingId}</span>
+        </Space>
+      );
+    }
+    return t('menu.payment_settings', '支付设置');
+  };
 
+  return (
+    <Card bordered={false} title={getPageTitle()} style={{ borderRadius: 12 }}>
+      <style>{`
+        .settings-compact-form .ant-form-item {
+          margin-bottom: 12px;
+        }
+        .settings-compact-form .ant-form-item-label {
+          padding-bottom: 2px;
+        }
+        .settings-compact-form .ant-form-item-label > label {
+          font-size: 13px;
+          font-weight: 500;
+        }
+        .settings-compact-form .ant-form-item-extra {
+          font-size: 12px;
+          margin-top: 2px;
+          line-height: 1.4;
+        }
+        .settings-compact-form .ant-card-body {
+          padding: 16px 20px;
+        }
+        .settings-compact-form .ant-tabs-nav {
+          margin-bottom: 14px;
+        }
+      `}</style>
+      {!editingId ? (
+        <div className="settings-compact-form">
+          <Tabs activeKey={activeTab} onChange={handleTabChange} items={tabItems} />
+        </div>
+      ) : (
+        <div style={{ animation: 'fadeIn 0.3s' }} className="settings-compact-form">
           <div style={{ maxWidth: 760, width: '100%' }}>
             <Form form={formDisplay} layout="vertical" autoComplete="off">
               <Divider plain style={{ margin: '8px 0 16px' }}>用户端展示</Divider>
@@ -1000,15 +2101,130 @@ const PaymentSettings: React.FC = () => {
               {renderGatewayFields()}
             </Form>
 
-            <Space style={{ marginTop: 8, marginBottom: 24 }}>
-              <Button type="primary" loading={savingDrawer} onClick={onSaveDrawer} size="large" style={{ borderRadius: 8 }}>
-                保存配置
+            <Space style={{ marginTop: 16, marginBottom: 16 }}>
+              <Button type="primary" loading={savingDrawer} onClick={onSaveDrawer}>
+                {t('common.save', '保存配置')}
               </Button>
-              <Button onClick={closeEditor} size="large" style={{ borderRadius: 8 }}>取消</Button>
+              <Button onClick={closeEditor}>
+                {t('common.cancel', '取消')}
+              </Button>
             </Space>
           </div>
         </div>
       )}
+
+      {/* 添加 / 编辑开票主体与销方资质 Modal */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <BankOutlined style={{ color: '#1677ff' }} />
+            <span>
+              {editingSeller
+                ? (isChinaMode ? '编辑开票主体与销方资质' : '编辑开票主体')
+                : '添加开票主体'}
+            </span>
+          </div>
+        }
+        open={sellerModalOpen}
+        onCancel={() => setSellerModalOpen(false)}
+        onOk={handleSaveSellerModal}
+        confirmLoading={savingSellerModal}
+        okText="确定"
+        cancelText="取消"
+        width={540}
+        destroyOnClose
+      >
+        <Form form={formSeller} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            name="company_name"
+            label="开票主体 / 销方公司名称"
+            rules={[{ required: true, message: '请输入开票主体公司名称' }]}
+          >
+            <Input placeholder={isChinaMode ? "如：北京数字未来信息技术有限公司" : "如：FUSION ELECTRONICS TECHNOLOGY LIMITED"} />
+          </Form.Item>
+
+          <Form.Item
+            name="tax_id"
+            label={isChinaMode ? "纳税人识别号 / 统一社会信用代码" : "营业执照号码"}
+            rules={[{ required: true, message: isChinaMode ? '请输入纳税人识别号' : '请输入营业执照号码' }]}
+          >
+            <Input placeholder={isChinaMode ? "如：91110108MA01XXXXXX" : "如：No.77440427 或商业登记证号"} />
+          </Form.Item>
+
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="contact_email"
+                label="联系邮箱"
+                rules={[
+                  {
+                    type: 'email',
+                    message: '请输入有效的邮箱地址',
+                    transform: (value) => (value ? value.trim() : value),
+                  },
+                ]}
+              >
+                <Input placeholder="如：billing@company.com" allowClear />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="company_phone"
+                label="联系电话"
+              >
+                <Input placeholder="如：+1 555-0199 或 010-88888888" allowClear />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Form.Item
+            name="company_address"
+            label="公司地址"
+          >
+            <Input placeholder={isChinaMode ? "如：北京市海淀区中关村南大街1号" : "如：100 Innovation Way, Suite 300, San Francisco, CA 94107"} allowClear />
+          </Form.Item>
+
+          <Form.Item
+            name="company_website"
+            label="网站地址"
+          >
+            <Input placeholder="如：https://www.example.com" allowClear />
+          </Form.Item>
+
+          {/* 境内模式：核心资质配置属性 */}
+          {isChinaMode && (
+            <div
+              style={{
+                padding: '12px 14px',
+                background: 'var(--ant-color-fill-quaternary)',
+                border: '1px solid var(--ant-color-border-secondary)',
+                borderRadius: 6,
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+                支持的发票类型资质 (至少勾选一项)
+              </div>
+              <Row gutter={[16, 10]}>
+                <Col xs={24} sm={12}>
+                  <Form.Item name="support_normal" valuePropName="checked" noStyle>
+                    <Checkbox>增值税普通发票</Checkbox>
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item name="support_special" valuePropName="checked" noStyle>
+                    <Checkbox>增值税专用发票</Checkbox>
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+          )}
+
+          <Form.Item name="is_default" valuePropName="checked" style={{ marginTop: 8, marginBottom: 0 }}>
+            <Checkbox>设为默认开票主体（系统优先采用此主体进行开票）</Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
     </Card>
   );
 };

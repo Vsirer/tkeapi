@@ -25,7 +25,7 @@ pub struct UserContext {
     pub balance: f64,
     pub discount: f64,
     pub discount_type: i32,
-    /// 用户模型单独折扣(JSON: {"mid": discount})，优先于等级折扣
+    /// 用户模型单独折扣(JSON: {"mid": discount})，优先于用户等级折扣
     pub model_discounts: Option<String>,
 }
 
@@ -70,12 +70,10 @@ pub async fn get_user_context(state: &AppState, user_id: &str) -> AppResult<User
     })
 }
 
-/// 统一折扣策略（MIN + MAX 两步）：
-/// 1. 根据等级 discount_type 取对应折扣来源的最小值：
-///    - discount_type = 1 (全站折扣): MIN(用户模型单独折扣, 全站折扣)
-///    - discount_type = 2 (等级折扣): MIN(用户模型单独折扣, 用户等级折扣)
-///    - discount_type = 0 (不选择/默认): MIN(用户模型单独折扣, 全站折扣, 用户等级折扣)
-/// 2. 折扣限价约束：MAX(最低折扣, 模型限价)，保证折扣不低于限价
+/// 统一折扣策略（仅取 MIN；限价与渠道倍率在 `calculate_relay_cost` 合并后再约束）：
+/// - discount_type = 1 (全站折扣): MIN(用户模型单独折扣, 全站折扣)
+/// - discount_type = 2 (用户等级折扣): MIN(用户模型单独折扣, 用户等级折扣)
+/// - discount_type = 0 (不选择/默认): MIN(用户模型单独折扣, 全站折扣, 用户等级折扣)
 pub fn resolve_discount(
     db_model: Option<&crate::models::Model>,
     level_discount: f64,
@@ -83,18 +81,17 @@ pub fn resolve_discount(
     discount_type: i32,
 ) -> (f64, &'static str) {
     let mut min_discount = f64::MAX;
-    let mut source = "等级折扣";
+    let mut source = "用户等级折扣";
 
-    // 1. 用户模型单独折扣
     if let Some(umd) = user_model_discount {
         min_discount = umd;
         source = "用户模型折扣";
     }
 
-    // 2. 按 discount_type 比对等级折扣或全站折扣 (0=全取, 1=仅全站, 2=仅等级)
+    // discount_type: 0=全取, 1=仅全站, 2=仅用户等级
     if discount_type != 1 && level_discount < min_discount {
         min_discount = level_discount;
-        source = "等级折扣";
+        source = "用户等级折扣";
     }
 
     if discount_type != 2 {
@@ -106,20 +103,26 @@ pub fn resolve_discount(
         }
     }
 
-    // 兜底保护：若全站折扣未开启且无其他可用折扣，回退等级折扣
     if min_discount == f64::MAX {
         min_discount = level_discount;
-        source = "等级折扣";
-    }
-
-    // 3. 模型折扣限价约束 MAX(最低折扣, 模型限价)
-    if let Some(m) = db_model {
-        if m.site_discount_enabled == 1 && min_discount < m.site_discount {
-            return (m.site_discount, "折扣限价");
-        }
+        source = "用户等级折扣";
     }
 
     (min_discount, source)
+}
+
+/// 折扣限价：有效倍率（折扣来源 × 渠道倍率）不得低于模型 `site_discount`
+#[inline]
+pub fn clamp_discount_floor(
+    effective: f64,
+    db_model: Option<&crate::models::Model>,
+) -> Option<f64> {
+    let m = db_model?;
+    if m.site_discount_enabled == 1 && effective < m.site_discount {
+        Some(m.site_discount)
+    } else {
+        None
+    }
 }
 
 /// 从用户 model_discounts JSON 中提取指定模型(mid)的单独折扣
@@ -131,19 +134,27 @@ pub fn parse_user_model_discount(model_discounts: &Option<String>, mid: &str) ->
 
 // ── Model Lookup (支持同名模型按类型区分) ────────────────────────
 
-/// 轻量查询模型关联的计费规则详情结构体（完整 BillingRule 实体）。
+/// 请求内已锁定峰谷的计费规则；HA 环外建一份，`billing_rule_id` 未变则免重复查库。
+pub type BillingRuleCache = Option<(i64, crate::models::BillingRule)>;
+
+/// 查询模型关联计费规则并锁定峰谷倍率；`cache` 命中同 `billing_rule_id` 则直接复用。
 pub async fn get_model_billing_rule(
     state: &AppState,
     model_id: &str,
     channel: Option<&crate::models::Channel>,
     db_model: Option<&crate::models::Model>,
+    cache: &mut BillingRuleCache,
 ) -> Option<crate::models::BillingRule> {
     let rule_id = if let Some(m) = db_model {
         m.billing_rule_id?
     } else {
-        let model = find_active_model_exact(state, model_id, None, channel).await?;
-        model.billing_rule_id?
+        find_active_model_exact(state, model_id, None, channel)
+            .await?
+            .billing_rule_id?
     };
+    if let Some((_, rule)) = cache.as_ref().filter(|(id, _)| *id == rule_id) {
+        return Some(rule.clone());
+    }
     let mut rule: crate::models::BillingRule = sqlx::query_as(
         &state
             .db
@@ -154,10 +165,9 @@ pub async fn get_model_billing_rule(
     .await
     .unwrap_or(None)?;
 
-    // 请求开始时刻锁定峰谷倍率到 applied_multiplier（结算时不再按当前时钟重算）
     let default_site_tz = super::relay_settings::get_cached_site_timezone(&state.db).await;
     rule.lock_time_multiplier(&default_site_tz);
-
+    *cache = Some((rule_id, rule.clone()));
     Some(rule)
 }
 
@@ -253,7 +263,7 @@ fn category_compatible(expected: &str, resolved: &str) -> bool {
         || (expected == "视频增强" && resolved == "视频")
 }
 
-/// 类型隔离失败文案：真实类型 + 实际入口（action_type 另记入口，见 check_access）
+/// 类型隔离失败文案：真实类型 + 实际入口（action_type 另记入口，见 check_access_with_model）
 #[inline]
 fn type_mismatch_message(model: &str, resolved_cat: &str, expected_cat: &str) -> String {
     format!(
@@ -277,7 +287,7 @@ pub fn action_type_from_path(endpoint: &str) -> Option<&'static str> {
         ("contents/generations", "视频"),
         ("video-generation", "视频"),
         ("video-synthesis", "视频"),
-        ("/videos/", "视频"),
+        ("videos", "视频"),
         ("/video/", "视频"),
         ("multimodal-generation", "图片"),
         ("/images/", "图片"),
@@ -288,7 +298,7 @@ pub fn action_type_from_path(endpoint: &str) -> Option<&'static str> {
         ("embedding", "向量"),
         ("rerank", "排序"),
         ("/chat/", "聊天"),
-        ("/messages", "聊天"),
+        ("/v1/messages", "聊天"),
         ("/responses", "聊天"),
         ("v1beta/models", "聊天"),
     ];
@@ -324,36 +334,39 @@ pub async fn check_model_permission(
     Ok(())
 }
 
-/// 类型安全隔离 + 预扣费余额检查。
-/// 调用方需在渠道选择 **之前** 自行执行 `check_model_permission()` 权限拦截，
-/// 本函数只负责模型类别校验和预扣费，channel 用于精确匹配同名模型的预扣费金额。
-/// 返回 `(pre_deduction, db_model)`：pre_deduction 为预扣费金额，db_model 为已查询的模型记录，
-/// 调用方可将 db_model 传递给下游函数（如 resolve_forward_rule / record_pending_log）复用，避免重复查库。
-pub async fn check_access(
-    state: &Arc<AppState>,
-    token: &ApiToken,
-    model: &str,
-    ctx: &UserContext,
-    category: Option<&str>,
-    channel: Option<&crate::models::Channel>,
-) -> AppResult<(f64, Option<crate::models::Model>, String)> {
-    check_access_with_model(state, token, model, ctx, category, channel, None).await
+/// 请求内按 channel.id 复用鉴权结果（同 HA 组换子配免再查 models）。
+pub struct AccessMemo {
+    channel_id: i64,
+    pre_deduction: f64,
+    db_model: Option<crate::models::Model>,
+    resolved_cat: String,
 }
+pub type AccessCache = Option<AccessMemo>;
 
-/// 支持透传预查模型实体的安全隔离扣费校验，规避 find_active_model_exact 内部的二次查表
+/// 类型安全隔离 + 预扣费余额检查。调用方须先 `check_model_permission`。
+/// `pre_fetched_model` 有值则跳过查表；`cache` 命中同 `channel.id` 则整段复用。
 pub async fn check_access_with_model(
     state: &Arc<AppState>,
     token: &ApiToken,
     model: &str,
     ctx: &UserContext,
     category: Option<&str>,
-    channel: Option<&crate::models::Channel>,
-    pre_fetched_model: Option<crate::models::Model>,
+    channel: &crate::models::Channel,
+    pre_fetched_model: Option<&crate::models::Model>,
+    cache: &mut AccessCache,
 ) -> AppResult<(f64, Option<crate::models::Model>, String)> {
+    if let Some(memo) = cache.as_ref().filter(|m| m.channel_id == channel.id) {
+        return Ok((
+            memo.pre_deduction,
+            memo.db_model.clone(),
+            memo.resolved_cat.clone(),
+        ));
+    }
+
     let db_model = if let Some(m) = pre_fetched_model {
-        Some(m)
+        Some(m.clone())
     } else {
-        find_active_model_exact(state, model, category, channel).await
+        find_active_model_exact(state, model, category, Some(channel)).await
     };
 
     // 获取真实分类
@@ -366,8 +379,8 @@ pub async fn check_access_with_model(
     };
 
     let ep = category_endpoint(category);
-    let ch_id = channel.map(|c| c.id);
-    let up_url = channel.map(|c| c.base_url.as_str());
+    let ch_id = Some(channel.id);
+    let up_url = Some(channel.base_url.as_str());
 
     // 类型安全隔离：action_type 记入口 expected（Tab=endpoint），文案带模型真实类型 resolved
     if let Some(expected_cat) = category {
@@ -424,33 +437,39 @@ pub async fn check_access_with_model(
         return Err(AppError::PaymentRequired(msg));
     }
 
-    // 低余额：限制未完成视频路数（金额门禁已过；不二次扣在途预扣）
-    // 入口类别或模型真实类型任含「视频」即生效（含视频增强）
-    let is_video = category.is_some_and(|c| c.contains("视频")) || resolved_cat.contains("视频");
-    if is_video {
-        if let Err(e) =
-            super::relay_settings::enforce_video_inflight_gate(&state.db, &token.user_id, avail)
-                .await
-        {
-            if let AppError::TooManyRequests(msg) = &e {
-                record_error_log(
-                    state,
-                    &token.user_id,
-                    ch_id,
-                    Some(token.id),
-                    model,
-                    429,
-                    ep,
-                    msg,
-                    up_url,
-                    Some(&resolved_cat),
-                )
-                .await;
-            }
-            return Err(e);
+    // 低余额：按类别限制未完成任务路数（金额门禁已过；不二次扣在途预扣）
+    if let Err(e) = super::relay_settings::enforce_inflight_gate(
+        &state.db,
+        &token.user_id,
+        avail,
+        &resolved_cat,
+    )
+    .await
+    {
+        if let AppError::TooManyRequests(msg) = &e {
+            record_error_log(
+                state,
+                &token.user_id,
+                ch_id,
+                Some(token.id),
+                model,
+                429,
+                ep,
+                msg,
+                up_url,
+                Some(&resolved_cat),
+            )
+            .await;
         }
+        return Err(e);
     }
 
+    *cache = Some(AccessMemo {
+        channel_id: channel.id,
+        pre_deduction,
+        db_model: db_model.clone(),
+        resolved_cat: resolved_cat.clone(),
+    });
     Ok((pre_deduction, db_model, resolved_cat))
 }
 
@@ -466,6 +485,7 @@ pub async fn select_channel_for_model(
     exclude_aids: &[String],
     log_miss: bool,
     action_type: Option<&str>,
+    ha_pool: &mut Option<super::ha::HaPoolSnap>,
 ) -> AppResult<Channel> {
     select_channel_with_db(
         state,
@@ -478,6 +498,7 @@ pub async fn select_channel_for_model(
         exclude_aids,
         log_miss,
         action_type,
+        ha_pool,
     )
     .await
 }
@@ -496,9 +517,10 @@ pub async fn select_channel_with_db(
     exclude_aids: &[String],
     log_miss: bool,
     action_type: Option<&str>,
+    ha_pool: &mut Option<super::ha::HaPoolSnap>,
 ) -> AppResult<Channel> {
     let mids = db_model.map(|m| vec![m.mid.clone()]);
-    let (allow_ha, _) = super::ha::policy(state, token.high_availability).await;
+    let allow_ha = super::ha::policy(state, token.high_availability).await;
     match router::select_channel(
         state,
         model,
@@ -507,6 +529,7 @@ pub async fn select_channel_with_db(
         exclude_aids,
         mids.as_deref(),
         allow_ha,
+        ha_pool,
     )
     .await
     {
@@ -592,7 +615,7 @@ pub async fn pre_deduct(
         .rows_affected();
         if touched == 0 {
             tx.rollback().await?;
-            tracing::error!(
+            tracing::warn!(
                 "[PreDeduct] pending log {} 不存在，回滚预扣 user={}",
                 log_id,
                 user_id
@@ -643,9 +666,13 @@ pub async fn pre_deduct_or_intercept(
                 }
                 _ => format!("预扣费失败: {:?}", e),
             };
-            tracing::error!("[PreDeduct] 预扣费失败 用户ID={}: {:?}", token.user_id, e);
-            let latency_ms = start_time.elapsed().as_millis() as u32;
             let is_balance = matches!(e, sqlx::Error::RowNotFound);
+            if is_balance {
+                crate::relay_debug!("[PreDeduct] 余额不足 用户ID={}", token.user_id);
+            } else {
+                tracing::warn!("[PreDeduct] 预扣费失败 用户ID={}: {:?}", token.user_id, e);
+            }
+            let latency_ms = start_time.elapsed().as_millis() as u32;
             let status_code = if is_balance { 402 } else { 500 };
             let _ = record_zero_cost_fail(ZeroCostUpstreamFail {
                 state,
@@ -663,7 +690,6 @@ pub async fn pre_deduct_or_intercept(
                 billing_detail: ep_tag,
                 hint_category: category,
                 pending_log_id,
-                billing_model_hint: None,
                 db_model,
                 client_msg: Some(&err_msg),
                 pre_deducted: 0.0,
@@ -691,12 +717,14 @@ pub async fn pre_deduct_or_intercept(
 /// Base64 数据脱敏：将请求/响应内容中的 base64 长串替换为占位符，减少日志体积。
 /// 供预记录和最终记录共用，保证数据处理一致性。
 pub fn sanitize_base64(text: &str) -> String {
-    // 规则 1: data URI 格式 (data:image/png;base64,...)
-    let re_data_uri = Regex::new(r"data:[^;]+;base64,[A-Za-z0-9+/=]{100,}").unwrap();
-    let text = re_data_uri.replace_all(text, "base64数据").to_string();
-    // 规则 2: 纯 base64 长串 (无 data: 前缀，如 b64_json / inline_data 字段)
-    let re_raw_b64 = Regex::new(r#""[A-Za-z0-9+/]{200,}={0,2}""#).unwrap();
-    re_raw_b64.replace_all(&text, "\"base64数据\"").to_string()
+    static RE_URI: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_RAW: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_uri = RE_URI
+        .get_or_init(|| Regex::new(r"data:[^;]+;base64,[A-Za-z0-9+/=]{100,}").unwrap());
+    let text = re_uri.replace_all(text, "base64数据");
+    let re_raw = RE_RAW
+        .get_or_init(|| Regex::new(r#""[A-Za-z0-9+/]{200,}={0,2}""#).unwrap());
+    re_raw.replace_all(&text, "\"base64数据\"").into_owned()
 }
 
 /// 预记录日志参数（命名字段，避免位置参数踩坑）
@@ -710,7 +738,6 @@ pub struct PendingLog<'a> {
     pub request_content: Option<&'a str>,
     pub upstream_url: Option<&'a str>,
     pub channel: &'a crate::models::Channel,
-    pub billing_model_hint: Option<&'a str>,
     pub plugin_tag: Option<&'a str>,
     pub category: Option<&'a str>,
     pub db_model: Option<&'a crate::models::Model>,
@@ -735,17 +762,14 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
         request_content,
         upstream_url,
         channel,
-        billing_model_hint,
         plugin_tag,
         category,
         db_model,
         forward_eid,
         requested_log_id,
     } = p;
-    // 计费模型提示：插件（如快乐小马）解析后的实际模型，用于正确查询元信息
-    let meta_model = billing_model_hint.unwrap_or(model);
     let (mut action_type, billing_pid, enable_log) =
-        resolve_model_meta(state, meta_model, category, Some(channel), db_model).await;
+        resolve_model_meta(state, model, category, Some(channel), db_model).await;
     // 元信息未解析到类型时透传调用方 category（业务模块已知，无需再猜 endpoint）
     if action_type.is_empty() {
         if let Some(cat) = category.map(str::trim).filter(|c| !c.is_empty()) {
@@ -757,13 +781,17 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
     } else {
         "log_"
     };
-    let generated_log_id = requested_log_id.map(|s| s.to_string()).unwrap_or_else(|| {
-        format!(
-            "{}{}",
-            log_id_prefix,
-            ulid::Ulid::new().to_string().to_lowercase()
-        )
-    });
+    let generated_log_id = requested_log_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "{}{}",
+                log_id_prefix,
+                ulid::Ulid::new().to_string().to_lowercase()
+            )
+        });
     let forward_eid: Option<String> = forward_eid.filter(|s| !s.is_empty()).map(|s| s.to_string());
 
     let channel_config_id = super::ha::resolve_log_config_id(state, channel).await;
@@ -786,12 +814,7 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
                  '请求处理中', '', ?, ?, ?, ?, ?, ?) RETURNING id"
     );
 
-    let (sys_ep, _upstream_ep) = if endpoint.contains('|') {
-        let parts: Vec<&str> = endpoint.splitn(2, '|').collect();
-        (parts[0], parts[1])
-    } else {
-        (endpoint, endpoint)
-    };
+    let sys_ep = endpoint.split_once('|').map(|(s, _)| s).unwrap_or(endpoint);
 
     let res = sqlx::query_scalar::<_, i64>(&sql)
         .bind(&generated_log_id)
@@ -814,7 +837,7 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
 
     match res {
         Ok(id) => {
-            tracing::info!(
+            crate::relay_debug!(
                 "[PendingLog] ID={} 日志号={} 模型={} 端点={}",
                 id,
                 generated_log_id,
@@ -824,7 +847,7 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
             Some(id)
         }
         Err(e) => {
-            tracing::error!("[PendingLog] 预记录失败: {:?}", e);
+            tracing::warn!("[PendingLog] 预记录失败: {:?}", e);
             None
         }
     }
@@ -943,7 +966,7 @@ async fn resolve_model_meta(
     billing_pid = row.try_get("billing_pid").unwrap_or(None);
     enable_log = row.try_get("enable_log_content").unwrap_or(0);
 
-    tracing::info!(
+    crate::relay_debug!(
         "[ModelMeta] 模型={} 类别={} PID={} 日志内容开关={} 来源={}",
         model_name,
         action_type,
@@ -1006,88 +1029,74 @@ pub async fn record_error_log(
         .await;
 
     if let Err(e) = res {
-        tracing::error!("[ErrorLog] 记录错误日志失败: {:?}", e);
+        tracing::warn!("[ErrorLog] 记录错误日志失败: {:?}", e);
     }
 }
 
-/// 最终记账/更新日志参数
+/// 最终记账参数：`ctx` 复用 HA 记账上下文，`usage` 替代 prompt/completion/cached 三字段
 pub struct BillRecord<'a> {
-    pub state: &'a Arc<AppState>,
-    pub token: &'a ApiToken,
+    pub ctx: crate::relay::ha::HaBillCtx<'a>,
     pub channel: &'a crate::models::Channel,
-    pub model: &'a str,
-    pub prompt_tokens: i32,
-    pub completion_tokens: i32,
-    pub cached_tokens: i32,
+    pub log_id: Option<i64>,
+    pub usage: crate::relay::usage_extractor::UsageTokens,
     pub cost: f64,
     pub pre_deducted: f64,
     pub pre_deduct_gift: f64,
-    pub status_code: u16,
-    pub endpoint: &'a str,
-    pub error_msg: Option<&'a str>,
     pub latency_ms: u32,
     pub is_stream: i32,
-    pub request_content: Option<String>,
-    pub response_content: Option<String>,
-    pub upstream_req_content: Option<String>,
-    pub billing_detail: Option<String>,
-    pub hint_category: Option<&'a str>,
-    pub pending_log_id: Option<i64>,
-    pub billing_model_hint: Option<&'a str>,
-    pub plugin_tag: Option<&'a str>,
-    pub db_model: Option<&'a crate::models::Model>,
-    /// 请求开始已锁定的峰谷倍率；`None` 时由本函数按当前规则快照写入 billing_features
+    pub status_code: u16,
+    pub error_msg: Option<&'a str>,
+    pub request: Option<String>,
+    pub response: Option<String>,
+    pub upstream_req: Option<String>,
+    pub detail: Option<String>,
+    pub features: Option<crate::relay::usage_extractor::ExtractedFeatures>,
     pub time_multiplier: Option<f64>,
+    pub plugin_tag: Option<&'a str>,
 }
 
-/// 计费记录统一入口
-/// 【一条日志原则】pending_log_id 有值时 UPDATE 预记录行，无值时 INSERT 新行
-/// billing_model_hint: 插件解析后的实际模型（用于正确查询 billing_pid 等元信息），普通场景传 None
-/// plugin_tag: INSERT 时写入；UPDATE 时非空则覆盖（级联需回写 s1_task_id）
-/// db_model: 调用方已查询的 Model 记录，传入后 resolve_model_meta 走主键精确定位，避免重复查库
-/// channel: 已水合渠道（含最终 base_url/api_key/yid），禁止再查空父行覆盖
+/// 计费记录统一入口；log_id 有值 UPDATE 预记录行，无值 INSERT
 pub async fn record_and_bill_inner(p: BillRecord<'_>) {
     let BillRecord {
-        state,
-        token,
+        ctx,
         channel,
-        model: model_name,
-        prompt_tokens,
-        completion_tokens,
-        cached_tokens,
+        log_id: pending_log_id,
+        usage,
         cost,
         pre_deducted,
         pre_deduct_gift,
-        status_code,
-        endpoint,
-        error_msg,
         latency_ms,
         is_stream,
-        request_content,
-        response_content,
-        upstream_req_content,
-        billing_detail,
-        hint_category,
-        pending_log_id,
-        billing_model_hint,
-        plugin_tag,
-        db_model,
+        status_code,
+        error_msg,
+        request: request_content,
+        response: response_content,
+        upstream_req: upstream_req_content,
+        detail: billing_detail,
+        features: billed_features,
         time_multiplier: bill_time_multiplier,
+        plugin_tag,
     } = p;
+    let state = ctx.state;
+    let token = ctx.token;
+    let model_name = ctx.model;
+    let hint_category = ctx.hint_category;
+    let db_model = ctx.db_model;
+    let endpoint = ctx.ep;
     let pre_deducted = crate::money::round_money(pre_deducted);
     let pre_deduct_gift = crate::money::round_money(pre_deduct_gift);
-    // 实时 TPM 观测（与计费路径同点，零写库）
-    let live_total_tokens =
-        (prompt_tokens.max(0) as u64).saturating_add(completion_tokens.max(0) as u64);
-    crate::middleware::live_metrics::record_tokens(&token.user_id, token.id, live_total_tokens);
+    crate::middleware::live_metrics::record_tokens(
+        &token.user_id,
+        token.id,
+        (usage.prompt.max(0) as u64).saturating_add(usage.completion.max(0) as u64),
+    );
 
     let extracted_error_msg = error_msg.map(|msg| extract_error_message(msg));
     let db_error_msg = extracted_error_msg.as_deref();
     let channel_id = channel.id;
 
-    let meta_model = billing_model_hint.unwrap_or(model_name);
     let (category, billing_pid, enable_log) =
-        resolve_model_meta(state, meta_model, hint_category, Some(channel), db_model).await;
+        resolve_model_meta(state, model_name, hint_category, Some(channel), db_model).await;
 
     // HA: group_aid；物理: preset_id；内存 yid 补全 config_id
     let channel_config_id = super::ha::resolve_log_config_id(state, channel).await;
@@ -1101,85 +1110,52 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
         Some(sanitize_base64(&text))
     };
 
-    // ── 计费特征快照 ──
+    // ── 计费特征快照（与扣费同源；已传入则复用）──
     let billing_features_json: Option<String> = {
-        let mut feat = request_content
-            .as_ref()
-            .and_then(|rc| serde_json::from_str::<serde_json::Value>(rc).ok())
-            .map(|json| crate::relay::usage_extractor::extract_request_features(&json));
-        if let Some(upstream_feat) = upstream_req_content
-            .as_ref()
-            .and_then(|uc| serde_json::from_str::<serde_json::Value>(uc).ok())
-            .map(|json| crate::relay::usage_extractor::extract_request_features(&json))
-        {
-            if let Some(ref mut f) = feat {
-                f.merge(upstream_feat);
-            } else {
-                feat = Some(upstream_feat);
-            }
-        }
-        if let Some(ref resp) = response_content {
-            if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(resp) {
-                let resp_feat = crate::relay::usage_extractor::extract_request_features(&resp_json);
-                if let Some(ref mut f) = feat {
-                    f.merge(resp_feat);
-                } else {
-                    feat = Some(resp_feat);
+        let mut feat = crate::relay::usage_extractor::build_billing_features(
+            request_content.as_deref(),
+            upstream_req_content.as_deref(),
+            response_content.as_deref(),
+            billed_features,
+            bill_time_multiplier,
+        );
+        // 级联：从 plugin_tag.cascade 补 version/resolution（不改用户入参）
+        if let Some(tag) = plugin_tag {
+            if feat.version.is_none() {
+                if let Some(ver) = crate::relay::cascade::cascade_json_str(tag, "/cascade/version") {
+                    feat.version = Some(ver);
                 }
             }
-            let usage = crate::relay::usage_extractor::parse_usage(resp);
-            crate::relay::usage_extractor::enrich_features_from_usage(
-                feat.get_or_insert_with(Default::default),
-                &usage,
-            );
-        }
-        // 级联：从 plugin_tag.cascade 补 version/resolution 到计费特征（不改用户入参）
-        if let Some(tag) = plugin_tag {
-            if let Some(ver) = crate::relay::cascade::cascade_json_str(tag, "/cascade/version") {
-                feat.get_or_insert_with(Default::default).version = Some(ver);
-            }
-            if let Some(res) = crate::relay::cascade::cascade_json_str(tag, "/cascade/resolution") {
-                feat.get_or_insert_with(Default::default).resolution = Some(res);
+            if feat.resolution.is_none() {
+                if let Some(res) =
+                    crate::relay::cascade::cascade_json_str(tag, "/cascade/resolution")
+                {
+                    feat.resolution = Some(res);
+                }
             }
         }
-        // 峰谷倍率快照：优先用调用方传入的请求开始锁定值；否则按当前规则锁定写入
-        if feat.as_ref().and_then(|f| f.time_multiplier).is_none() {
-            let locked = if let Some(tm) = bill_time_multiplier {
-                Some(tm)
-            } else {
-                get_model_billing_rule(state, model_name, Some(channel), db_model)
-                    .await
-                    .map(|r| r.applied_multiplier)
-            };
-            if let Some(tm) = locked {
-                feat.get_or_insert_with(Default::default).time_multiplier = Some(tm);
-            }
-        }
-        feat.and_then(|f| serde_json::to_string(&f).ok())
+        serde_json::to_string(&feat).ok()
     };
 
     let req_content = filter_content(request_content, true);
     let upstream_req = filter_content(upstream_req_content, true);
 
-    let resp_content = if enable_log == 0 {
-        if category == "视频" || category == "图片" {
-            filter_content(response_content, false)
-        } else {
-            if let Some(ref text) = response_content {
-                let usage_json = crate::relay::usage_extractor::extract_usage_json_string(text);
-                if usage_json.is_some() {
-                    usage_json
-                } else if category == "聊天" || category == "文本" {
-                    Some("[]".to_string())
+    let resp_content = if enable_log == 0 && category == "聊天" {
+        // 关闭上下文记录的聊天类型：仅保留 usage 统计；失败时保留响应体以便排错
+        if let Some(ref text) = response_content {
+            crate::relay::usage_extractor::extract_usage_json_string(text).or_else(|| {
+                if status_code != 200 {
+                    Some(sanitize_base64(text))
                 } else {
-                    filter_content(Some(text.clone()), false)
+                    Some("[]".to_string())
                 }
-            } else {
-                None
-            }
+            })
+        } else {
+            None
         }
     } else {
-        filter_content(response_content, false)
+        // 视频/图片/其他类别，或已开启上下文记录：完整保留响应体
+        response_content.map(|t| sanitize_base64(&t))
     };
 
     // 直接复用已水合 Channel 的 base_url/api_key（含 HA 子配 / preset / volc 覆盖）
@@ -1351,9 +1327,9 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
             ))
             .bind(channel_id)
             .bind(model_name)
-            .bind(prompt_tokens)
-            .bind(completion_tokens)
-            .bind(cached_tokens)
+            .bind(usage.prompt)
+            .bind(usage.completion)
+            .bind(usage.cached)
             .bind(settled_cost)
             .bind(status_code as i32)
             .bind(system_endpoint)
@@ -1395,9 +1371,9 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
             .bind(channel_id)
             .bind(token.id)
             .bind(model_name)
-            .bind(prompt_tokens)
-            .bind(completion_tokens)
-            .bind(cached_tokens)
+            .bind(usage.prompt)
+            .bind(usage.completion)
+            .bind(usage.cached)
             .bind(settled_cost)
             .bind(status_code as i32)
             .bind(system_endpoint)
@@ -1428,7 +1404,7 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
     }
     .await;
     if let Err(e) = res {
-        tracing::error!("[RelayUsage] 记录使用日志失败: {:?}", e);
+        tracing::warn!("[RelayUsage] 记录使用日志失败: {:?}", e);
         // 结算事务失败：若已预扣且日志仍为处理中，立即 CAS 退款（不必等孤儿任务）
         // CAS 未命中说明他处已关单/退款，禁止再补偿
         let cas_miss = matches!(&e, sqlx::Error::Protocol(m) if m == "pending_cas_miss");
@@ -1445,7 +1421,7 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
             )
             .await
             {
-                tracing::error!(
+                tracing::warn!(
                     "[BillCompensate] 无 pending 日志钱包退款失败 user={} amount={:.6}: {:?}",
                     token.user_id,
                     pre_deducted,
@@ -1491,7 +1467,7 @@ async fn settle_pending_prepay(
     let mut tx = match state.db.pool.begin().await {
         Ok(tx) => tx,
         Err(e) => {
-            tracing::error!("[{tag}] 开启事务失败 日志ID={}: {:?}", log_id, e);
+            tracing::warn!("[{tag}] 开启事务失败 日志ID={}: {:?}", log_id, e);
             return false;
         }
     };
@@ -1499,7 +1475,7 @@ async fn settle_pending_prepay(
     let row = match lock_pending_prepay(&state.db, &mut tx, log_id).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("[{tag}] 锁定日志失败 日志ID={}: {:?}", log_id, e);
+            tracing::warn!("[{tag}] 锁定日志失败 日志ID={}: {:?}", log_id, e);
             let _ = tx.rollback().await;
             return false;
         }
@@ -1536,13 +1512,13 @@ async fn settle_pending_prepay(
         .await,
     };
     if let Err(e) = upd {
-        tracing::error!("[{tag}] 更新日志失败 日志ID={}: {:?}", log_id, e);
+        tracing::warn!("[{tag}] 更新日志失败 日志ID={}: {:?}", log_id, e);
         let _ = tx.rollback().await;
         return false;
     }
 
     if let Err(e) = refund_wallet_sql(&state.db, &mut *tx, &user_id, cost, pre_deduct_gift).await {
-        tracing::error!(
+        tracing::warn!(
             "[{tag}] 退款失败 用户ID={} 日志ID={}: {:?}",
             user_id,
             log_id,
@@ -1553,12 +1529,12 @@ async fn settle_pending_prepay(
     }
 
     if let Err(e) = tx.commit().await {
-        tracing::error!("[{tag}] 提交事务失败 日志ID={}: {:?}", log_id, e);
+        tracing::warn!("[{tag}] 提交事务失败 日志ID={}: {:?}", log_id, e);
         return false;
     }
 
     if let Some((status_code, _, _)) = close {
-        tracing::info!(
+        crate::relay_debug!(
             "[PendingClose] 已关闭 日志ID={} 状态码={} 用户ID={} 金额={:.6} 赠送={:.6}",
             log_id,
             status_code,
@@ -1567,7 +1543,7 @@ async fn settle_pending_prepay(
             pre_deduct_gift
         );
     } else {
-        tracing::info!(
+        crate::relay_debug!(
             "[HA] 续试退预扣 日志ID={} 金额={:.6} 赠送={:.6}",
             log_id,
             cost,
@@ -1634,7 +1610,7 @@ pub async fn cleanup_orphan_pending_logs(state: &Arc<AppState>) {
     {
         Ok(rows) => rows,
         Err(e) => {
-            tracing::error!("[OrphanCleanup] 查询孤儿日志失败: {:?}", e);
+            tracing::warn!("[OrphanCleanup] 查询孤儿日志失败: {:?}", e);
             return;
         }
     };
@@ -1667,7 +1643,7 @@ pub async fn recover_interrupted_logs(state: &Arc<AppState>) {
     {
         Ok(rows) => rows,
         Err(e) => {
-            tracing::error!("[StartupRecover] 查询中断日志失败: {:?}", e);
+            tracing::warn!("[StartupRecover] 查询中断日志失败: {:?}", e);
             return;
         }
     };
@@ -1753,7 +1729,6 @@ pub struct ZeroCostUpstreamFail<'a> {
     pub billing_detail: Option<String>,
     pub hint_category: Option<&'a str>,
     pub pending_log_id: Option<i64>,
-    pub billing_model_hint: Option<&'a str>,
     pub db_model: Option<&'a crate::models::Model>,
     pub client_msg: Option<&'a str>,
     pub pre_deducted: f64,
@@ -1773,31 +1748,31 @@ pub async fn record_zero_cost_fail(p: ZeroCostUpstreamFail<'_>) -> (u16, String)
     };
     let client_owned = p.client_msg.unwrap_or(&error_msg).to_string();
     record_and_bill_inner(BillRecord {
-        state: p.state,
-        token: p.token,
+        ctx: crate::relay::ha::HaBillCtx {
+            state: p.state,
+            token: p.token,
+            model: p.model,
+            ep: p.endpoint,
+            hint_category: p.hint_category,
+            db_model: p.db_model,
+        },
         channel: p.channel,
-        model: p.model,
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        cached_tokens: 0,
+        log_id: p.pending_log_id,
+        usage: Default::default(),
         cost: 0.0,
         pre_deducted: p.pre_deducted,
         pre_deduct_gift: p.pre_deduct_gift,
-        status_code,
-        endpoint: p.endpoint,
-        error_msg: Some(&error_msg),
         latency_ms: p.latency_ms,
         is_stream: p.is_stream,
-        request_content: Some(p.request_content),
-        response_content: p.response_content,
-        upstream_req_content: p.upstream_req_content,
-        billing_detail: p.billing_detail,
-        hint_category: p.hint_category,
-        pending_log_id: p.pending_log_id,
-        billing_model_hint: p.billing_model_hint,
-        plugin_tag: None,
-        db_model: p.db_model,
+        status_code,
+        error_msg: Some(&error_msg),
+        request: Some(p.request_content),
+        response: p.response_content,
+        upstream_req: p.upstream_req_content,
+        detail: p.billing_detail,
+        features: None,
         time_multiplier: None,
+        plugin_tag: None,
     })
     .await;
     (status_code, client_owned)
@@ -1841,22 +1816,44 @@ pub fn extract_error_message(resp_body: &str) -> String {
     resp_body.to_string()
 }
 
-/// 推断业务 HTTP 状态码（error.code → 文案关键词），结果保证为 4xx/5xx。
-pub fn infer_error_status_code(body: &serde_json::Value) -> u16 {
-    let raw = if let Some(code) = super::response_formatter::extract_error_code_from_value(body) {
-        if let Some(status) = classify_error_code(&code) {
-            status
-        } else {
-            classify_error_text(
-                &super::response_formatter::extract_error_message_from_value(body)
-                    .unwrap_or_default(),
-            )
+/// 文案中的显式 HTTP 码（`status 404`）。只认 3 位 4xx/5xx，避免厂商业务码如 40004。
+fn http_status_in_text(s: &str) -> Option<u16> {
+    let lower = s.to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(i) = rest.find("status") {
+        let after = rest[i + 6..].trim_start_matches([' ', '\t', ':', '=', '-']);
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 3 {
+            if let Ok(n) = digits.parse::<u16>() {
+                if (400..600).contains(&n) {
+                    return Some(n);
+                }
+            }
         }
-    } else {
-        classify_error_text(
-            &super::response_formatter::extract_error_message_from_value(body).unwrap_or_default(),
-        )
-    };
+        rest = &rest[i + 6..];
+    }
+    None
+}
+
+fn is_content_policy(s: &str) -> bool {
+    s.contains("sensitive")
+        || s.contains("policy")
+        || s.contains("violation")
+        || s.contains("copyright")
+        || s.contains("safety")
+        || s.contains("moderation")
+        || s.contains("censor")
+}
+
+/// 推断业务 HTTP 状态码：文案里的 `status 404` 优先于厂商 `InternalError` 等笼统码。
+pub fn infer_error_status_code(body: &serde_json::Value) -> u16 {
+    let msg = super::response_formatter::extract_error_message_from_value(body).unwrap_or_default();
+    let raw = http_status_in_text(&msg)
+        .or_else(|| {
+            super::response_formatter::extract_error_code_from_value(body)
+                .and_then(|c| classify_error_code(&c))
+        })
+        .unwrap_or_else(|| classify_error_text(&msg));
     normalize_error_http_status(raw)
 }
 
@@ -1866,12 +1863,14 @@ pub fn infer_error_status_code_from_str(err: &str) -> u16 {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
         return infer_error_status_code(&v);
     }
-    normalize_error_http_status(classify_error_text(err))
+    normalize_error_http_status(
+        http_status_in_text(err).unwrap_or_else(|| classify_error_text(err)),
+    )
 }
 
 /// 按 error.code 字符串分类 HTTP 状态码。
 /// 数字仅在合法 HTTP 错误区间（400–599）时采纳；厂商业务码（如 MiniMax 2013）返回 None，
-/// 由调用方按 message 再分级。语义字符串码（PolicyViolation 等）正常映射。
+/// 由调用方按 message 再分级。
 fn classify_error_code(code: &str) -> Option<u16> {
     if let Ok(n) = code.parse::<u16>() {
         return if (400..=599).contains(&n) {
@@ -1881,7 +1880,7 @@ fn classify_error_code(code: &str) -> Option<u16> {
         };
     }
     let c = code.to_lowercase();
-    // 402：欠费/余额不足（顺序须在 403 之前，防止 overdue 含 forbidden 被误分）
+    // 402：欠费/余额不足（须在权限/风控之前）
     if c.contains("overdue")
         || c.contains("balance")
         || c.contains("payment")
@@ -1891,19 +1890,12 @@ fn classify_error_code(code: &str) -> Option<u16> {
     {
         return Some(402);
     }
-    // 403：内容安全 / 政策违规 / 权限不足（permission 须排在 auth 之前）
-    if c.contains("sensitive")
-        || c.contains("policy")
-        || c.contains("violation")
-        || c.contains("safety")
-        || c.contains("copyright")
-        || c.contains("block")
-        || c.contains("moderation")
-        || c.contains("censor")
-        || c.contains("permission")
-        || c.contains("forbidden")
-        || c.contains("access_denied")
-    {
+    // 400：内容风控（用户内容被拒，不是没权限调接口）
+    if is_content_policy(&c) || c.contains("block") {
+        return Some(400);
+    }
+    // 403：令牌/IP/模型白名单等权限不足
+    if c.contains("permission") || c.contains("forbidden") || c.contains("access_denied") {
         return Some(403);
     }
     // 鉴权/身份认证失败
@@ -1941,10 +1933,10 @@ fn classify_error_code(code: &str) -> Option<u16> {
     Some(400)
 }
 
-/// message 文本关键词分类 HTTP 状态码（无结构化 error.code 时的兜底，私有辅助）
+/// message 文本关键词分类（无 error.code 时）。`status 404` 已在入口先判。
 fn classify_error_text(msg: &str) -> u16 {
     let m = msg.to_lowercase();
-    // 402：欠费/余额不足（须在 403 之前，防止被权限分支误拦）
+    // 402：欠费/余额不足（须在权限之前）
     if m.contains("overdue")
         || m.contains("out of budget")
         || m.contains("insufficient_balance")
@@ -1958,24 +1950,20 @@ fn classify_error_text(msg: &str) -> u16 {
     {
         return 402;
     }
-    // 403：内容安全/政策违规/权限不足（permission 须在 auth 之前："not authorized" 含 auth 子串）
-    if m.contains("safety")
-        || m.contains("censor")
-        || m.contains("policy")
-        || m.contains("violation")
-        || m.contains("block")
-        || m.contains("sensitive")
-        || m.contains("moderation")
+    // 400：内容风控（须在 403 之前）
+    if is_content_policy(&m)
         || m.contains("content_filter")
-        || m.contains("permission")
+        || m.contains("敏感")
+        || m.contains("违规")
+        || m.contains("版权")
+    {
+        return 400;
+    }
+    // 403：权限不足（permission 须在 auth 之前："not authorized" 含 auth 子串）
+    if m.contains("permission")
         || m.contains("forbidden")
         || m.contains("not authorized")
         || m.contains("access denied")
-        || m.contains("敏感")
-        || m.contains("违规")
-        || m.contains("安全")
-        || m.contains("政策")
-        || m.contains("审核")
         || m.contains("无权限")
         || m.contains("没有权限")
     {
@@ -2042,18 +2030,26 @@ fn classify_error_text(msg: &str) -> u16 {
     400
 }
 
-/// 并发获取所有视频 URL 的时长之和（8 秒全局超时兜底）
-pub async fn sum_remote_videos_duration(client: &reqwest::Client, urls: &[String]) -> f64 {
+/// 并发获取所有远程多媒体 URL (视频/音频) 的时长之和（8 秒全局超时兜底，流式 Range 解析）
+/// 若媒体资源无法访问 (如 404/网络异常)，返回明确错误提示，避免无谓转给上游浪费资源
+pub async fn sum_remote_media_duration(
+    client: &reqwest::Client,
+    urls: &[String],
+) -> Result<f64, String> {
     if urls.is_empty() {
-        return 0.0;
+        return Ok(0.0);
     }
     let probe = async {
-        let futs = urls.iter().map(|u| probe_video_duration(client, u));
-        futures::future::join_all(futs).await.into_iter().sum()
+        let futs = urls
+            .iter()
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+            .map(|u| probe_media_duration(client, u));
+        let durations = futures::future::try_join_all(futs).await?;
+        Ok(durations.into_iter().sum())
     };
     tokio::time::timeout(std::time::Duration::from_secs(8), probe)
         .await
-        .unwrap_or(0.0)
+        .map_err(|_| "探测参考媒体资源超时，请确保资源可正常公开访问".to_string())?
 }
 
 /// 局部辅助：流式获取指定 Range 的数据，一旦解析出时长立刻返回，支持 UA 伪装防拦截
@@ -2061,23 +2057,29 @@ async fn fetch_and_parse(
     client: &reqwest::Client,
     url: &str,
     range: &str,
-) -> Option<(f64, Option<u64>, Vec<u8>)> {
+) -> Result<(f64, Option<u64>, Vec<u8>), String> {
     use futures::StreamExt;
 
-    let resp = client.get(url)
+    let resp = client
+        .get(url)
         .header("Range", range)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
         .timeout(std::time::Duration::from_secs(4))
-        .send().await.ok()?;
+        .send()
+        .await
+        .map_err(|e| format!("参考媒体资源连接失败: {} ({})", url, e))?;
 
     let status = resp.status().as_u16();
     if status != 200 && status != 206 {
-        tracing::warn!(
-            "[VideoDuration] HTTP 状态码非预期: {} 状态码={}",
+        crate::relay_debug!(
+            "[MediaDuration] HTTP 状态码非预期: {} 状态码={}",
             url,
             status
         );
-        return None;
+        return Err(format!("参考媒体资源无法访问 (HTTP {}): {}", status, url));
     }
 
     let total = resp
@@ -2088,76 +2090,82 @@ async fn fetch_and_parse(
 
     let mut buf = Vec::with_capacity(8192);
     let mut stream = resp.bytes_stream();
-    while let Some(Ok(chunk)) = stream.next().await {
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = match chunk_res {
+            Ok(c) => c,
+            Err(e) => return Err(format!("参考媒体资源读取中断: {} ({})", url, e)),
+        };
         buf.extend_from_slice(&chunk);
-        if let Some(d) = parse_video_duration(&buf) {
-            return Some((d, total, buf));
+        if let Some(d) = parse_media_duration(&buf) {
+            return Ok((d, total, buf));
         }
         if buf.len() >= 32768 {
             break;
         }
     }
-    Some((0.0, total, buf))
+    Ok((0.0, total, buf))
 }
 
-/// HTTP Range 流式探测单个远程 MP4 视频时长，解析出 duration 立即终止连接
-async fn probe_video_duration(client: &reqwest::Client, url: &str) -> f64 {
+/// HTTP Range 流式探测单个远程多媒体(视频/音频)时长，解析出 duration 立即终止连接
+async fn probe_media_duration(client: &reqwest::Client, url: &str) -> Result<f64, String> {
     let start = std::time::Instant::now();
 
     // 1. 发起头部 Range 请求，拉取并流式解析前 32KB
     let (dur, total_size, head_buf) = match fetch_and_parse(client, url, "bytes=0-32767").await {
-        Some(res) => res,
-        None => {
-            tracing::warn!("[VideoDuration] 头部请求异常: {}", url);
-            return 0.0;
+        Ok(res) => res,
+        Err(err) => {
+            crate::relay_debug!("[MediaDuration] 头部请求异常: {}", err);
+            return Err(err);
         }
     };
 
     if dur > 0.0 {
-        tracing::info!(
-            "[VideoDuration] 头部解析成功: {} 时长={} 耗时={:?}",
+        crate::relay_debug!(
+            "[MediaDuration] 头部解析成功: {} 时长={} 耗时={:?}",
             url,
             dur,
             start.elapsed()
         );
-        return dur;
+        return Ok(dur);
     }
 
     // 2. 如果头部未找到且知道总大小，发起第二个 Range 请求，拉取并流式解析尾部 32KB (处理非 faststart 视频)
     if let Some(total) = total_size {
         if total > 32768 {
             let range = format!("bytes={}-{}", total - 32768, total - 1);
-            if let Some((tail_dur, _, _)) = fetch_and_parse(client, url, &range).await {
+            if let Ok((tail_dur, _, _)) = fetch_and_parse(client, url, &range).await {
                 if tail_dur > 0.0 {
-                    tracing::info!(
-                        "[VideoDuration] 尾部解析成功: {} 时长={} 耗时={:?}",
+                    crate::relay_debug!(
+                        "[MediaDuration] 尾部解析成功: {} 时长={} 耗时={:?}",
                         url,
                         tail_dur,
                         start.elapsed()
                     );
-                    return tail_dur;
+                    return Ok(tail_dur);
                 }
             }
         }
     }
 
-    // 3. 兜底处理 (若全部步骤都没找到，则宣告失败)
-    tracing::warn!(
-        "[VideoDuration] 探测失败(非标准或元数据过大): {} 大小={} 字节 总大小={:?} 耗时={:?}",
+    // 3. 兜底处理 (链接正常连通但未从元数据识别出时长，返回 0.0)
+    crate::relay_debug!(
+        "[MediaDuration] 探测完成(未解析到元数据时长): {} 大小={} 字节 总大小={:?} 耗时={:?}",
         url,
         head_buf.len(),
         total_size,
         start.elapsed()
     );
-    0.0
+    Ok(0.0)
 }
 
-/// 通用视频时长解析入口，支持 MP4/MOV、WEBM/MKV、AVI、FLV
-fn parse_video_duration(data: &[u8]) -> Option<f64> {
+/// 通用多媒体时长解析入口，支持 MP4/MOV、WEBM/MKV、AVI、FLV、WAV、MP3
+fn parse_media_duration(data: &[u8]) -> Option<f64> {
     parse_mp4_duration(data)
         .or_else(|| parse_webm_duration(data))
         .or_else(|| parse_avi_duration(data))
         .or_else(|| parse_flv_duration(data))
+        .or_else(|| parse_wav_duration(data))
+        .or_else(|| parse_mp3_duration(data))
         .filter(|d| *d > 0.0 && d.is_finite() && *d < 86400.0)
 }
 
@@ -2325,7 +2333,118 @@ pub fn extract_request_video_urls(body: &serde_json::Value) -> Vec<String> {
         }
     }
 
+    // 3. fal reference_video_urls 纯字符串数组
+    urls.extend(extract_string_array_urls(body, "reference_video_urls"));
+
     urls.sort();
     urls.dedup();
     urls
+}
+
+/// 辅助提取 JSON 字段中的字符串 URL 列表（支持纯字符串数组与非空过滤）
+fn extract_string_array_urls(body: &serde_json::Value, field: &str) -> Vec<String> {
+    body.get(field)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 提取请求体中的参考音频 URLs（纯一维字符串数组）
+pub fn extract_request_audio_urls(body: &serde_json::Value) -> Vec<String> {
+    let mut urls = extract_string_array_urls(body, "reference_audio_urls");
+    if urls.is_empty() {
+        urls = extract_string_array_urls(body, "audios");
+    }
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+/// 解析 WAV 提取音频时长（秒）
+fn parse_wav_duration(data: &[u8]) -> Option<f64> {
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut pos = 12;
+    let mut byte_rate: Option<u32> = None;
+    let mut data_size: Option<u32> = None;
+    while pos + 8 <= data.len() {
+        let id = &data[pos..pos + 4];
+        let len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as usize;
+        if id == b"fmt " && pos + 8 + 16 <= data.len() {
+            byte_rate = Some(u32::from_le_bytes(data[pos + 16..pos + 20].try_into().ok()?));
+        } else if id == b"data" {
+            data_size = Some(len as u32);
+        }
+        if let (Some(br), Some(ds)) = (byte_rate, data_size) {
+            if br > 0 {
+                let dur = ds as f64 / br as f64;
+                if dur > 0.0 && dur.is_finite() && dur < 86400.0 {
+                    return Some(dur);
+                }
+            }
+        }
+        match pos.checked_add(8).and_then(|p| p.checked_add(len)) {
+            Some(next) => pos = next,
+            None => break,
+        }
+    }
+    None
+}
+
+/// 解析 MP3 提取音频时长（秒）
+fn parse_mp3_duration(data: &[u8]) -> Option<f64> {
+    let mut offset = 0;
+    if data.len() >= 10 && &data[0..3] == b"ID3" {
+        let tag_size = ((data[6] as usize & 0x7F) << 21)
+            | ((data[7] as usize & 0x7F) << 14)
+            | ((data[8] as usize & 0x7F) << 7)
+            | (data[9] as usize & 0x7F);
+        offset = 10 + tag_size;
+    }
+    if offset + 4 > data.len() {
+        return None;
+    }
+    let slice = &data[offset..];
+    let sync_pos = slice.windows(2).position(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0)?;
+    let frame = &slice[sync_pos..];
+    if frame.len() < 4 {
+        return None;
+    }
+    let ver_bits = (frame[1] >> 3) & 0x03;
+    let layer_bits = (frame[1] >> 1) & 0x03;
+    if layer_bits != 1 {
+        return None;
+    }
+    let bitrate_idx = (frame[2] >> 4) & 0x0F;
+    let srate_idx = (frame[2] >> 2) & 0x03;
+    if bitrate_idx == 0 || bitrate_idx == 15 || srate_idx == 3 {
+        return None;
+    }
+    let sample_rate = match (ver_bits, srate_idx) {
+        (3, 0) => 44100,
+        (3, 1) => 48000,
+        (3, 2) => 32000,
+        (2, 0) => 22050,
+        (2, 1) => 24000,
+        (2, 2) => 16000,
+        _ => return None,
+    };
+    if let Some(pos) = frame.windows(4).take(200).position(|w| w == b"Xing" || w == b"Info") {
+        let xing_body = &frame[pos + 4..];
+        if xing_body.len() >= 8 && (xing_body[3] & 0x01 != 0) {
+            let frames = u32::from_be_bytes(xing_body[4..8].try_into().ok()?) as f64;
+            let dur = frames * 1152.0 / sample_rate as f64;
+            if dur > 0.0 && dur.is_finite() && dur < 86400.0 {
+                return Some(dur);
+            }
+        }
+    }
+    None
 }

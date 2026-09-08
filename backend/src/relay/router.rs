@@ -45,8 +45,9 @@ pub async fn select_channel(
     exclude_aids: &[String],
     mids: Option<&[String]>,
     allow_ha: bool,
+    ha_pool: &mut Option<super::ha::HaPoolSnap>,
 ) -> AppResult<Channel> {
-    tracing::info!(
+    crate::relay_debug!(
         "[SelectChannel] 开始 模型={} 分组={} 等级={} 已排除={:?} 允许HA={}",
         model,
         user_group,
@@ -138,7 +139,7 @@ pub async fn select_channel(
     query = query.bind(format!("%\"{}\"%", level_id));
     let channels: Vec<Channel> = query.fetch_all(&state.db.pool).await?;
 
-    tracing::info!(
+    crate::relay_debug!(
         "[SelectChannel] 库候选数={} 渠道id={:?}",
         channels.len(),
         channels.iter().map(|c| c.id).collect::<Vec<i64>>()
@@ -209,7 +210,7 @@ pub async fn select_channel(
         })
         .collect();
 
-    tracing::info!(
+    crate::relay_debug!(
         "[SelectChannel] 过滤后={} 渠道id={:?}",
         channels.len(),
         channels.iter().map(|c| c.id).collect::<Vec<i64>>()
@@ -217,7 +218,7 @@ pub async fn select_channel(
 
     if channels.is_empty() {
         let err_msg = format!("No available channels found for model {}", model);
-        tracing::warn!(
+        crate::relay_debug!(
             "[SelectChannel] 未命中 模型={} 分组={} 等级={}",
             model,
             user_group,
@@ -248,13 +249,14 @@ pub async fn select_channel(
             .unwrap_or_default();
 
         if sub_channel_ids.is_empty() {
+            *ha_pool = Some(super::ha::HaPoolSnap::default());
             return Err(AppError::NotFound(format!(
                 "高可用虚拟渠道组 (ID: {}) 配置异常，未绑定任何上游子渠道",
                 picked.id
             )));
         }
 
-        let mut sub_configs: Vec<crate::models::ChannelConfig> = sqlx::query_as(
+        let rows: Vec<crate::models::ChannelConfig> = sqlx::query_as(
             &state
                 .db
                 .format_query("SELECT * FROM channel_configs WHERE id = ANY(?)"),
@@ -264,30 +266,24 @@ pub async fn select_channel(
         .await?;
 
         let group_id = picked.id;
-        sub_configs = sub_configs
-            .into_iter()
-            .filter(|sub_c| {
-                if sub_c.status != 1 {
-                    return false;
-                }
-                let config_key = format!("ha_group_{}_config_{}", group_id, sub_c.id);
-                if exclude_aids.contains(&config_key) {
-                    return false;
-                }
-                if crate::relay::ha::is_melted_down(state, &config_key) {
-                    return false;
-                }
-                // 上游预设额度耗尽则不可选
-                sub_c.has_available_quota(&tz_name, &now_week, &now_month)
-            })
-            .collect();
+        let (sub_configs, pool) = live_ha_subs(
+            &sub_channel_ids,
+            rows,
+            group_id,
+            exclude_aids,
+            state,
+            &tz_name,
+            &now_week,
+            &now_month,
+        );
+        *ha_pool = Some(pool);
 
         if sub_configs.is_empty() {
             // 整组不可用：剔除后重选，避免误报盖住其它可用物理渠
             channels.retain(|c| c.id != group_id);
             if channels.is_empty() {
                 let err_msg = format!("No available channels found for model {}", model);
-                tracing::warn!("[SelectChannel] HA组 {} 子渠已耗尽", group_id);
+                crate::relay_debug!("[SelectChannel] HA组 {} 子渠已耗尽", group_id);
                 return Err(AppError::NotFound(err_msg));
             }
             continue;
@@ -332,13 +328,13 @@ pub async fn select_channel(
         .await
         {
             if preset.status != 1 {
-                tracing::warn!("[SelectChannel] 预设已禁用 渠道={} 预设id={}", ch.id, pid);
+                crate::relay_debug!("[SelectChannel] 预设已禁用 渠道={} 预设id={}", ch.id, pid);
                 return Err(AppError::NotFound(format!(
                     "上游渠道配置已禁用 (preset_id={})",
                     pid
                 )));
             }
-            tracing::info!(
+            crate::relay_debug!(
                 "[SelectChannel] 套用预设 渠道={} 子渠标识={:?} 预设id={} {} -> {}",
                 ch.id,
                 ch.group_aid,
@@ -348,7 +344,7 @@ pub async fn select_channel(
             );
             apply_config_base(&mut ch, &preset);
         } else {
-            tracing::warn!(
+            crate::relay_debug!(
                 "[SelectChannel] 预设缺失 渠道={} 子渠标识={:?} 预设id={}",
                 ch.id,
                 ch.group_aid,
@@ -361,7 +357,7 @@ pub async fn select_channel(
     apply_volcengine_credential(state, &mut ch).await;
     apply_comfyui_channel(state, &mut ch).await;
 
-    tracing::info!(
+    crate::relay_debug!(
         "[SelectChannel] 选中 渠道id={} 上游YID={} 名称='{}' 类型={} 子渠标识={:?} 地址={}",
         ch.id,
         crate::relay::ha::yid_label(ch.yid.as_deref()),
@@ -372,6 +368,63 @@ pub async fn select_channel(
     );
 
     Ok(ch)
+}
+
+fn live_ha_subs(
+    bound_ids: &[i64],
+    rows: Vec<crate::models::ChannelConfig>,
+    group_id: i64,
+    exclude_aids: &[String],
+    state: &AppState,
+    tz_name: &str,
+    now_week: &str,
+    now_month: &str,
+) -> (Vec<crate::models::ChannelConfig>, super::ha::HaPoolSnap) {
+    let mut by_id: std::collections::HashMap<i64, crate::models::ChannelConfig> =
+        rows.into_iter().map(|c| (c.id, c)).collect();
+    let mut live = Vec::new();
+    let mut off = 0u16;
+    let mut melt = 0u16;
+    let mut quota = 0u16;
+    let mut excl = 0u16;
+    let mut gone = 0u16;
+    for id in bound_ids {
+        let Some(sub) = by_id.remove(id) else {
+            gone += 1;
+            continue;
+        };
+        if sub.status != 1 {
+            off += 1;
+            continue;
+        }
+        let key = format!("ha_group_{}_config_{}", group_id, sub.id);
+        if exclude_aids.contains(&key) {
+            excl += 1;
+            continue;
+        }
+        if crate::relay::ha::is_melted_down(state, &key) {
+            melt += 1;
+            continue;
+        }
+        if !sub.has_available_quota(tz_name, now_week, now_month) {
+            quota += 1;
+            continue;
+        }
+        live.push(sub);
+    }
+    let n = live.len() as u16;
+    (
+        live,
+        super::ha::HaPoolSnap {
+            bind: bound_ids.len() as u16,
+            live: n,
+            off,
+            melt,
+            quota,
+            excl,
+            gone,
+        },
+    )
 }
 
 /// 将 channel_configs 的 base/key/rate/yid 写入内存 Channel（选渠 / 重载共用）
@@ -511,7 +564,7 @@ pub fn resolve_model(
     if let Some(res) = resolution {
         if let Some((alias, res_key)) = resolve_res_alias(channel, requested_model, res) {
             let src = format!("分辨率映射@{}", res_key);
-            tracing::debug!("[ModelMap] {} {} → {}", src, requested_model, alias);
+            crate::relay_debug!("[ModelMap] {} {} → {}", src, requested_model, alias);
             return (alias, Some(src));
         }
     }
@@ -595,9 +648,7 @@ fn res_alias_in_map(
         if crate::relay::usage_extractor::normalize_resolution_label(k) != res_key {
             return None;
         }
-        v.as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
+        v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
     })
 }
 
@@ -647,42 +698,7 @@ pub(crate) async fn apply_volcengine_credential(
 }
 
 #[cfg(feature = "plugin_comfyui")]
-pub(crate) async fn apply_comfyui_channel(state: &crate::AppState, ch: &mut crate::models::Channel) {
-    if ch.provider_type != "comfyui" {
-        return;
-    }
-    let cfg = serde_json::from_str::<serde_json::Value>(&ch.config).unwrap_or(serde_json::Value::Null);
-    let server_id = crate::relay::forward::parse_comfyui_server_ids(&cfg)
-        .first()
-        .copied();
-    let workflow_id = cfg.get("comfyui_workflow_id").and_then(|v| v.as_i64());
-    let url: Option<String> = if let Some(sid) = server_id {
-        sqlx::query_scalar(&state.db.format_query(
-            "SELECT base_url FROM comfyui_servers WHERE id = ? AND is_active = 1",
-        ))
-        .bind(sid)
-        .fetch_optional(&state.db.pool)
-        .await
-        .ok()
-        .flatten()
-    } else if let Some(wid) = workflow_id {
-        sqlx::query_scalar(&state.db.format_query(
-            "SELECT s.base_url FROM comfyui_workflows w \
-             INNER JOIN comfyui_servers s ON s.id = w.server_id \
-             WHERE w.id = ? AND w.is_active = 1 AND s.is_active = 1",
-        ))
-        .bind(wid)
-        .fetch_optional(&state.db.pool)
-        .await
-        .ok()
-        .flatten()
-    } else {
-        None
-    };
-    if let Some(u) = url {
-        ch.base_url = u;
-    }
-}
+pub(crate) use crate::api::plugins::comfyui_bridge::apply_channel_url as apply_comfyui_channel;
 
 #[cfg(not(feature = "plugin_comfyui"))]
 pub(crate) async fn apply_comfyui_channel(_: &crate::AppState, _: &mut crate::models::Channel) {}

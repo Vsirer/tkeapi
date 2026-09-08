@@ -11,6 +11,7 @@ import { Spin, Typography, ConfigProvider, theme } from 'antd';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import { sanitizeHtml } from '../../utils/sanitize';
+import { DEFAULT_TOS_ZH, DEFAULT_TOS_EN, DEFAULT_PRIVACY_ZH, DEFAULT_PRIVACY_EN } from '../../constants/agreements';
 
 const LegalPage: React.FC = () => {
   const { type } = useParams<{ type: string }>();
@@ -38,13 +39,17 @@ const LegalPage: React.FC = () => {
     }
 
     const fetchLegalContent = async () => {
+      const isEn = legalLanguage ? legalLanguage === 'en' : Boolean(i18n.language?.startsWith('en'));
+      const defaultTos = isEn ? DEFAULT_TOS_EN : DEFAULT_TOS_ZH;
+      const defaultPrivacy = isEn ? DEFAULT_PRIVACY_EN : DEFAULT_PRIVACY_ZH;
+
       try {
         const response = await (request.get('/settings') as any);
         const agreement = response?.agreement;
-        const isEn = legalLanguage ? legalLanguage === 'en' : Boolean(i18n.language?.startsWith('en'));
         
         if (!agreement) {
-          setContent(isEn ? 'No content available' : '暂无内容');
+          setTitle(type === 'terms' ? (isEn ? 'Terms of Service' : '服务条款 (Terms of Service)') : (isEn ? 'Privacy Policy' : '隐私政策 (Privacy Policy)'));
+          setContent(type === 'terms' ? defaultTos : defaultPrivacy);
           setLoading(false);
           return;
         }
@@ -64,8 +69,8 @@ const LegalPage: React.FC = () => {
               } catch { /* 非法 URL，忽略 */ }
             }
           }
-          const textContent = isEn && agreement.tos_content_en ? agreement.tos_content_en : agreement.tos_content;
-          setContent(textContent || (isEn ? 'No content available' : '暂无内容'));
+          const textContent = isEn && agreement.tos_content_en ? agreement.tos_content_en : (agreement.tos_content || defaultTos);
+          setContent(textContent || defaultTos);
         } else if (type === 'privacy') {
           setTitle(isEn ? 'Privacy Policy' : '隐私政策 (Privacy Policy)');
           if (isEn ? agreement.privacy_mode_en === 'link' : agreement.privacy_mode === 'link') {
@@ -81,13 +86,14 @@ const LegalPage: React.FC = () => {
               } catch { /* 非法 URL，忽略 */ }
             }
           }
-          const textContent = isEn && agreement.privacy_content_en ? agreement.privacy_content_en : agreement.privacy_content;
-          setContent(textContent || (isEn ? 'No content available' : '暂无内容'));
+          const textContent = isEn && agreement.privacy_content_en ? agreement.privacy_content_en : (agreement.privacy_content || defaultPrivacy);
+          setContent(textContent || defaultPrivacy);
         }
         
       } catch (error) {
         console.error('Failed to fetch legal settings:', error);
-        setContent('加载失败');
+        setTitle(type === 'terms' ? (isEn ? 'Terms of Service' : '服务条款 (Terms of Service)') : (isEn ? 'Privacy Policy' : '隐私政策 (Privacy Policy)'));
+        setContent(type === 'terms' ? defaultTos : defaultPrivacy);
       } finally {
         setLoading(false);
       }

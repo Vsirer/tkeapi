@@ -1,6 +1,6 @@
 # 画像生成・編集インターフェース
 
-ゲートウェイの画像生成インターフェースは、OpenAI標準の画像生成仕様と完全に互換性があります。システムバックエンドには、Dall-E-3、Gemini Imagen、火山方舟（Volcengine）、Tencent Hunyuan（腾讯混元）、Alibaba Wanx（阿里万相）、Jimeng AI（即梦AI）などの主要な画像生成チャネルが統合されており、各プロバイダー固有のパラメータのアライメントと解析を自動的に行います。
+OpenAI 互換の画像 API。阿里千问画像（`qwen-image-3.0-pro`）は **`wan-image`** を参照。
 
 ### 1. 画像生成 (Image Generations)
 * **パス**: `/v1/images/generations`
@@ -9,14 +9,15 @@
 #### 主要なリクエストパラメータの説明
 | パラメータ名 | タイプ | 必須 | 説明 |
 | :--- | :--- | :--- | :--- |
-| `model` | `string` | はい | 画像生成モデル名。例：`dall-e-3` (OpenAI), `wanx-v1` (阿里万相), `seedream-5.0-lite` (即梦) |
+| `model` | `string` | はい | 画像生成モデル名。例：`dall-e-3` (OpenAI), `qwen-image-3.0-pro`, `seedream-5.0-lite` (即梦) |
 | `prompt` | `string` | はい | 画像を記述するテキストプロンプト（指示文） |
 | `n` | `integer` | いいえ | 生成を希望する画像の枚数（デフォルトは `1`） |
 | `size` | `string` | いいえ | 解像度（例：`1024x1024`）。システムはサイズを各プロバイダーがサポートする標準仕様に自動変換します |
 | `watermark` | `boolean` | いいえ | 画像にウォーターマーク（透かし）を追加するかどうか（火山、阿里百煉などの一部のチャネルでサポート） |
 | `web_search` | `boolean` | いいえ | ネット検索を有効にするか（OpenAI 互換の真偽値、デフォルト `false`）。ゲートウェイが火山方舟 Seedream 等向けに自動変換します |
 | `ratio` | `string` | いいえ | アスペクト比のオプション（例：`16:9`, `3:4`。主に Gemini などのアスペクト比をサポートする画像生成モデルで使用） |
-| `image` | `string` | いいえ | Image-to-Image（イメージからイメージ）の参照画像URL（OpenAIプロトコル拡張、オンラインの画像リンクを渡すことができます） |
+| `image` | `string / array` | いいえ | 参照画像 URL（単一または配列） |
+| `image_urls` | `array` | いいえ | 複数参照画像 URL 配列 |
 
 #### Curl 画像生成呼び出し例
 ```bash

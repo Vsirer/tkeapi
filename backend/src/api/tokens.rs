@@ -332,6 +332,10 @@ pub async fn update_token(
     .execute(&state.db.pool)
     .await?;
 
+    // 令牌配置/限额已更新：丢弃内存限额 slot，下次请求从 DB 重新 hydrate
+    state.quota_memory.invalidate_token(id);
+    crate::relay::relay_settings::invalidate_api_token_key(&token.token_key);
+
     enrich_token_period_usage(&state, std::slice::from_mut(&mut token)).await;
     Ok(Json(token))
 }
@@ -342,15 +346,16 @@ pub async fn delete_token(
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     // Check ownership
-    let token_user_id: String = sqlx::query_scalar(
+    let row: (String, String) = sqlx::query_as(
         &state
             .db
-            .format_query("SELECT user_id FROM api_tokens WHERE id = ?"),
+            .format_query("SELECT user_id, token_key FROM api_tokens WHERE id = ?"),
     )
     .bind(id)
     .fetch_optional(&state.db.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("Token not found".to_string()))?;
+    let (token_user_id, token_key) = row;
 
     if token_user_id != claims.sub && claims.role != "admin" {
         return Err(AppError::Forbidden("Unauthorized access".to_string()));
@@ -360,6 +365,10 @@ pub async fn delete_token(
         .bind(id)
         .execute(&state.db.pool)
         .await?;
+
+    // 丢弃内存限额 slot 与鉴权缓存
+    state.quota_memory.invalidate_token(id);
+    crate::relay::relay_settings::invalidate_api_token_key(&token_key);
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -452,6 +461,7 @@ pub async fn reset_token_usage(
 
     // DB 已清零：丢弃内存限额 slot，避免清零后仍按旧用量拦截
     state.quota_memory.invalidate_token(id);
+    crate::relay::relay_settings::invalidate_api_token_key(&token.token_key);
 
     let mut updated: ApiToken = sqlx::query_as(
         &state

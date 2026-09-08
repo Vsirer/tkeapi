@@ -61,7 +61,6 @@ const pluginIcons: Record<string, React.ReactNode> = {
   site_portal: <Home className="w-3.5 h-3.5" />,
   site_portal_pro: <Home className="w-3.5 h-3.5" />,
   docs_api: <BookOpen className="w-3.5 h-3.5" />,
-  happyhorse_router: <Zap className="w-3.5 h-3.5" />,
   volcengine_ark_monitor: <MonitorPlay className="w-3.5 h-3.5" />,
   upstream_asset_relay: <Share2 className="w-3.5 h-3.5" />,
   comfyui_bridge: <Video className="w-3.5 h-3.5" />,
@@ -130,7 +129,7 @@ const PluginsList: React.FC = () => {
       message.success(checked ? t('plugins_page.enabled') : t('plugins_page.disabled'));
       fetchPlugins();
     } catch (error) {
-      message.error(t('plugins_page.action_failed'));
+      console.error(error);
     }
   };
 

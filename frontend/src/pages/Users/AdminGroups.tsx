@@ -21,6 +21,7 @@ import {
   expandLegacyAdminMenuPermissions,
   flattenAdminMenuPermissions,
   getAdminMenuPermissionLabel,
+  parseAdminGroupPermissions,
 } from '../../constants/adminMenuPermissions';
 
 const { Title, Text } = Typography;
@@ -45,7 +46,7 @@ const AdminGroups: React.FC = () => {
       const response = await (request.get('/admin_groups') as any);
       setGroups(response.data);
     } catch (error) {
-      message.error('获取管理员等级失败');
+      console.error(error);
     } finally {
       setLoading(false);
     }
@@ -94,18 +95,13 @@ const AdminGroups: React.FC = () => {
       message.success('删除成功');
       fetchGroups();
     } catch (error) {
-      message.error('删除失败，分组可能正在使用中');
+      console.error(error);
     }
   };
 
   const renderPermissionsTags = (permissionsStr?: string) => {
-    let perms: string[] = [];
-    try {
-      if (permissionsStr) {
-        perms = JSON.parse(permissionsStr);
-      }
-    } catch {}
-    
+    const policy = parseAdminGroupPermissions(permissionsStr);
+    const perms = policy.view;
     const basicPerms = perms.filter((p) => !p.startsWith('plugin:'));
     const expandedBasic = expandLegacyAdminMenuPermissions(basicPerms);
     const hasAllBasic = ALL_BASIC_PERMISSION_VALUES.every((item) => expandedBasic.includes(item));
@@ -113,12 +109,18 @@ const AdminGroups: React.FC = () => {
       activePlugins.length === 0 ||
       activePlugins.every((plugin) => perms.includes(`plugin:${plugin.name}`));
 
+    const hasFullEdit = perms.length > 0 && perms.every((p) => policy.edit.includes(p));
     if (hasAllBasic && hasAllPlugins) {
       return (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
           <Tag color="success" style={{ fontSize: '11px', margin: 0, padding: '0 4px', fontWeight: 'bold' }}>
             {t('admin_perm.all_features')}
           </Tag>
+          {!hasFullEdit && (
+            <Tag style={{ fontSize: '11px', margin: 0, padding: '0 4px' }}>
+              {t('admin_perm.partial_readonly')}
+            </Tag>
+          )}
         </div>
       );
     }
@@ -143,9 +145,9 @@ const AdminGroups: React.FC = () => {
       if (p.startsWith('plugin:')) {
         const pName = p.substring(7);
         const foundPlugin = activePlugins.find((ap) => ap.name === pName);
-        return `${t('admin_perm.plugin_prefix')}${foundPlugin ? t(`plugin_titles.${pName}`, { defaultValue: foundPlugin.title || pName }) : pName}`;
+        return `${t('admin_perm.plugin_prefix')}${foundPlugin ? t(`plugin_titles.${pName}`, foundPlugin.title || pName) : pName}`;
       }
-      return getAdminMenuPermissionLabel(p, (k, def) => (def !== undefined ? t(k, { defaultValue: def }) : t(k)));
+      return getAdminMenuPermissionLabel(p, t);
     });
 
     if (permLabels.length === 0) {
@@ -159,6 +161,11 @@ const AdminGroups: React.FC = () => {
             {label}
           </Tag>
         ))}
+        {!hasFullEdit && perms.length > 0 && (
+          <Tag style={{ fontSize: '11px', margin: 0, padding: '0 4px' }}>
+            {t('admin_perm.partial_readonly')}
+          </Tag>
+        )}
       </div>
     );
   };

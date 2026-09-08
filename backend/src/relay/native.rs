@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-//! Relay: Native protocol passthrough for Google Gemini & Volcengine.
+//! Relay: Native protocol passthrough (Gemini / Volcengine / DashScope).
 //! Provides direct-path endpoints that mirror the vendor's own API surface,
 //! while still running through the gateway's auth / billing / logging pipeline.
 
@@ -18,7 +18,7 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{Extension, OriginalUri, Path, Query, State},
     response::{IntoResponse, Response},
     Json,
 };
@@ -26,6 +26,49 @@ use std::collections::HashMap;
 #[cfg(feature = "commercial_plugins")]
 use std::collections::HashSet;
 use std::sync::Arc;
+
+// ═══════════════════════════════════════════════════════════════
+//  阿里百炼 DashScope Native:
+//    POST /api/v1/services/aigc/multimodal-generation/generation
+//    生图/多模态聊天共用官方路径；模型类型为聊天 → chat，否则 → image。
+// ═══════════════════════════════════════════════════════════════
+
+pub async fn dashscope_multimodal_generation(
+    State(state): State<Arc<AppState>>,
+    Extension(token): Extension<ApiToken>,
+    OriginalUri(uri): OriginalUri,
+    request: axum::http::Request<axum::body::Body>,
+) -> AppResult<Response> {
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read request body: {e}")))?;
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Some(model) = json["model"].as_str() {
+            let is_chat = proxy::find_active_model_exact(&state, model, None, None)
+                .await
+                .and_then(|m| m.type_name)
+                .is_some_and(|t| t == "聊天");
+            if is_chat {
+                return super::chat::chat_completions(
+                    State(state),
+                    Extension(token),
+                    OriginalUri(uri),
+                    parts.headers,
+                    Json(json),
+                )
+                .await;
+            }
+        }
+    }
+    super::image::image_generations(
+        State(state),
+        Extension(token),
+        OriginalUri(uri),
+        axum::http::Request::from_parts(parts, axum::body::Body::from(bytes)),
+    )
+    .await
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  Google Gemini Native:
@@ -79,10 +122,13 @@ pub async fn gemini_proxy(
     let ctx = proxy::get_user_context(&state, &token.user_id).await?;
 
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
+    let mut billing_rule_cache = None;
+    let mut access_cache = None;
 
     while ha.cont() {
         let start_time = std::time::Instant::now();
         // 2. 渠道选择
+        let mut ha_pool = None;
         let channel = match proxy::select_channel_for_model(
             &state,
             &token,
@@ -93,27 +139,41 @@ pub async fn gemini_proxy(
             &ha.exclude_aids,
             !ha.had_upstream,
             Some(entry_cat),
+            &mut ha_pool,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                ha.note_pool(ha_pool);
+                ha.on_channel(&c);
+                c
+            }
             Err(e) => {
+                ha.note_pool(ha_pool);
                 ha.on_select_err(e);
                 break;
             }
         };
 
         // 3. 预扣费检查（带 channel 精确匹配同名模型的预扣费金额，同时获取 Model 供下游复用）
-        let (pre_deduction, db_model, resolved_cat) =
-            match proxy::check_access(&state, &token, model, &ctx, Some(entry_cat), Some(&channel))
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    ha.on_access_err(e);
-                    break;
-                }
-            };
+        let (pre_deduction, db_model, resolved_cat) = match proxy::check_access_with_model(
+            &state,
+            &token,
+            model,
+            &ctx,
+            Some(entry_cat),
+            &channel,
+            None,
+            &mut access_cache,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                ha.on_access_err(e);
+                break;
+            }
+        };
 
         // 模型映射：仅图片类走分辨率档；聊天等跳过 body 解析
         let (resolved_model, mapping_source) = if resolved_cat.contains("图片") {
@@ -137,7 +197,7 @@ pub async fn gemini_proxy(
             ),
             qs
         );
-        tracing::info!(
+        crate::relay_debug!(
             "[Native] 模型={} URL={}",
             model,
             super::forward::mask_key_in_string(&url, &channel.api_key)
@@ -175,7 +235,6 @@ pub async fn gemini_proxy(
                     request_content: Some(&request_content_str),
                     upstream_url: Some(&url),
                     channel: &channel,
-                    billing_model_hint: None,
                     plugin_tag: None,
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
@@ -190,203 +249,219 @@ pub async fn gemini_proxy(
             .category(resolved_cat.as_str())
             .db(db_model.as_ref());
 
-        let native_builder = crate::services::http_client::with_timeout_if(
-            state
-                .http_client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .body(body.to_vec()),
-            is_stream == 0,
-            ha.attempt_timeout(),
-        );
-        let resp = match native_builder.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                let err_msg = e.to_string();
-                let latency_ms = start_time.elapsed().as_millis() as u32;
-                let bill = crate::relay::ha::FailBill::transport(
-                    latency_ms,
-                    err_msg.clone(),
-                    &request_content_str,
-                    request_content_str.clone(),
-                )
-                .content(None)
-                .client(err_msg)
-                .stream(is_stream);
-                let err = crate::relay::ha::HaAttempt::park(&ha.buf(), bill, None);
-                if ha.fail(&bill_ctx, &channel, err, Some(&url)).await {
-                    ha.bump();
-                    continue;
+        let mut db_rule = proxy::get_model_billing_rule(
+            &state,
+            model,
+            Some(&channel),
+            db_model.as_ref(),
+            &mut billing_rule_cache,
+        )
+        .await;
+
+        let pending_log_id = ha.pending_log_id;
+        let timeout_ctx = ha.timeout_ctx();
+        let fail_buf = ha.buf();
+
+        // 【连接保护】打上游 → 预扣 → 记账；拼响应体在 task 外
+        let result_rx = super::spawn_protected({
+            let state = state.clone();
+            let token = token.clone();
+            let channel = channel.clone();
+            let model = model.to_string();
+            let request_content_str = request_content_str.clone();
+            let ctx = ctx.clone();
+            let url = url.clone();
+            let endpoint = endpoint.clone();
+            let db_model = db_model.clone();
+            let resolved_cat = resolved_cat.clone();
+            let resolved_model = resolved_model.clone();
+            let body = body.clone();
+            let body_json = body_json.clone();
+            async move {
+                let native_builder = crate::services::http_client::with_timeout_if(
+                    state
+                        .http_client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .body(body),
+                    is_stream == 0,
+                    timeout_ctx.resolve(),
+                );
+                let resp = match native_builder.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        let bill = crate::relay::ha::FailBill::transport(
+                            start_time.elapsed().as_millis() as u32,
+                            err_msg.clone(),
+                            &request_content_str,
+                            request_content_str.clone(),
+                        )
+                        .content(None)
+                        .client(err_msg)
+                        .stream(is_stream);
+                        return Err(crate::relay::ha::HaAttempt::park(&fail_buf, bill, None));
+                    }
+                };
+
+                let status = resp.status().as_u16();
+                if !resp.status().is_success() {
+                    let upstream_hdrs = resp.headers().clone();
+                    let err = resp.text().await.unwrap_or_default();
+                    let bill = crate::relay::ha::FailBill::http(
+                        start_time.elapsed().as_millis() as u32,
+                        status,
+                        err,
+                        &request_content_str,
+                        request_content_str.clone(),
+                    )
+                    .content(None)
+                    .stream(is_stream);
+                    return Err(crate::relay::ha::HaAttempt::park(
+                        &fail_buf,
+                        bill,
+                        Some(upstream_hdrs),
+                    ));
                 }
-                break;
+
+                if is_stream == 1 {
+                    let pre_deduct_gift = proxy::pre_deduct_or_intercept(
+                        &state,
+                        &token,
+                        &channel,
+                        &model,
+                        pre_deduction,
+                        &endpoint,
+                        start_time,
+                        is_stream,
+                        &request_content_str,
+                        &request_content_str,
+                        None,
+                        pending_log_id,
+                        db_model.as_ref(),
+                        Some(resolved_cat.as_str()),
+                    )
+                    .await?;
+                    return Ok(super::ProtectOut::Live(
+                        crate::relay::stream::handle_native_stream(
+                            state,
+                            token,
+                            channel,
+                            model,
+                            resp,
+                            ctx,
+                            request_content_str.clone(),
+                            start_time,
+                            endpoint.clone(),
+                            Some(request_content_str),
+                            pre_deduction,
+                            pre_deduct_gift,
+                            endpoint,
+                            None,
+                            pending_log_id,
+                            db_model,
+                            db_rule,
+                            resolved_cat,
+                        )
+                        .await
+                        .into_response(),
+                    ));
+                }
+
+                let headers = resp.headers().clone();
+                let body_str = resp.text().await.unwrap_or_default();
+                let usage = crate::relay::usage_extractor::parse_usage(&body_str);
+                let features = crate::relay::usage_extractor::features_from_values(
+                    body_json.as_ref(),
+                    None,
+                    Some(&body_str),
+                );
+                let pre_deduct_gift = proxy::pre_deduct_or_intercept(
+                    &state,
+                    &token,
+                    &channel,
+                    &model,
+                    pre_deduction,
+                    &endpoint,
+                    start_time,
+                    is_stream,
+                    &request_content_str,
+                    &request_content_str,
+                    None,
+                    pending_log_id,
+                    db_model.as_ref(),
+                    Some(resolved_cat.as_str()),
+                )
+                .await?;
+                let (cost, detail) = crate::relay::calculate_relay_cost(
+                    &state,
+                    db_model.as_ref(),
+                    db_rule.as_mut(),
+                    &channel,
+                    &ctx,
+                    &usage,
+                    &features,
+                    mapping_source.as_deref(),
+                    &model,
+                    &resolved_model,
+                )
+                .await;
+                crate::relay_debug!(
+                    "[Gemini] 模型={} 输入Tokens={} 输出Tokens={} 扣费={:.6}",
+                    model,
+                    usage.prompt,
+                    usage.completion,
+                    cost
+                );
+                let req = request_content_str;
+                proxy::record_and_bill_inner(proxy::BillRecord {
+                    ctx: crate::relay::ha::HaBillCtx::new(&state, &token, &model, &endpoint)
+                        .category(resolved_cat.as_str())
+                        .db(db_model.as_ref()),
+                    channel: &channel,
+                    log_id: pending_log_id,
+                    usage,
+                    cost,
+                    pre_deducted: pre_deduction,
+                    pre_deduct_gift,
+                    latency_ms: start_time.elapsed().as_millis() as u32,
+                    is_stream,
+                    status_code: 200,
+                    error_msg: None,
+                    request: Some(req.clone()),
+                    response: Some(body_str.clone()),
+                    upstream_req: Some(req),
+                    detail: Some(detail),
+                    features: Some(features),
+                    time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
+                    plugin_tag: None,
+                })
+                .await;
+                Ok(super::ProtectOut::Raw(super::UpstreamRaw::new(
+                    headers, body_str,
+                )))
             }
-        };
+        });
 
-        let status = resp.status().as_u16();
-
-        if !resp.status().is_success() {
-            let upstream_hdrs = resp.headers().clone();
-            let err = resp.text().await.unwrap_or_default();
-            let latency_ms = start_time.elapsed().as_millis() as u32;
-            let bill = crate::relay::ha::FailBill::http(
-                latency_ms,
-                status,
-                err,
-                &request_content_str,
-                request_content_str.clone(),
-            )
-            .content(None)
-            .stream(is_stream);
-            let err = crate::relay::ha::HaAttempt::park(&ha.buf(), bill, Some(upstream_hdrs));
-            if ha.fail(&bill_ctx, &channel, err, Some(&url)).await {
+        match super::join_protected(&mut ha, result_rx, &bill_ctx, &channel, Some(&url)).await {
+            super::ProtectJoin::Ok(super::ProtectOut::Raw(raw)) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &url, ms).await;
+                return Ok(upstream_headers::json_with_upstream_headers(
+                    &raw.headers,
+                    raw.body,
+                ));
+            }
+            super::ProtectJoin::Ok(super::ProtectOut::Live(resp)) => {
+                let ms = start_time.elapsed().as_millis() as u32;
+                ha.ok(&state, &channel, &url, ms).await;
+                return Ok(resp);
+            }
+            super::ProtectJoin::Retry => {
                 ha.bump();
                 continue;
             }
-            break;
-        }
-
-        // 预扣费
-        let pre_deduct_gift = match proxy::pre_deduct_or_intercept(
-            &state,
-            &token,
-            &channel,
-            model,
-            pre_deduction,
-            &endpoint,
-            start_time,
-            is_stream,
-            &request_content_str,
-            &request_content_str,
-            None,
-            ha.pending_log_id,
-            db_model.as_ref(),
-            Some(resolved_cat.as_str()),
-        )
-        .await
-        {
-            Ok(g) => g,
-            Err(e) => {
-                ha.on_access_err(e);
-                break;
-            }
-        };
-
-        // 查询计费规则（复用 db_model，流式/非流式共用）
-        let mut db_rule =
-            proxy::get_model_billing_rule(&state, model, Some(&channel), db_model.as_ref()).await;
-
-        if action.starts_with("streamGenerateContent") || is_stream == 1 {
-            let ms = start_time.elapsed().as_millis() as u32;
-            ha.ok(&state, &channel, &url, ms).await;
-            return Ok(crate::relay::stream::handle_native_stream(
-                state.clone(),
-                token.clone(),
-                channel.clone(),
-                model.to_string(),
-                resp,
-                ctx.clone(),
-                request_content_str.clone(),
-                start_time,
-                endpoint.clone(),
-                Some(request_content_str.clone()),
-                pre_deduction,
-                pre_deduct_gift,
-                endpoint.clone(),
-                None,
-                ha.pending_log_id,
-                db_model.clone(),
-                db_rule,
-                resolved_cat.clone(),
-            )
-            .await
-            .into_response());
-        } else {
-            let upstream_hdrs = resp.headers().clone();
-            let data = resp.bytes().await?;
-            let response_content_str = String::from_utf8_lossy(&data).to_string();
-
-            // 提取 token 用量（Gemini usageMetadata / OpenAI usage）
-            let usage = crate::relay::usage_extractor::parse_usage(&response_content_str);
-
-            let empty = serde_json::json!({});
-            let mut features = crate::relay::usage_extractor::extract_request_features(
-                body_json.as_ref().unwrap_or(&empty),
-            );
-            // 用响应中的实际图片数量覆盖（Gemini 生图场景）
-            if let Some(resp_count) =
-                crate::relay::usage_extractor::count_response_images(&response_content_str)
-            {
-                features.image_count = Some(resp_count);
-            }
-            crate::relay::usage_extractor::enrich_features_from_usage(&mut features, &usage);
-            let (cost, detail) = crate::relay::calculate_relay_cost(
-                &state,
-                db_model.as_ref(),
-                db_rule.as_mut(),
-                &channel,
-                &ctx,
-                &usage,
-                &features,
-                mapping_source.as_deref(),
-                &model,
-                &resolved_model,
-            )
-            .await;
-            tracing::info!(
-                "[Gemini] 模型={} 输入Tokens={} 输出Tokens={} 扣费={:.6}",
-                model,
-                usage.prompt,
-                usage.completion,
-                cost
-            );
-
-            let latency_ms = start_time.elapsed().as_millis() as u32;
-            // 【连接保护】计费放入独立 task（resolved_cat 随闭包移入，无额外 clone）
-            {
-                let state = state.clone();
-                let token = token.clone();
-                let channel = channel.clone();
-                let model = model.to_string();
-                let endpoint = endpoint.clone();
-                let request_content = request_content_str.clone();
-                let response_content = response_content_str.clone();
-                let pending_log_id = ha.pending_log_id;
-                tokio::spawn(async move {
-                    proxy::record_and_bill_inner(proxy::BillRecord {
-                        state: &state,
-                        token: &token,
-                        channel: &channel,
-                        model: &model,
-                        prompt_tokens: usage.prompt,
-                        completion_tokens: usage.completion,
-                        cached_tokens: usage.cached,
-                        cost: cost,
-                        pre_deducted: pre_deduction,
-                        pre_deduct_gift: pre_deduct_gift,
-                        status_code: 200,
-                        endpoint: &endpoint,
-                        error_msg: None,
-                        latency_ms: latency_ms,
-                        is_stream: is_stream,
-                        request_content: Some(request_content.clone()),
-                        response_content: Some(response_content),
-                        upstream_req_content: Some(request_content),
-                        billing_detail: Some(detail),
-                        hint_category: Some(resolved_cat.as_str()),
-                        pending_log_id: pending_log_id,
-                        billing_model_hint: None,
-                        plugin_tag: None,
-                        db_model: db_model.as_ref(),
-                        time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
-                    })
-                    .await;
-                });
-            }
-            ha.ok(&state, &channel, &url, latency_ms).await;
-            return Ok(upstream_headers::json_with_upstream_headers(
-                &upstream_hdrs,
-                data,
-            ));
+            super::ProtectJoin::Stop => break,
         }
     } // end while
 
@@ -806,72 +881,66 @@ pub async fn ark_asset_proxy(
 
                 let res_bytes = serde_json::to_vec(&res).unwrap_or_default();
 
-                // 后置处理：Create 写入本地归属记录 / Delete 清理本地记录（异步不阻塞响应）
+                // 后置处理：Create 写入本地归属记录 / Delete 清理本地记录
                 match action.as_str() {
                     "CreateAsset" => {
                         if let Some(aid) = res.pointer("/Result/Id").and_then(|v| v.as_str()) {
-                            let s = state.clone();
-                            let uid = token.user_id.clone();
-                            let aid = aid.to_string();
-                            let at = body_asset_type.unwrap_or_else(|| "image".to_string());
-                            let url = body_url.unwrap_or_default();
-                            let ns = plugin_ns.to_string();
-                            tokio::spawn(async move {
-                                let fname = url.rsplit('/').next().unwrap_or("unknown").to_string();
-                                let _ = sqlx::query(&s.db.format_query(
+                            let fname = body_url
+                                .as_deref()
+                                .and_then(|url| url.rsplit('/').next())
+                                .unwrap_or("unknown");
+                            let at = body_asset_type.as_deref().unwrap_or("image");
+                            let _ = sqlx::query(&state.db.format_query(
                                 "INSERT INTO plugin_assets (user_id, asset_type, source, status, file_name, file_url, asset_id, category, plugin_ns) \
                                  VALUES (?, ?, 'api_proxy', 'approved', ?, ?, ?, 'API素材', ?)"
                             ))
-                            .bind(&uid).bind(&at).bind(&fname).bind(&url).bind(&aid).bind(&ns)
-                            .execute(&s.db.pool).await;
-                            });
+                            .bind(&token.user_id)
+                            .bind(at)
+                            .bind(fname)
+                            .bind(body_url.as_deref().unwrap_or(""))
+                            .bind(aid)
+                            .bind(plugin_ns)
+                            .execute(&state.db.pool)
+                            .await;
                         }
                     }
                     "CreateAssetGroup" => {
                         if let Some(gid) = res.pointer("/Result/Id").and_then(|v| v.as_str()) {
-                            let s = state.clone();
-                            let uid = token.user_id.clone();
-                            let gid = gid.to_string();
-                            let name = body_name.unwrap_or_else(|| "未命名".to_string());
-                            let desc = body_desc;
-                            let ns = plugin_ns.to_string();
-                            tokio::spawn(async move {
-                                let _ = sqlx::query(&s.db.format_query(
+                            let name = body_name.as_deref().unwrap_or("未命名");
+                            let _ = sqlx::query(&state.db.format_query(
                                 "INSERT INTO plugin_asset_groups (user_id, group_id, name, description, plugin_ns) VALUES (?, ?, ?, ?, ?)"
                             ))
-                            .bind(&uid).bind(&gid).bind(&name).bind(&desc).bind(&ns)
-                            .execute(&s.db.pool).await;
-                            });
+                            .bind(&token.user_id)
+                            .bind(gid)
+                            .bind(name)
+                            .bind(body_desc.as_deref())
+                            .bind(plugin_ns)
+                            .execute(&state.db.pool)
+                            .await;
                         }
                     }
                     "DeleteAsset" => {
-                        if let Some(ref id) = body_id {
-                            let s = state.clone();
-                            let id = id.clone();
-                            let uid = token.user_id.clone();
-                            let ns = plugin_ns.to_string();
-                            tokio::spawn(async move {
-                                let _ = sqlx::query(&s.db.format_query(
+                        if let Some(id) = body_id.as_deref() {
+                            let _ = sqlx::query(&state.db.format_query(
                                 "DELETE FROM plugin_assets WHERE asset_id = ? AND user_id = ? AND plugin_ns = ? AND source = 'api_proxy'"
                             ))
-                            .bind(&id).bind(&uid).bind(&ns)
-                            .execute(&s.db.pool).await;
-                            });
+                            .bind(id)
+                            .bind(&token.user_id)
+                            .bind(plugin_ns)
+                            .execute(&state.db.pool)
+                            .await;
                         }
                     }
                     "DeleteAssetGroup" => {
-                        if let Some(ref id) = body_id {
-                            let s = state.clone();
-                            let id = id.clone();
-                            let uid = token.user_id.clone();
-                            let ns = plugin_ns.to_string();
-                            tokio::spawn(async move {
-                                let _ = sqlx::query(&s.db.format_query(
+                        if let Some(id) = body_id.as_deref() {
+                            let _ = sqlx::query(&state.db.format_query(
                                 "DELETE FROM plugin_asset_groups WHERE group_id = ? AND user_id = ? AND plugin_ns = ?"
                             ))
-                            .bind(&id).bind(&uid).bind(&ns)
-                            .execute(&s.db.pool).await;
-                            });
+                            .bind(id)
+                            .bind(&token.user_id)
+                            .bind(plugin_ns)
+                            .execute(&state.db.pool)
+                            .await;
                         }
                     }
                     _ => {}
@@ -883,7 +952,7 @@ pub async fn ark_asset_proxy(
                     .unwrap())
             }
             Err(e) => {
-                tracing::error!(
+                crate::relay_debug!(
                     "[ArkAssetProxy] {} 失败 命名空间={}: {}",
                     action,
                     plugin_ns,
@@ -954,7 +1023,7 @@ pub async fn volcengine_task_cancel(
         &channel.base_url,
         &format!("/api/v3/contents/generations/tasks/{}", task_id),
     );
-    tracing::info!(
+    crate::relay_debug!(
         "[Volcengine Cancel] 用户ID={} 任务ID={} URL={}",
         token.user_id,
         task_id,
@@ -973,7 +1042,7 @@ pub async fn volcengine_task_cancel(
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         let err_body = resp.text().await.unwrap_or_default();
-        tracing::warn!(
+        crate::relay_debug!(
             "[Volcengine Cancel] 上游返回错误 状态码={} 响应体={}",
             status,
             err_body
@@ -1020,7 +1089,7 @@ pub async fn volcengine_task_cancel(
             499,
         )
         .await;
-        tracing::info!(
+        crate::relay_debug!(
             "[Volcengine Cancel] 预扣费已退还 日志ID={} 退款金额={:.6}",
             log_id,
             pre_deduction
@@ -1127,7 +1196,7 @@ pub async fn volcengine_task_list(
         join_url(&channel.base_url, "/api/v3/contents/generations/tasks"),
         qs
     );
-    tracing::info!(
+    crate::relay_debug!(
         "[Volcengine TaskList] 用户ID={} 任务数={} URL长度={}",
         token.user_id,
         task_ids.len(),

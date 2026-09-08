@@ -5,19 +5,23 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
+use crate::admin_permission::{require_edit, AdminContext};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     build_public_payment_channels, merge_payment_channels_ui, public_payment_status_from_channels,
     AgreementSettings, AllSettings, CurrencySettings, DatabaseSettings, GoogleOAuthSettings,
-    LoginSettings, MarketingSettings, PaymentAlipaySettings, PaymentAllinpaySettings,
-    PaymentBonuspaySettings, PaymentChannelsUiSettings, PaymentGatewayEnableFlags,
-    PaymentHyperbcSettings, PaymentStripeSettings, PaymentWechatSettings,
-    PublicMarketingSettings, PublicNotificationSettings, PublicRegistrationSettings,
-    PublicSettings, RegistrationSettings, RelaySettings, SMTPSettings, SiteSettings, SmsSettings,
-    StorageSettings, UpdateSettingsRequest, WechatOAuthSettings,
+    InvoiceSettings, LoginSettings, LogCleanupSettings, MarketingSettings, PaymentAlipaySettings,
+    PaymentAllinpaySettings, PaymentBonuspaySettings, PaymentChannelsUiSettings,
+    PaymentGatewayEnableFlags, PaymentHyperbcSettings, PaymentStripeSettings,
+    PaymentWechatSettings, PublicMarketingSettings, PublicNotificationSettings,
+    PublicRegistrationSettings, PublicSettings, RegistrationSettings, RelaySettings, SMTPSettings,
+    SiteSettings, SmsSettings, StorageSettings, UpdateSettingsRequest, WechatOAuthSettings,
 };
 use crate::AppState;
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Extension, State},
+    Json,
+};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 
@@ -104,6 +108,14 @@ pub async fn get_public_settings(
     let payment_channels = build_public_payment_channels(&channels_ui, &gateway);
     let payment = public_payment_status_from_channels(&payment_channels);
 
+    let invoices = get_setting(
+        &state,
+        "invoice_settings",
+        crate::models::InvoiceSettings::default(),
+    )
+    .await
+    .ok();
+
     Ok(Json(PublicSettings {
         is_open_source: cfg!(not(feature = "commercial_plugins")),
         site,
@@ -118,6 +130,7 @@ pub async fn get_public_settings(
         google_oauth_client_id,
         menu_config: Some(menu_config),
         notification: PublicNotificationSettings::from(&notification),
+        invoices,
     }))
 }
 
@@ -130,10 +143,59 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> AppResult<Json<
     Ok(Json(all))
 }
 
+fn require_settings_fields(ctx: &AdminContext, req: &UpdateSettingsRequest) -> AppResult<()> {
+    if req.site.is_some()
+        || req.login.is_some()
+        || req.registration.is_some()
+        || req.agreement.is_some()
+        || req.menu_config.is_some()
+        || req.relay.is_some()
+    {
+        require_edit(ctx, "settings.basic")?;
+    }
+    if req.currency.is_some()
+        || req.payment_wechat.is_some()
+        || req.payment_alipay.is_some()
+        || req.payment_stripe.is_some()
+        || req.payment_bonuspay.is_some()
+        || req.payment_hyperbc.is_some()
+        || req.payment_allinpay.is_some()
+        || req.payment_channels_ui.is_some()
+        || req.invoices.is_some()
+    {
+        require_edit(ctx, "settings.payment")?;
+    }
+    if req.smtp.is_some() || req.sms.is_some() || req.notification.is_some() {
+        require_edit(ctx, "settings.message_notification")?;
+    }
+    if req.google_oauth.is_some() || req.wechat_oauth.is_some() {
+        require_edit(ctx, "settings.oauth")?;
+    }
+    if req.storage.is_some() || req.log_cleanup.is_some() {
+        require_edit(ctx, "settings.database")?;
+    }
+    if let Some(v) = &req.marketing {
+        let only_redemption = v
+            .as_object()
+            .is_some_and(|o| o.len() == 1 && o.contains_key("enable_redemption"));
+        require_edit(
+            ctx,
+            if only_redemption {
+                "marketing.redemptions"
+            } else {
+                "marketing.registration_gifts"
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub async fn update_settings(
     State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AdminContext>,
     Json(request): Json<UpdateSettingsRequest>,
 ) -> AppResult<Json<AllSettings>> {
+    require_settings_fields(&ctx, &request)?;
     let mut currency_or_site_changed = false;
     if let Some(v) = request.site {
         let saved =
@@ -300,6 +362,15 @@ pub async fn update_settings(
         )
         .await?;
     }
+    if let Some(v) = request.log_cleanup {
+        merge_and_save_setting::<LogCleanupSettings>(
+            &state,
+            "log_cleanup_settings",
+            &v,
+            Default::default(),
+        )
+        .await?;
+    }
     if let Some(v) = request.menu_config {
         merge_and_save_setting(
             &state,
@@ -319,9 +390,17 @@ pub async fn update_settings(
         .await?;
     }
     if let Some(v) = request.relay {
-        let saved =
-            merge_and_save_setting(&state, "relay_settings", &v, default_relay_settings()).await?;
+        let saved = save_relay_settings(&state, &v).await?;
         crate::relay::relay_settings::put_cached_relay_settings(saved);
+    }
+    if let Some(v) = request.invoices {
+        merge_and_save_setting::<InvoiceSettings>(
+            &state,
+            "invoice_settings",
+            &v,
+            Default::default(),
+        )
+        .await?;
     }
 
     if currency_or_site_changed {
@@ -785,23 +864,28 @@ pub async fn backup_database(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct TestStorageConnectionRequest {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(flatten)]
+    pub storage: StorageSettings,
+}
+
 pub async fn test_storage_connection(
     State(_state): State<Arc<AppState>>,
-    Json(settings): Json<StorageSettings>,
+    Json(req): Json<TestStorageConnectionRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let tos_config = crate::services::tos::TosConfig {
-        access_key: settings.tos_access_key,
-        secret_key: settings.tos_secret_key,
-        endpoint: settings.tos_endpoint,
-        region: settings.tos_region,
-        bucket: settings.tos_bucket,
-        path_prefix: settings.tos_path_prefix,
-        custom_domain: settings.tos_custom_domain,
+    use crate::services::object_store::{ObjectStore, StoreKind};
+    let kind = StoreKind::parse(req.provider.as_deref().unwrap_or(&req.storage.default_provider));
+    let Some(store) = ObjectStore::from_settings_for(&req.storage, kind) else {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "message": "请先填写该存储的完整凭证（密钥、地域、Endpoint、Bucket）"
+        })));
     };
-    match crate::services::tos::test_connection(&tos_config).await {
-        Ok(_) => Ok(Json(
-            serde_json::json!({"success": true, "message": "连接成功，能正常访问指定的 Bucket"}),
-        )),
+    match store.test_connection().await {
+        Ok(msg) => Ok(Json(serde_json::json!({"success": true, "message": msg}))),
         Err(e) => Ok(Json(
             serde_json::json!({"success": false, "message": format!("测试失败: {}", e)}),
         )),
@@ -881,39 +965,6 @@ fn parse_postgres_url(url: &str) -> Option<DatabaseSettings> {
     })
 }
 
-#[cfg(test)]
-fn postgres_settings_eq(a: &DatabaseSettings, b: &DatabaseSettings) -> bool {
-    let port_a = if a.port == 0 { 5432 } else { a.port };
-    let port_b = if b.port == 0 { 5432 } else { b.port };
-    a.host.eq_ignore_ascii_case(&b.host)
-        && port_a == port_b
-        && a.database == b.database
-        && a.username == b.username
-        && a.password == b.password
-        && a.ssl_mode == b.ssl_mode
-}
-
-#[cfg(test)]
-fn normalize_database_settings(settings: DatabaseSettings) -> Result<DatabaseSettings, String> {
-    let mut s = settings;
-    if s.db_type.trim().is_empty() {
-        s.db_type = "postgres".to_string();
-    }
-    if s.db_type != "postgres" {
-        return Err("仅支持 PostgreSQL".to_string());
-    }
-    s.host = s.host.trim().to_string();
-    s.database = s.database.trim().to_string();
-    s.username = s.username.trim().to_string();
-    if s.host.is_empty() || s.database.is_empty() || s.username.is_empty() {
-        return Err("数据库地址、名称和用户名不能为空".to_string());
-    }
-    if s.port == 0 {
-        s.port = 5432;
-    }
-    Ok(s)
-}
-
 /// 加载全部设置（统一入口）
 pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> {
     let payment_wechat: Option<PaymentWechatSettings> =
@@ -970,6 +1021,7 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         wechat_oauth: get_setting(state, "wechat_oauth", None).await?,
         agreement: get_setting(state, "agreement_settings", default_agreement_settings()).await?,
         storage: get_setting(state, "storage_settings", None).await?,
+        log_cleanup: Some(load_log_cleanup_settings(state).await?),
         menu_config: Some(
             get_setting(
                 state,
@@ -979,10 +1031,41 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
             .await?,
         ),
         notification: get_setting(state, "notification_settings", Default::default()).await?,
-        relay: get_setting(state, "relay_settings", default_relay_settings()).await?,
+        relay: get_setting(state, "relay_settings", default_relay_settings())
+            .await?
+            .prepared(),
+        invoices: Some(get_setting(state, "invoice_settings", InvoiceSettings::default()).await?),
         server_timezone: None,
         server_time: None,
     })
+}
+
+pub async fn load_log_cleanup_settings(state: &AppState) -> AppResult<LogCleanupSettings> {
+    let val: Option<String> = sqlx::query_scalar(
+        &state
+            .db
+            .format_query("SELECT value FROM settings WHERE key = ?"),
+    )
+    .bind("log_cleanup_settings")
+    .fetch_optional(&state.db.pool)
+    .await?;
+    if let Some(v) = val {
+        if let Ok(parsed) = serde_json::from_str::<LogCleanupSettings>(&v) {
+            return Ok(parsed);
+        }
+    }
+    let legacy: Option<String> = sqlx::query_scalar(
+        &state
+            .db
+            .format_query("SELECT value FROM settings WHERE key = ?"),
+    )
+    .bind("storage_settings")
+    .fetch_optional(&state.db.pool)
+    .await?;
+    Ok(legacy
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .map(|v| LogCleanupSettings::from_legacy_storage_json(&v))
+        .unwrap_or_default())
 }
 
 async fn get_setting<T: serde::de::DeserializeOwned + Clone>(
@@ -1130,6 +1213,36 @@ pub fn default_relay_settings() -> RelaySettings {
     RelaySettings::default()
 }
 
+/// 保存 relay：写入新 `inflight_limits` 时剥掉旧字段，避免 merge 把已关类别再次打开
+async fn save_relay_settings(
+    state: &Arc<AppState>,
+    new_val: &serde_json::Value,
+) -> AppResult<RelaySettings> {
+    let mut current = sqlx::query_scalar::<_, String>(
+        &state
+            .db
+            .format_query("SELECT value FROM settings WHERE key = ?"),
+    )
+    .bind("relay_settings")
+    .fetch_optional(&state.db.pool)
+    .await?
+    .and_then(|v| serde_json::from_str(&v).ok())
+    .unwrap_or_else(|| serde_json::to_value(default_relay_settings()).unwrap_or_default());
+
+    if new_val.get("inflight_limits").is_some() {
+        if let Some(obj) = current.as_object_mut() {
+            obj.remove("video_inflight_enabled");
+            obj.remove("video_inflight_tiers");
+        }
+    }
+    merge_json(&mut current, new_val);
+    let saved = serde_json::from_value::<RelaySettings>(current)
+        .map_err(|e| AppError::BadRequest(format!("配置合并后数据格式错误: {}", e)))?
+        .prepared();
+    save_setting(state, "relay_settings", &saved).await?;
+    Ok(saved)
+}
+
 pub fn default_currency_settings() -> CurrencySettings {
     CurrencySettings {
         default_currency: "CNY".to_string(),
@@ -1229,22 +1342,7 @@ pub fn default_database_settings() -> DatabaseSettings {
 }
 
 pub fn default_agreement_settings() -> AgreementSettings {
-    AgreementSettings {
-        tos_mode: "link".to_string(),
-        tos_mode_en: "link".to_string(),
-        tos_content: "".to_string(),
-        tos_content_en: "".to_string(),
-        tos_link: "".to_string(),
-        tos_link_en: "".to_string(),
-        privacy_mode: "link".to_string(),
-        privacy_mode_en: "link".to_string(),
-        privacy_content: "".to_string(),
-        privacy_content_en: "".to_string(),
-        privacy_link: "".to_string(),
-        privacy_link_en: "".to_string(),
-        tos_enabled: false,
-        privacy_enabled: false,
-    }
+    AgreementSettings::default()
 }
 
 async fn collect_runtime(version: &str) -> serde_json::Value {
@@ -1255,6 +1353,42 @@ async fn collect_runtime(version: &str) -> serde_json::Value {
         .unwrap_or_else(|_| crate::services::runtime_info::fallback(&version_fb))
 }
 
+fn format_commit_date(raw_date: &str) -> String {
+    let trimmed = raw_date.trim();
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+    if trimmed.contains("(UTC") || trimmed.ends_with("UTC") {
+        return trimmed.to_string();
+    }
+    if let Some((dt, tz)) = trimmed.rsplit_once(' ') {
+        if (tz.starts_with('+') || tz.starts_with('-')) && (tz.len() == 5 || tz.len() == 6) {
+            let sign = &tz[0..1];
+            let rest = &tz[1..];
+            let parts: Vec<&str> = if rest.contains(':') {
+                rest.split(':').collect()
+            } else if rest.len() == 4 {
+                vec![&rest[0..2], &rest[2..4]]
+            } else {
+                vec![]
+            };
+            if parts.len() == 2 {
+                let hours: u32 = parts[0].parse().unwrap_or(0);
+                let minutes: u32 = parts[1].parse().unwrap_or(0);
+                let tz_suffix = if hours == 0 && minutes == 0 {
+                    "(UTC)".to_string()
+                } else if minutes == 0 {
+                    format!("(UTC{}{})", sign, hours)
+                } else {
+                    format!("(UTC{}{}:{:02})", sign, hours, minutes)
+                };
+                return format!("{} {}", dt, tz_suffix);
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
 pub async fn system_about() -> AppResult<Json<serde_json::Value>> {
     // 优先动态调用 git log 获取最新提交记录（无论 debug/release 模式）
     let output = std::process::Command::new("git")
@@ -1262,7 +1396,7 @@ pub async fn system_about() -> AppResult<Json<serde_json::Value>> {
             "log",
             "-10",
             "--format=%H\x1F%h\x1F%an\x1F%cd\x1F%s",
-            "--date=format:%Y-%m-%d %H:%M:%S",
+            "--date=format:%Y-%m-%d %H:%M:%S %z",
         ])
         .output();
 
@@ -1289,7 +1423,7 @@ pub async fn system_about() -> AppResult<Json<serde_json::Value>> {
                 } else {
                     raw_author
                 };
-                let date = parts.get(3).unwrap_or(&"").to_string();
+                let date = format_commit_date(parts.get(3).unwrap_or(&""));
                 let message = parts.get(4).unwrap_or(&"").replace("\n", " ");
 
                 commits.push(serde_json::json!({
@@ -1467,447 +1601,5 @@ pub fn default_menu_config_settings() -> crate::models::MenuConfigSettings {
                 allowed_levels: "all".to_string(),
             },
         ],
-    }
-}
-
-#[derive(Debug, sqlx::FromRow)]
-pub struct LogRepairItem {
-    pub id: i64,
-    pub log_id: Option<String>,
-    pub user_id: String,
-    pub channel_id: Option<i64>,
-    pub token_id: Option<i64>,
-    pub channel_config_id: Option<i32>,
-    pub cost: f64,
-    pub pre_deduct_gift: f64,
-    pub response_content: String,
-}
-
-struct UserRefundDetail {
-    balance_refund: f64,
-    gift_refund: f64,
-}
-
-struct TokenRefundDetail {
-    cost_refund: f64,
-    user_id: String,
-}
-
-struct ChannelRefundDetail {
-    cost_refund: f64,
-}
-
-struct ConfigRefundDetail {
-    cost_refund: f64,
-}
-
-struct LogUpdateDetail {
-    id: i64,
-    error_msg: String,
-    billing_detail: String,
-}
-
-#[derive(serde::Serialize)]
-struct LogRepairDetail {
-    pub id: i64,
-    pub log_id: Option<String>,
-    pub user_id: String,
-    pub refund_balance: f64,
-    pub refund_gift: f64,
-    pub error_message: String,
-}
-
-/// 管理员专属接口 — 一键扫描并退款历史 200 状态码但上游实质报错的图片/视频请求日志
-pub async fn repair_failed_logs(
-    State(state): State<Arc<AppState>>,
-) -> AppResult<Json<serde_json::Value>> {
-    use std::collections::{HashMap, HashSet};
-
-    // 1. 查询所有可能出问题的历史记录（status_code = 200 且 cost > 0.0，且 response_content 不为空，且计费明细含“冻结”）
-    // 精确查询包含主键 id 以实现高速行锁定位，排除潜在反序列化字段类型差异
-    let rows: Vec<LogRepairItem> = sqlx::query_as(
-        &state.db.format_query(
-            "SELECT id, log_id, user_id, channel_id, token_id, channel_config_id, cost, pre_deduct_gift, response_content \
-             FROM logs \
-             WHERE status_code = 200 AND cost > 0.0 AND is_completed = 1 AND response_content IS NOT NULL AND billing_detail LIKE '%冻结%' \
-             ORDER BY created_at DESC LIMIT 5000"
-        )
-    )
-    .fetch_all(&state.db.pool)
-    .await?;
-
-    let mut potential_log_ids = Vec::new();
-    let mut candidates = Vec::new();
-
-    for row in rows {
-        // 解析 response_content
-        let resp_json: serde_json::Value = match serde_json::from_str(&row.response_content) {
-            Ok(j) => j,
-            Err(_) => continue,
-        };
-
-        // 精准判定是否是上游业务报错
-        if crate::relay::response_formatter::is_upstream_error_response(&resp_json) {
-            potential_log_ids.push(row.id);
-            candidates.push((row, resp_json));
-        }
-    }
-
-    if potential_log_ids.is_empty() {
-        return Ok(Json(serde_json::json!({
-            "success": true,
-            "repaired_count": 0,
-            "refunded_balance": 0.0,
-            "refunded_gift_balance": 0.0,
-        })));
-    }
-
-    // 启动大事务，确保本次数据订正操作的绝对完整性
-    let mut tx = state.db.pool.begin().await?;
-
-    // 【第一步】行级排他锁，锁住选中的这一批 logs 记录，进行防并发、防二次重复退款的校验
-    let locked_logs: Vec<(i64, f64, i32)> = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT id, cost, status_code FROM logs WHERE id = ANY(?) FOR UPDATE"),
-    )
-    .bind(&potential_log_ids)
-    .fetch_all(&mut *tx)
-    .await?;
-
-    // 筛选出尚未被其他事务订正过的有效日志集合 (status_code == 200)
-    let valid_log_ids: HashSet<i64> = locked_logs
-        .into_iter()
-        .filter(|(_, cost, status_code)| *status_code == 200 && *cost > 0.0)
-        .map(|(id, _, _)| id)
-        .collect();
-
-    // 【第二步】进行多大表数据退款及用额回滚的合并聚合
-    let mut final_user_refunds: HashMap<String, UserRefundDetail> = HashMap::new();
-    let mut final_token_refunds: HashMap<i64, TokenRefundDetail> = HashMap::new();
-    let mut final_channel_refunds: HashMap<i64, ChannelRefundDetail> = HashMap::new();
-    let mut final_config_refunds: HashMap<i64, ConfigRefundDetail> = HashMap::new();
-    let mut final_log_updates: Vec<LogUpdateDetail> = Vec::new();
-    let mut details = Vec::new();
-
-    let mut repaired_count = 0;
-    let mut total_refund_balance = 0.0;
-    let mut total_refund_gift = 0.0;
-
-    for (row, resp_json) in candidates {
-        if !valid_log_ids.contains(&row.id) {
-            continue;
-        }
-
-        let error_msg = crate::relay::response_formatter::extract_error_message(&resp_json);
-        let billing_detail = format!("历史数据自动订正退款，原始错误: {}", error_msg);
-        let balance_refund = row.cost - row.pre_deduct_gift;
-        let gift_refund = row.pre_deduct_gift;
-
-        // 聚合用户退款
-        let user_entry =
-            final_user_refunds
-                .entry(row.user_id.clone())
-                .or_insert(UserRefundDetail {
-                    balance_refund: 0.0,
-                    gift_refund: 0.0,
-                });
-        user_entry.balance_refund += balance_refund;
-        user_entry.gift_refund += gift_refund;
-
-        // 聚合令牌额度回滚
-        if let Some(token_id) = row.token_id {
-            let token_entry = final_token_refunds
-                .entry(token_id)
-                .or_insert(TokenRefundDetail {
-                    cost_refund: 0.0,
-                    user_id: row.user_id.clone(),
-                });
-            token_entry.cost_refund += row.cost;
-        }
-
-        // 聚合渠道额度回滚
-        if let Some(channel_id) = row.channel_id {
-            let channel_entry = final_channel_refunds
-                .entry(channel_id)
-                .or_insert(ChannelRefundDetail { cost_refund: 0.0 });
-            channel_entry.cost_refund += row.cost;
-        }
-
-        // 聚合上游预设额度回滚（与主退款路径 refund_config 对齐）
-        if let Some(cfg_id) = row.channel_config_id {
-            if cfg_id > 0 {
-                let config_entry = final_config_refunds
-                    .entry(cfg_id as i64)
-                    .or_insert(ConfigRefundDetail { cost_refund: 0.0 });
-                config_entry.cost_refund += row.cost;
-            }
-        }
-
-        final_log_updates.push(LogUpdateDetail {
-            id: row.id,
-            error_msg: error_msg.clone(),
-            billing_detail,
-        });
-
-        details.push(LogRepairDetail {
-            id: row.id,
-            log_id: row.log_id.clone(),
-            user_id: row.user_id.clone(),
-            refund_balance: balance_refund,
-            refund_gift: gift_refund,
-            error_message: error_msg,
-        });
-
-        repaired_count += 1;
-        total_refund_balance += balance_refund;
-        total_refund_gift += gift_refund;
-    }
-
-    // 若锁校验后发现已无可订正的日志（代表全是重复请求），则立刻安全回滚并放行
-    if repaired_count == 0 {
-        let _ = tx.rollback().await;
-        return Ok(Json(serde_json::json!({
-            "success": true,
-            "repaired_count": 0,
-            "refunded_balance": 0.0,
-            "refunded_gift_balance": 0.0,
-        })));
-    }
-
-    // 【第三步】按 user_id 排序后，直接依次合并更新用户钱包与用额用量（利用 UPDATE 隐式行锁防并发死锁）
-    let mut sorted_user_ids: Vec<String> = final_user_refunds.keys().cloned().collect();
-    sorted_user_ids.sort();
-
-    for user_id in sorted_user_ids {
-        if let Some(refund) = final_user_refunds.get(&user_id) {
-            sqlx::query(&state.db.format_query(
-                "UPDATE users SET \
-                       balance = balance + ?, \
-                       gift_balance = gift_balance + ?, \
-                       used_quota = used_quota - ?, \
-                       gift_used_quota = gift_used_quota - ?, \
-                       updated_at = CURRENT_TIMESTAMP \
-                     WHERE id = ?",
-            ))
-            .bind(refund.balance_refund)
-            .bind(refund.gift_refund)
-            .bind(refund.balance_refund)
-            .bind(refund.gift_refund)
-            .bind(&user_id)
-            .execute(&mut *tx)
-            .await?;
-        }
-    }
-
-    let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
-
-    // 【第四步】按 token_id 排序后合并退回令牌额度（总额 + 当期日/周/月；按令牌所属用户 timedisplay）
-    let mut sorted_token_ids: Vec<i64> = final_token_refunds.keys().cloned().collect();
-    sorted_token_ids.sort();
-
-    for token_id in sorted_token_ids {
-        if let Some(refund) = final_token_refunds.get(&token_id) {
-            let user_td = crate::api::date_helper::resolve_user_timedisplay_name(
-                &state.db,
-                &refund.user_id,
-                &site_tz,
-            )
-            .await;
-            crate::relay::token_quota::refund(
-                &state.db,
-                &mut tx,
-                token_id,
-                refund.cost_refund,
-                &user_td,
-            )
-            .await?;
-            state
-                .quota_memory
-                .apply_refund_ensured(&state.db, token_id, &user_td, refund.cost_refund)
-                .await;
-        }
-    }
-
-    // 【第五步】按 channel_id 排序后，直接依次合并更新渠道已用额度（利用 UPDATE 隐式行锁防死锁）
-    let mut sorted_channel_ids: Vec<i64> = final_channel_refunds.keys().cloned().collect();
-    sorted_channel_ids.sort();
-    for channel_id in sorted_channel_ids {
-        if let Some(refund) = final_channel_refunds.get(&channel_id) {
-            crate::relay::channel_quota::refund_channel(
-                &state.db,
-                &mut tx,
-                channel_id,
-                refund.cost_refund,
-                &site_tz,
-            )
-            .await?;
-        }
-    }
-
-    // 【第五步 b】按 channel_config_id 排序后退回上游预设额度（与 execute_refund_tx 对齐）
-    let mut sorted_config_ids: Vec<i64> = final_config_refunds.keys().cloned().collect();
-    sorted_config_ids.sort();
-    for config_id in sorted_config_ids {
-        if let Some(refund) = final_config_refunds.get(&config_id) {
-            crate::relay::channel_quota::refund_config(
-                &state.db,
-                &mut tx,
-                config_id,
-                refund.cost_refund,
-                &site_tz,
-            )
-            .await?;
-        }
-    }
-
-    // 【第六步】逐一更新对应日志的费用（清零）、状态（400 失败）及订正说明
-    for update in final_log_updates {
-        sqlx::query(
-            &state.db.format_query(
-                "UPDATE logs SET cost = 0.0, pre_deduct_gift = 0.0, status_code = 400, error_message = ?, billing_detail = ? WHERE id = ?"
-            )
-        )
-        .bind(&update.error_msg)
-        .bind(&update.billing_detail)
-        .bind(update.id)
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    // 提交全局事务
-    tx.commit().await?;
-
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "repaired_count": repaired_count,
-        "refunded_balance": total_refund_balance,
-        "refunded_gift_balance": total_refund_gift,
-        "details": details,
-    })))
-}
-
-#[cfg(test)]
-mod postgres_url_tests {
-    use super::*;
-
-    fn sample() -> DatabaseSettings {
-        DatabaseSettings {
-            db_type: "postgres".to_string(),
-            host: "postgres".to_string(),
-            port: 5432,
-            database: "tokensapi".to_string(),
-            username: "tokensapi".to_string(),
-            password: "tokensapi".to_string(),
-            ssl_mode: false,
-        }
-    }
-
-    #[test]
-    fn parse_docker_compose_url() {
-        let parsed = parse_postgres_url(
-            "postgres://tokensapi:tokensapi@postgres:5432/tokensapi",
-        )
-        .expect("parse");
-        assert!(postgres_settings_eq(&parsed, &sample()));
-        assert!(!parsed.ssl_mode);
-    }
-
-    #[test]
-    fn missing_sslmode_equals_disable() {
-        let a = parse_postgres_url("postgres://tokensapi:tokensapi@postgres:5432/tokensapi")
-            .unwrap();
-        let b = parse_postgres_url(
-            "postgres://tokensapi:tokensapi@postgres:5432/tokensapi?sslmode=disable",
-        )
-        .unwrap();
-        assert!(postgres_settings_eq(&a, &b));
-    }
-
-    #[test]
-    fn build_roundtrip_and_special_password() {
-        let mut s = sample();
-        s.password = "p@ss:word/加".to_string();
-        s.ssl_mode = true;
-        let url = build_postgres_url(&s);
-        let parsed = parse_postgres_url(&url).expect("roundtrip");
-        assert!(postgres_settings_eq(&s, &parsed));
-        assert!(url.contains("sslmode=require"));
-    }
-
-    #[test]
-    fn ipv6_host_roundtrip() {
-        let mut s = sample();
-        s.host = "::1".to_string();
-        let url = build_postgres_url(&s);
-        assert!(url.contains("[::1]"));
-        let parsed = parse_postgres_url(&url).expect("ipv6");
-        assert_eq!(parsed.host, "::1");
-    }
-
-    #[test]
-    fn localhost_is_not_docker_postgres() {
-        let docker = sample();
-        let local = DatabaseSettings {
-            host: "localhost".to_string(),
-            database: "postgres".to_string(),
-            username: "postgres".to_string(),
-            password: "postgres".to_string(),
-            ..sample()
-        };
-        assert!(!postgres_settings_eq(&docker, &local));
-    }
-
-    #[test]
-    fn normalize_fills_defaults() {
-        let s = normalize_database_settings(DatabaseSettings {
-            db_type: String::new(),
-            host: "  postgres  ".to_string(),
-            port: 0,
-            database: "tokensapi".to_string(),
-            username: "tokensapi".to_string(),
-            password: String::new(),
-            ssl_mode: false,
-        })
-        .expect("ok");
-        assert_eq!(s.db_type, "postgres");
-        assert_eq!(s.host, "postgres");
-        assert_eq!(s.port, 5432);
-    }
-
-    #[test]
-    fn reset_confirm_requires_exact_phrase() {
-        assert!(is_db_reset_confirm("确认清空当前数据"));
-        assert!(is_db_reset_confirm("  确认清空当前数据  "));
-        assert!(!is_db_reset_confirm("确认清空"));
-        assert!(!is_db_reset_confirm(""));
-    }
-
-    #[test]
-    fn format_uptime_zh_parts() {
-        assert_eq!(format_uptime_zh(0), "0 分钟");
-        assert_eq!(format_uptime_zh(125), "2 分钟");
-        assert_eq!(format_uptime_zh(3700), "1 小时 1 分钟");
-        assert_eq!(format_uptime_zh(90_061), "1 天 1 小时 1 分钟");
-    }
-
-    #[test]
-    fn cache_hit_pct_from_shared_counters() {
-        assert_eq!(cache_hit_pct(0, 0), None);
-        assert_eq!(
-            cache_hit_pct(99, 1).map(|v| (v * 10.0).round() / 10.0),
-            Some(99.0)
-        );
-        assert_eq!(
-            cache_hit_pct(1, 1).map(|v| (v * 10.0).round() / 10.0),
-            Some(50.0)
-        );
-    }
-
-    #[test]
-    fn bytes_pretty_scales_units() {
-        assert_eq!(bytes_pretty(0), "0 B");
-        assert_eq!(bytes_pretty(512), "512 B");
-        assert_eq!(bytes_pretty(1536), "1.5 kB");
     }
 }

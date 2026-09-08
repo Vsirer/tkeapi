@@ -6,11 +6,13 @@
  */
 
 import React, { useState, useEffect, Suspense } from 'react';
-import { Typography, Switch, Button, Checkbox, Divider, Spin, Tag, Tabs, Input, InputNumber, Form, Space, Alert, Select, Table, Drawer, Radio, App, Segmented, Modal, Tooltip, Row, Col } from 'antd';
+import { Typography, Switch, Button, Checkbox, Divider, Spin, Tag, Tabs, Input, InputNumber, Form, Space, Alert, Select, Table, Drawer, Radio, App, Segmented, Modal, Tooltip, Row, Col, Popconfirm } from 'antd';
 import { AppMessageBridge } from '../../components/AppMessageBridge';
-import { EyeOutlined, ArrowLeftOutlined, SaveOutlined, PictureOutlined, AppstoreOutlined, CloudServerOutlined, ApiOutlined, CheckCircleOutlined, LoadingOutlined, CloseCircleOutlined, SendOutlined, TeamOutlined, ExperimentOutlined, SettingOutlined, VideoCameraOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ShopOutlined, MessageOutlined, ReloadOutlined, HomeOutlined, ThunderboltOutlined, InfoCircleOutlined, BookOutlined } from '@ant-design/icons';
-import { useParams, useNavigate } from 'react-router-dom';
+import { EyeOutlined, ArrowLeftOutlined, SaveOutlined, PictureOutlined, AppstoreOutlined, CloudServerOutlined, ApiOutlined, CheckCircleOutlined, LoadingOutlined, CloseCircleOutlined, SendOutlined, TeamOutlined, ExperimentOutlined, SettingOutlined, VideoCameraOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ShopOutlined, MessageOutlined, ReloadOutlined, HomeOutlined, ThunderboltOutlined, InfoCircleOutlined, BookOutlined, QuestionCircleOutlined, SafetyCertificateOutlined, TagsOutlined, SearchOutlined, CheckOutlined, CloseOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import request from '../../utils/request';
+import { invalidateAdminPluginsCache } from '../../utils/adminPlugins';
+import { getPluginAdminTabs, resolvePluginAdminDefaultTab } from '../../utils/pluginAdminTabs';
 import { modelMatchesKeyword } from '../../utils/modelKeywordMatch';
 import { buildClassificationParams } from '../../utils/classificationParams';
 import type { Plugin, UserLevel } from '../../types';
@@ -28,7 +30,6 @@ import {
   PortalDocsManager,
   PortalAboutManagerPro,
   PortalContactManagerPro,
-  HappyHorseManager,
   DocsManager,
   ApiAccessConfig,
   HaLogs,
@@ -36,11 +37,31 @@ import {
 import ModerationQuery from '../ModerationQuery/ModerationQuery';
 import { useThemeStore } from '../../store/theme';
 import ApiLogPayloadExpand from './components/ApiLogPayloadExpand';
+import SchemeIoEditor, { ensureSchemeIoDefaults } from './components/SchemeIoEditor';
+import ModelIoOverridesEditor from './components/ModelIoOverridesEditor';
+import { validateSchemeIoForSave } from './Playground_2026/utils/schemeIo';
+import { SCHEME_QUICK_BAR_HELP, SCHEME_QUICK_BAR_MAX, countQuickBarEnabled, isQuickBarEligible } from './Playground_2026/utils/schemeQuickBar';
+import { isCountParam, isSingleCountParam } from './Playground_2026/components/SchemeParamFields';
+import { featureKindFromTypeName, parseFeatureAttrList, videoGenerationModesFromScheme } from './Playground_2026/config/modelFeatures';
+import FeatureAttributesEditor from './Playground_2026/components/FeatureAttributesEditor';
+import ImageSpecialParamsEditor from './Playground_2026/components/ImageSpecialParamsEditor';
+import {
+  normalizeImageSpecialParams,
+  officialImageSpecialParams,
+  seedImageSpecialParams,
+} from './Playground_2026/utils/imageSpecialParams';
 import useSettingsStore from '../../store/settings';
+import { StorageConfigPanel, getStorageProvider } from '../../components/Storage';
 import ClassificationFilter from '../../components/Models/ClassificationFilter';
 import MarketplaceTrendingTab from './ModelMarketplace/MarketplaceTrendingTab';
 import { useTranslation } from 'react-i18next';
 import { formatApiDateTime } from '../../utils/timedisplay';
+import {
+  HA_DEFAULT_MELT,
+  HA_MELT_CODES,
+  haMeltLabel,
+  haMeltSummary,
+} from '../../constants/relayStatusCodes';
 
 // ── 物理级完全解耦动态插件扫描 ──
 const dynamicMeta = import.meta.glob('./**/plugin_meta.ts', { eager: true });
@@ -67,17 +88,21 @@ const safeLazy = (loader: () => Promise<any>) =>
     loader().catch(() => ({ default: () => <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>该插件模块暂未安装</div> }))
   );
 
+/** 按 tab key 缓存 lazy，避免父组件重渲染时换类型导致误卸载 */
+const lazyByKey = new Map<string, React.LazyExoticComponent<React.ComponentType<any>>>();
+const cachedLazy = (key: string, loader: () => Promise<any>) => {
+  let Comp = lazyByKey.get(key);
+  if (!Comp) {
+    Comp = safeLazy(loader);
+    lazyByKey.set(key, Comp);
+  }
+  return Comp;
+};
+
 /** 插件组件包装器：Suspense + 降级 */
 const PluginModule: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400, height: '100%' }}><Spin size="large" /></div>}>{children}</Suspense>
 );
-
-/** 内置 Tab hash 白名单（与 Tabs items 的 key 对齐） */
-const BUILTIN_TAB_KEYS = [
-  'audit_log', 'basic', 'api_access', 'storage', 'moderation', 'moderation_query',
-  'preset', 'api_log', 'team_config', 'theme_promo', 'pg_storage', 'marketplace_models',
-  'routing_rules', 'portal_manager', 'ha_config', 'ha_logs', 'docs_manager',
-] as const;
 
 /** 使用独立 TOS 表单的插件（其余仅展示全局存储） */
 const INDEPENDENT_STORAGE_PLUGINS = new Set([
@@ -86,12 +111,100 @@ const INDEPENDENT_STORAGE_PLUGINS = new Set([
   'playground',
   'playground_2026',
   'upstream_asset_relay',
-  'comfyui_bridge',
 ]);
+
+const SCHEME_CONTROL_TYPE_OPTIONS = [
+  { label: 'Input 文本框', value: 'input' },
+  { label: 'Radio 单选分段', value: 'radio' },
+  { label: 'Select 下拉', value: 'select' },
+  { label: 'Switch 开关', value: 'switch' },
+  { label: 'Slider 滑块', value: 'slider' },
+];
+
+function isSeedream50ProModel(model?: { model_id?: string; name?: string; mid?: string } | null) {
+  const hay = `${model?.model_id || ''} ${model?.name || ''} ${model?.mid || ''}`
+    .toLowerCase()
+    .replace(/[_\s.]+/g, '-');
+  return hay.includes('seedream-5-0-pro') || hay.includes('seedream-5-pro');
+}
+
+function asFiniteNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+function numericParamOptions(options: unknown): number[] {
+  if (!Array.isArray(options)) return [];
+  return options
+    .map(asFiniteNumber)
+    .filter((n): n is number => n !== undefined);
+}
+
+function optionsFromSliderRange(min: number, max: number, step: number): number[] {
+  const s = step > 0 ? step : 1;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max < min) return [];
+  const count = Math.floor((max - min) / s) + 1;
+  if (count <= 0) return [];
+  if (count > 64) return [min, max];
+  const out: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    out.push(Number((min + i * s).toFixed(8)));
+  }
+  return out;
+}
+
+/** 调参面板切换控件类型时，补齐该类型需要的字段 */
+function patchForControlTypeChange(base: any, currentMod: any, nextType: string): Record<string, any> {
+  const merged = { ...base, ...currentMod };
+  const patch: Record<string, any> = { type: nextType };
+  const nums = numericParamOptions(merged.options);
+  if (nextType === 'slider') {
+    patch.data_type = merged.data_type === 'number' ? 'number' : 'integer';
+    if (nums.length) {
+      patch.min = Math.min(...nums);
+      patch.max = Math.max(...nums);
+    } else {
+      patch.min = asFiniteNumber(merged.min) ?? 0;
+      patch.max = asFiniteNumber(merged.max) ?? 100;
+    }
+    if (patch.max < patch.min) patch.max = patch.min;
+    patch.step = asFiniteNumber(merged.step) ?? 1;
+    patch.options = [];
+    if (typeof merged.default === 'boolean' || merged.default === undefined || merged.default === '') {
+      patch.default = patch.min;
+    }
+  } else if (nextType === 'select' || nextType === 'radio') {
+    if (!Array.isArray(merged.options) || merged.options.length === 0) {
+      const min = asFiniteNumber(merged.min) ?? 1;
+      const max = asFiniteNumber(merged.max) ?? min;
+      const step = asFiniteNumber(merged.step) ?? 1;
+      const generated = optionsFromSliderRange(min, max, step);
+      if (generated.length) patch.options = generated;
+    }
+    if (merged.data_type === 'boolean') {
+      patch.data_type = nums.length ? 'integer' : 'string';
+    }
+  } else if (nextType === 'switch') {
+    patch.data_type = 'boolean';
+    patch.default = !!merged.default;
+  } else if (nextType === 'input' && merged.data_type === 'boolean') {
+    patch.data_type = 'string';
+  }
+  const nextMerged = { ...merged, ...patch };
+  if (nextMerged.quick && !isQuickBarEligible(nextMerged)) {
+    patch.quick = false;
+  }
+  return patch;
+}
 
 const { Title, Text } = Typography;
 
 interface StorageConfig {
+  default_provider?: string;
   tos_access_key: string;
   tos_secret_key_masked: string;
   tos_endpoint: string;
@@ -99,10 +212,20 @@ interface StorageConfig {
   tos_bucket: string;
   tos_path_prefix: string;
   tos_custom_domain: string;
+  cos_secret_id?: string;
+  cos_secret_key_masked?: string;
+  cos_endpoint?: string;
+  cos_region?: string;
+  cos_bucket?: string;
+  cos_path_prefix?: string;
+  cos_custom_domain?: string;
   is_configured: boolean;
   global_configured?: boolean;
-  global_tos_bucket?: string;
-  global_tos_endpoint?: string;
+  global_provider?: string;
+  global_bucket?: string;
+  global_endpoint?: string;
+  global_region?: string;
+  global_path_prefix?: string;
 }
 
 interface ModerationConfig {
@@ -117,34 +240,33 @@ interface ModerationConfig {
   review_enabled: boolean;
 }
 
-// 火山引擎 TOS 对象存储地域配置（国内版 + 海外版）
-const TOS_REGION_GROUPS = [
-  {
-    group: '🇨🇳 国内版 - 火山引擎',
-    regions: [
-      { label: '华北2（北京）', region: 'cn-beijing', endpointExternal: 'https://tos-cn-beijing.volces.com', endpointInternal: 'https://tos-cn-beijing.ivolces.com' },
-      { label: '华南1（广州）', region: 'cn-guangzhou', endpointExternal: 'https://tos-cn-guangzhou.volces.com', endpointInternal: 'https://tos-cn-guangzhou.ivolces.com' },
-      { label: '华东2（上海）', region: 'cn-shanghai', endpointExternal: 'https://tos-cn-shanghai.volces.com', endpointInternal: 'https://tos-cn-shanghai.ivolces.com' },
-      { label: '中国香港', region: 'cn-hongkong', endpointExternal: 'https://tos-cn-hongkong.volces.com', endpointInternal: 'https://tos-cn-hongkong.ivolces.com' },
-      { label: '亚太东南（柔佛）', region: 'ap-southeast-1', endpointExternal: 'https://tos-ap-southeast-1.volces.com', endpointInternal: 'https://tos-ap-southeast-1.ivolces.com' },
-      { label: '亚太东南（雅加达）', region: 'ap-southeast-3', endpointExternal: 'https://tos-ap-southeast-3.volces.com', endpointInternal: 'https://tos-ap-southeast-3.ivolces.com' },
-    ]
-  },
-  {
-    group: '🌏 海外版 - BytePlus',
-    regions: [
-      { label: '亚太地区（柔佛）', region: 'bp-ap-southeast-1', endpointExternal: 'https://tos-ap-southeast-1.bytepluses.com', endpointInternal: 'https://tos-ap-southeast-1.ibytepluses.com' },
-      { label: '中国（香港）', region: 'bp-cn-hongkong', endpointExternal: 'https://tos-cn-hongkong.bytepluses.com', endpointInternal: 'https://tos-cn-hongkong.ibytepluses.com' },
-      { label: '亚太地区（雅加达）', region: 'bp-ap-southeast-3', endpointExternal: 'https://tos-ap-southeast-3.bytepluses.com', endpointInternal: 'https://tos-ap-southeast-3.ibytepluses.com' },
-      { label: '中国（北京）', region: 'bp-cn-beijing', endpointExternal: 'https://tos-cn-beijing.bytepluses.com.cn', endpointInternal: 'https://tos-cn-beijing.ibytepluses.com.cn' },
-      { label: '中国（广州）', region: 'bp-cn-guangzhou', endpointExternal: 'https://tos-cn-guangzhou.bytepluses.com.cn', endpointInternal: 'https://tos-cn-guangzhou.ibytepluses.com.cn' },
-      { label: '中国（上海）', region: 'bp-cn-shanghai', endpointExternal: 'https://tos-cn-shanghai.bytepluses.com.cn', endpointInternal: 'https://tos-cn-shanghai.ibytepluses.com.cn' },
-    ]
-  }
-];
 
-// 扁平化用于快速查找
-const ALL_TOS_REGIONS = TOS_REGION_GROUPS.flatMap(g => g.regions);
+
+type HaRuleDto = {
+  id: string;
+  name: string;
+  retries: number;
+  budget: number;
+  err: 'first' | 'last';
+  melt: Record<string, number>;
+  allow?: string[];
+  deny?: string[];
+};
+
+const HA_MAX_RETRIES = 100;
+
+function newHaRule(): HaRuleDto {
+  return {
+    id: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    name: '新规则',
+    retries: 3,
+    budget: 0,
+    err: 'first',
+    melt: { ...HA_DEFAULT_MELT },
+    allow: [],
+    deny: [],
+  };
+}
 
 // ── 插件图标映射（各插件均可独立移除，未匹配时使用默认图标 AppstoreOutlined） ──
 const pluginIcons: Record<string, React.ReactNode> = {
@@ -160,8 +282,8 @@ const pluginIcons: Record<string, React.ReactNode> = {
   site_portal: <HomeOutlined style={{ fontSize: 20 }} />,
   site_portal_pro: <HomeOutlined style={{ fontSize: 20 }} />,
   docs_api: <BookOutlined style={{ fontSize: 20 }} />,
-  happyhorse_router: <ThunderboltOutlined style={{ fontSize: 20 }} />,
   comfyui_bridge: <VideoCameraOutlined style={{ fontSize: 20 }} />,
+  content_security: <SafetyCertificateOutlined style={{ fontSize: 20 }} />,
 };
 
 const PluginConfigInner: React.FC = () => {
@@ -171,6 +293,7 @@ const PluginConfigInner: React.FC = () => {
   const { message } = App.useApp();
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { settings } = useSettingsStore();
   const adminPath = settings?.site?.admin_path || 'admin1688';
   const [plugin, setPlugin] = useState<Plugin | null>(null);
@@ -189,8 +312,18 @@ const PluginConfigInner: React.FC = () => {
   const [defaultMaxProjects, setDefaultMaxProjects] = useState<number>(3);
   const [levelMaxAssets, setLevelMaxAssets] = useState<Record<string, number>>({});
   const [defaultMaxAssets, setDefaultMaxAssets] = useState<number>(10);
+  /** 创作中心2026：单个工作流节点上限 */
+  const [workflowNodeLimit, setWorkflowNodeLimit] = useState<number>(200);
+  /** 创作中心2026：工作流功能总开关（默认关闭） */
+  const [workflowEnabled, setWorkflowEnabled] = useState<boolean>(false);
+  /** 创作中心2026：用户端工作流菜单名称（默认「工作流」） */
+  const [workflowMenuTitle, setWorkflowMenuTitle] = useState<string>('工作流');
   const [showInPlaygroundPrompt, setShowInPlaygroundPrompt] = useState<boolean>(false);
   const [docsApiAllowGuest, setDocsApiAllowGuest] = useState<boolean>(false);
+  const [showInAdminMenu, setShowInAdminMenu] = useState(false);
+  const [adminMenuSort, setAdminMenuSort] = useState(0);
+  const [adminMenuTitle, setAdminMenuTitle] = useState('');
+  const [adminMenuDefaultTab, setAdminMenuDefaultTab] = useState('');
 
   // 管理员等级（系统增强插件使用）
   const [adminGroups, setAdminGroups] = useState<{ id: number; name: string; description?: string }[]>([]);
@@ -200,38 +333,28 @@ const PluginConfigInner: React.FC = () => {
   // 存储配置
   const [storageConfig, setStorageConfig] = useState<StorageConfig | null>(null);
   const [storageForm] = Form.useForm();
-  const [haForm] = Form.useForm();
+  const [haDef, setHaDef] = useState('r1');
+  const [haRules, setHaRules] = useState<HaRuleDto[]>([]);
+  const [haDraft, setHaDraft] = useState<HaRuleDto | null>(null);
+  const [haDraftIsNew, setHaDraftIsNew] = useState(false);
   const [savingStorage, setSavingStorage] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [tosNetworkType, setTosNetworkType] = useState<'external' | 'internal'>('external');
   const [activeTabKey, setActiveTabKey] = useState(() => {
     const hash = window.location.hash.replace('#', '');
-    const currentPlugin = name ? dynamicPlugins[name] : null;
-    const customTabKeys = currentPlugin?.tabs?.map((t: any) => t.key) || [];
-    if ([...BUILTIN_TAB_KEYS, ...customTabKeys].includes(hash)) return hash;
-    if (name === 'site_portal' || name === 'site_portal_pro') return 'portal_manager';
-    if (name === 'docs_api') return 'docs_manager';
-    return 'basic'; // default to basic, will be adjusted when plugin loads
+    const tabs = getPluginAdminTabs(name || '', name ? dynamicPlugins[name] : undefined);
+    if (tabs.some((t) => t.key === hash)) return hash;
+    return tabs[0]?.key ?? 'basic';
   });
 
   useEffect(() => {
     if (!name) return;
-    const hash = window.location.hash.replace('#', '');
-    const currentPlugin = dynamicPlugins[name];
-    const customTabKeys = currentPlugin?.tabs?.map((t: any) => t.key) || [];
-    if ([...BUILTIN_TAB_KEYS, ...customTabKeys].includes(hash)) {
+    const hash = location.hash.replace('#', '');
+    const tabs = getPluginAdminTabs(name, dynamicPlugins[name]);
+    if (tabs.some((t) => t.key === hash)) {
       setActiveTabKey(hash);
       return;
     }
-    if (name === 'site_portal' || name === 'site_portal_pro') {
-      setActiveTabKey('portal_manager');
-    } else if (name === 'docs_api') {
-      setActiveTabKey('docs_manager');
-    } else {
-      setActiveTabKey('basic');
-    }
-  }, [name]);
+    setActiveTabKey(tabs[0]?.key ?? 'basic');
+  }, [name, location.hash]);
 
   const handleTabChange = (key: string) => {
     setActiveTabKey(key);
@@ -252,15 +375,19 @@ const PluginConfigInner: React.FC = () => {
   const [apiLogs, setApiLogs] = useState<any[]>([]);
   const [apiLogsTotal, setApiLogsTotal] = useState(0);
   const [apiLogsPage, setApiLogsPage] = useState(1);
+  const [apiLogsPageSize, setApiLogsPageSize] = useState(15);
   const [apiLogsLoading, setApiLogsLoading] = useState(false);
   const [logSourceFilter, setLogSourceFilter] = useState<string>('');
   const [logKeyword, setLogKeyword] = useState<string>('');
 
   // ====== 模型创作中心 (Playground) 配置 Tab ======
   const [pgModels, setPgModels] = useState<any[]>([]);
+  const [pgPage, setPgPage] = useState(1);
+  const [pgPageSize, setPgPageSize] = useState(20);
   const [pgAdvancedNodesEnabled, setPgAdvancedNodesEnabled] = useState<boolean>(false);
   const [pgAdvancedNodePreviewEnabled, setPgAdvancedNodePreviewEnabled] = useState<boolean>(true);
   const [pgAdvancedNodeVolcEnhanceEnabled, setPgAdvancedNodeVolcEnhanceEnabled] = useState<boolean>(false);
+  const [pgAdvancedNodeDirectorEnabled, setPgAdvancedNodeDirectorEnabled] = useState<boolean>(false);
   const [pgAdvancedNodePromptEnabled, setPgAdvancedNodePromptEnabled] = useState<boolean>(true);
   const [pgAdvancedNodeAiVideoEnabled, setPgAdvancedNodeAiVideoEnabled] = useState<boolean>(true);
   const [pgAdvancedNodeAiImageEnabled, setPgAdvancedNodeAiImageEnabled] = useState<boolean>(true);
@@ -284,7 +411,11 @@ const PluginConfigInner: React.FC = () => {
   const [volcEnhancePluginActive, setVolcEnhancePluginActive] = useState<boolean>(false);
   const [pgSchemes, setPgSchemes] = useState<any[]>([]);
   const [savingPlayground, setSavingPlayground] = useState(false);
+  const [savingWorkflowConfig, setSavingWorkflowConfig] = useState(false);
   const [pgSearchKeyword, setPgSearchKeyword] = useState('');
+  const [editingSortModelId, setEditingSortModelId] = useState<number | null>(null);
+  const [editingSortValue, setEditingSortValue] = useState<number>(0);
+  const [pgEnabledFilter, setPgEnabledFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
   const [pgSchemeTypeFilter, setPgSchemeTypeFilter] = useState('all');
   const [pgSchemeDrawerVisible, setPgSchemeDrawerVisible] = useState(false);
   const [pgCurrentId, setPgCurrentId] = useState<number | null>(null);
@@ -297,13 +428,27 @@ const PluginConfigInner: React.FC = () => {
   const [pgSelectedProvider, setPgSelectedProvider] = useState<number | null>(null);
   const [pgSelectedApiProvider, setPgSelectedApiProvider] = useState<number | null>(null);
   const [pgSelectedType, setPgSelectedType] = useState<number | null>(null);
+  const [pgModelTypes, setPgModelTypes] = useState<{ id: number; name: string; default_features: string[] }[]>([]);
+  const [pgFeatureModalVisible, setPgFeatureModalVisible] = useState(false);
+  const [pgFeatureModelId, setPgFeatureModelId] = useState<number | null>(null);
+  const [pgFeatureDraft, setPgFeatureDraft] = useState<string[]>([]);
+  const [pgFeatureSaving, setPgFeatureSaving] = useState(false);
   // 参数覆写 Modal
   const [pgOverrideModalVisible, setPgOverrideModalVisible] = useState(false);
   const [pgOverrideModelId, setPgOverrideModelId] = useState<number | null>(null);
   const [pgOverrideData, setPgOverrideData] = useState<any>({ modify: {}, remove: [], add: [] });
+  // IO 覆写 Modal
+  const [pgIoOverrideModalVisible, setPgIoOverrideModalVisible] = useState(false);
+  const [pgIoOverrideModelId, setPgIoOverrideModelId] = useState<number | null>(null);
+  const [pgIoOverrideData, setPgIoOverrideData] = useState<any>(null);
+  const [pgIspModalVisible, setPgIspModalVisible] = useState(false);
+  const [pgIspDraft, setPgIspDraft] = useState<any>(null);
+  const [pgIspBaseline, setPgIspBaseline] = useState<any>(null);
 
   // ====== 模型广场管理 (Model Marketplace) 配置 ======
   const [mpModels, setMpModels] = useState<any[]>([]);
+  const [mpPage, setMpPage] = useState(1);
+  const [mpPageSize, setMpPageSize] = useState(20);
   const [savingMarketplace, setSavingMarketplace] = useState(false);
   const [mpSearchKeyword, setMpSearchKeyword] = useState('');
   const [mpProviderFilter, setMpProviderFilter] = useState<string>('all');
@@ -352,20 +497,41 @@ const PluginConfigInner: React.FC = () => {
           enabled: m.mp_enabled,
           sort_order: m.mp_sort_order || 0,
           description: m.mp_description || '',
-          description_en: m.mp_description_en || ''
+          description_en: m.mp_description_en || '',
+          level_ids: m.mp_level_ids || []
         }))
       };
       await request.post(`/plugins/${name}/marketplace-models`, payload);
       message.success('模型广场配置保存成功');
     } catch (e) {
-      message.error('保存失败');
+      console.error(e);
     } finally {
       setSavingMarketplace(false);
     }
   };
 
-  const handleMpToggle = (id: number, enabled: boolean) => {
-    setMpModels(prev => prev.map(m => m.id === id ? { ...m, mp_enabled: enabled } : m));
+  const handleMpToggle = async (id: number, enabled: boolean) => {
+    const target = mpModels.find(m => m.id === id);
+    const prevLevelIds = target?.mp_level_ids || [];
+    setMpModels(prev => prev.map(m => m.id === id ? { ...m, mp_enabled: enabled, mp_level_ids: [] } : m));
+    try {
+      await request.post(`/plugins/${name}/marketplace-models/toggle`, {
+        id,
+        enabled,
+        sort_order: target?.mp_sort_order,
+        description: target?.mp_description,
+        description_en: target?.mp_description_en,
+      });
+      message.success(enabled ? '已开启广场展示' : '已关闭广场展示');
+    } catch (e) {
+      console.error(e);
+      message.error('切换广场展示状态失败');
+      setMpModels(prev => prev.map(m => m.id === id ? { ...m, mp_enabled: !enabled, mp_level_ids: prevLevelIds } : m));
+    }
+  };
+
+  const handleMpLevelIdsChange = (id: number, levelIds: number[]) => {
+    setMpModels(prev => prev.map(m => m.id === id ? { ...m, mp_level_ids: levelIds } : m));
   };
 
   const handleMpSortChange = (id: number, sort: number) => {
@@ -385,6 +551,13 @@ const PluginConfigInner: React.FC = () => {
         setPgModels(sorted);
       }
       if (res.schemes) setPgSchemes(res.schemes);
+      if (Array.isArray(res.model_types)) {
+        setPgModelTypes(res.model_types.map((t: any) => ({
+          id: t.id,
+          name: t.name || '',
+          default_features: parseFeatureAttrList(t.default_features),
+        })));
+      }
       if (res.default_model_mids) {
         let midsArray: string[] = [];
         if (Array.isArray(res.default_model_mids)) {
@@ -398,6 +571,7 @@ const PluginConfigInner: React.FC = () => {
         setPgAdvancedNodesEnabled(!!res.advanced_nodes.enabled);
         setPgAdvancedNodePreviewEnabled(res.advanced_nodes.preview_enabled !== false);
         setPgAdvancedNodeVolcEnhanceEnabled(!!res.advanced_nodes.volc_enhance_enabled);
+        setPgAdvancedNodeDirectorEnabled(!!res.advanced_nodes.director_enabled);
         setPgAdvancedNodePromptEnabled(res.advanced_nodes.prompt_enabled !== false);
         setPgAdvancedNodeAiVideoEnabled(res.advanced_nodes.ai_video_enabled !== false);
         setPgAdvancedNodeAiImageEnabled(res.advanced_nodes.ai_image_enabled !== false);
@@ -442,26 +616,146 @@ const PluginConfigInner: React.FC = () => {
   };
 
   const [savingHa, setSavingHa] = useState(false);
+  const [clearingHaRuntime, setClearingHaRuntime] = useState(false);
   const fetchHaConfigBase = async () => {
     try {
       const res = await (request.get(`/plugins/${name}/ha-config`) as Promise<any>);
-      haForm.setFieldsValue(res);
+      const rules: HaRuleDto[] = Array.isArray(res?.rules) && res.rules.length ? res.rules : [newHaRule()];
+      const def = rules.some(r => r.id === res?.def) ? res.def : rules[0].id;
+      setHaRules(rules);
+      setHaDef(def);
+      setHaDraft(null);
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleSaveHaConfig = async () => {
+  const openHaCreate = () => {
+    if (haRules.length >= 32) {
+      message.warning('最多 32 条规则');
+      return;
+    }
+    setHaDraftIsNew(true);
+    setHaDraft(newHaRule());
+  };
+
+  const openHaEdit = (r: HaRuleDto) => {
+    setHaDraftIsNew(false);
+    setHaDraft({
+      ...r,
+      melt: { ...(r.melt || {}) },
+      allow: [...(r.allow || [])],
+      deny: [...(r.deny || [])],
+    });
+  };
+
+  const patchHaDraft = (fn: (r: HaRuleDto) => HaRuleDto) => {
+    setHaDraft(d => (d ? fn(d) : d));
+  };
+
+  const setHaDraftMelt = (key: string, secs: number) => {
+    patchHaDraft(r => {
+      const melt = { ...r.melt };
+      if (secs > 0) melt[key] = secs;
+      else delete melt[key];
+      return { ...r, melt };
+    });
+  };
+
+  const setHaDraftAuthMelt = (secs: number) => {
+    patchHaDraft(r => {
+      const melt = { ...r.melt };
+      if (secs > 0) {
+        melt['401'] = secs;
+        melt['402'] = secs;
+      } else {
+        delete melt['401'];
+        delete melt['402'];
+      }
+      return { ...r, melt };
+    });
+  };
+
+  const commitHaDraft = async () => {
+    if (!haDraft) return;
+    const nameTrim = (haDraft.name || '').trim();
+    if (!nameTrim) {
+      message.error('请填写规则名称');
+      return;
+    }
+    const next = { ...haDraft, name: nameTrim };
+    let nextRules: HaRuleDto[];
+    if (haDraftIsNew) {
+      if (haRules.some(r => r.id === next.id)) {
+        message.error('规则 id 冲突，请重试');
+        return;
+      }
+      nextRules = [...haRules, next];
+    } else {
+      nextRules = haRules.map(r => (r.id === next.id ? next : r));
+    }
+
     try {
-      const values = await haForm.validateFields();
       setSavingHa(true);
-      await request.post(`/plugins/${name}/ha-config`, values);
-      message.success('高可用插件配置保存成功');
+      await request.post(`/plugins/${name}/ha-config`, { def: haDef, rules: nextRules });
+      message.success(haDraftIsNew ? '新建高可用规则成功' : '编辑高可用规则成功');
+      setHaRules(nextRules);
+      setHaDraft(null);
+      await fetchHaConfigBase();
     } catch (e: any) {
       console.error(e);
-      message.error(e?.response?.data?.error?.message || e?.message || '保存失败');
     } finally {
       setSavingHa(false);
+    }
+  };
+
+  const setHaDefault = async (id: string) => {
+    if (!haRules.some(r => r.id === id)) return;
+    try {
+      setSavingHa(true);
+      await request.post(`/plugins/${name}/ha-config`, { def: id, rules: haRules });
+      setHaDef(id);
+      message.success('已设为默认规则');
+      await fetchHaConfigBase();
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setSavingHa(false);
+    }
+  };
+
+  const deleteHaRule = async (id: string) => {
+    if (haRules.length <= 1) {
+      message.warning('至少保留一条规则');
+      return;
+    }
+    if (id === haDef) {
+      message.warning('请先将其他规则设为默认后再删除');
+      return;
+    }
+    const nextRules = haRules.filter(r => r.id !== id);
+    try {
+      setSavingHa(true);
+      await request.post(`/plugins/${name}/ha-config`, { def: haDef, rules: nextRules });
+      setHaRules(nextRules);
+      message.success('删除规则成功');
+      await fetchHaConfigBase();
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setSavingHa(false);
+    }
+  };
+
+  const handleClearHaRuntime = async () => {
+    try {
+      setClearingHaRuntime(true);
+      await request.post(`/plugins/${name}/ha-runtime/clear`);
+      message.success('运行时缓存已清除');
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setClearingHaRuntime(false);
     }
   };
 
@@ -500,60 +794,119 @@ const PluginConfigInner: React.FC = () => {
     }
   }, [name, pgSelectedProvider, pgSelectedApiProvider, pgSelectedType]);
 
-  const handleSavePlaygroundConfig = async () => {
+  const buildPlaygroundModelsPayload = (models: any[]) => models.map(m => ({
+    id: m.id,
+    mid: m.mid || '',
+    enabled: m.pg_enabled,
+    scheme_id: m.pg_scheme_id || null,
+    param_overrides: m.pg_param_overrides || null,
+    io_overrides: m.pg_io_overrides || null,
+    sort_order: m.pg_sort_order || 0,
+    ...(name === 'playground_2026' && featureKindFromTypeName(m.type_name) ? {
+      feature_attributes: parseFeatureAttrList(m.feature_attributes),
+      feature_keys: Array.isArray(m.pg_feature_keys) ? m.pg_feature_keys : [],
+    } : {}),
+    ...(name === 'playground_2026' && featureKindFromTypeName(m.type_name) === 'image' && m.pg_image_special_params && typeof m.pg_image_special_params === 'object' ? {
+      image_special_params: m.pg_image_special_params,
+    } : {}),
+  }));
+
+  /** 创作中心 2026：方案/调参/IO/特性确认后立刻落库，不再依赖「保存全部配置」 */
+  const persistPlaygroundModels = async (
+    nextModels: any[],
+    extra?: { defaultModelMids?: string[]; successMessage: string },
+  ) => {
     try {
       setSavingPlayground(true);
-      const payload = {
-        default_model_mids: pgDefaultModelMids,
-        models: pgModels.map(m => ({
-          id: m.id,
-          mid: m.mid || '',
-          enabled: m.pg_enabled,
-          scheme_id: m.pg_scheme_id || null,
-          param_overrides: m.pg_param_overrides || null,
-          sort_order: m.pg_sort_order || 0
-        })),
-        advanced_nodes: {
-          enabled: pgAdvancedNodesEnabled,
-          preview_enabled: pgAdvancedNodePreviewEnabled,
-          volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
-          prompt_enabled: pgAdvancedNodePromptEnabled,
-          ai_video_enabled: pgAdvancedNodeAiVideoEnabled,
-          ai_image_enabled: pgAdvancedNodeAiImageEnabled,
-          agent_enabled: pgAdvancedNodeAgentEnabled,
-          unified_limit_enabled: pgAdvancedNodesUnifiedLimitEnabled,
-          unified_limit_value: pgAdvancedNodesUnifiedLimitValue,
-          preview_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodePreviewLimit,
-          prompt_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodePromptLimit,
-          ai_video_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAiVideoLimit,
-          ai_image_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAiImageLimit,
-          agent_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAgentLimit,
-          volc_enhance_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeVolcEnhanceLimit,
-          instance_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeInstanceLimit,
-          agent_mode_enabled: pgAgentModeEnabled,
-          agent_video_mode: pgAgentVideoMode,
-          agent_welcome_title: pgAgentWelcomeTitle,
-          agent_welcome_desc: pgAgentWelcomeDesc,
-          agent_system_prompt: pgAgentSystemPrompt,
-          agent_preset_prompts: pgAgentPresetPrompts,
-          agent_chat_models: pgAgentChatModels,
-        }
-      };
-      await request.post(`/plugins/${name}/playground-config`, payload);
-      message.success('创作配置保存成功');
+      await request.post(`/plugins/${name}/playground-config`, {
+        default_model_mids: extra?.defaultModelMids ?? pgDefaultModelMids,
+        models: buildPlaygroundModelsPayload(nextModels),
+      });
+      message.success(extra?.successMessage || '已保存');
+      return true;
     } catch (e) {
+      console.error(e);
       message.error('保存失败');
+      return false;
     } finally {
       setSavingPlayground(false);
     }
   };
 
-  const handlePgToggle = (id: number, enabled: boolean) => {
-    setPgModels(prev => prev.map(m => m.id === id ? { ...m, pg_enabled: enabled } : m));
+  const handleSavePlaygroundConfig = async () => {
+    try {
+      setSavingPlayground(true);
+      const payload = {
+        default_model_mids: pgDefaultModelMids,
+        models: buildPlaygroundModelsPayload(pgModels),
+        advanced_nodes: name === 'playground_2026'
+          ? {
+              // 2026 已移除「高级节点配置 / AI智能体配置」Tab：节点能力默认开启；限额改走 workflow_node_limit
+              enabled: true,
+              preview_enabled: true,
+              volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
+              director_enabled: pgAdvancedNodeDirectorEnabled,
+              prompt_enabled: true,
+              ai_video_enabled: true,
+              ai_image_enabled: true,
+              agent_enabled: false,
+            }
+          : {
+              enabled: pgAdvancedNodesEnabled,
+              preview_enabled: pgAdvancedNodePreviewEnabled,
+              volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
+              prompt_enabled: pgAdvancedNodePromptEnabled,
+              ai_video_enabled: pgAdvancedNodeAiVideoEnabled,
+              ai_image_enabled: pgAdvancedNodeAiImageEnabled,
+              agent_enabled: pgAdvancedNodeAgentEnabled,
+              unified_limit_enabled: pgAdvancedNodesUnifiedLimitEnabled,
+              unified_limit_value: pgAdvancedNodesUnifiedLimitValue,
+              preview_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodePreviewLimit,
+              prompt_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodePromptLimit,
+              ai_video_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAiVideoLimit,
+              ai_image_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAiImageLimit,
+              agent_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeAgentLimit,
+              volc_enhance_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeVolcEnhanceLimit,
+              instance_limit: pgAdvancedNodesUnifiedLimitEnabled ? pgAdvancedNodesUnifiedLimitValue : pgAdvancedNodeInstanceLimit,
+              agent_mode_enabled: pgAgentModeEnabled,
+              agent_video_mode: pgAgentVideoMode,
+              agent_welcome_title: pgAgentWelcomeTitle,
+              agent_welcome_desc: pgAgentWelcomeDesc,
+              agent_system_prompt: pgAgentSystemPrompt,
+              agent_preset_prompts: pgAgentPresetPrompts,
+              agent_chat_models: pgAgentChatModels,
+            },
+      };
+      await request.post(`/plugins/${name}/playground-config`, payload);
+      message.success('创作配置保存成功');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSavingPlayground(false);
+    }
   };
 
-  const handlePgSortChange = (id: number, sort: number) => {
-    setPgModels(prev => prev.map(m => m.id === id ? { ...m, pg_sort_order: sort } : m));
+  const handlePgToggle = async (id: number, enabled: boolean) => {
+    const next = pgModels.map(m => m.id === id ? { ...m, pg_enabled: enabled } : m);
+    setPgModels(next);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: enabled ? '已启用创作' : '已关闭创作' });
+      if (!ok) setPgModels(pgModels);
+    }
+  };
+
+  const handlePgSortChange = async (id: number, sort: number) => {
+    const next = pgModels.map(m => m.id === id ? { ...m, pg_sort_order: sort } : m);
+    setPgModels(next);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: '排序已保存' });
+      if (!ok) setPgModels(pgModels);
+    }
+  };
+
+  const handleSaveInlineSort = async (id: number) => {
+    await handlePgSortChange(id, editingSortValue);
+    setEditingSortModelId(null);
   };
 
   const handleOpenSchemeDrawer = (id: number, currentSchemeId: string) => {
@@ -562,9 +915,117 @@ const PluginConfigInner: React.FC = () => {
     setPgSchemeDrawerVisible(true);
   };
 
-  const handleConfirmScheme = () => {
-    setPgModels(prev => prev.map(m => m.id === pgCurrentId ? { ...m, pg_scheme_id: pgSelectedSchemeId } : m));
+  const handleConfirmScheme = async (schemeId?: string) => {
+    const nextSchemeId = schemeId !== undefined ? schemeId : pgSelectedSchemeId;
+    const next = pgModels.map(m => m.id === pgCurrentId ? { ...m, pg_scheme_id: nextSchemeId } : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, {
+        successMessage: nextSchemeId ? '方案已绑定' : '已取消绑定',
+      });
+      if (!ok) return;
+    }
+    setPgModels(next);
     setPgSchemeDrawerVisible(false);
+  };
+
+  const inheritPgIspDraft = (record: any) => {
+    const scheme = pgSchemes.find((s: any) => s.id === record?.pg_scheme_id);
+    if (scheme?.image_special_params?.enabled) {
+      return seedImageSpecialParams(scheme.image_special_params);
+    }
+    return { enabled: false };
+  };
+
+  const initPgIspDraft = (record: any) => {
+    const own = record?.pg_image_special_params;
+    if (own && typeof own === 'object' && !Array.isArray(own) && Object.keys(own).length) {
+      return own.enabled
+        ? seedImageSpecialParams(own)
+        : { ...normalizeImageSpecialParams(own), enabled: false };
+    }
+    return inheritPgIspDraft(record);
+  };
+
+  const isPg2026ImageModel = (record: any) =>
+    name === 'playground_2026' && featureKindFromTypeName(record?.type_name) === 'image';
+
+  const handleResetParamOverrides = async () => {
+    const ovModel = pgModels.find(m => m.id === pgOverrideModelId);
+    const resetIsp = isPg2026ImageModel(ovModel);
+    const next = pgModels.map(m => m.id === pgOverrideModelId
+      ? { ...m, pg_param_overrides: null, ...(resetIsp ? { pg_image_special_params: {} } : {}) }
+      : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为方案预设' });
+      if (!ok) return;
+    }
+    setPgOverrideData({ modify: {}, remove: [], add: [] });
+    setPgIspDraft(resetIsp ? inheritPgIspDraft(ovModel) : null);
+    setPgIspModalVisible(false);
+    setPgModels(next);
+    setPgOverrideModalVisible(false);
+    if (name !== 'playground_2026') message.info('已清空覆写，保存后生效');
+  };
+
+  const handleConfirmParamOverrides = async () => {
+    const cleaned = { ...pgOverrideData };
+    if (Object.keys(cleaned.modify || {}).length === 0) delete cleaned.modify;
+    if ((cleaned.remove || []).length === 0) delete cleaned.remove;
+    if ((cleaned.add || []).length === 0) delete cleaned.add;
+    const ovModel = pgModels.find(m => m.id === pgOverrideModelId);
+    const ovScheme = pgSchemes.find(s => s.id === ovModel?.pg_scheme_id);
+    if (name === 'playground_2026' && (ovScheme?.type === 'image' || ovScheme?.type === 'video')) {
+      const quickCount = countQuickBarEnabled(ovScheme?.params || [], cleaned);
+      if (quickCount > SCHEME_QUICK_BAR_MAX) {
+        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        return;
+      }
+    }
+    const hasOverrides = Object.keys(cleaned).length > 0;
+    let ispPatch: Record<string, any> = {};
+    if (isPg2026ImageModel(ovModel)) {
+      const own = ovModel.pg_image_special_params;
+      const hadOwn = own && typeof own === 'object' && !Array.isArray(own) && Object.keys(own).length > 0;
+      const draft = pgIspDraft || { enabled: false };
+      const sameAsInherit = JSON.stringify(draft) === JSON.stringify(inheritPgIspDraft(ovModel));
+      if (hadOwn || !sameAsInherit) {
+        ispPatch = { pg_image_special_params: draft };
+      }
+    }
+    const next = pgModels.map(m => m.id === pgOverrideModelId
+      ? { ...m, pg_param_overrides: hasOverrides ? cleaned : null, ...ispPatch }
+      : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: '参数已保存' });
+      if (!ok) return;
+    }
+    setPgModels(next);
+    setPgIspModalVisible(false);
+    setPgOverrideModalVisible(false);
+    if (name !== 'playground_2026') message.success('参数已调整，保存全部配置后生效');
+  };
+
+  const handleResetIoOverrides = async () => {
+    const next = pgModels.map(m => m.id === pgIoOverrideModelId ? { ...m, pg_io_overrides: null } : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为方案默认 IO' });
+      if (!ok) return;
+    }
+    setPgIoOverrideData(null);
+    setPgModels(next);
+    setPgIoOverrideModalVisible(false);
+    if (name !== 'playground_2026') message.info('已清空 IO 覆写，保存后生效');
+  };
+
+  const handleConfirmIoOverrides = async () => {
+    const next = pgModels.map(m => m.id === pgIoOverrideModelId ? { ...m, pg_io_overrides: pgIoOverrideData || null } : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: 'IO 配置已保存' });
+      if (!ok) return;
+    }
+    setPgModels(next);
+    setPgIoOverrideModalVisible(false);
+    if (name !== 'playground_2026') message.success('IO 已调整，保存全部配置后生效');
   };
 
   // ====== 创作方案配置 Tab ======
@@ -574,6 +1035,11 @@ const PluginConfigInner: React.FC = () => {
   const [schemeEditVisible, setSchemeEditVisible] = useState(false);
   const [editingScheme, setEditingScheme] = useState<any>(null);
   const [editingSchemeIndex, setEditingSchemeIndex] = useState<number>(-1);
+  const [schemeIoEditVisible, setSchemeIoEditVisible] = useState(false);
+  const [editingIoScheme, setEditingIoScheme] = useState<any>(null);
+  const [editingIoSchemeIndex, setEditingIoSchemeIndex] = useState<number>(-1);
+  const [imageSpecialModalOpen, setImageSpecialModalOpen] = useState(false);
+  const [imageSpecialBaseline, setImageSpecialBaseline] = useState<any>(null);
 
   const fetchSchemeList = async () => {
     try {
@@ -591,92 +1057,346 @@ const PluginConfigInner: React.FC = () => {
     }
   }, [name]);
 
+  const persistPlaygroundSchemes = async (
+    nextSchemes: any[],
+    extra?: { successMessage: string },
+  ) => {
+    try {
+      setSavingSchemes(true);
+      await request.post(`/plugins/${name}/playground-schemes`, { schemes: nextSchemes });
+      message.success(extra?.successMessage || '已保存');
+      return true;
+    } catch (e) {
+      console.error(e);
+      message.error('保存失败');
+      return false;
+    } finally {
+      setSavingSchemes(false);
+    }
+  };
+
   const handleSaveAllSchemes = async () => {
     try {
       setSavingSchemes(true);
       await request.post(`/plugins/${name}/playground-schemes`, { schemes: schemeList });
       message.success('方案配置已保存');
     } catch (e) {
-      message.error('保存失败');
+      console.error(e);
     } finally {
       setSavingSchemes(false);
     }
   };
 
   const handleAddScheme = () => {
-    const newScheme = {
+    // 新建方案：编辑抽屉只含基本信息与参数；按类型自动生成初始 IO（随后可在「IO配置」里改）
+    const params: any[] = [
+      { key: 'ratio', label: '画面比例', type: 'radio', data_type: 'string', options: ['16:9', '9:16', '1:1'], default: '16:9' },
+      { key: 'resolution', label: '分辨率', type: 'select', data_type: 'string', options: ['720p', '1080p', '4k'], default: '1080p' },
+      { key: 'duration', label: '时长', type: 'slider', data_type: 'integer', min: 1, max: 60, step: 1, default: 5 },
+      { key: 'watermark', label: '水印', type: 'switch', data_type: 'boolean', default: false },
+      { key: 'return_last_frame', label: '返回最后一帧', type: 'switch', data_type: 'boolean', default: false },
+      { key: 'generate_audio', label: '生成音频', type: 'switch', data_type: 'boolean', default: false },
+      { key: 'web_search', label: '联网搜索', type: 'switch', data_type: 'boolean', default: false }
+    ];
+    if (name === 'playground_2026') {
+      for (const p of params) {
+        if (p.key === 'ratio' || p.key === 'resolution') p.quick = true;
+      }
+    }
+    const newScheme = ensureSchemeIoDefaults({
       id: `custom_${Date.now()}`,
       name: '新建创作方案',
       type: 'video',
       is_system: false,
       description: '请填写方案描述',
       max_reference_images: 7,
-      params: [
-        { key: 'ratio', label: '画面比例', type: 'radio', data_type: 'string', options: ['16:9', '9:16', '1:1'], default: '16:9' },
-        { key: 'resolution', label: '分辨率', type: 'select', data_type: 'string', options: ['720p', '1080p', '4k'], default: '1080p' },
-        { key: 'duration', label: '时长', type: 'slider', data_type: 'integer', min: 1, max: 60, step: 1, default: 5 },
-        { key: 'watermark', label: '水印', type: 'switch', data_type: 'boolean', default: false },
-        { key: 'return_last_frame', label: '返回最后一帧', type: 'switch', data_type: 'boolean', default: false },
-        { key: 'generate_audio', label: '生成音频', type: 'switch', data_type: 'boolean', default: false },
-        { key: 'web_search', label: '联网搜索', type: 'switch', data_type: 'boolean', default: false }
-      ]
-    };
+      params,
+    });
     setEditingScheme(JSON.parse(JSON.stringify(newScheme)));
     setEditingSchemeIndex(-1);
     setSchemeEditVisible(true);
   };
 
   const handleEditScheme = (scheme: any, index: number) => {
+    // 编辑：只改基本信息与参数，不带出 IO 编辑器
     setEditingScheme(JSON.parse(JSON.stringify(scheme)));
     setEditingSchemeIndex(index);
     setSchemeEditVisible(true);
   };
 
-  const handleDeleteScheme = (index: number) => {
-    setSchemeList(prev => prev.filter((_, i) => i !== index));
-    message.success('方案已删除，请点击保存生效');
+  const handleOpenSchemeIo = (scheme: any, index: number) => {
+    if (scheme.type !== 'image' && scheme.type !== 'video') {
+      message.warning('仅图片、视频方案支持 IO 配置');
+      return;
+    }
+    setEditingIoScheme(ensureSchemeIoDefaults(JSON.parse(JSON.stringify(scheme))));
+    setEditingIoSchemeIndex(index);
+    setSchemeIoEditVisible(true);
+  };
+
+  const handleDeleteScheme = async (index: number) => {
+    const next = schemeList.filter((_, i) => i !== index);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundSchemes(next, { successMessage: '方案已删除' });
+      if (!ok) return;
+    }
+    setSchemeList(next);
+    if (name !== 'playground_2026') message.success('方案已删除，请点击保存生效');
   };
 
   const handleResetScheme = (id: string, idx: number) => {
     Modal.confirm({
       title: '确认重置',
-      content: '是否将该内置方案重置为初始默认参数？该操作将在您点击"保存全部方案"后生效。',
-      onOk: () => {
+      content: name === 'playground_2026'
+        ? '是否将该内置方案重置为初始默认（含参数配置与 IO 配置）？确认后立即生效。'
+        : '是否将该内置方案重置为初始默认（含参数配置与 IO 配置）？该操作将在您点击「保存全部方案」后生效。',
+      onOk: async () => {
         const def = defaultSchemeList.find(s => s.id === id);
-        if (def) {
-          const newList = [...schemeList];
-          newList[idx] = JSON.parse(JSON.stringify(def));
-          setSchemeList(newList);
-          message.success('已重置为默认参数，请记得保存配置');
-        } else {
+        if (!def) {
           message.error('无法获取内置默认参数');
+          return Promise.reject();
         }
+        const newList = [...schemeList];
+        newList[idx] = ensureSchemeIoDefaults(JSON.parse(JSON.stringify(def)));
+        if (name === 'playground_2026') {
+          const ok = await persistPlaygroundSchemes(newList, { successMessage: '已重置为默认参数与 IO' });
+          if (!ok) return Promise.reject();
+        }
+        setSchemeList(newList);
+        if (name !== 'playground_2026') message.success('已重置为默认参数与 IO，请记得保存配置');
       }
     });
   };
 
-  const handleSaveEditingScheme = () => {
+  const handleSaveEditingScheme = async () => {
     if (!editingScheme) return;
-    const normalized = {
-      ...editingScheme,
-      max_reference_images:
-        typeof editingScheme.max_reference_images === 'number'
-          ? editingScheme.max_reference_images
-          : 7,
-    };
-    if (editingSchemeIndex >= 0) {
-      setSchemeList(prev => prev.map((s, i) => i === editingSchemeIndex ? normalized : s));
-    } else {
-      setSchemeList(prev => [...prev, normalized]);
+    // 编辑抽屉不改 IO；新建或类型切换后若为空则补默认 IO
+    let next = { ...editingScheme };
+    if (next.type === 'image' || next.type === 'video') {
+      next = ensureSchemeIoDefaults(next);
     }
+    if (name === 'playground_2026' && (next.type === 'image' || next.type === 'video')) {
+      const quickCount = (next.params || []).filter((p: any) => p?.quick).length;
+      if (quickCount > SCHEME_QUICK_BAR_MAX) {
+        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        return;
+      }
+    }
+    const refPort = (next.inputs || []).find(
+      (p: any) => p?.key === 'reference_images' || p?.bind_key === 'image_urls' || p?.bind_key === 'reference_urls',
+    );
+    const maxFromIo =
+      refPort && refPort.enabled !== false && typeof refPort.max === 'number'
+        ? refPort.max
+        : undefined;
+    const normalized = {
+      ...next,
+      // 业务参考图上限以 IO「参考图.数量上限」为准；无 IO 时回落旧字段/默认
+      max_reference_images:
+        typeof maxFromIo === 'number'
+          ? maxFromIo
+          : typeof next.max_reference_images === 'number'
+            ? next.max_reference_images
+            : 7,
+    };
+    const nextList = editingSchemeIndex >= 0
+      ? schemeList.map((s, i) => (i === editingSchemeIndex ? {
+        ...normalized,
+        inputs: normalized.inputs?.length ? normalized.inputs : (s.inputs || normalized.inputs),
+        outputs: normalized.outputs?.length ? normalized.outputs : (s.outputs || normalized.outputs),
+      } : s))
+      : [...schemeList, normalized];
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundSchemes(nextList, {
+        successMessage: editingSchemeIndex >= 0 ? '方案已保存' : '方案已创建',
+      });
+      if (!ok) return;
+    }
+    setSchemeList(nextList);
     setSchemeEditVisible(false);
-    message.success('方案已更新，请点击保存生效');
+    setImageSpecialModalOpen(false);
+    if (name !== 'playground_2026') message.success('方案已更新，请点击保存生效');
+  };
+
+  const handleSaveSchemeIo = async () => {
+    if (!editingIoScheme || editingIoSchemeIndex < 0) return;
+    const ioErr = validateSchemeIoForSave(editingIoScheme);
+    if (ioErr) {
+      message.error(ioErr);
+      return;
+    }
+    const refPort = (editingIoScheme.inputs || []).find(
+      (p: any) => p?.key === 'reference_images' || p?.bind_key === 'image_urls' || p?.bind_key === 'reference_urls',
+    );
+    let maxRef =
+      typeof editingIoScheme.max_reference_images === 'number'
+        ? editingIoScheme.max_reference_images
+        : 7;
+    if (refPort && refPort.enabled !== false && typeof refPort.max === 'number') {
+      maxRef = refPort.max;
+    }
+    const normalized = {
+      ...editingIoScheme,
+      max_reference_images: maxRef,
+    };
+    const nextList = schemeList.map((s, i) => (i === editingIoSchemeIndex ? normalized : s));
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundSchemes(nextList, { successMessage: 'IO 配置已保存' });
+      if (!ok) return;
+    }
+    setSchemeList(nextList);
+    setSchemeIoEditVisible(false);
+    if (name !== 'playground_2026') message.success('IO 配置已更新，请点击保存生效');
+  };
+
+/** 解析「选项列表」输入：支持纯逗号分割，也支持 value:label 语法（自动规避 16:9 纯比例误判） */
+function parseOptionsAndLabels(inputStr: string): { options: (string | number)[]; option_labels: Record<string, string> } {
+  const options: (string | number)[] = [];
+  const option_labels: Record<string, string> = {};
+  if (!inputStr || !inputStr.trim()) return { options, option_labels };
+
+  const parts = inputStr.split(',').map((s) => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    const isPureRatio = /^\d+\s*[:：]\s*\d+$/.test(part);
+    const ratioWithLabel = part.match(/^(\d+\s*[:：]\s*\d+)[:：](.+)$/);
+    if (ratioWithLabel) {
+      const val = ratioWithLabel[1].trim();
+      const lbl = ratioWithLabel[2].trim();
+      options.push(val);
+      if (lbl) option_labels[val] = lbl;
+    } else if (isPureRatio) {
+      options.push(part);
+    } else {
+      const colonIdx = part.indexOf(':') !== -1 ? part.indexOf(':') : part.indexOf('：');
+      if (colonIdx > 0) {
+        const val = part.slice(0, colonIdx).trim();
+        const lbl = part.slice(colonIdx + 1).trim();
+        if (val) {
+          options.push(val);
+          if (lbl) option_labels[val] = lbl;
+        }
+      } else {
+        options.push(part);
+      }
+    }
+  }
+  return { options, option_labels };
+}
+
+/** 解析「选项中文描述映射」：支持 opaque:不透明 或 纯中文列表按下标 1-对-1 映射 */
+function parseOptionLabelsMapping(
+  mappingStr: string,
+  options: (string | number)[],
+): Record<string, string> {
+  const labels: Record<string, string> = {};
+  if (!mappingStr || !mappingStr.trim()) return labels;
+  const parts = mappingStr.split(',').map((s) => s.trim()).filter(Boolean);
+  const hasColon = parts.some((p) => {
+    if (/^\d+\s*[:：]\s*\d+$/.test(p)) return false;
+    return p.includes(':') || p.includes('：');
+  });
+
+  if (hasColon) {
+    for (const part of parts) {
+      const ratioWithLabel = part.match(/^(\d+\s*[:：]\s*\d+)[:：](.+)$/);
+      if (ratioWithLabel) {
+        labels[ratioWithLabel[1].trim()] = ratioWithLabel[2].trim();
+      } else {
+        const colonIdx = part.indexOf(':') !== -1 ? part.indexOf(':') : part.indexOf('：');
+        if (colonIdx > 0) {
+          const k = part.slice(0, colonIdx).trim();
+          const v = part.slice(colonIdx + 1).trim();
+          if (k) labels[k] = v;
+        }
+      }
+    }
+  } else {
+    parts.forEach((label, idx) => {
+      if (idx < options.length && label) {
+        labels[String(options[idx])] = label;
+      }
+    });
+  }
+  return labels;
+}
+
+/** 格式化「选项中文描述映射」字符串展示 */
+function formatOptionLabelsDisplay(
+  optionLabels?: Record<string, string>,
+  options?: (string | number)[],
+): string {
+  if (!optionLabels || Object.keys(optionLabels).length === 0) return '';
+  if (Array.isArray(options) && options.length > 0) {
+    return options
+      .map((opt) => {
+        const key = String(opt);
+        const label = optionLabels[key];
+        return label && label !== key ? `${key}:${label}` : (label || '');
+      })
+      .filter(Boolean)
+      .join(', ');
+  }
+  return Object.entries(optionLabels)
+    .map(([k, v]) => (v && v !== k ? `${k}:${v}` : ''))
+    .filter(Boolean)
+    .join(', ');
+}
+
+  const handleEditingSchemeParamBatchChange = (paramIndex: number, patch: Record<string, any>) => {
+    if (!editingScheme) return;
+    const newParams = [...editingScheme.params];
+    const prev = newParams[paramIndex] || {};
+    let next = { ...prev, ...patch };
+
+    if (name === 'playground_2026' && patch.quick === true) {
+      if (!isQuickBarEligible({ ...prev, ...next })) {
+        message.error('快捷栏仅支持已配置选项的单选或下拉参数');
+        return;
+      }
+      const enabled = newParams.filter((p: any, i: number) => i !== paramIndex && p?.quick).length;
+      if (enabled >= SCHEME_QUICK_BAR_MAX) {
+        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        return;
+      }
+    }
+
+    if (name === 'playground_2026' && patch.type && patch.type !== 'radio' && patch.type !== 'select') {
+      next.quick = false;
+    }
+    if (name === 'playground_2026' && patch.options && (!Array.isArray(patch.options) || patch.options.length === 0)) {
+      next.quick = false;
+    }
+
+    newParams[paramIndex] = next;
+    setEditingScheme({ ...editingScheme, params: newParams });
   };
 
   const handleEditingSchemeParamChange = (paramIndex: number, field: string, value: any) => {
     if (!editingScheme) return;
     const newParams = [...editingScheme.params];
-    newParams[paramIndex] = { ...newParams[paramIndex], [field]: value };
+    const prev = newParams[paramIndex] || {};
+    let next = { ...prev, [field]: value };
+
+    if (name === 'playground_2026' && field === 'quick' && value === true) {
+      if (!isQuickBarEligible({ ...prev, ...next })) {
+        message.error('快捷栏仅支持已配置选项的单选或下拉参数');
+        return;
+      }
+      const enabled = newParams.filter((p: any, i: number) => i !== paramIndex && p?.quick).length;
+      if (enabled >= SCHEME_QUICK_BAR_MAX) {
+        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        return;
+      }
+    }
+
+    if (name === 'playground_2026' && field === 'type' && value !== 'radio' && value !== 'select') {
+      next.quick = false;
+    }
+    if (name === 'playground_2026' && field === 'options' && (!Array.isArray(value) || value.length === 0)) {
+      next.quick = false;
+    }
+
+    newParams[paramIndex] = next;
     setEditingScheme({ ...editingScheme, params: newParams });
   };
 
@@ -692,10 +1412,21 @@ const PluginConfigInner: React.FC = () => {
     setEditingScheme({ ...editingScheme, params: newParams });
   };
 
-  const fetchApiLogs = async (page = 1) => {
+  const handleMoveParam = (index: number, direction: 'up' | 'down') => {
+    if (!editingScheme?.params) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= editingScheme.params.length) return;
+    const newParams = [...editingScheme.params];
+    const temp = newParams[index];
+    newParams[index] = newParams[targetIndex];
+    newParams[targetIndex] = temp;
+    setEditingScheme({ ...editingScheme, params: newParams });
+  };
+
+  const fetchApiLogs = async (page = 1, pageSize = apiLogsPageSize) => {
     try {
       setApiLogsLoading(true);
-      const params: any = { page, page_size: 15 };
+      const params: any = { page, page_size: pageSize };
       if (logSourceFilter) params.source = logSourceFilter;
       if (logKeyword) params.keyword = logKeyword;
       const res = await (request.get(`/plugins/${name}/api-logs`, { params }) as any);
@@ -716,6 +1447,8 @@ const PluginConfigInner: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditUidMap, setAuditUidMap] = useState<Record<string, { uid: string; username: string }>>({});
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(15);
 
   useEffect(() => {
     fetchData();
@@ -754,6 +1487,10 @@ const PluginConfigInner: React.FC = () => {
       const found = pluginRes.plugins?.find((p: Plugin) => p.name === name);
       if (found) {
         setPlugin(found);
+        setShowInAdminMenu(found.show_in_admin_menu === 1);
+        setAdminMenuSort(found.admin_menu_sort ?? 0);
+        setAdminMenuTitle(found.admin_menu_title ?? '');
+        setAdminMenuDefaultTab(found.admin_menu_default_tab ?? '');
         if (found.category === 'system' || found.category === 'system_builtin') {
           // 系统增强插件：解析管理员等级权限
           if (found.allowed_levels === 'all') {
@@ -840,6 +1577,15 @@ const PluginConfigInner: React.FC = () => {
           setLevelMaxAssets(lma);
         }
         if (storageRes.default_max_assets != null) setDefaultMaxAssets(storageRes.default_max_assets);
+        if (storageRes.workflow_node_limit != null) {
+          setWorkflowNodeLimit(Number(storageRes.workflow_node_limit) || 200);
+        }
+        if (storageRes.workflow_enabled != null) {
+          setWorkflowEnabled(!!storageRes.workflow_enabled);
+        }
+        if (storageRes.workflow_menu_title != null) {
+          setWorkflowMenuTitle(storageRes.workflow_menu_title || '工作流');
+        }
         if (storageRes.show_in_playground_prompt != null) setShowInPlaygroundPrompt(storageRes.show_in_playground_prompt);
         if (storageRes.docs_api_allow_guest != null) {
           setDocsApiAllowGuest(storageRes.docs_api_allow_guest);
@@ -849,21 +1595,22 @@ const PluginConfigInner: React.FC = () => {
         // 延迟设置表单值，等待 Tabs 内的 Form 组件渲染完毕
         setTimeout(() => {
           storageForm.setFieldsValue({
+            default_provider: storageRes.default_provider || 'tos',
             tos_access_key: storageRes.tos_access_key || '',
             tos_secret_key: storageRes.tos_secret_key || '',
             tos_endpoint: storageRes.tos_endpoint || '',
             tos_region: storageRes.tos_region || '',
             tos_bucket: storageRes.tos_bucket || '',
             tos_path_prefix: storageRes.tos_path_prefix || '',
-            tos_custom_domain: storageRes.tos_custom_domain || ''
+            tos_custom_domain: storageRes.tos_custom_domain || '',
+            cos_secret_id: storageRes.cos_secret_id || '',
+            cos_secret_key: storageRes.cos_secret_key || '',
+            cos_endpoint: storageRes.cos_endpoint || '',
+            cos_region: storageRes.cos_region || '',
+            cos_bucket: storageRes.cos_bucket || '',
+            cos_path_prefix: storageRes.cos_path_prefix || '',
+            cos_custom_domain: storageRes.cos_custom_domain || '',
           });
-          // 根据已保存的 endpoint 智能推断网络类型
-          const ep = storageRes.tos_endpoint || '';
-          if (ep.includes('ivolces.com') || ep.includes('ibytepluses.com')) {
-            setTosNetworkType('internal');
-          } else {
-            setTosNetworkType('external');
-          }
         }, 0);
       }
 
@@ -948,11 +1695,40 @@ const PluginConfigInner: React.FC = () => {
         default_max_projects: defaultMaxProjects,
         level_max_assets: levelMaxAssets,
         default_max_assets: defaultMaxAssets,
+        ...(name === 'playground_2026'
+          ? {
+              workflow_node_limit: workflowNodeLimit,
+              workflow_enabled: workflowEnabled,
+              workflow_menu_title: workflowMenuTitle.trim(),
+              volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
+              director_enabled: pgAdvancedNodeDirectorEnabled,
+            }
+          : {}),
         show_in_playground_prompt: showInPlaygroundPrompt,
-        docs_api_allow_guest: docsApiAllowGuest
+        docs_api_allow_guest: docsApiAllowGuest,
+        show_in_admin_menu: showInAdminMenu ? 1 : 0,
+        admin_menu_sort: adminMenuSort,
+        admin_menu_title: adminMenuTitle.trim(),
+        admin_menu_default_tab: resolvePluginAdminDefaultTab(
+          plugin.name,
+          adminMenuDefaultTab,
+          dynamicPlugins[plugin.name],
+        ),
       });
       // 同步本地插件状态，供「API 接口调用」Tab 正确展示开放等级标签
-      setPlugin((prev) => (prev ? { ...prev, allowed_levels: allowed } : prev));
+      setPlugin((prev) => (prev ? {
+        ...prev,
+        allowed_levels: allowed,
+        show_in_admin_menu: showInAdminMenu ? 1 : 0,
+        admin_menu_sort: adminMenuSort,
+        admin_menu_title: adminMenuTitle.trim(),
+        admin_menu_default_tab: resolvePluginAdminDefaultTab(
+          plugin.name,
+          adminMenuDefaultTab,
+          dynamicPlugins[plugin.name],
+        ),
+      } : prev));
+      invalidateAdminPluginsCache();
       message.success('配置已保存');
     } catch (error) {
       // 全局拦截器已统一弹出错误提示
@@ -963,30 +1739,14 @@ const PluginConfigInner: React.FC = () => {
 
   const handleSaveStorage = async () => {
     try {
-      const values = await storageForm.validateFields();
+      const values = storageForm.getFieldsValue(true);
       setSavingStorage(true);
       await request.post(`/plugins/${name}/storage-config`, values);
       message.success('存储配置已保存');
-      setTestResult(null);
     } catch (error: any) {
-      if (error?.errorFields) return; // form validation
-      // 全局拦截器已统一弹出错误提示
+      if (error?.errorFields) return;
     } finally {
       setSavingStorage(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    try {
-      setTesting(true);
-      setTestResult(null);
-      const values = storageForm.getFieldsValue();
-      const res = await request.post(`/plugins/${name}/test-connection`, values) as any;
-      setTestResult(res);
-    } catch (error: any) {
-      setTestResult({ success: false, message: error?.response?.data?.error?.message || '测试失败' });
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -1033,18 +1793,70 @@ const PluginConfigInner: React.FC = () => {
         background: _isLight ? '#fff' : '#141414', borderRadius: 8,
         border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
         padding: '16px 20px', marginBottom: 16,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
       }}>
-        <div>
-          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>启用状态</Text><br />
-          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-            {isSystemPlugin ? '开启后，有权限的管理员将在管理后台看到此插件' : '开启后，符合等级要求的用户将在菜单中看到此功能'}
-          </Text>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>启用状态</Text><br />
+            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+              {isSystemPlugin ? '开启后，有权限的管理员将在管理后台看到此插件' : '开启后，符合等级要求的用户将在菜单中看到此功能'}
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Tag color={isEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{isEnabled ? '运行中' : '已停用'}</Tag>
+            <Switch checked={isEnabled} onChange={handleToggle} />
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Tag color={isEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{isEnabled ? '运行中' : '已停用'}</Tag>
-          <Switch checked={isEnabled} onChange={handleToggle} />
+
+        <Divider style={{ borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)', margin: '14px 0' }} />
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>左侧菜单显示</Text><br />
+            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+              开启后，管理后台「站点插件」下出现二级菜单，点击可直达本插件配置页
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Tag color={showInAdminMenu ? 'success' : 'default'} style={{ margin: 0 }}>{showInAdminMenu ? '已开启' : '已关闭'}</Tag>
+            <Switch checked={showInAdminMenu} onChange={setShowInAdminMenu} />
+          </div>
         </div>
+
+        {showInAdminMenu && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginTop: 14 }}>
+            <div style={{ flex: '1 1 220px', minWidth: 180 }}>
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginBottom: 6 }}>左侧菜单名称</Text>
+              <Input
+                value={adminMenuTitle}
+                maxLength={64}
+                placeholder={plugin.title}
+                onChange={(e) => setAdminMenuTitle(e.target.value)}
+              />
+            </div>
+            <div style={{ flex: '1 1 200px', minWidth: 180 }}>
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginBottom: 6 }}>默认跳转 Tab</Text>
+              <Select
+                value={resolvePluginAdminDefaultTab(plugin.name, adminMenuDefaultTab, dynamicPlugins[plugin.name])}
+                onChange={setAdminMenuDefaultTab}
+                options={getPluginAdminTabs(plugin.name, dynamicPlugins[plugin.name]).map((tab) => ({
+                  value: tab.key,
+                  label: tab.label,
+                }))}
+                style={{ width: '100%' }}
+              />
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 11, display: 'block', marginTop: 4 }}>点击左侧菜单后打开该 Tab，默认第一个</Text>
+            </div>
+            <div style={{ width: 160 }}>
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginBottom: 6 }}>排序权重</Text>
+              <InputNumber
+                value={adminMenuSort}
+                onChange={(v) => setAdminMenuSort(typeof v === 'number' ? v : 0)}
+                style={{ width: '100%' }}
+              />
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 11, display: 'block', marginTop: 4 }}>数字越大越靠前</Text>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 模型创作中心提示词输入窗口加载显示 (仅限素材资产管理插件) */}
@@ -1068,8 +1880,8 @@ const PluginConfigInner: React.FC = () => {
         </div>
       )}
 
-      {/* DocsApi / SitePortalPro / ModelMarketplace 插件专属：免登录访问 */}
-      {isEnabled && (name === 'docs_api' || name === 'site_portal_pro' || name === 'model_marketplace') && (
+      {/* DocsApi / ModelMarketplace 插件专属：免登录访问 */}
+      {isEnabled && (name === 'docs_api' || name === 'model_marketplace') && (
         <div style={{
           background: _isLight ? '#fff' : '#141414', borderRadius: 8,
           border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
@@ -1460,201 +2272,67 @@ const PluginConfigInner: React.FC = () => {
   const storageTab = (
     <div>
       {hasIndependentStorage ? (
-        <>
-          {/* 状态提示：基于插件独立存储是否已配置 tos_access_key 来判断 */}
-          {storageConfig && (
-            <div style={{ marginBottom: 16 }}>
-              {storageConfig.tos_access_key ? (
-                <Alert
-                  type="success"
-                  showIcon
-                  icon={<CheckCircleOutlined />}
-                  message="对象存储已配置"
-                  description={`当前 Bucket: ${storageConfig.tos_bucket}，Endpoint: ${storageConfig.tos_endpoint}`}
-                  style={{ background: 'rgba(82,196,26,0.06)', border: '1px solid rgba(82,196,26,0.2)' }}
-                />
-              ) : (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="对象存储未配置"
-                  description={
-                    name === 'upstream_asset_relay'
-                      ? storageConfig.global_configured
-                        ? '尚未单独配置本插件存储。base64 转素材将暂时使用「站点设置 → 存储设置」全局 TOS；保存下方配置后优先使用本插件存储。'
-                        : 'base64 转素材 ID 需要 TOS。请在此单独配置，或先到「站点设置 → 存储设置」配置全局存储作为回退。'
-                      : name === 'comfyui_bridge'
-                        ? storageConfig.global_configured
-                          ? '尚未单独配置本插件存储。成片将暂时使用「站点设置 → 存储设置」全局 TOS；都未配置时写入本地 /assets/comfyui/。保存下方配置后优先使用本插件存储。'
-                          : '建议配置 TOS。未配置时回退「站点设置 → 存储设置」全局 TOS，再没有则写入本地 /assets/comfyui/。'
-                        : '用户上传素材功能需要先完成火山引擎 TOS 对象存储配置'
-                  }
-                  style={{ background: 'rgba(250,173,20,0.06)', border: '1px solid rgba(250,173,20,0.2)' }}
-                />
-              )}
-            </div>
-          )}
-
-          <div style={{
-            background: _isLight ? '#fff' : '#141414', borderRadius: 8,
-            border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', padding: '20px'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-              <CloudServerOutlined style={{ color: '#1677ff', fontSize: 16 }} />
-              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>火山引擎 TOS 对象存储</Text>
-            </div>
-
-            {/* 插件独立存储配置表单 */}
-            <Form form={storageForm} layout="vertical" requiredMark={false}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-                <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>Access Key</Text>} name="tos_access_key" rules={[{ required: true, message: '请输入 Access Key' }]}>
-                  <Input placeholder="火山引擎 Access Key" style={inputStyle} />
-                </Form.Item>
-                <Form.Item
-                  label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>Secret Key</Text>}
-                  name="tos_secret_key"
-                  extra={storageConfig?.tos_secret_key_masked ? <Text style={{ color: _isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)', fontSize: 11 }}>当前: {storageConfig.tos_secret_key_masked}（留空则不修改）</Text> : undefined}
-                >
-                  <Input.Password placeholder="火山引擎 Secret Key" style={inputStyle} />
-                </Form.Item>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0 16px' }}>
-                <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>数据地域</Text>} name="tos_region" rules={[{ required: true, message: '请选择数据地域' }]}>
-                  <Select
-                    placeholder="选择数据地域"
-                    style={{ width: '100%' }}
-                    popupClassName="dark-select-dropdown"
-                    showSearch
-                    optionFilterProp="label"
-                    onChange={(value: string) => {
-                      const found = ALL_TOS_REGIONS.find(r => r.region === value);
-                      if (found) {
-                        const ep = tosNetworkType === 'internal' ? found.endpointInternal : found.endpointExternal;
-                        storageForm.setFieldsValue({ tos_endpoint: ep });
-                      }
-                    }}
-                  >
-                    {TOS_REGION_GROUPS.map(g => (
-                      <Select.OptGroup key={g.group} label={<span style={{ fontWeight: 600, fontSize: 13 }}>{g.group}</span>}>
-                        {g.regions.map(r => (
-                          <Select.Option key={r.region} value={r.region} label={`${r.label} ${r.region}`}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span>{r.label}</span>
-                              <span style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>{r.region.replace(/^bp-/, '')}</span>
-                            </div>
-                          </Select.Option>
-                        ))}
-                      </Select.OptGroup>
-                    ))}
-                  </Select>
-                </Form.Item>
-                <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>网络类型</Text>}>
-                  <Radio.Group
-                    value={tosNetworkType}
-                    onChange={(e) => {
-                      const newType = e.target.value as 'external' | 'internal';
-                      setTosNetworkType(newType);
-                      // 如果已选地域，自动切换 endpoint
-                      const currentRegion = storageForm.getFieldValue('tos_region');
-                      if (currentRegion) {
-                        const found = ALL_TOS_REGIONS.find(r => r.region === currentRegion);
-                        if (found) {
-                          const ep = newType === 'internal' ? found.endpointInternal : found.endpointExternal;
-                          storageForm.setFieldsValue({ tos_endpoint: ep });
-                        }
-                      }
-                    }}
-                    optionType="button"
-                    buttonStyle="solid"
-                    size="middle"
-                    options={[
-                      { label: '外网', value: 'external' },
-                      { label: '内网', value: 'internal' },
-                    ]}
-                  />
-                </Form.Item>
-              </div>
-              <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>Endpoint</Text>} name="tos_endpoint" rules={[{ required: true, message: '请选择地域后自动填充' }]}
-                extra={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)', fontSize: 11 }}>选择地域和网络类型后自动填充，也可手动修改</Text>}
-              >
-                <Input placeholder="选择地域后自动填充" style={inputStyle} />
-              </Form.Item>
-
-              <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>Bucket</Text>} name="tos_bucket" rules={[{ required: true, message: '请输入 Bucket 名称' }]}>
-                <Input placeholder="对象存储桶名称" style={inputStyle} />
-              </Form.Item>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-                <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>路径前缀</Text>} name="tos_path_prefix" extra={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)', fontSize: 11 }}>选填，如 assets/upload</Text>}>
-                  <Input placeholder="如 assets/" style={inputStyle} />
-                </Form.Item>
-                <Form.Item label={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>自定义域名</Text>} name="tos_custom_domain" extra={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)', fontSize: 11 }}>选填，CDN 加速域名</Text>}>
-                  <Input placeholder="如 https://cdn.example.com" style={inputStyle} />
-                </Form.Item>
-              </div>
-            </Form>
-
-            {/* 测试结果 */}
-            {testResult && (
-              <div style={{ marginBottom: 16 }}>
-                <Alert
-                  type={testResult.success ? 'success' : 'error'}
-                  showIcon
-                  message={testResult.success ? '连接成功' : '连接失败'}
-                  description={testResult.message}
-                  style={{ background: testResult.success ? 'rgba(82,196,26,0.06)' : 'rgba(255,77,79,0.06)', border: `1px solid ${testResult.success ? 'rgba(82,196,26,0.2)' : 'rgba(255,77,79,0.2)'}` }}
-                />
-              </div>
-            )}
-
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Button icon={<ApiOutlined />} loading={testing} onClick={handleTestConnection}>测试连接</Button>
-              <Button type="primary" icon={<SaveOutlined />} loading={savingStorage} onClick={handleSaveStorage}>保存存储配置</Button>
-            </div>
-          </div>
-
-          {/* CORS 配置说明：仅创作中心插件展示，指引运营者配置前端直传功能 */}
-          {isPlaygroundPlugin && (
-            <div style={{
-              marginTop: 16, padding: '16px 20px', borderRadius: 8,
-              background: _isLight ? 'rgba(22,119,255,0.03)' : 'rgba(22,119,255,0.06)',
-              border: _isLight ? '1px solid rgba(22,119,255,0.15)' : '1px solid rgba(22,119,255,0.2)',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <InfoCircleOutlined style={{ color: '#1677ff', fontSize: 14 }} />
-                <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13 }}>前端直传 TOS 所需的 CORS 配置</Text>
-                <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>可选但推荐</Tag>
-              </div>
-              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: '20px', display: 'block', marginBottom: 10 }}>
-                创作中心支持浏览器直接上传文件到 TOS（无需经过服务器中转，显著节省服务器带宽）。
-                直传请求发往 TOS 官方域名（与自定义域名 / CDN 解耦，避免签名 Host 不一致）；上传成功后的访问地址仍可使用自定义域名。
-                若需启用此功能，请在火山引擎 TOS 控制台完成以下 CORS 配置，否则上传将自动降级为服务器中转模式。
-              </Text>
-              <div style={{ background: _isLight ? '#f8fafc' : '#1a1a2e', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
-                <div style={{ marginBottom: 6 }}>
-                  <Text style={{ color: '#1677ff', fontSize: 12 }}>操作路径：</Text>
-                  <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 12 }}>火山引擎控制台 → 对象存储 TOS → 选择 Bucket → 权限管理 → CORS 设置 → 添加规则</Text>
+        <StorageConfigPanel
+          form={storageForm}
+          namePrefix={[]}
+          standalone={true}
+          pluginName={name}
+          onSaveStandalone={handleSaveStorage}
+          savingStandalone={savingStorage}
+          maskedSecrets={{
+            tos_secret_key: storageConfig?.tos_secret_key_masked || '',
+            cos_secret_key: storageConfig?.cos_secret_key_masked || '',
+          }}
+          globalSnapshot={storageConfig?.global_configured ? {
+            provider: storageConfig.global_provider || 'tos',
+            bucket: storageConfig.global_bucket || '',
+            endpoint: storageConfig.global_endpoint || '',
+            region: storageConfig.global_region,
+            pathPrefix: storageConfig.global_path_prefix,
+          } : undefined}
+          siteSettingsHref={`/${adminPath}/settings?tab=database&subtab=storage`}
+          extraBottomContent={
+            isPlaygroundPlugin ? (
+              <div style={{
+                marginTop: 16, padding: '16px 20px', borderRadius: 8,
+                background: _isLight ? 'rgba(22,119,255,0.03)' : 'rgba(22,119,255,0.06)',
+                border: _isLight ? '1px solid rgba(22,119,255,0.15)' : '1px solid rgba(22,119,255,0.2)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <InfoCircleOutlined style={{ color: '#1677ff', fontSize: 14 }} />
+                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13 }}>前端直传所需的 CORS 配置</Text>
+                  <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>可选但推荐</Tag>
                 </div>
-                {[
-                  { label: '允许来源 AllowedOrigin', value: '本站完整域名，如 https://your-domain.com（请勿填写 *，存在安全风险）' },
-                  { label: '允许方法 AllowedMethod', value: 'PUT、GET、HEAD' },
-                  { label: '允许请求头 AllowedHeader', value: 'Content-Type、Content-Length' },
-                  { label: '暴露响应头 ExposeHeader', value: 'ETag' },
-                  { label: '预检缓存 MaxAgeSeconds', value: '3600' },
-                ].map(item => (
-                  <div key={item.label} style={{ display: 'flex', gap: 8, marginBottom: 3, alignItems: 'flex-start' }}>
-                    <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.4)', fontSize: 11, whiteSpace: 'nowrap', minWidth: 160 }}>{item.label}:</Text>
-                    <Text style={{ color: _isLight ? '#1f2937' : '#e2e8f0', fontSize: 11 }}>{item.value}</Text>
+                <Text style={{ color: _isLight ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: '20px', display: 'block', marginBottom: 10 }}>
+                  创作中心支持浏览器直接上传文件到对象存储（无需经过服务器中转，显著节省服务器带宽）。
+                  直传请求发往官方域名（与自定义域名 / CDN 解耦，避免签名 Host 不一致）；上传成功后的访问地址仍可使用自定义域名。
+                  若需启用此功能，请在 TOS 或 COS 控制台完成以下 CORS 配置，否则上传将自动降级为服务器中转模式。
+                </Text>
+                <div style={{ background: _isLight ? '#f8fafc' : '#1a1a2e', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
+                  <div style={{ marginBottom: 6 }}>
+                    <Text style={{ color: '#1677ff', fontSize: 12 }}>操作路径：</Text>
+                    <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 12 }}>对象存储控制台 → 选择 Bucket → 权限管理 / 安全管理 → CORS 设置 → 添加规则</Text>
                   </div>
-                ))}
+                  {[
+                    { label: '允许来源 AllowedOrigin', value: '本站完整域名，如 https://your-domain.com（请勿填写 *，存在安全风险）' },
+                    { label: '允许方法 AllowedMethod', value: 'PUT、GET、HEAD' },
+                    { label: '允许请求头 AllowedHeader', value: 'Content-Type、Content-Length' },
+                    { label: '暴露响应头 ExposeHeader', value: 'ETag' },
+                    { label: '预检缓存 MaxAgeSeconds', value: '3600' },
+                  ].map(item => (
+                    <div key={item.label} style={{ display: 'flex', gap: 8, marginBottom: 3, alignItems: 'flex-start' }}>
+                      <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.4)', fontSize: 11, whiteSpace: 'nowrap', minWidth: 160 }}>{item.label}:</Text>
+                      <Text style={{ color: _isLight ? '#1f2937' : '#e2e8f0', fontSize: 11 }}>{item.value}</Text>
+                    </div>
+                  ))}
+                </div>
+                <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.3)', fontSize: 11, marginTop: 8, display: 'block' }}>
+                  💡 配置后用户上传文件将直接传输到 TOS，不再经过服务器，大幅降低带宽消耗。未配置时自动降级为服务器中转，功能不受影响。
+                </Text>
               </div>
-              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.3)', fontSize: 11, marginTop: 8, display: 'block' }}>
-                💡 配置后用户上传文件将直接传输到 TOS，不再经过服务器，大幅降低带宽消耗。未配置时自动降级为服务器中转，功能不受影响。
-              </Text>
-            </div>
-          )}
-        </>
+            ) : null
+          }
+        />
       ) : (
         /* 其它插件继续继承站点全局存储设置 */
         <div style={{
@@ -1663,7 +2341,7 @@ const PluginConfigInner: React.FC = () => {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
             <CloudServerOutlined style={{ color: '#1677ff', fontSize: 16 }} />
-            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>火山引擎 TOS 对象存储</Text>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>对象存储配置</Text>
           </div>
 
           <Alert
@@ -1673,23 +2351,28 @@ const PluginConfigInner: React.FC = () => {
             message={storageConfig?.global_configured ? "已使用全局存储设置" : "未配置存储"}
             description={
               <div>
-                <p style={{ margin: 0 }}>当前存储默认使用<b>管理后台「站点设置 → 存储设置」</b>里面的对象存储配置，无需在此处单独进行配置。</p>
+                <p style={{ margin: 0 }}>当前存储默认使用管理后台「<Link to={`/${adminPath}/settings?tab=database&subtab=storage`}>站点设置 → 存储设置</Link>」里面的对象存储配置，无需在此处单独进行配置。站点默认厂商变更后，本页会同步显示。</p>
                 {storageConfig?.global_configured ? (
                   <div style={{ marginTop: 12, borderTop: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.08)', paddingTop: 8 }}>
                     <p style={{ margin: '4px 0 0 0', fontSize: 12 }}>
                       <b>已启用全局存储设置：</b>
                     </p>
                     <p style={{ margin: '4px 0 0 0', fontSize: 12 }}>
-                      全局 Bucket: <code style={{ background: _isLight ? '#f3f4f6' : '#27272a', padding: '2px 4px', borderRadius: 4, fontFamily: 'monospace' }}>{storageConfig.global_tos_bucket}</code>
+                      全局提供商: <code style={{ background: _isLight ? '#f3f4f6' : '#27272a', padding: '2px 4px', borderRadius: 4, fontFamily: 'monospace' }}>{getStorageProvider(storageConfig.global_provider || 'tos').name}</code>
                     </p>
                     <p style={{ margin: '4px 0 0 0', fontSize: 12 }}>
-                      全局 Endpoint: <code style={{ background: _isLight ? '#f3f4f6' : '#27272a', padding: '2px 4px', borderRadius: 4, fontFamily: 'monospace' }}>{storageConfig.global_tos_endpoint}</code>
+                      全局 Bucket: <code style={{ background: _isLight ? '#f3f4f6' : '#27272a', padding: '2px 4px', borderRadius: 4, fontFamily: 'monospace' }}>{storageConfig.global_bucket || '—'}</code>
                     </p>
+                    {storageConfig.global_endpoint ? (
+                      <p style={{ margin: '4px 0 0 0', fontSize: 12 }}>
+                        Endpoint: <code style={{ background: _isLight ? '#f3f4f6' : '#27272a', padding: '2px 4px', borderRadius: 4, fontFamily: 'monospace' }}>{storageConfig.global_endpoint}</code>
+                      </p>
+                    ) : null}
                   </div>
                 ) : (
                   <div style={{ marginTop: 12, color: '#ff4d4f' }}>
                     <p style={{ margin: 0, fontSize: 12 }}>
-                      ⚠️ 系统提示：管理后台尚未配置全局对象存储，请先前往<b>「站点设置 → 存储设置」</b>中完成火山引擎 TOS 存储配置。
+                      ⚠️ 系统提示：管理后台尚未配置全局对象存储，请先前往「<Link to={`/${adminPath}/settings?tab=database&subtab=storage`}>站点设置 → 存储设置</Link>」中完成对象存储配置。
                     </p>
                   </div>
                 )}
@@ -1714,8 +2397,6 @@ const PluginConfigInner: React.FC = () => {
       message.success(checked ? '素材审核功能已开启' : '素材审核功能已关闭');
     } catch (error: any) {
       console.error(error);
-      const rawMsg = error?.response?.data?.error?.message || '';
-      message.error(rawMsg || '切换失败');
       setReviewEnabled(!checked);
     }
   };
@@ -1871,117 +2552,240 @@ const PluginConfigInner: React.FC = () => {
     </div>
   );
 
-  // ====== 高可用配置 Tab ======
+  // ====== 高可用配置 Tab：列表 + 创建/编辑弹窗 ======
   const haConfigTab = (
     <div>
       <div style={{
         background: _isLight ? '#fff' : '#141414', borderRadius: 8,
-        border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', padding: '20px'
+        border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', padding: '16px 20px'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>高可用 Failover 参数配置</Text>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>高可用规则模板</Text>
+          <Space size={8} wrap>
+            <Popconfirm
+              title="清除本进程运行时缓存？"
+              description="清空熔断表和规则缓存，下次调用从库加载。不改绑定与规则。"
+              onConfirm={handleClearHaRuntime}
+              okText="清除"
+              cancelText="取消"
+            >
+              <Button icon={<ReloadOutlined />} loading={clearingHaRuntime}>
+                清除运行时缓存
+              </Button>
+            </Popconfirm>
+            <Button type="primary" icon={<PlusOutlined />} disabled={haRules.length >= 32} onClick={openHaCreate}>
+              新建规则
+            </Button>
+          </Space>
         </div>
-        <Form form={haForm} layout="vertical">
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="ha_max_retries"
-                label="最大备用切换次数 (次)"
-                tooltip="控制当物理上游损坏时，允许向下 Failover 切换重试的最大子渠道个数。同时也作为添加渠道虚拟组时多渠道绑定的多选勾选上限。"
-                rules={[{ required: true, message: '请输入最大重试次数' }]}
-              >
-                <InputNumber min={1} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="ha_cooldown_429"
-                label="限流 (429) 熔断阻断时长 (秒)"
-                tooltip="上游返回 429 Too Many Requests 时，该子渠道在内存中熔断冷却的倒计时秒数。"
-                rules={[{ required: true, message: '请输入冷却时间' }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="ha_cooldown_network"
-                label="网络超时 / 5xx 熔断阻断时长 (秒)"
-                tooltip="上游连接超时、DNS失败、网关502等，该子渠道在内存中熔断冷却的倒计时秒数。"
-                rules={[{ required: true, message: '请输入冷却时间' }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="ha_cooldown_auth"
-                label="鉴权失效 / 欠费 (401/402) 熔断阻断时长 (秒)"
-                tooltip="上游返回 401 密钥失效、402 余额耗尽等错误时，在内存中拉黑该渠道的倒计时秒数。"
-                rules={[{ required: true, message: '请输入冷却时间' }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="ha_cooldown_404"
-                label="上游返回 404 熔断阻断时长 (秒)"
-                tooltip="上游返回 404 Not Found 时（如接口路径配错或模型下线等），在内存中熔断拉黑该渠道的倒计时秒数。设置为较小值可快速恢复。"
-                rules={[{ required: true, message: '请输入冷却时间' }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="ha_total_timeout_secs"
-                label="HA 整次墙钟预算 (秒)"
-                tooltip="从首次尝试起算的整次 HA 墙钟上限，仅开启 Failover 时生效。预算耗尽后立即返回首次上游失败，避免备渠切换把时间打满被入口 Nginx 切成 504 HTML。填 0 为自动：min(540, 上游超时-60)。首次尝试仍用全局上游超时（默认 1800s），不截断长成功请求。"
-                rules={[{ required: true, message: '请输入墙钟预算，0 表示自动' }]}
-                initialValue={0}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item
-            name="ha_meltdown_whitelist"
-            label="报错信息不熔断白名单"
-            tooltip="输入上游报错信息中的关键词，当上游返回的错误信息包含白名单中的任意一条关键词时（不区分大小写），将跳过熔断，不冷却对应子渠道。适用于上游返回的业务级错误提示（如内容安全审核等）不应触发渠道冷却的场景；仍会按策略尝试切换备渠。"
-          >
-            <Select
-              mode="tags"
-              style={{ width: '100%' }}
-              placeholder="输入报错关键词后按回车添加，例如：内容安全、content_filter"
-              tokenSeparators={['\n']}
-              open={false}
-              suffixIcon={null}
-            />
-          </Form.Item>
-          <Form.Item
-            name="ha_meltdown_blacklist"
-            label="报错信息停止切换黑名单"
-            tooltip="输入上游报错信息中的关键词，当失败错误信息包含黑名单中的任意一条关键词时（不区分大小写），立即停止向后续备渠 Failover。适用于各上游大概率返回相同业务错误（如内容违规、参数非法、InternalServiceError 等）的场景，避免空耗时间与配额。嵌套转发时建议将平台级错误码加入黑名单，以便下游站尽快拿到真实错误体。"
-          >
-            <Select
-              mode="tags"
-              style={{ width: '100%' }}
-              placeholder="输入报错关键词后按回车添加，例如：InternalServiceError、content_policy、敏感词"
-              tokenSeparators={['\n']}
-              open={false}
-              suffixIcon={null}
-            />
-          </Form.Item>
-        </Form>
+        <Table
+          rowKey="id"
+          size="middle"
+          pagination={false}
+          dataSource={haRules}
+          scroll={{ x: 900 }}
+          locale={{ emptyText: '暂无规则' }}
+          columns={[
+            {
+              title: '规则名称',
+              dataIndex: 'name',
+              ellipsis: true,
+              render: (name: string, r: HaRuleDto) => (
+                <Space size={8}>
+                  <Text strong>{name}</Text>
+                  {r.id === haDef && <Tag color="blue">默认</Tag>}
+                </Space>
+              ),
+            },
+            {
+              title: '最大尝试',
+              dataIndex: 'retries',
+              width: 96,
+              align: 'center',
+            },
+            {
+              title: '墙钟预算',
+              dataIndex: 'budget',
+              width: 110,
+              render: (v: number) => (v > 0 ? `${v}s` : '自动'),
+            },
+            {
+              title: '终态错误',
+              dataIndex: 'err',
+              width: 96,
+              render: (v: string) => (v === 'last' ? '末败' : '首败'),
+            },
+            {
+              title: '熔断摘要',
+              key: 'melt',
+              ellipsis: true,
+              render: (_: unknown, r: HaRuleDto) => (
+                <Text type="secondary" style={{ fontSize: 12 }}>{haMeltSummary(r.melt)}</Text>
+              ),
+            },
+            {
+              title: '名单',
+              key: 'lists',
+              width: 120,
+              render: (_: unknown, r: HaRuleDto) => (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  白{(r.allow || []).length} / 黑{(r.deny || []).length}
+                </Text>
+              ),
+            },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 220,
+              fixed: 'right' as const,
+              render: (_: unknown, r: HaRuleDto) => (
+                <Space size={4} wrap>
+                  <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openHaEdit(r)}>编辑</Button>
+                  <Button type="link" size="small" disabled={r.id === haDef} onClick={() => setHaDefault(r.id)}>设为默认</Button>
+                  <Popconfirm
+                    title="确认删除该规则？"
+                    disabled={haRules.length <= 1 || r.id === haDef}
+                    onConfirm={() => deleteHaRule(r.id)}
+                  >
+                    <Button
+                      type="link"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      disabled={haRules.length <= 1 || r.id === haDef}
+                    >
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </Space>
+              ),
+            },
+          ]}
+        />
       </div>
-      <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
-        <Button type="primary" icon={<SaveOutlined />} loading={savingHa} onClick={handleSaveHaConfig}>保存配置</Button>
-      </div>
+
+      <Modal
+        title={haDraftIsNew ? '新建高可用规则' : '编辑高可用规则'}
+        open={!!haDraft}
+        onCancel={() => setHaDraft(null)}
+        onOk={commitHaDraft}
+        confirmLoading={savingHa}
+        okText="确定"
+        cancelText="取消"
+        width={720}
+        destroyOnHidden
+        styles={{ body: { maxHeight: '70vh', overflowY: 'auto', paddingTop: 12 } }}
+      >
+        {haDraft && (
+          <>
+            <Row gutter={16}>
+              <Col span={24}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>规则名称</Text>
+                  <Input
+                    value={haDraft.name}
+                    maxLength={64}
+                    onChange={e => patchHaDraft(r => ({ ...r, name: e.target.value }))}
+                  />
+                </div>
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col span={8}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>最大尝试次数（含首次）</Text>
+                  <InputNumber
+                    min={1}
+                    max={HA_MAX_RETRIES}
+                    style={{ width: '100%' }}
+                    value={haDraft.retries}
+                    onChange={v => patchHaDraft(r => ({ ...r, retries: Number(v) || 1 }))}
+                  />
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+                    含第一次调用；未达上限也可能因无可用子渠、熔断、预算或黑名单提前停
+                  </Text>
+                </div>
+              </Col>
+              <Col span={8}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>整次墙钟预算（秒，0=自动）</Text>
+                  <InputNumber
+                    min={0}
+                    style={{ width: '100%' }}
+                    value={haDraft.budget}
+                    onChange={v => patchHaDraft(r => ({ ...r, budget: Math.max(0, Number(v) || 0) }))}
+                  />
+                </div>
+              </Col>
+              <Col span={8}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>终态错误</Text>
+                  <div>
+                    <Radio.Group
+                      value={haDraft.err || 'first'}
+                      onChange={e => patchHaDraft(r => ({ ...r, err: e.target.value }))}
+                    >
+                      <Radio.Button value="first">首败</Radio.Button>
+                      <Radio.Button value="last">末败</Radio.Button>
+                    </Radio.Group>
+                  </div>
+                </div>
+              </Col>
+            </Row>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>熔断冷却（秒，0=关闭）</Text>
+            <Row gutter={16}>
+              {HA_MELT_CODES.filter(c => c !== '401' && c !== '402').map(code => (
+                <Col span={12} key={code}>
+                  <div style={{ marginBottom: 16 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{haMeltLabel(code)}</Text>
+                    <InputNumber
+                      min={0}
+                      style={{ width: '100%' }}
+                      value={haDraft.melt?.[code] || 0}
+                      onChange={v => setHaDraftMelt(code, Number(v) || 0)}
+                    />
+                  </div>
+                </Col>
+              ))}
+              <Col span={12}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>401·402 鉴权失效/欠费</Text>
+                  <InputNumber
+                    min={0}
+                    style={{ width: '100%' }}
+                    value={haDraft.melt?.['401'] || haDraft.melt?.['402'] || 0}
+                    onChange={v => setHaDraftAuthMelt(Number(v) || 0)}
+                  />
+                </div>
+              </Col>
+            </Row>
+            <div style={{ marginTop: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>不熔断白名单（报错关键词）</Text>
+              <Select
+                mode="tags"
+                style={{ width: '100%', marginBottom: 16 }}
+                placeholder="回车添加"
+                tokenSeparators={['\n']}
+                open={false}
+                suffixIcon={null}
+                value={haDraft.allow || []}
+                onChange={(v: string[]) => patchHaDraft(r => ({ ...r, allow: v }))}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>停止切换黑名单（报错关键词）</Text>
+              <Select
+                mode="tags"
+                style={{ width: '100%' }}
+                placeholder="回车添加"
+                tokenSeparators={['\n']}
+                open={false}
+                suffixIcon={null}
+                value={haDraft.deny || []}
+                onChange={(v: string[]) => patchHaDraft(r => ({ ...r, deny: v }))}
+              />
+            </div>
+          </>
+        )}
+      </Modal>
     </div>
   );
 
@@ -2101,7 +2905,19 @@ const PluginConfigInner: React.FC = () => {
         rowKey="id"
         loading={auditLoading}
         size="small"
-        pagination={{ pageSize: 15 }}
+        scroll={{ x: 860 }}
+        pagination={{
+          current: auditPage,
+          pageSize: auditPageSize,
+          showSizeChanger: true,
+          pageSizeOptions: ['10', '15', '30', '50', '100'],
+          showTotal: (total) => `共 ${total} 条`,
+          showQuickJumper: true,
+          onChange: (page, size) => {
+            setAuditPage(page);
+            setAuditPageSize(size);
+          },
+        }}
         expandable={{
           expandedRowRender: record => {
             const aid = record.asset_id;
@@ -2217,11 +3033,19 @@ const PluginConfigInner: React.FC = () => {
         rowKey="id"
         loading={apiLogsLoading}
         size="small"
+        scroll={{ x: 880 }}
         pagination={{
           current: apiLogsPage,
           total: apiLogsTotal,
-          pageSize: 15,
-          onChange: (page) => fetchApiLogs(page)
+          pageSize: apiLogsPageSize,
+          showSizeChanger: true,
+          pageSizeOptions: ['10', '15', '30', '50', '100'],
+          showTotal: (total) => `共 ${total} 条`,
+          showQuickJumper: true,
+          onChange: (page, size) => {
+            setApiLogsPageSize(size);
+            fetchApiLogs(page, size);
+          },
         }}
         expandable={{
           expandedRowRender: (record) => (
@@ -2241,6 +3065,8 @@ const PluginConfigInner: React.FC = () => {
     if (pgSelectedProvider != null && m.provider_id !== pgSelectedProvider) return false;
     if (pgSelectedApiProvider != null && m.api_provider_id !== pgSelectedApiProvider) return false;
     if (pgSelectedType != null && m.type_id !== pgSelectedType) return false;
+    if (pgEnabledFilter === 'enabled' && !m.pg_enabled) return false;
+    if (pgEnabledFilter === 'disabled' && !!m.pg_enabled) return false;
     return modelMatchesKeyword(m, pgSearchKeyword);
   });
 
@@ -2249,19 +3075,43 @@ const PluginConfigInner: React.FC = () => {
       title: '模型名称',
       dataIndex: 'name',
       key: 'name',
+      width: 260,
       render: (name: string, record: any) => {
-        const scheme = pgSchemes.find(s => s.id === record.pg_scheme_id);
         return (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13 }}>{name}</Text>
-              {scheme && (
-                <span style={{ fontSize: 11, color: '#1677ff', fontWeight: 'normal' }}>
-                  (已挂载流：{scheme.name})
-                </span>
-              )}
+          <div style={{ maxWidth: 240, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ lineHeight: 1.2 }}>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color: _isLight ? '#1f2937' : '#fff',
+                  fontSize: 13,
+                  lineHeight: 1.2,
+                  wordBreak: 'break-all',
+                  display: 'inline-block'
+                }}
+                title={name}
+              >
+                {name}
+              </span>
             </div>
-            <div style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontFamily: 'monospace' }}>MID: {record.mid} | {record.model_id}</div>
+            {record.remark && (
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.2,
+                  color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                title={record.remark}
+              >
+                {record.remark}
+              </div>
+            )}
+            <div style={{ fontSize: 11, lineHeight: 1.2, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`MID: ${record.mid} | ${record.model_id}`}>
+              MID: {record.mid} | {record.model_id}
+            </div>
           </div>
         );
       }
@@ -2281,7 +3131,8 @@ const PluginConfigInner: React.FC = () => {
     {
       title: '启用创作',
       key: 'pg_enabled',
-      width: 100,
+      width: 90,
+      align: 'center' as const,
       render: (_: any, record: any) => (
         <Switch
           checked={record.pg_enabled}
@@ -2292,7 +3143,7 @@ const PluginConfigInner: React.FC = () => {
     {
       title: '绑定方案',
       key: 'pg_scheme_id',
-      width: 200,
+      width: 180,
       render: (_: any, record: any) => {
         const scheme = pgSchemes.find(s => s.id === record.pg_scheme_id);
         return scheme ? (
@@ -2307,42 +3158,100 @@ const PluginConfigInner: React.FC = () => {
       key: 'pg_sort_order',
       width: 120,
       sorter: (a: any, b: any) => (a.pg_sort_order || 0) - (b.pg_sort_order || 0),
-      render: (_: any, record: any) => (
-        <InputNumber
-          size="small"
-          min={0}
-          max={9999}
-          value={record.pg_sort_order || 0}
-          onChange={(val) => handlePgSortChange(record.id, val ?? 0)}
-          style={{ width: 80 }}
-        />
-      )
+      render: (_: any, record: any) => {
+        const isEditing = editingSortModelId === record.id;
+        if (isEditing) {
+          return (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <InputNumber
+                size="small"
+                min={0}
+                max={9999}
+                autoFocus
+                value={editingSortValue}
+                onChange={(val) => setEditingSortValue(val ?? 0)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSaveInlineSort(record.id);
+                  } else if (e.key === 'Escape') {
+                    setEditingSortModelId(null);
+                  }
+                }}
+                style={{ width: 66 }}
+              />
+              <Button
+                type="text"
+                size="small"
+                icon={<CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />}
+                onClick={() => handleSaveInlineSort(record.id)}
+                style={{ padding: '0 4px', height: 22, minWidth: 22 }}
+                title="保存"
+              />
+              <Button
+                type="text"
+                size="small"
+                icon={<CloseOutlined style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12 }} />}
+                onClick={() => setEditingSortModelId(null)}
+                style={{ padding: '0 4px', height: 22, minWidth: 22 }}
+                title="取消"
+              />
+            </div>
+          );
+        }
+        return (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 13, fontFamily: 'monospace', minWidth: 16 }}>
+              {record.pg_sort_order || 0}
+            </span>
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }} />}
+              onClick={() => {
+                setEditingSortModelId(record.id);
+                setEditingSortValue(record.pg_sort_order || 0);
+              }}
+              style={{ padding: '0 4px', height: 22, minWidth: 22 }}
+              title="修改排序权重"
+            />
+          </div>
+        );
+      }
     },
     {
       title: '默认展示',
       key: 'pg_default',
       width: 100,
       align: 'center' as const,
+      filters: [
+        { text: '已设默认', value: 'default' },
+        { text: '未设默认', value: 'not_default' },
+      ],
+      filterMultiple: false,
+      onFilter: (value: any, record: any) => {
+        const isDefault = Array.isArray(pgDefaultModelMids) && pgDefaultModelMids.includes(record.mid);
+        if (value === 'default') return isDefault;
+        if (value === 'not_default') return !isDefault;
+        return true;
+      },
       render: (_: any, record: any) => {
         const isChecked = Array.isArray(pgDefaultModelMids) && pgDefaultModelMids.includes(record.mid);
         return (
-          <Checkbox
+          <Switch
+            size="small"
             checked={isChecked}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setPgDefaultModelMids(prev => {
-                const prevList = Array.isArray(prev) ? prev : [];
-                if (checked) {
-                  if (!prevList.includes(record.mid)) {
-                    return [...prevList, record.mid];
-                  }
-                } else {
-                  return prevList.filter(mid => mid !== record.mid);
-                }
-                return prevList;
-              });
+            onChange={async (checked) => {
+              const prevList = Array.isArray(pgDefaultModelMids) ? pgDefaultModelMids : [];
+              const nextList = checked
+                ? (prevList.includes(record.mid) ? prevList : [...prevList, record.mid])
+                : prevList.filter(mid => mid !== record.mid);
+              setPgDefaultModelMids(nextList);
+              if (name === 'playground_2026') {
+                const ok = await persistPlaygroundModels(pgModels, { defaultModelMids: nextList, successMessage: checked ? '已设为默认展示' : '已取消默认展示' });
+                if (!ok) setPgDefaultModelMids(prevList);
+              }
             }}
-            disabled={!record.pg_enabled}
+            disabled={!record.pg_enabled || (name === 'playground_2026' && savingPlayground)}
           />
         );
       }
@@ -2350,53 +3259,102 @@ const PluginConfigInner: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 140,
-      render: (_: any, record: any) => (
-        <div style={{ display: 'flex', gap: 4 }}>
+      width: name === 'playground_2026' ? 340 : 200,
+      render: (_: any, record: any) => {
+        const featureKind = name === 'playground_2026' ? featureKindFromTypeName(record.type_name) : null;
+        return (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap', alignItems: 'center' }}>
           <Button
             type="text"
+            size="small"
             icon={<SettingOutlined />}
             onClick={() => handleOpenSchemeDrawer(record.id, record.pg_scheme_id)}
-            style={{ color: '#1677ff' }}
+            style={{ color: '#1677ff', padding: '0 4px' }}
           >
             方案
           </Button>
           {record.pg_scheme_id && (
+            <>
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setPgOverrideModelId(record.id);
+                  setPgOverrideData(record.pg_param_overrides || { modify: {}, remove: [], add: [] });
+                  if (isPg2026ImageModel(record)) {
+                    setPgIspDraft(initPgIspDraft(record));
+                  } else {
+                    setPgIspDraft(null);
+                  }
+                  setPgIspModalVisible(false);
+                  setPgOverrideModalVisible(true);
+                }}
+                style={{ color: '#faad14', padding: '0 4px' }}
+              >
+                调参
+              </Button>
+              <Button
+                type="text"
+                size="small"
+                icon={<ApiOutlined />}
+                onClick={() => {
+                  setPgIoOverrideModelId(record.id);
+                  setPgIoOverrideData(record.pg_io_overrides || null);
+                  setPgIoOverrideModalVisible(true);
+                }}
+                style={{ color: '#13c2c2', padding: '0 4px' }}
+              >
+                IO配置
+              </Button>
+            </>
+          )}
+          {name === 'playground_2026' && record.pg_enabled && featureKind && (
             <Button
               type="text"
-              icon={<EditOutlined />}
+              size="small"
+              icon={<TagsOutlined />}
               onClick={() => {
-                setPgOverrideModelId(record.id);
-                setPgOverrideData(record.pg_param_overrides || { modify: {}, remove: [], add: [] });
-                setPgOverrideModalVisible(true);
+                setPgFeatureModelId(record.id);
+                setPgFeatureDraft(parseFeatureAttrList(record.feature_attributes));
+                setPgFeatureModalVisible(true);
               }}
-              style={{ color: '#faad14' }}
+              style={{ color: '#722ed1', padding: '0 4px' }}
             >
-              调参
+              特性配置
             </Button>
           )}
         </div>
-      )
+        );
+      }
     },
   ];
 
   const playgroundModelTab = (
     <div>
       <div style={{ background: _isLight ? '#fff' : '#141414', borderRadius: 8, padding: '20px', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
           <div>
             <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>可创作模型列表</Text>
             <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginTop: 4 }}>
-              开启启用开关并绑定方案后，用户即可在模型创作中心使用该模型。选中"默认展示"列后，可将模型设为默认展示（支持多选）。
+              {name === 'playground_2026'
+                ? '开启启用开关并绑定方案后即可使用。方案、调参、IO、特性点击确认后立即生效；图片模型可在调参中开关专用参数。选中「默认展示」可将模型设为默认（支持多选）。'
+                : '开启启用开关并绑定方案后，用户即可在模型创作中心使用该模型。选中"默认展示"列后，可将模型设为默认展示（支持多选）。'}
             </Text>
           </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Radio.Group value={pgEnabledFilter} onChange={e => setPgEnabledFilter(e.target.value)}>
+              <Radio.Button value="all">全部</Radio.Button>
+              <Radio.Button value="enabled">已开启</Radio.Button>
+              <Radio.Button value="disabled">未开启</Radio.Button>
+            </Radio.Group>
             <Input
               placeholder="搜索模型..."
               value={pgSearchKeyword}
               onChange={e => setPgSearchKeyword(e.target.value)}
               style={{ width: 220 }}
               allowClear
+              prefix={<SearchOutlined style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)' }} />}
             />
           </div>
         </div>
@@ -2411,75 +3369,57 @@ const PluginConfigInner: React.FC = () => {
             selectedType={pgSelectedType}
             onProviderChange={setPgSelectedProvider}
             onApiProviderChange={setPgSelectedApiProvider}
-            onTypeChange={setPgSelectedType}
+            onTypeChange={(id) => {
+              setPgSelectedType(id);
+            }}
           />
         </div>
-
-        {Array.isArray(pgDefaultModelMids) && pgDefaultModelMids.length > 0 && (() => {
-          const selectedModels = pgModels.filter(m => pgDefaultModelMids.includes(m.mid));
-          return selectedModels.length > 0 ? (
-            <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, background: 'rgba(22,119,255,0.06)', border: '1px solid rgba(22,119,255,0.15)', fontSize: 12 }}>
-              <Space wrap size={[4, 8]}>
-                <Text style={{ color: '#1677ff' }}>默认展示的模型：</Text>
-                {selectedModels.map(m => (
-                  <Tag
-                    key={m.mid}
-                    color="blue"
-                    closable
-                    onClose={() => {
-                      setPgDefaultModelMids(prev => prev.filter(mid => mid !== m.mid));
-                    }}
-                  >
-                    {m.name}
-                  </Tag>
-                ))}
-              </Space>
-            </div>
-          ) : null;
-        })()}
 
         <Table
           dataSource={filteredPgModels}
           columns={pgModelColumns}
           rowKey="id"
           size="small"
-          pagination={{ pageSize: 20 }}
-          style={{ marginBottom: 16 }}
+          scroll={{ x: name === 'playground_2026' ? 1280 : 1000 }}
+          pagination={{
+            current: pgPage,
+            pageSize: pgPageSize,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50', '100', '200'],
+            showTotal: (total) => `共 ${total} 项`,
+            showQuickJumper: true,
+            onChange: (page, size) => {
+              setPgPage(page);
+              setPgPageSize(size);
+            },
+          }}
+          style={{ marginBottom: name === 'playground_2026' ? 0 : 16 }}
         />
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Button type="primary" loading={savingPlayground} onClick={handleSavePlaygroundConfig} icon={<SaveOutlined />}>
-            保存全部配置
-          </Button>
-        </div>
+        {name !== 'playground_2026' && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button type="primary" loading={savingPlayground} onClick={handleSavePlaygroundConfig} icon={<SaveOutlined />}>
+              保存全部配置
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* 参数覆写 Modal */}
       <Modal
         title={`参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`}
         open={pgOverrideModalVisible}
-        onCancel={() => setPgOverrideModalVisible(false)}
-        width={640}
+        onCancel={() => {
+          setPgOverrideModalVisible(false);
+          setPgIspModalVisible(false);
+        }}
+        width={name === 'playground_2026' ? 720 : 640}
         footer={
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <Button danger onClick={() => {
-              setPgOverrideData({ modify: {}, remove: [], add: [] });
-              setPgModels(prev => prev.map(m => m.id === pgOverrideModelId ? { ...m, pg_param_overrides: null } : m));
-              setPgOverrideModalVisible(false);
-              message.info('已清空覆写，保存后生效');
-            }}>重置为预设</Button>
+            <Button danger loading={savingPlayground} onClick={handleResetParamOverrides}>重置为预设</Button>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button onClick={() => setPgOverrideModalVisible(false)}>取消</Button>
-              <Button type="primary" onClick={() => {
-                const cleaned = { ...pgOverrideData };
-                if (Object.keys(cleaned.modify || {}).length === 0) delete cleaned.modify;
-                if ((cleaned.remove || []).length === 0) delete cleaned.remove;
-                if ((cleaned.add || []).length === 0) delete cleaned.add;
-                const hasOverrides = Object.keys(cleaned).length > 0;
-                setPgModels(prev => prev.map(m => m.id === pgOverrideModelId ? { ...m, pg_param_overrides: hasOverrides ? cleaned : null } : m));
-                setPgOverrideModalVisible(false);
-                message.success('参数已调整，保存全部配置后生效');
-              }}>确认</Button>
+              <Button onClick={() => { setPgOverrideModalVisible(false); setPgIspModalVisible(false); }} disabled={savingPlayground}>取消</Button>
+              <Button type="primary" loading={savingPlayground} onClick={handleConfirmParamOverrides}>确认</Button>
             </div>
           </div>
         }
@@ -2491,29 +3431,98 @@ const PluginConfigInner: React.FC = () => {
           const overrides = pgOverrideData || { modify: {}, remove: [], add: [] };
           const removes = new Set(overrides.remove || []);
           const modifies = overrides.modify || {};
+          const showQuickBar = name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video');
+          const tryEnableQuick = (merged: any, skip: { key?: string; addIndex?: number }) => {
+            if (!isQuickBarEligible(merged)) {
+              message.error('快捷栏仅支持已配置选项的单选或下拉参数');
+              return false;
+            }
+            if (countQuickBarEnabled(scheme.params || [], overrides, skip) >= SCHEME_QUICK_BAR_MAX) {
+              message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+              return false;
+            }
+            return true;
+          };
 
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12 }}>
-                基于方案「{scheme.name}」的参数个性化调整（仅对此模型生效）
+                {name === 'playground_2026'
+                  ? `基于系统方案「${scheme.name}」的模型级调参，控件类型、选项与默认值以此面板为准（仅对本模型生效）`
+                  : `基于方案「${scheme.name}」的参数个性化调整（仅对此模型生效）`}
               </Text>
+              {name === 'playground_2026' && scheme.type === 'image' && (
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片专用参数配置</Text>
+                      <Text style={{ display: 'block', fontSize: 12, marginTop: 2, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
+                        对本模型生效。开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件
+                      </Text>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                      {!!pgIspDraft?.enabled && (
+                        <Button
+                          size="small"
+                          icon={<SettingOutlined />}
+                          onClick={() => {
+                            const next = seedImageSpecialParams(pgIspDraft);
+                            setPgIspDraft(next);
+                            setPgIspBaseline(JSON.parse(JSON.stringify(next)));
+                            setPgIspModalVisible(true);
+                          }}
+                        >
+                          配置
+                        </Button>
+                      )}
+                      <Switch
+                        checked={!!pgIspDraft?.enabled}
+                        onChange={(v) => {
+                          if (!v) setPgIspModalVisible(false);
+                          setPgIspDraft(v
+                            ? seedImageSpecialParams(pgIspDraft)
+                            : { ...normalizeImageSpecialParams(pgIspDraft), enabled: false });
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+                </>
+              )}
               {/* 预设参数列表 */}
               {scheme.params.map((p: any) => {
                 const isRemoved = removes.has(p.key);
                 const mod = modifies[p.key] || {};
+                const mergedParam = { ...p, ...mod };
+                if (
+                  name === 'playground_2026'
+                  && (isSingleCountParam(mergedParam) || (isSeedream50ProModel(model) && isCountParam(mergedParam)))
+                ) {
+                  return null;
+                }
+                const schemeParamOn = p.enabled !== false;
+                const isParamOn = name === 'playground_2026'
+                  ? !isRemoved && (mod.enabled ?? schemeParamOn)
+                  : !isRemoved;
+                const effectiveType = mod.type || p.type;
                 const fieldHint = { fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 } as const;
                 const sameValue = (a: any, b: any) =>
                   Array.isArray(a) && Array.isArray(b)
                     ? JSON.stringify(a) === JSON.stringify(b)
                     : a === b || String(a) === String(b);
-                const patchModField = (field: string, value: any, original: any) => {
+                const applyModPatch = (partial: Record<string, any>) => {
                   const next = { ...mod };
-                  if (sameValue(value, original)) delete next[field];
-                  else next[field] = value;
+                  Object.entries(partial).forEach(([field, value]) => {
+                    if (sameValue(value, p[field])) delete next[field];
+                    else next[field] = value;
+                  });
                   const newMod = { ...modifies };
                   if (Object.keys(next).length === 0) delete newMod[p.key];
                   else newMod[p.key] = next;
                   setPgOverrideData({ ...overrides, modify: newMod });
+                };
+                const patchModField = (field: string, value: any) => {
+                  applyModPatch({ [field]: value });
                 };
                 const parseNum = (raw: string, fallback: number) => {
                   const n = Number(raw);
@@ -2522,43 +3531,69 @@ const PluginConfigInner: React.FC = () => {
                 return (
                   <div key={p.key} style={{
                     padding: '10px 14px', borderRadius: 8,
-                    background: isRemoved ? (_isLight ? 'rgba(255,0,0,0.03)' : 'rgba(255,0,0,0.06)') : (_isLight ? '#fafafa' : '#1a1a1a'),
+                    background: isRemoved || !isParamOn ? (_isLight ? 'rgba(255,0,0,0.03)' : 'rgba(255,0,0,0.06)') : (_isLight ? '#fafafa' : '#1a1a1a'),
                     border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)',
-                    opacity: isRemoved ? 0.5 : 1,
+                    opacity: isParamOn ? 1 : 0.5,
                   }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isRemoved ? 0 : 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isParamOn ? 8 : 0 }}>
                       <div>
                         <Text strong style={{ fontSize: 13, color: _isLight ? '#1f2937' : '#fff' }}>{p.label}</Text>
                         <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', marginLeft: 8 }}>{p.key}</Text>
                       </div>
                       <Switch
-                        checked={!isRemoved}
+                        checked={isParamOn}
                         onChange={(checked) => {
+                          if (name === 'playground_2026' && p.enabled === false) {
+                            const newRemoves = (overrides.remove || []).filter((k: string) => k !== p.key);
+                            const next = { ...mod };
+                            if (checked) next.enabled = true;
+                            else delete next.enabled;
+                            const newMod = { ...modifies };
+                            if (Object.keys(next).length === 0) delete newMod[p.key];
+                            else newMod[p.key] = next;
+                            setPgOverrideData({ ...overrides, remove: newRemoves, modify: newMod });
+                            return;
+                          }
                           const newRemoves = checked ? (overrides.remove || []).filter((k: string) => k !== p.key) : [...(overrides.remove || []), p.key];
                           setPgOverrideData({ ...overrides, remove: newRemoves });
                         }}
                         size="small"
                       />
                     </div>
-                    {!isRemoved && (
+                    {isParamOn && (
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {p.type !== 'switch' && p.type !== 'slider' && Array.isArray(p.options) && (
+                        {name === 'playground_2026' && (
+                          <div style={{ width: 140 }}>
+                            <Text style={fieldHint}>控件类型</Text>
+                            <Select
+                              size="small"
+                              value={effectiveType}
+                              style={{ width: '100%' }}
+                              options={SCHEME_CONTROL_TYPE_OPTIONS}
+                              onChange={(v) => applyModPatch(patchForControlTypeChange(p, mod, v))}
+                            />
+                          </div>
+                        )}
+                        {effectiveType !== 'switch' && effectiveType !== 'slider' && (
+                          (name === 'playground_2026' || Array.isArray(p.options))
+                        ) && (
                           <div style={{ flex: 1, minWidth: 200 }}>
                             <Text style={fieldHint}>选项 (逗号分隔)</Text>
                             <Input
                               size="small"
-                              defaultValue={(mod.options || p.options).join(', ')}
-                              key={`opts-${p.key}-${JSON.stringify(mod.options || p.options)}`}
+                              defaultValue={(mod.options || p.options || []).join(', ')}
+                              key={`opts-${p.key}-${effectiveType}-${JSON.stringify(mod.options || p.options || [])}`}
                               onBlur={e => {
-                                const isNumeric = typeof p.default === 'number' || (Array.isArray(p.options) && p.options.length > 0 && typeof p.options[0] === 'number');
+                                const srcOpts = mod.options || p.options || [];
+                                const isNumeric = typeof (mod.default ?? p.default) === 'number' || (Array.isArray(srcOpts) && srcOpts.length > 0 && typeof srcOpts[0] === 'number') || effectiveType === 'slider';
                                 const newOpts = e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean).map(x => (isNumeric && !isNaN(Number(x))) ? Number(x) : x);
-                                patchModField('options', newOpts, p.options);
+                                patchModField('options', newOpts);
                               }}
                               onPressEnter={e => (e.target as HTMLInputElement).blur()}
                             />
                           </div>
                         )}
-                        {p.type === 'slider' && ([
+                        {effectiveType === 'slider' && ([
                           { field: 'min', label: `最小值${p.unit ? ` (${p.unit})` : ''}`, fallback: 0, width: 100 },
                           { field: 'max', label: `最大值${p.unit ? ` (${p.unit})` : ''}`, fallback: 100, width: 100 },
                           { field: 'step', label: '步长', fallback: 1, width: 80 },
@@ -2571,38 +3606,55 @@ const PluginConfigInner: React.FC = () => {
                                 size="small"
                                 type="number"
                                 value={String(mod[field] !== undefined ? mod[field] : original)}
-                                onChange={e => patchModField(field, parseNum(e.target.value, original), original)}
+                                onChange={e => patchModField(field, parseNum(e.target.value, original))}
                               />
                             </div>
                           );
                         })}
                         <div style={{ width: 120 }}>
                           <Text style={fieldHint}>默认值</Text>
-                          {p.type === 'switch' ? (
+                          {effectiveType === 'switch' ? (
                             <Switch
                               size="small"
                               checked={mod.default !== undefined ? mod.default : p.default}
-                              onChange={v => patchModField('default', v, p.default)}
+                              onChange={v => patchModField('default', v)}
                             />
                           ) : (
                             <Input
                               size="small"
-                              value={String(mod.default !== undefined ? mod.default : p.default)}
+                              value={String(mod.default !== undefined ? mod.default : p.default ?? '')}
                               onChange={e => {
                                 const rawVal = e.target.value;
                                 let val: any = rawVal;
-                                if (typeof p.default === 'number') {
+                                if (typeof (mod.default ?? p.default) === 'number' || effectiveType === 'slider') {
                                   if (rawVal !== '' && !rawVal.endsWith('.') && !isNaN(Number(rawVal))) {
                                     val = Number(rawVal);
+                                  } else if (effectiveType === 'slider') {
+                                    val = Number(rawVal) || 0;
                                   }
-                                } else if (p.type === 'slider') {
-                                  val = Number(rawVal) || 0;
                                 }
-                                patchModField('default', val, p.default);
+                                patchModField('default', val);
                               }}
                             />
                           )}
                         </div>
+                        {showQuickBar && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 4 }}>
+                            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
+                            <Tooltip title={SCHEME_QUICK_BAR_HELP}>
+                              <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
+                            </Tooltip>
+                            <Switch
+                              size="small"
+                              checked={!!(mod.quick !== undefined ? mod.quick : p.quick)}
+                              disabled={!isQuickBarEligible({ ...p, ...mod }) && !(mod.quick !== undefined ? mod.quick : p.quick)}
+                              onChange={(v) => {
+                                if (v && !tryEnableQuick({ ...p, ...mod }, { key: p.key })) return;
+                                patchModField('quick', v);
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2637,7 +3689,7 @@ const PluginConfigInner: React.FC = () => {
                       </div>
                       <div style={{ width: 100 }}>
                         <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>类型</Text>
-                        <Select size="small" value={ap.type} onChange={v => updateAdd({ type: v, options: (v === 'select' || v === 'radio') ? (ap.options || []) : undefined, min: v === 'slider' ? (ap.min ?? 0) : undefined, max: v === 'slider' ? (ap.max ?? 1) : undefined, step: v === 'slider' ? (ap.step ?? 0.1) : undefined })} style={{ width: '100%' }}
+                        <Select size="small" value={ap.type} onChange={v => updateAdd({ type: v, options: (v === 'select' || v === 'radio') ? (ap.options || []) : undefined, min: v === 'slider' ? (ap.min ?? 0) : undefined, max: v === 'slider' ? (ap.max ?? 1) : undefined, step: v === 'slider' ? (ap.step ?? 0.1) : undefined, quick: (v === 'select' || v === 'radio') ? ap.quick : false })} style={{ width: '100%' }}
                           options={[{ label: 'Select', value: 'select' }, { label: 'Radio', value: 'radio' }, { label: 'Switch', value: 'switch' }, { label: 'Slider', value: 'slider' }]} />
                       </div>
                       <Button type="text" size="small" icon={<DeleteOutlined />} danger onClick={() => {
@@ -2703,6 +3755,23 @@ const PluginConfigInner: React.FC = () => {
                       <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>提示 (选填)</Text>
                       <Input size="small" value={ap.hint || ''} onChange={e => updateAdd({ hint: e.target.value || undefined })} placeholder="参数说明" />
                     </div>
+                    {showQuickBar && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
+                        <Tooltip title={SCHEME_QUICK_BAR_HELP}>
+                          <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
+                        </Tooltip>
+                        <Switch
+                          size="small"
+                          checked={!!ap.quick}
+                          disabled={!isQuickBarEligible(ap) && !ap.quick}
+                          onChange={(v) => {
+                            if (v && !tryEnableQuick(ap, { addIndex: idx })) return;
+                            updateAdd({ quick: v });
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2710,6 +3779,142 @@ const PluginConfigInner: React.FC = () => {
           );
         })()}
       </Modal>
+
+      {/* IO 覆写 Modal */}
+      <Modal
+        title={`IO 调整 — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}`}
+        open={pgIoOverrideModalVisible}
+        onCancel={() => setPgIoOverrideModalVisible(false)}
+        width={720}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <Button danger loading={savingPlayground} onClick={handleResetIoOverrides}>重置为方案默认</Button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button onClick={() => setPgIoOverrideModalVisible(false)} disabled={savingPlayground}>取消</Button>
+              <Button type="primary" loading={savingPlayground} onClick={handleConfirmIoOverrides}>确认</Button>
+            </div>
+          </div>
+        }
+      >
+        {(() => {
+          const model = pgModels.find(m => m.id === pgIoOverrideModelId);
+          const scheme = pgSchemes.find(s => s.id === model?.pg_scheme_id);
+          if (!scheme) return <Text type="secondary">该模型未绑定方案</Text>;
+          const seeded = ensureSchemeIoDefaults(scheme);
+          return (
+            <div>
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12, display: 'block', marginBottom: 12 }}>
+                基于方案「{scheme.name}」的工作流 IO 个性化调整（仅对此模型生效）
+              </Text>
+              <ModelIoOverridesEditor
+                schemeInputs={seeded.inputs || []}
+                schemeOutputs={seeded.outputs || []}
+                overrides={pgIoOverrideData}
+                onChange={setPgIoOverrideData}
+                isLight={_isLight}
+              />
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {name === 'playground_2026' && (
+        <Modal
+          title={`特性配置 — ${pgModels.find(m => m.id === pgFeatureModelId)?.name || ''}`}
+          open={pgFeatureModalVisible}
+          onCancel={() => { if (!pgFeatureSaving) setPgFeatureModalVisible(false); }}
+          confirmLoading={pgFeatureSaving}
+          onOk={async () => {
+            const model = pgModels.find(m => m.id === pgFeatureModelId);
+            if (!model) {
+              setPgFeatureModalVisible(false);
+              return;
+            }
+            const attrs = parseFeatureAttrList(pgFeatureDraft);
+            const next = pgModels.map(m => m.id === pgFeatureModelId ? { ...m, feature_attributes: attrs } : m);
+            setPgFeatureSaving(true);
+            const ok = await persistPlaygroundModels(next, { successMessage: '特性配置已保存' });
+            setPgFeatureSaving(false);
+            if (!ok) return;
+            setPgModels(next);
+            setPgFeatureModalVisible(false);
+          }}
+          okText="确认"
+          cancelText="取消"
+        >
+          {(() => {
+            const model = pgModels.find(m => m.id === pgFeatureModelId);
+            if (!model || !featureKindFromTypeName(model.type_name)) {
+              return <Text type="secondary">该模型类型未配置二级功能属性</Text>;
+            }
+            const fromType = pgModelTypes.find((t) => t.id === model.type_id)?.default_features;
+            const options = parseFeatureAttrList(fromType?.length ? fromType : model.type_default_features);
+            return (
+              <FeatureAttributesEditor
+                value={pgFeatureDraft}
+                options={options}
+                onChange={setPgFeatureDraft}
+                isLight={_isLight}
+              />
+            );
+          })()}
+        </Modal>
+      )}
+
+      {name === 'playground_2026' && (
+        <Modal
+          title="图片专用参数配置"
+          open={pgIspModalVisible}
+          onCancel={() => {
+            setPgIspDraft(pgIspBaseline);
+            setPgIspModalVisible(false);
+          }}
+          width={640}
+          zIndex={1100}
+          footer={
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Button
+                onClick={() => {
+                  const model = pgModels.find(m => m.id === pgOverrideModelId);
+                  const scheme = pgSchemes.find((s: any) => s.id === model?.pg_scheme_id);
+                  setPgIspDraft(officialImageSpecialParams(scheme?.id));
+                }}
+              >
+                重置
+              </Button>
+              <Button
+                onClick={() => {
+                  setPgIspDraft(pgIspBaseline);
+                  setPgIspModalVisible(false);
+                }}
+              >
+                取消
+              </Button>
+              <Button type="primary" onClick={() => setPgIspModalVisible(false)}>完成</Button>
+            </div>
+          }
+        >
+          {(() => {
+            const model = pgModels.find(m => m.id === pgOverrideModelId);
+            const scheme = pgSchemes.find((s: any) => s.id === model?.pg_scheme_id);
+            const ov = pgOverrideData || { modify: {}, remove: [], add: [] };
+            const removes = new Set(ov.remove || []);
+            const modifies = ov.modify || {};
+            const mergedParams = (scheme?.params || [])
+              .filter((p: any) => !removes.has(p.key))
+              .map((p: any) => ({ ...p, ...(modifies[p.key] || {}) }))
+              .concat(ov.add || []);
+            return (
+              <ImageSpecialParamsEditor
+                value={pgIspDraft}
+                params={mergedParams}
+                onChange={(next) => setPgIspDraft({ ...next, enabled: true })}
+                isLight={_isLight}
+              />
+            );
+          })()}
+        </Modal>
+      )}
 
       {/* 方案选择 Drawer */}
       <Drawer
@@ -2719,8 +3924,8 @@ const PluginConfigInner: React.FC = () => {
         width={580}
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={() => { setPgSelectedSchemeId(''); handleConfirmScheme(); }}>取消绑定</Button>
-            <Button type="primary" onClick={handleConfirmScheme}>确认绑定</Button>
+            <Button loading={savingPlayground} onClick={() => handleConfirmScheme('')}>取消绑定</Button>
+            <Button type="primary" loading={savingPlayground} onClick={() => handleConfirmScheme()}>确认绑定</Button>
           </div>
         }
       >
@@ -2734,51 +3939,68 @@ const PluginConfigInner: React.FC = () => {
           const modelSchemeType = currentModelType.includes('视频') ? 'video' : currentModelType.includes('图片') ? 'image' : 'chat';
           const filteredSchemes = pgSchemes.filter(s => s.type === modelSchemeType);
           return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {filteredSchemes.map(scheme => {
                 const isSelected = pgSelectedSchemeId === scheme.id;
                 return (
                   <div
                     key={scheme.id}
                     style={{
-                      padding: '16px 20px', borderRadius: 8,
-                      border: isSelected ? '2px solid #1677ff' : (_isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)'),
-                      background: isSelected ? (_isLight ? 'rgba(22,119,255,0.03)' : 'rgba(22,119,255,0.06)') : (_isLight ? '#fff' : '#141414'),
-                      cursor: 'pointer', transition: 'all 0.2s',
-                      boxShadow: isSelected ? '0 4px 12px rgba(22,119,255,0.08)' : 'none',
-                      position: 'relative'
+                      padding: '10px 14px', borderRadius: 6,
+                      border: isSelected ? '1px solid #1677ff' : (_isLight ? '1px solid #e4e4e7' : '1px solid #27272a'),
+                      background: isSelected ? (_isLight ? 'rgba(22,119,255,0.05)' : 'rgba(22,119,255,0.12)') : (_isLight ? '#fafafa' : '#18181b'),
+                      cursor: 'pointer', transition: 'all 0.15s',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: 12
                     }}
                     onClick={() => setPgSelectedSchemeId(scheme.id)}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingRight: 24 }}>
-                      <Text strong style={{ color: isSelected ? '#1677ff' : (_isLight ? '#1f2937' : '#fff'), fontSize: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+                      <Text strong style={{ color: isSelected ? '#1677ff' : (_isLight ? '#09090b' : '#f4f4f5'), fontSize: 13 }}>
                         {scheme.name}
                       </Text>
-                      {isSelected && (
-                        <div style={{ position: 'absolute', top: 16, right: 16 }}>
-                          <CheckCircleOutlined style={{ color: '#1677ff', fontSize: 18, fontWeight: 'bold' }} />
-                        </div>
+                      {scheme.is_system && (
+                        <Tag
+                          style={{
+                            fontSize: 10,
+                            borderRadius: 4,
+                            lineHeight: '16px',
+                            padding: '0 5px',
+                            margin: 0,
+                            background: _isLight ? '#fef3c7' : 'rgba(245,158,11,0.15)',
+                            color: _isLight ? '#b45309' : '#fbbf24',
+                            border: _isLight ? '1px solid #fde68a' : '1px solid rgba(245,158,11,0.3)'
+                          }}
+                        >
+                          内置
+                        </Tag>
                       )}
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          color: _isLight ? '#71717a' : '#a1a1aa',
+                          background: _isLight ? '#f4f4f5' : '#27272a',
+                          padding: '1px 6px',
+                          borderRadius: 4,
+                          border: _isLight ? '1px solid #e4e4e7' : '1px solid #3f3f46'
+                        }}
+                      >
+                        ID: {scheme.id}
+                      </span>
                     </div>
-                    <div>
-                      <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginBottom: 8 }}>
-                        {scheme.description}
-                      </Text>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        {scheme.params?.map((p: any) => (
-                          <Tag key={p.key} style={{ fontSize: 11, borderRadius: 4, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', maxWidth: '100%', display: 'inline-flex', flexWrap: 'wrap', whiteSpace: 'normal', height: 'auto', padding: '4px 8px' }}>
-                            <span style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>
-                              {p.label}: {Array.isArray(p.options) ? (p.options.length > 4 ? p.options.slice(0, 4).join(' / ') + ` / ...(+${p.options.length - 4})` : p.options.join(' / ')) : String(p.default)}
-                            </span>
-                          </Tag>
-                        ))}
-                      </div>
-                    </div>
+                    {isSelected ? (
+                      <CheckCircleOutlined style={{ color: '#1677ff', fontSize: 16 }} />
+                    ) : (
+                      <div style={{ width: 16, height: 16, borderRadius: '50%', border: _isLight ? '1px solid #d4d4d8' : '1px solid #3f3f46' }} />
+                    )}
                   </div>
                 );
               })}
               {filteredSchemes.length === 0 && (
-                <div style={{ textAlign: 'center', padding: '30px 0', color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)' }}>暂无匹配类型的方案</div>
+                <div style={{ textAlign: 'center', padding: '24px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>暂无匹配类型的方案</div>
               )}
             </div>
           );
@@ -2788,24 +4010,27 @@ const PluginConfigInner: React.FC = () => {
   );
 
   // ====== 体验方案配置 Tab ======
+  const schemeListDense = name === 'playground_2026';
   const playgroundSchemeTab = (
     <div>
-      <div style={{ background: _isLight ? '#fff' : '#141414', borderRadius: 8, padding: '20px', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <div>
-            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>体验方案列表</Text>
-            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginTop: 4 }}>
-              管理内置和自定义的体验方案。每个方案定义了可配置的参数模板，绑定到模型后用户侧会动态展示。
-            </Text>
+      <div style={{ background: _isLight ? '#fff' : '#141414', borderRadius: schemeListDense ? 6 : 8, padding: schemeListDense ? '8px 10px' : '16px 20px', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: schemeListDense ? 4 : 12, marginBottom: schemeListDense ? 6 : 16 }}>
+          <div style={{ minWidth: schemeListDense ? 0 : 200, flex: '1 1 auto' }}>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: schemeListDense ? 13 : 14 }}>创作方案列表</Text>
+            {!schemeListDense && (
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginTop: 2 }}>
+                管理内置和自定义的创作方案。每个方案定义了参数与 IO 管道，绑定到模型后生效。
+              </Text>
+            )}
           </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <Radio.Group value={pgSchemeTypeFilter} onChange={e => setPgSchemeTypeFilter(e.target.value)}>
+          <div style={{ display: 'flex', gap: schemeListDense ? 6 : 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Radio.Group value={pgSchemeTypeFilter} onChange={e => setPgSchemeTypeFilter(e.target.value)} size="small" style={{ flexShrink: 0 }}>
               <Radio.Button value="all">全部</Radio.Button>
               <Radio.Button value="chat">对话</Radio.Button>
               <Radio.Button value="image">图片</Radio.Button>
               <Radio.Button value="video">视频</Radio.Button>
             </Radio.Group>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleAddScheme}>新增方案</Button>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddScheme} style={{ flexShrink: 0 }}>新增方案</Button>
           </div>
         </div>
 
@@ -2827,73 +4052,159 @@ const PluginConfigInner: React.FC = () => {
           });
           const activeGroups = Object.entries(typeGroups).filter(([, g]) => g.schemes.length > 0);
           if (activeGroups.length === 0) {
-            return <div style={{ textAlign: 'center', padding: '40px 0', color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)' }}>暂无方案，点击「新增方案」创建</div>;
+            return <div style={{ textAlign: 'center', padding: schemeListDense ? '16px 0' : '36px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>暂无方案，点击「新增方案」创建</div>;
           }
           return activeGroups.map(([key, group]) => (
-            <div key={key} style={{ marginBottom: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, paddingBottom: 8, borderBottom: `1px solid ${group.color}22` }}>
-                <span style={{ color: group.color, fontSize: 16 }}>{group.icon}</span>
-                <Text strong style={{ color: group.color, fontSize: 14 }}>{group.label}</Text>
-                <Tag style={{ fontSize: 11, borderRadius: 10, background: `${group.color}15`, border: `1px solid ${group.color}30`, color: group.color }}>{group.schemes.length} 个</Tag>
+            <div key={key} style={{ marginBottom: schemeListDense ? 6 : 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: schemeListDense ? 3 : 8, paddingBottom: schemeListDense ? 2 : 6, borderBottom: `1px solid ${group.color}22` }}>
+                <span style={{ color: group.color, fontSize: schemeListDense ? 12 : 14 }}>{group.icon}</span>
+                <Text strong style={{ color: group.color, fontSize: 12 }}>{group.label}</Text>
+                <Tag style={{ fontSize: 10, borderRadius: 10, lineHeight: '14px', padding: '0 5px', margin: 0, background: `${group.color}15`, border: `1px solid ${group.color}30`, color: group.color }}>{group.schemes.length}</Tag>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {group.schemes.map(({ scheme, idx }) => (
-                  <div key={scheme.id} style={{
-                    padding: '14px 18px', borderRadius: 10,
-                    border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)', background: _isLight ? '#fafafa' : '#1a1a1a',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16
-                  }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{scheme.name}</Text>
-                        {scheme.is_system && <Tag color="gold" style={{ fontSize: 10, borderRadius: 8, lineHeight: '18px' }}>内置</Tag>}
-                      </div>
-                      <Text style={{ color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', fontSize: 12, display: 'block', marginBottom: 8 }}>{scheme.description}</Text>
-                      <Tag style={{ fontSize: 11, borderRadius: 4, marginBottom: 8, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.03)', border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)', color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
-                        最大参考图: {scheme.max_reference_images ?? 7}
-                      </Tag>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        {scheme.params?.map((p: any) => (
-                          <Tag key={p.key} style={{ fontSize: 11, borderRadius: 4, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.03)', border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)', color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', maxWidth: '100%', display: 'inline-flex', flexWrap: 'wrap', whiteSpace: 'normal', height: 'auto', padding: '4px 8px' }}>
-                            <span style={{ wordBreak: 'break-all', whiteSpace: 'normal' }}>
-                              {p.label}: {Array.isArray(p.options) ? (p.options.length > 4 ? p.options.slice(0, 4).join(' / ') + ` / ...(+${p.options.length - 4})` : p.options.join(' / ')) : String(p.default)}{p.unit ? ` ${p.unit}` : ''}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: schemeListDense ? 3 : 8 }}>
+                {group.schemes.map(({ scheme, idx }) => {
+                  const videoModes = (name === 'playground_2026' && scheme.type === 'video')
+                    ? videoGenerationModesFromScheme(ensureSchemeIoDefaults(scheme))
+                    : [];
+                  const actionBtnH = schemeListDense ? 22 : 24;
+                  return (
+                    <div
+                      key={scheme.id}
+                      style={{
+                        padding: schemeListDense ? '3px 8px' : '10px 14px',
+                        borderRadius: schemeListDense ? 4 : 6,
+                        border: _isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
+                        background: _isLight ? '#fafafa' : '#18181b',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: schemeListDense ? 2 : 8,
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {/* 首行：方案名称、内置标识、ID 以及 右侧操作按钮组 */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: schemeListDense ? 2 : 8,
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: schemeListDense ? 4 : 6, flexWrap: 'wrap', minWidth: 0, flex: '1 1 auto' }}>
+                          <Text strong style={{ color: _isLight ? '#09090b' : '#f4f4f5', fontSize: 13, lineHeight: schemeListDense ? '22px' : undefined, wordBreak: 'break-word' }}>
+                            {scheme.name}
+                          </Text>
+                          {scheme.is_system && (
+                            <Tag
+                              style={{
+                                fontSize: 10,
+                                borderRadius: 4,
+                                lineHeight: '14px',
+                                padding: '0 4px',
+                                margin: 0,
+                                flexShrink: 0,
+                                background: _isLight ? '#fef3c7' : 'rgba(245,158,11,0.15)',
+                                color: _isLight ? '#b45309' : '#fbbf24',
+                                border: _isLight ? '1px solid #fde68a' : '1px solid rgba(245,158,11,0.3)'
+                              }}
+                            >
+                              内置
+                            </Tag>
+                          )}
+                          <span
+                            style={{
+                              fontSize: 11,
+                              lineHeight: '14px',
+                              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                              color: _isLight ? '#71717a' : '#a1a1aa',
+                              background: _isLight ? '#f4f4f5' : '#27272a',
+                              padding: '0 5px',
+                              borderRadius: 4,
+                              border: _isLight ? '1px solid #e4e4e7' : '1px solid #3f3f46',
+                              flexShrink: 0
+                            }}
+                          >
+                            ID: {scheme.id}
+                          </span>
+                        </div>
+
+                        {/* 右侧操作按钮 */}
+                        <div style={{ display: 'flex', gap: 0, flexShrink: 0, alignItems: 'center', marginLeft: 'auto' }}>
+                          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEditScheme(scheme, idx)} style={{ color: '#2563eb', padding: '0 4px', height: actionBtnH }}>编辑</Button>
+                          <Tooltip title={scheme.type === 'image' || scheme.type === 'video' ? '' : '仅图片、视频方案支持 IO 配置'}>
+                            <span>
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<ApiOutlined />}
+                                disabled={scheme.type !== 'image' && scheme.type !== 'video'}
+                                onClick={() => handleOpenSchemeIo(scheme, idx)}
+                                style={{ color: scheme.type === 'image' || scheme.type === 'video' ? '#0d9488' : undefined, padding: '0 4px', height: actionBtnH }}
+                              >
+                                IO配置
+                              </Button>
                             </span>
-                          </Tag>
-                        ))}
+                          </Tooltip>
+                          {scheme.is_system && (
+                            <Button size="small" type="text" icon={<ReloadOutlined />} onClick={() => handleResetScheme(scheme.id, idx)} style={{ color: '#d97706', padding: '0 4px', height: actionBtnH }}>重置</Button>
+                          )}
+                          <Button size="small" type="text" icon={<DeleteOutlined />} onClick={() => handleDeleteScheme(idx)} danger disabled={!!scheme.is_system} style={{ padding: '0 4px', height: actionBtnH }}>删除</Button>
+                        </div>
                       </div>
-                      <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', fontFamily: 'monospace', display: 'block', marginTop: 6 }}>ID: {scheme.id}</Text>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                      <Button type="text" icon={<EditOutlined />} onClick={() => handleEditScheme(scheme, idx)} style={{ color: '#1677ff' }}>编辑</Button>
-                      {scheme.is_system && (
-                        <Button type="text" icon={<ReloadOutlined />} onClick={() => handleResetScheme(scheme.id, idx)} style={{ color: '#faad14' }}>重置</Button>
+
+                      {/* 第二行：视频生成模式标签（文生 / 图生首帧 / 首尾帧 / 全能参考 等） */}
+                      {videoModes.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: schemeListDense ? 3 : 5, alignItems: 'center' }}>
+                          {videoModes.map((mode) => (
+                            <Tag
+                              key={mode.key}
+                              style={{
+                                fontSize: schemeListDense ? 10 : 11,
+                                borderRadius: 4,
+                                lineHeight: schemeListDense ? '16px' : '18px',
+                                padding: schemeListDense ? '0 5px' : '0 6px',
+                                margin: 0,
+                                background: _isLight ? '#eff6ff' : 'rgba(37,99,235,0.18)',
+                                color: _isLight ? '#1d4ed8' : '#93c5fd',
+                                border: _isLight ? '1px solid #bfdbfe' : '1px solid rgba(59,130,246,0.35)',
+                              }}
+                            >
+                              {mode.label}
+                            </Tag>
+                          ))}
+                        </div>
                       )}
-                      <Button type="text" icon={<DeleteOutlined />} onClick={() => handleDeleteScheme(idx)} danger disabled={!!scheme.is_system}>删除</Button>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ));
         })()}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
-          <Button type="primary" loading={savingSchemes} onClick={handleSaveAllSchemes} icon={<SaveOutlined />}>
-            保存全部方案
-          </Button>
-        </div>
+        {name !== 'playground_2026' && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+            <Button type="primary" loading={savingSchemes} onClick={handleSaveAllSchemes} icon={<SaveOutlined />}>
+              保存全部方案
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* 方案编辑 Drawer */}
       <Drawer
         title={editingSchemeIndex >= 0 ? '编辑创作方案' : '新建创作方案'}
         open={schemeEditVisible}
-        onClose={() => setSchemeEditVisible(false)}
+        onClose={() => {
+          setSchemeEditVisible(false);
+          setImageSpecialModalOpen(false);
+        }}
         size="large"
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={() => setSchemeEditVisible(false)}>取消</Button>
-            <Button type="primary" onClick={handleSaveEditingScheme}>确认</Button>
+            <Button type="primary" loading={savingSchemes} onClick={handleSaveEditingScheme}>确认</Button>
           </div>
         }
       >
@@ -2911,7 +4222,21 @@ const PluginConfigInner: React.FC = () => {
               </div>
               <div style={{ flex: 1 }}>
                 <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>类型</Text>
-                <Select value={editingScheme.type} onChange={v => setEditingScheme({ ...editingScheme, type: v })} style={{ width: '100%' }}
+                <Select
+                  value={editingScheme.type}
+                  onChange={v => {
+                    let next = { ...editingScheme, type: v };
+                    if (v !== 'chat') {
+                      const ioEmpty =
+                        !Array.isArray(next.inputs) ||
+                        next.inputs.length === 0 ||
+                        !Array.isArray(next.outputs) ||
+                        next.outputs.length === 0;
+                      if (ioEmpty) next = ensureSchemeIoDefaults(next);
+                    }
+                    setEditingScheme(next);
+                  }}
+                  style={{ width: '100%' }}
                   options={[{ label: '视频 (video)', value: 'video' }, { label: '图片 (image)', value: 'image' }, { label: '聊天 (chat)', value: 'chat' }]}
                 />
               </div>
@@ -2920,25 +4245,52 @@ const PluginConfigInner: React.FC = () => {
               <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>描述</Text>
               <Input.TextArea value={editingScheme.description} onChange={e => setEditingScheme({ ...editingScheme, description: e.target.value })} autoSize={{ minRows: 2, maxRows: 4 }} />
             </div>
-            <div>
-              <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>最大参考图数量</Text>
-              <InputNumber
-                min={0}
-                max={32}
-                precision={0}
-                style={{ width: '100%' }}
-                value={editingScheme.max_reference_images ?? 7}
-                onChange={v => setEditingScheme({
-                  ...editingScheme,
-                  max_reference_images: typeof v === 'number' ? v : 7,
-                })}
-              />
-              <Text style={{ display: 'block', marginTop: 6, fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)' }}>
-                固定字段：图片/视频创作页上传参考图的上限；对话方案可设为 0。
-              </Text>
-            </div>
 
             <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+
+            {name === 'playground_2026' && editingScheme.type === 'image' && (
+              <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片专用参数配置</Text>
+                  <Text style={{ display: 'block', fontSize: 12, marginTop: 2, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
+                    开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件
+                  </Text>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  {!!editingScheme.image_special_params?.enabled && (
+                    <Button
+                      size="small"
+                      icon={<SettingOutlined />}
+                      onClick={() => {
+                        const next = seedImageSpecialParams(editingScheme.image_special_params);
+                        setEditingScheme({
+                          ...editingScheme,
+                          image_special_params: next,
+                        });
+                        setImageSpecialBaseline(JSON.parse(JSON.stringify(next)));
+                        setImageSpecialModalOpen(true);
+                      }}
+                    >
+                      配置
+                    </Button>
+                  )}
+                  <Switch
+                    checked={!!editingScheme.image_special_params?.enabled}
+                    onChange={(v) => {
+                      if (!v) setImageSpecialModalOpen(false);
+                      const prev = normalizeImageSpecialParams(editingScheme.image_special_params);
+                      const next = v
+                        ? seedImageSpecialParams(editingScheme.image_special_params)
+                        : { ...prev, enabled: false };
+                      setEditingScheme({ ...editingScheme, image_special_params: next });
+                    }}
+                  />
+                </div>
+              </div>
+              <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+              </>
+            )}
 
             {/* 参数列表 */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2947,19 +4299,38 @@ const PluginConfigInner: React.FC = () => {
             </div>
 
             {editingScheme.params?.map((param: any, pIdx: number) => {
-              const isSystemParam = !!(editingScheme.is_system && defaultSchemeList.find(s => s.id === editingScheme.id)?.params?.some((p: any) => p.key === param.key));
               return (
               <div key={pIdx} style={{ background: _isLight ? '#fafafa' : '#1a1a1a', borderRadius: 8, padding: 14, border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                   <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12 }}>参数 #{pIdx + 1}</Text>
-                  {!isSystemParam && (
-                    <Button type="text" size="small" icon={<DeleteOutlined />} danger onClick={() => handleRemoveParam(pIdx)} />
-                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Tooltip title="上移">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<ArrowUpOutlined />}
+                        disabled={pIdx === 0}
+                        onClick={() => handleMoveParam(pIdx, 'up')}
+                      />
+                    </Tooltip>
+                    <Tooltip title="下移">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<ArrowDownOutlined />}
+                        disabled={pIdx === (editingScheme.params?.length || 0) - 1}
+                        onClick={() => handleMoveParam(pIdx, 'down')}
+                      />
+                    </Tooltip>
+                    <Tooltip title="删除">
+                      <Button type="text" size="small" icon={<DeleteOutlined />} danger onClick={() => handleRemoveParam(pIdx)} />
+                    </Tooltip>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                   <div style={{ flex: 1 }}>
                     <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>Key</Text>
-                    <Input size="small" value={param.key} onChange={e => handleEditingSchemeParamChange(pIdx, 'key', e.target.value)} disabled={isSystemParam} />
+                    <Input size="small" value={param.key} onChange={e => handleEditingSchemeParamChange(pIdx, 'key', e.target.value)} />
                   </div>
                   <div style={{ flex: 1 }}>
                     <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>显示标签</Text>
@@ -2967,24 +4338,57 @@ const PluginConfigInner: React.FC = () => {
                   </div>
                   <div style={{ width: 140 }}>
                     <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>控件类型</Text>
-                    <Select size="small" value={param.type} onChange={v => handleEditingSchemeParamChange(pIdx, 'type', v)} style={{ width: '100%' }} disabled={isSystemParam}
-                      options={[{ label: 'Input 文本', value: 'input' }, { label: 'Radio 单选', value: 'radio' }, { label: 'Select 下拉', value: 'select' }, { label: 'Switch 开关', value: 'switch' }, { label: 'Slider 滑块', value: 'slider' }]}
+                    <Select size="small" value={param.type} onChange={v => handleEditingSchemeParamChange(pIdx, 'type', v)} style={{ width: '100%' }}
+                      options={name === 'playground_2026'
+                        ? SCHEME_CONTROL_TYPE_OPTIONS
+                        : [{ label: 'Input 文本', value: 'input' }, { label: 'Radio 单选', value: 'radio' }, { label: 'Select 下拉', value: 'select' }, { label: 'Switch 开关', value: 'switch' }, { label: 'Slider 滑块', value: 'slider' }]}
                     />
                   </div>
                   <div style={{ width: 120 }}>
                     <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>数据类型</Text>
-                    <Select size="small" value={param.data_type || 'string'} onChange={v => handleEditingSchemeParamChange(pIdx, 'data_type', v)} style={{ width: '100%' }} disabled={isSystemParam}
+                    <Select size="small" value={param.data_type || 'string'} onChange={v => handleEditingSchemeParamChange(pIdx, 'data_type', v)} style={{ width: '100%' }}
                       options={[{ label: 'String 字符串', value: 'string' }, { label: 'Number 数字', value: 'number' }, { label: 'Integer 整数', value: 'integer' }, { label: 'Boolean 布尔', value: 'boolean' }]}
                     />
                   </div>
                 </div>
                 {param.type !== 'switch' && param.type !== 'slider' && (
-                  <div style={{ marginBottom: 8 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>选项列表（用英文逗号分隔）</Text>
-                    <Input size="small" value={Array.isArray(param.options) ? param.options.join(',') : ''}
-                      onChange={e => handleEditingSchemeParamChange(pIdx, 'options', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
-                      placeholder="例如: 16:9,9:16,1:1 或 480p,720p,1080p"
-                    />
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>
+                        选项列表（用英文逗号分隔）
+                      </Text>
+                      <Input
+                        size="small"
+                        value={Array.isArray(param.options) ? param.options.join(',') : ''}
+                        onChange={(e) => {
+                          const { options, option_labels: parsedLabels } = parseOptionsAndLabels(e.target.value);
+                          const mergedLabels = { ...(param.option_labels || {}), ...parsedLabels };
+                          handleEditingSchemeParamBatchChange(pIdx, {
+                            options,
+                            option_labels: Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined,
+                          });
+                        }}
+                        placeholder="例如: opaque,transparent 或 16:9,9:16"
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>
+                        选项中文映射（可选，例如 opaque:不透明,transparent:透明 或 不透明,透明）
+                      </Text>
+                      <Input
+                        size="small"
+                        value={formatOptionLabelsDisplay(param.option_labels, param.options)}
+                        onChange={(e) => {
+                          const newLabels = parseOptionLabelsMapping(e.target.value, param.options || []);
+                          handleEditingSchemeParamChange(
+                            pIdx,
+                            'option_labels',
+                            Object.keys(newLabels).length > 0 ? newLabels : undefined,
+                          );
+                        }}
+                        placeholder="例如: opaque:不透明,transparent:透明 或 不透明,透明"
+                      />
+                    </div>
                   </div>
                 )}
                 {param.type === 'slider' && (
@@ -3029,12 +4433,106 @@ const PluginConfigInner: React.FC = () => {
                     <Input size="small" value={param.unit || ''} onChange={e => handleEditingSchemeParamChange(pIdx, 'unit', e.target.value)} placeholder="可选" />
                   </div>
                 </div>
+                {name === 'playground_2026' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>模型默认启用</Text>
+                    <Switch
+                      size="small"
+                      checked={param.enabled !== false}
+                      onChange={(v) => handleEditingSchemeParamChange(pIdx, 'enabled', v)}
+                    />
+                  </div>
+                )}
+                {name === 'playground_2026' && (editingScheme.type === 'image' || editingScheme.type === 'video') && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
+                    <Tooltip
+                      title={SCHEME_QUICK_BAR_HELP}
+                    >
+                      <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
+                    </Tooltip>
+                    <Switch
+                      size="small"
+                      checked={!!param.quick}
+                      disabled={!isQuickBarEligible(param) && !param.quick}
+                      onChange={(v) => handleEditingSchemeParamChange(pIdx, 'quick', v)}
+                    />
+                  </div>
+                )}
               </div>
               );
             })}
           </div>
         )}
       </Drawer>
+
+      {/* 方案 IO 配置 Modal */}
+      <Modal
+        title={`IO配置 — ${editingIoScheme?.name || ''}`}
+        open={schemeIoEditVisible}
+        onCancel={() => setSchemeIoEditVisible(false)}
+        width={780}
+        style={{ top: 40 }}
+        bodyStyle={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto' }}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setSchemeIoEditVisible(false)}>取消</Button>
+            <Button type="primary" loading={savingSchemes} onClick={handleSaveSchemeIo}>确认</Button>
+          </div>
+        }
+      >
+        {editingIoScheme && (
+          <SchemeIoEditor
+            standalone
+            schemeId={editingIoScheme.id}
+            schemeType={editingIoScheme.type}
+            params={editingIoScheme.params || []}
+            inputs={editingIoScheme.inputs || []}
+            outputs={editingIoScheme.outputs || []}
+            onChange={({ inputs, outputs }) => setEditingIoScheme({ ...editingIoScheme, inputs, outputs })}
+            isLight={_isLight}
+          />
+        )}
+      </Modal>
+
+      {name === 'playground_2026' && (
+        <Modal
+          title="图片专用参数配置"
+          open={imageSpecialModalOpen}
+          onCancel={() => {
+            setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: imageSpecialBaseline } : prev));
+            setImageSpecialModalOpen(false);
+          }}
+          width={640}
+          footer={
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Button
+                onClick={() => {
+                  setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: officialImageSpecialParams(prev.id) } : prev));
+                }}
+              >
+                重置
+              </Button>
+              <Button
+                onClick={() => {
+                  setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: imageSpecialBaseline } : prev));
+                  setImageSpecialModalOpen(false);
+                }}
+              >
+                取消
+              </Button>
+              <Button type="primary" onClick={() => setImageSpecialModalOpen(false)}>完成</Button>
+            </div>
+          }
+        >
+          <ImageSpecialParamsEditor
+            value={editingScheme?.image_special_params}
+            params={editingScheme?.params || []}
+            onChange={(next) => setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: next } : prev))}
+            isLight={_isLight}
+          />
+        </Modal>
+      )}
     </div>
   );
 
@@ -3700,6 +5198,193 @@ const PluginConfigInner: React.FC = () => {
     </div>
   );
 
+  const handleSaveWorkflowConfig = async () => {
+    try {
+      setSavingWorkflowConfig(true);
+      await request.post(`/plugins/${name}/config`, {
+        allowed_levels: isAllLevels ? 'all' : selectedLevels.join(','),
+        level_quotas: levelQuotas,
+        default_quota: defaultQuota,
+        level_max_folders: levelMaxFolders,
+        default_max_folders: defaultMaxFolders,
+        level_max_files_per_folder: levelMaxFilesPerFolder,
+        default_max_files_per_folder: defaultMaxFilesPerFolder,
+        level_max_projects: levelMaxProjects,
+        default_max_projects: defaultMaxProjects,
+        level_max_assets: levelMaxAssets,
+        default_max_assets: defaultMaxAssets,
+        workflow_node_limit: workflowNodeLimit,
+        workflow_enabled: workflowEnabled,
+        workflow_menu_title: workflowMenuTitle.trim(),
+        volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
+        director_enabled: pgAdvancedNodeDirectorEnabled,
+        show_in_playground_prompt: showInPlaygroundPrompt,
+        docs_api_allow_guest: docsApiAllowGuest,
+        show_in_admin_menu: showInAdminMenu ? 1 : 0,
+        admin_menu_sort: adminMenuSort,
+        admin_menu_title: adminMenuTitle.trim(),
+        admin_menu_default_tab: resolvePluginAdminDefaultTab(
+          plugin?.name || name || '',
+          adminMenuDefaultTab,
+          name ? dynamicPlugins[name] : undefined,
+        ),
+      });
+      // 同步保存到 playground-config
+      try {
+        await request.post(`/plugins/${name}/playground-config`, {
+          default_model_mids: pgDefaultModelMids,
+          models: pgModels.map(m => ({
+            id: m.id,
+            mid: m.mid || '',
+            enabled: m.pg_enabled,
+            scheme_id: m.pg_scheme_id || null,
+            param_overrides: m.pg_param_overrides || null,
+            io_overrides: m.pg_io_overrides || null,
+            sort_order: m.pg_sort_order || 0,
+            ...(featureKindFromTypeName(m.type_name) ? {
+              feature_attributes: parseFeatureAttrList(m.feature_attributes),
+              feature_keys: Array.isArray(m.pg_feature_keys) ? m.pg_feature_keys : [],
+            } : {}),
+          })),
+          advanced_nodes: {
+            enabled: true,
+            preview_enabled: true,
+            volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
+            director_enabled: pgAdvancedNodeDirectorEnabled,
+            prompt_enabled: true,
+            ai_video_enabled: true,
+            ai_image_enabled: true,
+            agent_enabled: false,
+          },
+        });
+      } catch (e) {
+        console.error('sync playground-config failed', e);
+      }
+      message.success('工作流配置已保存');
+    } catch (e: any) {
+      message.error('保存失败: ' + (e?.message || '未知错误'));
+    } finally {
+      setSavingWorkflowConfig(false);
+    }
+  };
+
+  const playgroundWorkflowConfigTab = (
+    <div>
+      <div style={{
+        background: _isLight ? '#fff' : '#141414', borderRadius: 8,
+        border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', padding: '20px', marginBottom: 16
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>工作流管理</Text><br />
+            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+              控制是否开放工作流功能、单个工作流画布上的节点数量上限，以及是否开放「火山增强」「导演台」节点
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, color: workflowEnabled ? '#1677ff' : (_isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)') }}>
+              {workflowEnabled ? '已开启工作流' : '未开启工作流'}
+            </span>
+            <Switch
+              checked={workflowEnabled}
+              onChange={(checked) => setWorkflowEnabled(checked)}
+            />
+          </div>
+        </div>
+
+        {!workflowEnabled && (
+          <div style={{
+            margin: '12px 0',
+            background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.03)',
+            border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)',
+            borderRadius: 6,
+            padding: '8px 12px',
+            fontSize: 12,
+            color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
+          }}>
+            💡 当前工作流总开关处于关闭状态，前台用户端侧栏将隐藏「工作流」菜单与额度入口。
+          </div>
+        )}
+
+        <Divider style={{ borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)', margin: '14px 0' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
+            用户端菜单名称
+          </Text>
+          <Input
+            size="small"
+            placeholder="工作流"
+            value={workflowMenuTitle}
+            onChange={(e) => setWorkflowMenuTitle(e.target.value)}
+            style={{ width: 160 }}
+            allowClear
+          />
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+            自定义用户端创作中心 2026 侧边栏及页面展示的菜单名称，留空默认为「工作流」
+          </Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
+            单个工作流节点上限
+          </Text>
+          <InputNumber
+            size="small"
+            min={1}
+            max={5000}
+            value={workflowNodeLimit}
+            onChange={(val) => setWorkflowNodeLimit(val ?? 200)}
+            style={{ width: 160 }}
+            addonAfter="个"
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
+            火山画质增强
+          </Text>
+          <Tooltip title={!volcEnhancePluginActive ? '依赖的「AI MediaKit 火山引擎画质增强」插件未开启' : '关闭后工作流添加列表不显示该节点，画布上已有节点也不可提交'}>
+            <Switch
+              checked={pgAdvancedNodeVolcEnhanceEnabled}
+              onChange={(checked) => setPgAdvancedNodeVolcEnhanceEnabled(checked)}
+              disabled={!volcEnhancePluginActive}
+              size="small"
+            />
+          </Tooltip>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+            {volcEnhancePluginActive
+              ? '关闭后不显示、不可用火山画质增强节点'
+              : '请先启用火山引擎画质增强插件'}
+          </Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
+            导演台
+          </Text>
+          <Tooltip title="关闭后工作流添加列表不显示导演台节点">
+            <Switch
+              checked={pgAdvancedNodeDirectorEnabled}
+              onChange={(checked) => setPgAdvancedNodeDirectorEnabled(checked)}
+              size="small"
+            />
+          </Tooltip>
+          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+            默认关闭；开启后才可在工作流中添加导演台节点
+          </Text>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+        <Button
+          type="primary"
+          loading={savingWorkflowConfig}
+          onClick={handleSaveWorkflowConfig}
+          icon={<SaveOutlined />}
+        >
+          保存工作流配置
+        </Button>
+      </div>
+    </div>
+  );
+
   // ====== 模型广场管理 模型列表 Tab ======
   // 提取供应商和类型的唯一列表，用于筛选下拉
   const mpProviderOptions = Array.from(new Set(mpModels.map(m => m.provider_name).filter(Boolean)));
@@ -3726,9 +5411,23 @@ const PluginConfigInner: React.FC = () => {
   });
 
   // 一键切换当前筛选结果的广场展示状态
-  const handleMpBatchToggle = (enabled: boolean) => {
-    const filteredIds = new Set(filteredMpModels.map(m => m.id));
-    setMpModels(prev => prev.map(m => filteredIds.has(m.id) ? { ...m, mp_enabled: enabled } : m));
+  const handleMpBatchToggle = async (enabled: boolean) => {
+    const targetIds = filteredMpModels.map(m => m.id);
+    if (targetIds.length === 0) return;
+    const prevModels = mpModels;
+    const filteredIds = new Set(targetIds);
+    setMpModels(prev => prev.map(m => filteredIds.has(m.id) ? { ...m, mp_enabled: enabled, mp_level_ids: [] } : m));
+    try {
+      await request.post(`/plugins/${name}/marketplace-models/batch-toggle`, {
+        ids: targetIds,
+        enabled,
+      });
+      message.success(enabled ? '已批量开启广场展示' : '已批量关闭广场展示');
+    } catch (e) {
+      console.error(e);
+      message.error('批量切换广场展示状态失败');
+      setMpModels(prevModels);
+    }
   };
 
   const mpModelColumns = [
@@ -3739,23 +5438,59 @@ const PluginConfigInner: React.FC = () => {
       render: (nameVal: string, record: any) => {
         const scheme = pgSchemes.find(s => s.id === record.pg_scheme_id);
         return (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <Text strong style={{ color: record.is_active !== 1 ? (_isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)') : (_isLight ? '#1f2937' : '#fff'), fontSize: 13 }}>{nameVal}</Text>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', lineHeight: 1.2 }}>
+              <span
+                style={{
+                  fontWeight: 600,
+                  color: record.is_active !== 1 ? (_isLight ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.25)') : (_isLight ? '#1f2937' : '#fff'),
+                  fontSize: 13,
+                  lineHeight: 1.2,
+                  wordBreak: 'break-all'
+                }}
+                title={nameVal}
+              >
+                {nameVal}
+              </span>
               {record.is_active !== 1 && (
                 <Tooltip title="该模型在模型管理中已被禁用，即使开启广场展示也不会在模型广场中显示">
                   <Tag color="error" style={{ fontSize: 10, lineHeight: '16px', padding: '0 4px', margin: 0, borderRadius: 4 }}>已禁用</Tag>
                 </Tooltip>
               )}
               {scheme && (
-                <span style={{ fontSize: 11, color: '#1677ff', fontWeight: 'normal' }}>
+                <span style={{ fontSize: 11, color: '#1677ff', fontWeight: 'normal', lineHeight: 1.2 }}>
                   (已挂载流：{scheme.name})
                 </span>
               )}
             </div>
-            <div style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontFamily: 'monospace' }}>
+            {record.remark && (
+              <div
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.2,
+                  color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+                title={record.remark}
+              >
+                {record.remark}
+              </div>
+            )}
+            <div
+              style={{
+                fontSize: 11,
+                lineHeight: 1.2,
+                color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)',
+                fontFamily: 'monospace',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}
+              title={`MID: ${record.mid} | ${record.model_id}`}
+            >
               MID: {record.mid} | {record.model_id}
-              {record.remark && <span style={{ marginLeft: 8, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>({record.remark})</span>}
             </div>
           </div>
         );
@@ -3804,6 +5539,35 @@ const PluginConfigInner: React.FC = () => {
             style={record.is_active !== 1 ? { opacity: 0.5 } : {}}
           />
         </Tooltip>
+      )
+    },
+    {
+      title: (
+        <Tooltip title="广场展示开启时选择不可查看的用户等级（默认全部可查看）；关闭时选择可查看的用户等级（默认全部不可查看）。切换展示开关会清空已选等级。">
+          <span>用户等级</span>
+        </Tooltip>
+      ),
+      key: 'mp_level_ids',
+      width: 220,
+      render: (_: any, record: any) => (
+        <div>
+          <div style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', marginBottom: 4 }}>
+            {record.mp_enabled ? '不可查看' : '可查看'}
+          </div>
+          <Select
+            mode="multiple"
+            size="small"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            maxTagCount="responsive"
+            placeholder={record.mp_enabled ? '默认全部可查看' : '默认全部不可查看'}
+            value={record.mp_level_ids || []}
+            onChange={(vals: number[]) => handleMpLevelIdsChange(record.id, vals)}
+            options={levels.map(lv => ({ label: lv.name, value: lv.id }))}
+            style={{ width: '100%' }}
+          />
+        </div>
       )
     },
     {
@@ -4005,7 +5769,19 @@ const PluginConfigInner: React.FC = () => {
             columns={mpModelColumns}
             rowKey="id"
             size="small"
-            pagination={{ pageSize: 20, showTotal: (total) => `共 ${total} 项` }}
+            scroll={{ x: 1400 }}
+            pagination={{
+              current: mpPage,
+              pageSize: mpPageSize,
+              showSizeChanger: true,
+              pageSizeOptions: ['10', '20', '50', '100', '200'],
+              showTotal: (total) => `共 ${total} 项`,
+              showQuickJumper: true,
+              onChange: (page, size) => {
+                setMpPage(page);
+                setMpPageSize(size);
+              },
+            }}
             style={{ marginBottom: 16 }}
           />
 
@@ -4039,7 +5815,7 @@ const PluginConfigInner: React.FC = () => {
             {pluginIcons[plugin.name] || <AppstoreOutlined style={{ fontSize: 20 }} />}
           </div>
           <div>
-            <Title level={4} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff', lineHeight: 1.3 }}>{t(`${plugin.name}:title`, plugin.title)}</Title>
+            <Title level={4} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff', lineHeight: 1.3 }}>{t(`plugin_titles.${plugin.name}`, plugin.title)}</Title>
             <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 12 }}>{plugin.name}</Text>
           </div>
         </div>
@@ -4061,7 +5837,7 @@ const PluginConfigInner: React.FC = () => {
       <Tabs
         activeKey={activeTabKey}
         onChange={handleTabChange}
-        tabBarStyle={{ marginBottom: 12 }}
+        tabBarStyle={{ marginBottom: name === 'playground_2026' && activeTabKey === 'playground_schemes' ? 4 : 12 }}
         items={
           currentDyn
             ? [
@@ -4070,19 +5846,28 @@ const PluginConfigInner: React.FC = () => {
                 ? currentDyn.tabs.map((t: any) => ({
                     key: t.key,
                     label: t.label,
-                    children: <PluginModule>{React.createElement(safeLazy(t.component))}</PluginModule>
+                    // 仅激活时挂载：离开 tab 卸载面板，停掉轮询/定时请求
+                    children: activeTabKey === t.key ? (
+                      <PluginModule>
+                        {React.createElement(cachedLazy(`${name}:${t.key}`, t.component))}
+                      </PluginModule>
+                    ) : null,
                   }))
                 : currentDyn.component
                   ? [
                       {
                         key: 'plugin_panel',
                         label: currentDyn.title,
-                        children: <PluginModule>{React.createElement(safeLazy(currentDyn.component!))}</PluginModule>
+                        children: activeTabKey === 'plugin_panel' ? (
+                          <PluginModule>
+                            {React.createElement(cachedLazy(`${name}:plugin_panel`, currentDyn.component!))}
+                          </PluginModule>
+                        ) : null,
                       }
                     ]
                   : []),
               // 独立 TOS 表单（可单独配置；未填则运行时回退全局存储）
-              ...(name === 'upstream_asset_relay' || name === 'comfyui_bridge'
+              ...(name === 'upstream_asset_relay'
                 ? [{ key: 'storage', label: '存储配置', children: storageTab }]
                 : []),
             ]
@@ -4098,7 +5883,15 @@ const PluginConfigInner: React.FC = () => {
                 { key: 'team_config', label: '团队配置', children: <PluginModule><TeamConfig /></PluginModule> },
                 { key: 'theme_promo', label: '主题推广', children: <PluginModule><ThemePromo /></PluginModule> },
               ]
-            : (plugin.name === 'playground' || plugin.name === 'playground_2026')
+            : plugin.name === 'playground_2026'
+              ? [
+                { key: 'basic', label: '基本配置', children: basicTab },
+                { key: 'pg_storage', label: '存储配置', children: storageTab },
+                { key: 'playground_models', label: '创作模型管理', children: playgroundModelTab },
+                { key: 'playground_schemes', label: '创作方案配置', children: playgroundSchemeTab },
+                { key: 'playground_workflow_config', label: '工作流配置', children: playgroundWorkflowConfigTab },
+              ]
+            : plugin.name === 'playground'
               ? [
                 { key: 'basic', label: '基本配置', children: basicTab },
                 { key: 'pg_storage', label: '存储配置', children: storageTab },
@@ -4140,13 +5933,7 @@ const PluginConfigInner: React.FC = () => {
                             { key: 'docs_manager', label: '文档管理', children: <PluginModule><DocsManager /></PluginModule> },
                             { key: 'basic', label: '基本配置', children: basicTab },
                           ]
-                        : plugin.name === 'happyhorse_router'
-                            ? [
-                              { key: 'basic', label: '基本配置', children: basicTab },
-                              { key: 'happyhorse_logs', label: '小马转换日志', children: <PluginModule><HappyHorseManager mode="logs" /></PluginModule> },
-                              { key: 'happyhorse_config', label: '小马转换配置', children: <PluginModule><HappyHorseManager mode="config" /></PluginModule> }
-                            ]
-                            : (plugin.name === 'asset_manager' || plugin.name === 'asset_manager_intl')
+                        : (plugin.name === 'asset_manager' || plugin.name === 'asset_manager_intl')
                             ? [
                               { key: 'basic', label: '基本配置', children: basicTab },
                               { key: 'api_access', label: 'API 接口调用', children: (

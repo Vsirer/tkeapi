@@ -5,21 +5,24 @@
  * @license        MIT (https://www.tokensbyte.ai/)
  */
 
-//! 纯内存限额拦截器（DashMap）+ 重启后懒加载 hydration
+//! 纯内存限额拦截器（DashMap<token_id, QuotaSlot>）
 //!
-//! Key = `token_id:local_day`。跨本地日换新 key。
-//! DashMap miss 时禁止直接置 0：先查 `api_tokens` 已落库用量再灌入。
-//! 热路径 `check_and_incr_quota` 占用内存额度后，由 BillingPipeline 异步刷库。
+//! 设计要点：
+//! - Key = `token_id (i64)`，单令牌唯一槽位，彻底杜绝历史 Key 堆积（旧方案 `token_id:day` 会随天数线性膨胀）。
+//! - 跨本地日/周/月直接在槽位内懒刷新（原子 CAS），零锁争用。
+//! - 限额预存微单位整数 `u64`，热路径 0 浮点运算、0 除法。
+//! - 鉴权中间件直接传入已查出的 `ApiToken`，消除了旧方案的二次数据库查询。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::db::Database;
+use crate::models::ApiToken;
 use crate::time_system::{local_period_keys, PeriodKeys};
 
-/// f64 用量 ↔ 微单位整数，便于 AtomicU64 无锁累加（精度与 money::MONEY_SCALE 一致：1e-6）
+/// f64 额度 ↔ 微单位整数（精度与 money::MONEY_SCALE 保持一致：1e-6）
+#[inline(always)]
 fn to_micros(v: f64) -> u64 {
     if v <= 0.0 {
         0
@@ -28,43 +31,191 @@ fn to_micros(v: f64) -> u64 {
     }
 }
 
-fn from_micros(v: u64) -> f64 {
-    v as f64 / crate::money::MONEY_SCALE
-}
-
-fn limit_opt(limit: f64) -> Option<f64> {
+/// 限额字段：< 0 表示无限制，转为 None；≥ 0 预转为微单位 u64
+#[inline(always)]
+fn limit_micros_opt(limit: f64) -> Option<u64> {
     if limit < 0.0 {
         None
     } else {
-        Some(limit)
+        Some(to_micros(limit))
     }
 }
 
+/// 跨日/周/月周期的已用计数懒刷新辅助：
+/// 用 AtomicU64 存储 `day_key` 的哈希（FNV-1a 变体，32bit 足够区分自然日键），
+/// 匹配则保留，不匹配则清零——无锁、无堆分配、无 clone。
+///
+/// 安全性说明：哈希碰撞概率极低（日期格式为 `YYYY-WW`/`YYYY-MM`），
+/// 即便碰撞也只是多重置一次计数器（保守不超额），不影响计费安全。
+fn key_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
 #[derive(Debug)]
-struct QuotaSlot {
+pub struct QuotaSlot {
+    day_hash: AtomicU64,
+    week_hash: AtomicU64,
+    month_hash: AtomicU64,
+
     daily_used: AtomicU64,
     weekly_used: AtomicU64,
     monthly_used: AtomicU64,
     total_used: AtomicU64,
-    daily_limit: Option<f64>,
-    weekly_limit: Option<f64>,
-    monthly_limit: Option<f64>,
-    total_limit: Option<f64>,
+
+    daily_limit: Option<u64>,
+    weekly_limit: Option<u64>,
+    monthly_limit: Option<u64>,
+    total_limit: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct QuotaLimits {
-    pub daily_quota_limit: f64,
-    pub weekly_quota_limit: f64,
-    pub monthly_quota_limit: f64,
-    pub quota_limit: f64,
-    pub quota_used: f64,
+impl QuotaSlot {
+    pub fn from_token(token: &ApiToken, keys: &PeriodKeys) -> Self {
+        let daily = if token.last_reset_day.as_deref() == Some(keys.day.as_str()) {
+            token.daily_quota_used.max(0.0)
+        } else {
+            0.0
+        };
+        let weekly = if token.last_reset_week.as_deref() == Some(keys.week.as_str()) {
+            token.weekly_quota_used.max(0.0)
+        } else {
+            0.0
+        };
+        let monthly = if token.last_reset_month.as_deref() == Some(keys.month.as_str()) {
+            token.monthly_quota_used.max(0.0)
+        } else {
+            0.0
+        };
+
+        Self {
+            day_hash: AtomicU64::new(key_hash(&keys.day)),
+            week_hash: AtomicU64::new(key_hash(&keys.week)),
+            month_hash: AtomicU64::new(key_hash(&keys.month)),
+            daily_used: AtomicU64::new(to_micros(daily)),
+            weekly_used: AtomicU64::new(to_micros(weekly)),
+            monthly_used: AtomicU64::new(to_micros(monthly)),
+            total_used: AtomicU64::new(to_micros(token.quota_used.max(0.0))),
+            daily_limit: limit_micros_opt(token.daily_quota_limit),
+            weekly_limit: limit_micros_opt(token.weekly_quota_limit),
+            monthly_limit: limit_micros_opt(token.monthly_quota_limit),
+            total_limit: limit_micros_opt(token.quota_limit),
+        }
+    }
+
+    /// 跨周期懒刷新：无锁 CAS，仅在自然日/周/月切换时清零对应计数器
+    pub fn refresh_period(&self, keys: &PeriodKeys) {
+        let dh = key_hash(&keys.day);
+        if self.day_hash.load(Ordering::Relaxed) != dh
+            && self.day_hash.swap(dh, Ordering::SeqCst) != dh
+        {
+            self.daily_used.store(0, Ordering::SeqCst);
+        }
+        let wh = key_hash(&keys.week);
+        if self.week_hash.load(Ordering::Relaxed) != wh
+            && self.week_hash.swap(wh, Ordering::SeqCst) != wh
+        {
+            self.weekly_used.store(0, Ordering::SeqCst);
+        }
+        let mh = key_hash(&keys.month);
+        if self.month_hash.load(Ordering::Relaxed) != mh
+            && self.month_hash.swap(mh, Ordering::SeqCst) != mh
+        {
+            self.monthly_used.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// 纯整数限额检查（无浮点运算）
+    #[inline(always)]
+    pub fn assert_under_limit(&self) -> Result<(), QuotaMemoryError> {
+        if let Some(lim) = self.total_limit {
+            if self.total_used.load(Ordering::Relaxed) >= lim {
+                return Err(QuotaMemoryError::TotalExhausted);
+            }
+        }
+        if let Some(lim) = self.daily_limit {
+            if self.daily_used.load(Ordering::Relaxed) >= lim {
+                return Err(QuotaMemoryError::DailyExhausted);
+            }
+        }
+        if let Some(lim) = self.weekly_limit {
+            if self.weekly_used.load(Ordering::Relaxed) >= lim {
+                return Err(QuotaMemoryError::WeeklyExhausted);
+            }
+        }
+        if let Some(lim) = self.monthly_limit {
+            if self.monthly_used.load(Ordering::Relaxed) >= lim {
+                return Err(QuotaMemoryError::MonthlyExhausted);
+            }
+        }
+        Ok(())
+    }
+
+    /// 原子 CAS 累加并校验限额（允许最后一笔整额累加，可略超，与旧行为一致）
+    pub fn check_and_add(&self, add: u64) -> Result<(), QuotaMemoryError> {
+        loop {
+            let d = self.daily_used.load(Ordering::Relaxed);
+            let w = self.weekly_used.load(Ordering::Relaxed);
+            let m = self.monthly_used.load(Ordering::Relaxed);
+            let t = self.total_used.load(Ordering::Relaxed);
+
+            if let Some(lim) = self.total_limit {
+                if t >= lim {
+                    return Err(QuotaMemoryError::TotalExhausted);
+                }
+            }
+            if let Some(lim) = self.daily_limit {
+                if d >= lim {
+                    return Err(QuotaMemoryError::DailyExhausted);
+                }
+            }
+            if let Some(lim) = self.weekly_limit {
+                if w >= lim {
+                    return Err(QuotaMemoryError::WeeklyExhausted);
+                }
+            }
+            if let Some(lim) = self.monthly_limit {
+                if m >= lim {
+                    return Err(QuotaMemoryError::MonthlyExhausted);
+                }
+            }
+
+            // 以 daily_used 为乐观锁锚点，CAS 失败则重试
+            if self
+                .daily_used
+                .compare_exchange_weak(
+                    d,
+                    d.saturating_add(add),
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            self.weekly_used.fetch_add(add, Ordering::SeqCst);
+            self.monthly_used.fetch_add(add, Ordering::SeqCst);
+            self.total_used.fetch_add(add, Ordering::SeqCst);
+            return Ok(());
+        }
+    }
+
+    /// 强制累加（不校验限额，用于在途结算）
+    #[inline(always)]
+    pub fn force_add(&self, add: u64) {
+        self.daily_used.fetch_add(add, Ordering::SeqCst);
+        self.weekly_used.fetch_add(add, Ordering::SeqCst);
+        self.monthly_used.fetch_add(add, Ordering::SeqCst);
+        self.total_used.fetch_add(add, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct IncrResult {
     pub amount: f64,
-    /// 消费发生时刻锁定的周期键（刷库禁止重算）
     pub day: String,
     pub week: String,
     pub month: String,
@@ -80,13 +231,11 @@ pub enum QuotaMemoryError {
     MonthlyExhausted,
     #[error("总额度已耗尽")]
     TotalExhausted,
-    #[error("database error: {0}")]
-    Db(#[from] sqlx::Error),
 }
 
 #[derive(Clone, Default)]
 pub struct MemoryQuotaGuard {
-    slots: Arc<DashMap<String, QuotaSlot>>,
+    slots: Arc<DashMap<i64, QuotaSlot>>,
 }
 
 impl MemoryQuotaGuard {
@@ -100,164 +249,29 @@ impl MemoryQuotaGuard {
         self.slots.clear();
     }
 
-    fn slot_key(token_id: i64, local_day: &str) -> String {
-        format!("{}:{}", token_id, local_day)
-    }
-
-    /// 热路径：校验并累加（日/周/月/总）。miss 时 DB hydration。
-    /// 返回金额与**消费时刻**锁定的 period keys，供异步刷库使用。
-    pub async fn check_and_incr_quota(
+    /// 只读校验（鉴权中间件）：直接基于已查出的 ApiToken，零额外 DB 查询
+    pub fn check_quota(
         &self,
-        db: &Database,
-        token_id: i64,
-        amount: f64,
+        token: &ApiToken,
         timedisplay: &str,
-        limits: &QuotaLimits,
-    ) -> Result<IncrResult, QuotaMemoryError> {
-        if amount <= 0.0 || token_id <= 0 {
-            return Ok(IncrResult {
-                amount: 0.0,
-                day: String::new(),
-                week: String::new(),
-                month: String::new(),
-            });
-        }
-
-        let keys = local_period_keys(timedisplay);
-        let key = Self::slot_key(token_id, &keys.day);
-        if !self.slots.contains_key(&key) {
-            self.hydrate_slot(db, token_id, &keys, limits).await?;
-        }
-
-        let add = to_micros(amount);
-        let entry = self
-            .slots
-            .get(&key)
-            .ok_or(QuotaMemoryError::DailyExhausted)?;
-
-        loop {
-            let d = entry.daily_used.load(Ordering::Relaxed);
-            let w = entry.weekly_used.load(Ordering::Relaxed);
-            let m = entry.monthly_used.load(Ordering::Relaxed);
-            let t = entry.total_used.load(Ordering::Relaxed);
-
-            if let Some(lim) = entry.total_limit {
-                if from_micros(t) >= lim {
-                    return Err(QuotaMemoryError::TotalExhausted);
-                }
-            }
-            if let Some(lim) = entry.daily_limit {
-                if from_micros(d) >= lim {
-                    return Err(QuotaMemoryError::DailyExhausted);
-                }
-            }
-            if let Some(lim) = entry.weekly_limit {
-                if from_micros(w) >= lim {
-                    return Err(QuotaMemoryError::WeeklyExhausted);
-                }
-            }
-            if let Some(lim) = entry.monthly_limit {
-                if from_micros(m) >= lim {
-                    return Err(QuotaMemoryError::MonthlyExhausted);
-                }
-            }
-
-            // 与历史 token_quota 一致：未耗尽时允许最后一笔整额累加（可略超）
-            if entry
-                .daily_used
-                .compare_exchange_weak(
-                    d,
-                    d.saturating_add(add),
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                )
-                .is_err()
-            {
-                continue;
-            }
-            entry.weekly_used.fetch_add(add, Ordering::SeqCst);
-            entry.monthly_used.fetch_add(add, Ordering::SeqCst);
-            entry.total_used.fetch_add(add, Ordering::SeqCst);
-            return Ok(IncrResult {
-                amount,
-                day: keys.day.clone(),
-                week: keys.week.clone(),
-                month: keys.month.clone(),
-            });
-        }
-    }
-
-    /// 只读校验（中间件）：hydration 后检查四档限额，不占用额度。
-    pub async fn check_quota(
-        &self,
-        db: &Database,
-        token_id: i64,
-        timedisplay: &str,
-        limits: &QuotaLimits,
     ) -> Result<(), QuotaMemoryError> {
         let keys = local_period_keys(timedisplay);
-        let key = Self::slot_key(token_id, &keys.day);
-        if !self.slots.contains_key(&key) {
-            self.hydrate_slot(db, token_id, &keys, limits).await?;
-        }
-
         let slot = self
             .slots
-            .get(&key)
-            .ok_or(QuotaMemoryError::DailyExhausted)?;
-        Self::assert_under_limit(&slot)?;
-        Ok(())
+            .entry(token.id)
+            .or_insert_with(|| QuotaSlot::from_token(token, &keys));
+        slot.refresh_period(&keys);
+        slot.assert_under_limit()
     }
 
-    fn assert_under_limit(slot: &QuotaSlot) -> Result<(), QuotaMemoryError> {
-        if let Some(lim) = slot.total_limit {
-            if from_micros(slot.total_used.load(Ordering::Relaxed)) >= lim {
-                return Err(QuotaMemoryError::TotalExhausted);
-            }
-        }
-        if let Some(lim) = slot.daily_limit {
-            if from_micros(slot.daily_used.load(Ordering::Relaxed)) >= lim {
-                return Err(QuotaMemoryError::DailyExhausted);
-            }
-        }
-        if let Some(lim) = slot.weekly_limit {
-            if from_micros(slot.weekly_used.load(Ordering::Relaxed)) >= lim {
-                return Err(QuotaMemoryError::WeeklyExhausted);
-            }
-        }
-        if let Some(lim) = slot.monthly_limit {
-            if from_micros(slot.monthly_used.load(Ordering::Relaxed)) >= lim {
-                return Err(QuotaMemoryError::MonthlyExhausted);
-            }
-        }
-        Ok(())
-    }
-
-    /// 旁路累加（同步落库成功后、或外部已确认写入时）
-    pub fn apply_incr(&self, token_id: i64, local_day: &str, amount: f64) {
-        if amount <= 0.0 {
-            return;
-        }
-        let key = Self::slot_key(token_id, local_day);
-        if let Some(slot) = self.slots.get(&key) {
-            let add = to_micros(amount);
-            slot.daily_used.fetch_add(add, Ordering::SeqCst);
-            slot.weekly_used.fetch_add(add, Ordering::SeqCst);
-            slot.monthly_used.fetch_add(add, Ordering::SeqCst);
-            slot.total_used.fetch_add(add, Ordering::SeqCst);
-        }
-    }
-
-    /// 结算强制记入：跳过限额校验（中间件已放行的在途请求），保证与钱包扣费对齐。
-    pub async fn force_incr_ensured(
+    /// 热路径：校验并累加（日/周/月/总）
+    pub fn check_and_incr_quota(
         &self,
-        db: &Database,
-        token_id: i64,
+        token: &ApiToken,
         amount: f64,
         timedisplay: &str,
-        limits: &QuotaLimits,
     ) -> Result<IncrResult, QuotaMemoryError> {
-        if amount <= 0.0 || token_id <= 0 {
+        if amount <= 0.0 || token.id <= 0 {
             return Ok(IncrResult {
                 amount: 0.0,
                 day: String::new(),
@@ -265,12 +279,16 @@ impl MemoryQuotaGuard {
                 month: String::new(),
             });
         }
+
         let keys = local_period_keys(timedisplay);
-        let key = Self::slot_key(token_id, &keys.day);
-        if !self.slots.contains_key(&key) {
-            self.hydrate_slot(db, token_id, &keys, limits).await?;
-        }
-        self.apply_incr(token_id, &keys.day, amount);
+        let slot = self
+            .slots
+            .entry(token.id)
+            .or_insert_with(|| QuotaSlot::from_token(token, &keys));
+        slot.refresh_period(&keys);
+        let add = to_micros(amount);
+        slot.check_and_add(add)?;
+
         Ok(IncrResult {
             amount,
             day: keys.day,
@@ -279,67 +297,62 @@ impl MemoryQuotaGuard {
         })
     }
 
-    pub fn apply_refund(&self, token_id: i64, local_day: &str, amount: f64) {
-        if amount <= 0.0 {
+    /// 结算强制记入：跳过限额校验（中间件已放行的在途请求）
+    pub fn force_incr(&self, token: &ApiToken, amount: f64, timedisplay: &str) -> IncrResult {
+        if amount <= 0.0 || token.id <= 0 {
+            return IncrResult {
+                amount: 0.0,
+                day: String::new(),
+                week: String::new(),
+                month: String::new(),
+            };
+        }
+
+        let keys = local_period_keys(timedisplay);
+        let slot = self
+            .slots
+            .entry(token.id)
+            .or_insert_with(|| QuotaSlot::from_token(token, &keys));
+        slot.refresh_period(&keys);
+        slot.force_add(to_micros(amount));
+
+        IncrResult {
+            amount,
+            day: keys.day,
+            week: keys.week,
+            month: keys.month,
+        }
+    }
+
+    /// 旁路累加（同步落库成功后调用，slot Miss 则静默跳过）
+    pub fn apply_incr(&self, token_id: i64, amount: f64) {
+        if amount <= 0.0 || token_id <= 0 {
             return;
         }
-        let key = Self::slot_key(token_id, local_day);
-        if let Some(slot) = self.slots.get(&key) {
+        if let Some(slot) = self.slots.get(&token_id) {
+            slot.force_add(to_micros(amount));
+        }
+    }
+
+    /// 扣减退款（slot Miss 则静默跳过，下次请求从 DB hydrate 时自然对齐）
+    pub fn apply_refund(&self, token_id: i64, amount: f64) {
+        if amount <= 0.0 || token_id <= 0 {
+            return;
+        }
+        if let Some(slot) = self.slots.get(&token_id) {
             let sub = to_micros(amount);
             Self::saturating_sub(&slot.daily_used, sub);
             Self::saturating_sub(&slot.weekly_used, sub);
             Self::saturating_sub(&slot.monthly_used, sub);
             Self::saturating_sub(&slot.total_used, sub);
-        } else {
-            tracing::warn!(
-                "[QuotaMemory] apply_refund 未命中 令牌ID={} 日期={} 金额={:.6}（未水合，已跳过）",
-                token_id,
-                local_day,
-                amount
-            );
         }
     }
 
-    /// 清零/重置后丢弃该令牌全部日 slot，下次请求从 DB 重新 hydrate。
+    /// 令牌配置/额度修改、清零、删除时精确 O(1) 移除内存槽位
     pub fn invalidate_token(&self, token_id: i64) {
-        if token_id <= 0 {
-            return;
+        if token_id > 0 {
+            self.slots.remove(&token_id);
         }
-        let prefix = format!("{token_id}:");
-        self.slots.retain(|k, _| !k.starts_with(&prefix));
-    }
-
-    /// 退款前确保 slot 存在（miss 则 hydrate），避免静默丢弃。
-    pub async fn apply_refund_ensured(
-        &self,
-        db: &Database,
-        token_id: i64,
-        timedisplay: &str,
-        amount: f64,
-    ) {
-        if amount <= 0.0 || token_id <= 0 {
-            return;
-        }
-        let keys = local_period_keys(timedisplay);
-        let key = Self::slot_key(token_id, &keys.day);
-        if !self.slots.contains_key(&key) {
-            let limits = QuotaLimits {
-                daily_quota_limit: -1.0,
-                weekly_quota_limit: -1.0,
-                monthly_quota_limit: -1.0,
-                quota_limit: -1.0,
-                quota_used: 0.0,
-            };
-            if let Err(e) = self.hydrate_slot(db, token_id, &keys, &limits).await {
-                tracing::warn!(
-                    "[QuotaMemory] apply_refund_ensured 水合失败 令牌ID={}: {}",
-                    token_id,
-                    e
-                );
-                return;
-            }
-        }
-        self.apply_refund(token_id, &keys.day, amount);
     }
 
     fn saturating_sub(atom: &AtomicU64, sub: u64) {
@@ -353,101 +366,5 @@ impl MemoryQuotaGuard {
                 break;
             }
         }
-    }
-
-    async fn hydrate_slot(
-        &self,
-        db: &Database,
-        token_id: i64,
-        keys: &PeriodKeys,
-        limits: &QuotaLimits,
-    ) -> Result<(), QuotaMemoryError> {
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            quota_limit: f64,
-            quota_used: f64,
-            daily_quota_limit: f64,
-            daily_quota_used: f64,
-            weekly_quota_limit: f64,
-            weekly_quota_used: f64,
-            monthly_quota_limit: f64,
-            monthly_quota_used: f64,
-            last_reset_day: Option<String>,
-            last_reset_week: Option<String>,
-            last_reset_month: Option<String>,
-        }
-
-        let row: Option<Row> = sqlx::query_as(&db.format_query(
-            "SELECT quota_limit, quota_used, \
-             daily_quota_limit, daily_quota_used, \
-             weekly_quota_limit, weekly_quota_used, \
-             monthly_quota_limit, monthly_quota_used, \
-             last_reset_day, last_reset_week, last_reset_month \
-             FROM api_tokens WHERE id = ?",
-        ))
-        .bind(token_id)
-        .fetch_optional(&db.pool)
-        .await?;
-
-        let slot = match row {
-            Some(r) => {
-                let daily = if r.last_reset_day.as_deref() == Some(keys.day.as_str()) {
-                    r.daily_quota_used.max(0.0)
-                } else {
-                    0.0
-                };
-                let weekly = if r.last_reset_week.as_deref() == Some(keys.week.as_str()) {
-                    r.weekly_quota_used.max(0.0)
-                } else {
-                    0.0
-                };
-                let monthly = if r.last_reset_month.as_deref() == Some(keys.month.as_str()) {
-                    r.monthly_quota_used.max(0.0)
-                } else {
-                    0.0
-                };
-                QuotaSlot {
-                    daily_used: AtomicU64::new(to_micros(daily)),
-                    weekly_used: AtomicU64::new(to_micros(weekly)),
-                    monthly_used: AtomicU64::new(to_micros(monthly)),
-                    total_used: AtomicU64::new(to_micros(r.quota_used.max(0.0))),
-                    daily_limit: limit_opt(r.daily_quota_limit),
-                    weekly_limit: limit_opt(r.weekly_quota_limit),
-                    monthly_limit: limit_opt(r.monthly_quota_limit),
-                    total_limit: limit_opt(r.quota_limit),
-                }
-            }
-            None => QuotaSlot {
-                daily_used: AtomicU64::new(0),
-                weekly_used: AtomicU64::new(0),
-                monthly_used: AtomicU64::new(0),
-                total_used: AtomicU64::new(to_micros(limits.quota_used.max(0.0))),
-                daily_limit: limit_opt(limits.daily_quota_limit),
-                weekly_limit: limit_opt(limits.weekly_quota_limit),
-                monthly_limit: limit_opt(limits.monthly_quota_limit),
-                total_limit: limit_opt(limits.quota_limit),
-            },
-        };
-
-        let map_key = Self::slot_key(token_id, &keys.day);
-        self.slots.entry(map_key).or_insert(slot);
-
-        tracing::info!(
-            "[QuotaMemory] 水合成功 令牌ID={} 日期={}",
-            token_id,
-            keys.day
-        );
-        Ok(())
-    }
-}
-
-/// 从 ApiToken 构造限额快照（hydration 优先读库；此处供 miss 回退）
-pub fn limits_from_token(token: &crate::models::ApiToken) -> QuotaLimits {
-    QuotaLimits {
-        daily_quota_limit: token.daily_quota_limit,
-        weekly_quota_limit: token.weekly_quota_limit,
-        monthly_quota_limit: token.monthly_quota_limit,
-        quota_limit: token.quota_limit,
-        quota_used: token.quota_used,
     }
 }

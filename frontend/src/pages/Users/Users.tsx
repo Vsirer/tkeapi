@@ -6,20 +6,42 @@
  */
 
 import React, { useEffect, useState, useMemo, startTransition } from 'react';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Progress, Grid, Radio, Tabs, Timeline, Row, Col, Tooltip, DatePicker, Statistic, Spin, Switch } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Progress, Grid, Radio, Tabs, Timeline, Row, Col, Tooltip, DatePicker, Statistic, Spin, Switch, Alert } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
 import ModelSelector from '../../components/ModelSelector';
 import WalletBalanceDisplay from '../../components/WalletBalanceDisplay';
 import WalletDetailsView from '../../components/WalletDetailsView';
-import UserKycFormFields, {
-  kycToFormValues,
-  formValuesToKycPayload,
-  KYC_STATUS_META,
-} from '../../components/UserKycFormFields';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, SyncOutlined, WalletOutlined, LoginOutlined, ArrowLeftOutlined, CloseOutlined, SearchOutlined } from '@ant-design/icons';
+import UserKycListManager from '../../components/UserKycListManager';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, SyncOutlined, WalletOutlined, LoginOutlined, ArrowLeftOutlined, CloseOutlined, SearchOutlined, IdcardOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
+
+const TAB_KEY_TO_SLUG: Record<string, string> = {
+  '1': 'basic',
+  '2': 'detail',
+  '3': 'binding',
+  '5': 'payment',
+  '4': 'discount',
+  '6': 'kyc',
+};
+
+const SLUG_TO_TAB_KEY: Record<string, string> = {
+  basic: '1',
+  '1': '1',
+  detail: '2',
+  '2': '2',
+  binding: '3',
+  bind: '3',
+  '3': '3',
+  payment: '5',
+  pay: '5',
+  '5': '5',
+  discount: '4',
+  '4': '4',
+  kyc: '6',
+  '6': '6',
+};
 import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
 import generateUUID from '../../utils/uuid';
@@ -139,11 +161,26 @@ const Users: React.FC = () => {
   const _isLight = themeMode === 'light';
   const { t } = useTranslation();
   const location = useLocation();
+  const navigate = useNavigate();
+  const { actionId, tab: routeTab } = useParams<{ actionId?: string; tab?: string }>();
+  const [searchParams] = useSearchParams();
+  const queryTab = searchParams.get('tab');
+  const [userLoading, setUserLoading] = useState(false);
+  const loadingUserIdRef = React.useRef<string | null>(null);
+
   const screens = useBreakpoint();
   const isAdminPage = location.pathname.includes('/admins');
   const targetRole = isAdminPage ? 'admin' : 'user';
   
   const { settings } = useSettingsStore();
+  const adminPath = settings?.site?.admin_path || 'admin1688';
+  const basePath = isAdminPage ? 'admins' : 'users';
+
+  const rawTab = routeTab || queryTab;
+  const resolvedTabKey = useMemo(() => {
+    if (!rawTab) return '1';
+    return SLUG_TO_TAB_KEY[rawTab.toLowerCase()] || rawTab;
+  }, [rawTab]);
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -220,10 +257,9 @@ const Users: React.FC = () => {
   // ── 等级变更历史 ──
   const [levelLogs, setLevelLogs] = useState<any[]>([]);
   const [levelLogsLoading, setLevelLogsLoading] = useState(false);
-  // ── 用户实名 KYC ──
-  const [userKyc, setUserKyc] = useState<UserKyc | null>(null);
-  const [kycLoading, setKycLoading] = useState(false);
-  const [kycSaving, setKycSaving] = useState(false);
+  // ── 用户编辑与实名 Tab 控制 ──
+  const [userEditActiveTab, setUserEditActiveTab] = useState('1');
+  const [kycCount, setKycCount] = useState(0);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -333,91 +369,251 @@ const Users: React.FC = () => {
     return result;
   }, [users, searchText, filterGroup, filterReferrer, allUsers, listSort, walletTimeFilter, monthConsumptionMap]);
 
-  const handleAdd = () => {
-    setEditingUser(null);
-    setSelectedRole(targetRole);
-    form.resetFields();
-    form.setFieldsValue({ role: targetRole, is_active: 1, balance: 0, gift_balance: 0, user_group: 'default' });
-    // 清空模型折扣状态
-    setDiscountMap({});
-    setDiscountMids([]);
-    setUserKyc(null);
-    setIsModalVisible(true);
+  // 查找推荐人用户对象（支持通过 id、uid 或 username 匹配）
+  const findReferrerUser = (refVal?: string | null) => {
+    if (!refVal) return null;
+    const trimmed = String(refVal).trim();
+    if (!trimmed) return null;
+    return allUsers.find(u =>
+      String(u.id) === trimmed ||
+      (u.uid && String(u.uid) === trimmed) ||
+      u.username === trimmed
+    ) || null;
   };
 
-  const loadUserKyc = (userId: string) => {
-    setKycLoading(true);
-    (request.get(`/users/${userId}/kyc`) as unknown as Promise<UserKyc>)
-      .then((res) => {
-        setUserKyc(res);
-        form.setFieldsValue(kycToFormValues(res));
-      })
-      .catch(() => {
-        setUserKyc(null);
-      })
-      .finally(() => setKycLoading(false));
+  // 将表单推荐人值解析规范为对应的统一 id (UUID)，使 Select 的 value 精准匹配
+  const resolveReferrerFormValue = (refVal?: string | null): string | undefined => {
+    if (!refVal) return undefined;
+    const trimmed = String(refVal).trim();
+    if (!trimmed) return undefined;
+    const matched = findReferrerUser(trimmed);
+    return matched ? String(matched.id) : trimmed;
   };
 
-  const handleEdit = (record: User) => {
+  // 上级推荐人下拉列表候选项：排除自身，统一展示“用户名 (昵称) - UID: xxxx”
+  const referrerOptions = useMemo(() => {
+    // 过滤掉当前正在编辑的用户自己，不能自己推荐自己
+    const filtered = allUsers.filter(u => {
+      if (!editingUser) return true;
+      if (u.id === editingUser.id) return false;
+      if (editingUser.uid && String(u.uid) === String(editingUser.uid)) return false;
+      if (editingUser.username && u.username === editingUser.username) return false;
+      return true;
+    });
+
+    const formatLabel = (u: User) => {
+      const nickPart = u.nickname ? ` (${u.nickname})` : '';
+      const emailPart = isRealEmail(u.email) ? ` (${u.email})` : '';
+      return `${u.username}${nickPart} - UID: ${u.uid || u.id}${emailPart}`;
+    };
+
+    const options = filtered.map(u => ({
+      value: String(u.id),
+      label: formatLabel(u),
+      searchKey: `${u.username} ${u.nickname || ''} ${u.uid || ''} ${u.id} ${u.email || ''}`.toLowerCase(),
+    }));
+
+    // 若当前正在编辑的用户已有推荐人，且该推荐人未在候选列表中（例如老数据、异常数据等，但非自身），追加兜底项保证回显正常
+    if (editingUser?.referred_by) {
+      const currentRefId = resolveReferrerFormValue(editingUser.referred_by);
+      const isSelf = currentRefId && (
+        currentRefId === editingUser.id ||
+        (editingUser.uid && currentRefId === String(editingUser.uid)) ||
+        (editingUser.username && currentRefId === editingUser.username)
+      );
+      if (currentRefId && !isSelf && !options.some(opt => opt.value === currentRefId)) {
+        const matched = findReferrerUser(currentRefId);
+        if (matched) {
+          options.unshift({
+            value: String(matched.id),
+            label: formatLabel(matched),
+            searchKey: `${matched.username} ${matched.nickname || ''} ${matched.uid || ''} ${matched.id} ${matched.email || ''}`.toLowerCase(),
+          });
+        } else {
+          options.unshift({
+            value: currentRefId,
+            label: `未知推荐人 (${currentRefId})`,
+            searchKey: currentRefId.toLowerCase(),
+          });
+        }
+      }
+    }
+
+    return options;
+  }, [allUsers, editingUser]);
+
+  const initEditUser = (record: User, activeTab = '1') => {
     setEditingUser(record);
+    setUserEditActiveTab(activeTab);
     setIsModalVisible(true);
     // 加载等级变更记录
     setLevelLogs([]);
     setLevelLogsLoading(true);
-    (request.get(`/users/${record.id}/level-logs`) as unknown as Promise<{ data: any[] }>)
+    (request.get(`/users/${record.uid || record.id}/level-logs`) as unknown as Promise<{ data: any[] }>)
       .then(res => setLevelLogs(res.data || []))
       .catch(() => {})
       .finally(() => setLevelLogsLoading(false));
     setSelectedRole(record.role);
+
+    // 规范化推荐人初始值，避免自推荐或 UUID 无法匹配
+    const isSelfReferral = record.referred_by && (
+      record.referred_by === record.id ||
+      (record.uid && String(record.referred_by) === String(record.uid)) ||
+      (record.username && record.referred_by === record.username)
+    );
+    const initialReferredBy = isSelfReferral ? undefined : resolveReferrerFormValue(record.referred_by);
+
     form.setFieldsValue({
       ...record,
+      referred_by: initialReferredBy,
       password: '', // Don't show password
     });
     // 初始化模型折扣数据
     const md: Record<string, number> = record.model_discounts ? (() => { try { return JSON.parse(record.model_discounts); } catch { return {}; } })() : {};
     setDiscountMap(md);
     setDiscountMids(Object.keys(md));
-    if (!isAdminPage) {
-      loadUserKyc(record.id);
-    } else {
-      setUserKyc(null);
+    setKycCount(0);
+  };
+
+  const handleBackToList = () => {
+    setIsModalVisible(false);
+    setEditingUser(null);
+    navigate(`/${adminPath}/${basePath}`);
+  };
+
+  const handleAdd = () => {
+    navigate(`/${adminPath}/${basePath}/new`);
+  };
+
+  const handleEdit = (record: User, activeTab = '1') => {
+    initEditUser(record, activeTab);
+    const slug = TAB_KEY_TO_SLUG[activeTab] || activeTab;
+    navigate(`/${adminPath}/${basePath}/${record.uid || record.id}/${slug}`);
+  };
+
+  const handleTabChange = (key: string) => {
+    setUserEditActiveTab(key);
+    const slug = TAB_KEY_TO_SLUG[key] || key;
+    const currentActionId = editingUser?.uid || actionId || editingUser?.id || (actionId === 'new' ? 'new' : '');
+    if (currentActionId) {
+      navigate(`/${adminPath}/${basePath}/${currentActionId}/${slug}`, { replace: true });
     }
   };
 
-  const handleSaveKyc = async () => {
-    if (!editingUser) return;
+  const loadUserData = async (id: string, tabKey: string) => {
+    if (loadingUserIdRef.current === id) return;
+    loadingUserIdRef.current = id;
+    setUserLoading(true);
     try {
-      const kycType = form.getFieldValue('kyc_type') || 'personal';
-      const idDocType = form.getFieldValue('id_doc_type');
-      const validityType = form.getFieldValue('validity_type');
-      const fields = [
-        'kyc_type', 'status', 'validity_type', 'reject_reason', 'admin_remark',
-      ];
-      if (kycType === 'enterprise') {
-        fields.push('company_name', 'business_license_url', 'tax_registration_url', 'legal_notarization_url');
-      } else {
-        fields.push('real_name', 'id_doc_type', 'id_doc_front_url');
-        if (idDocType === 'id_card') fields.push('id_doc_back_url');
+      let targetUser: User | null = null;
+      try {
+        const res: any = await request.get(`/users/${id}`);
+        if (res && (res.id || res.data?.id)) {
+          targetUser = res.data || res;
+        }
+      } catch (e) {
+        // Fallback to list search
       }
-      if (validityType === 'expire_date') fields.push('expire_at');
-      const values = await form.validateFields(fields);
-      setKycSaving(true);
-      const payload = formValuesToKycPayload(values, true);
-      const res = await (request.put(`/users/${editingUser.id}/kyc`, payload) as unknown as Promise<UserKyc>);
-      setUserKyc(res);
-      form.setFieldsValue(kycToFormValues(res));
-      message.success('实名信息已保存');
-    } catch (e: any) {
-      if (e?.errorFields) return;
-      console.error(e);
+
+      if (!targetUser) {
+        const resp = await (request.get('/users') as unknown as Promise<{ data: User[] }>);
+        if (resp?.data) {
+          setAllUsers(resp.data);
+          const filtered = resp.data.filter(u => u.role === targetRole);
+          setUsers(filtered);
+          targetUser = resp.data.find((u: User) => String(u.id) === String(id) || u.uid === String(id)) || null;
+        }
+      }
+
+      if (targetUser) {
+        initEditUser(targetUser, tabKey);
+        if (targetUser.uid && id !== targetUser.uid && id !== 'new') {
+          const slug = TAB_KEY_TO_SLUG[tabKey] || tabKey;
+          navigate(`/${adminPath}/${basePath}/${targetUser.uid}/${slug}`, { replace: true });
+        }
+      } else {
+        message.error('未找到指定用户');
+        handleBackToList();
+      }
+    } catch (err) {
+      console.error('Failed to load user', err);
+      message.error('加载用户信息失败');
+      handleBackToList();
     } finally {
-      setKycSaving(false);
+      setUserLoading(false);
+      loadingUserIdRef.current = null;
     }
   };
 
-  const handleDelete = async (id: string) => {
+  useEffect(() => {
+    if (!actionId) {
+      setIsModalVisible(false);
+      setEditingUser(null);
+      return;
+    }
+
+    const targetTab = resolvedTabKey || '1';
+
+    if (actionId === 'new') {
+      setIsModalVisible(true);
+      setEditingUser(null);
+      setSelectedRole(targetRole);
+      form.resetFields();
+      form.setFieldsValue({ role: targetRole, is_active: 1, balance: 0, gift_balance: 0, user_group: 'default' });
+      setDiscountMap({});
+      setDiscountMids([]);
+      setKycCount(0);
+      setUserEditActiveTab(targetTab);
+      return;
+    }
+
+    // 编辑模式
+    setIsModalVisible(true);
+    setUserEditActiveTab(targetTab);
+
+    // 若当前已在编辑该用户，仅是 Tab 切换，勿重置表单内容
+    if (editingUser && (String(editingUser.id) === String(actionId) || editingUser.uid === String(actionId))) {
+      return;
+    }
+
+    // 优先尝试从已加载的用户列表中匹配
+    const foundInList = allUsers.find(u => String(u.id) === String(actionId) || u.uid === String(actionId));
+    if (foundInList) {
+      initEditUser(foundInList, targetTab);
+      if (foundInList.uid && actionId !== foundInList.uid && actionId !== 'new') {
+        const slug = TAB_KEY_TO_SLUG[targetTab] || targetTab;
+        navigate(`/${adminPath}/${basePath}/${foundInList.uid}/${slug}`, { replace: true });
+      }
+      return;
+    }
+
+    // 列表未加载或未找到：从后端获取该用户详情
+    loadUserData(actionId, targetTab);
+  }, [actionId, resolvedTabKey, allUsers.length]);
+
+  // 当 allUsers 异步加载完成后，若当前正在编辑用户，同步校准推荐人字段值为其对应 id
+  useEffect(() => {
+    if (editingUser?.referred_by && allUsers.length > 0) {
+      const isSelfReferral =
+        editingUser.referred_by === editingUser.id ||
+        (editingUser.uid && String(editingUser.referred_by) === String(editingUser.uid)) ||
+        (editingUser.username && editingUser.referred_by === editingUser.username);
+      if (isSelfReferral) {
+        form.setFieldsValue({ referred_by: undefined });
+        return;
+      }
+      const targetVal = resolveReferrerFormValue(editingUser.referred_by);
+      const currentVal = form.getFieldValue('referred_by');
+      if (targetVal && currentVal !== targetVal) {
+        form.setFieldsValue({ referred_by: targetVal });
+      }
+    }
+  }, [allUsers, editingUser]);
+
+  const handleDelete = async (target: User | string) => {
     try {
-      await request.delete(`/users/${id}`);
+      const deleteIdentifier = typeof target === 'string' ? target : (target.uid || target.id);
+      await request.delete(`/users/${deleteIdentifier}`);
       message.success(t('common.success'));
       fetchUsers();
     } catch (e) {
@@ -432,8 +628,18 @@ const Users: React.FC = () => {
         if (!payload.password || (payload.password as string).trim() === '') {
           delete payload.password;
         }
-        if (payload.referred_by === undefined) {
+        if (payload.referred_by === undefined || payload.referred_by === null) {
           payload.referred_by = "";
+        } else if (payload.referred_by) {
+          const refVal = String(payload.referred_by).trim();
+          if (
+            refVal === String(editingUser.id) ||
+            (editingUser.uid && refVal === String(editingUser.uid)) ||
+            (editingUser.username && refVal === String(editingUser.username))
+          ) {
+            message.error('不能将自己设置为上级推荐人');
+            return;
+          }
         }
         // 编辑模式下不发送 balance/gift_balance，避免并发覆盖充值操作
         delete payload.balance;
@@ -454,17 +660,25 @@ const Users: React.FC = () => {
           }
         }
         payload.model_discounts = Object.keys(validDiscounts).length > 0 ? JSON.stringify(validDiscounts) : '';
-        await request.put(`/users/${editingUser.id}`, payload);
+        await request.put(`/users/${editingUser.uid || editingUser.id}`, payload);
         message.success(t('common.success'));
       } else {
         const payload: any = { ...values, role: targetRole };
+        if (payload.referred_by && payload.username && String(payload.referred_by).trim() === String(payload.username).trim()) {
+          message.error('不能将自己设置为上级推荐人');
+          return;
+        }
         // 创建时去掉值为0的余额字段，避免后端不必要的记录
         if (payload.balance === 0 || payload.balance === null) delete payload.balance;
         if (payload.gift_balance === 0 || payload.gift_balance === null) delete payload.gift_balance;
+        if (targetRole === 'admin' && !payload.admin_group_id) {
+          message.error('请选择管理员等级');
+          return;
+        }
         await request.post('/users', payload);
         message.success(t('common.success'));
       }
-      setIsModalVisible(false);
+      handleBackToList();
       fetchUsers();
     } catch (e) {
       console.error(e);
@@ -496,11 +710,11 @@ const Users: React.FC = () => {
         remark: values.remark,
         wallet_type: values.walletType || 'system',
       };
-      await request.post(`/users/${rechargingUser.id}/recharge`, payload);
+      await request.post(`/users/${rechargingUser.uid || rechargingUser.id}/recharge`, payload);
       message.success(t('users.recharge_success'));
       setIsRechargeModalVisible(false);
       // 充值后清除该用户的钱包明细缓存，确保下次查看时获取最新数据
-      delete walletCacheRef.current[rechargingUser.id];
+      delete walletCacheRef.current[rechargingUser.uid || rechargingUser.id];
       fetchUsers();
     } catch (e) {
       console.error(e);
@@ -512,18 +726,19 @@ const Users: React.FC = () => {
   // ── 钱包明细：获取用户充值记录（30秒 TTL 缓存） ──
   const openWalletDetail = async (record: User) => {
     setWalletDetailUser(record);
+    const userKey = record.uid || record.id;
     // 检查缓存是否有效（30秒内）
-    const cached = walletCacheRef.current[record.id];
+    const cached = walletCacheRef.current[userKey];
     if (cached && Date.now() - cached.time < WALLET_CACHE_TTL) {
       setWalletRecharges(cached.data);
       return;
     }
     setWalletDetailLoading(true);
     try {
-      const res = await (request.get('/finance/recharges', { params: { user_id: record.id, per_page: 500 } }) as any);
+      const res = await (request.get('/finance/recharges', { params: { user_id: userKey, per_page: 500 } }) as any);
       const data = res.data || [];
       setWalletRecharges(data);
-      walletCacheRef.current[record.id] = { data, time: Date.now() };
+      walletCacheRef.current[userKey] = { data, time: Date.now() };
     } catch (e) {
       console.error('获取充值记录失败', e);
       setWalletRecharges([]);
@@ -534,7 +749,7 @@ const Users: React.FC = () => {
 
   const handleImpersonate = async (record: User) => {
     try {
-      const resp = await (request.post(`/users/${record.id}/impersonate`) as unknown as Promise<{ token: string; user: User }>);
+      const resp = await (request.post(`/users/${record.uid || record.id}/impersonate`) as unknown as Promise<{ token: string; user: User }>);
       const { token, user } = resp;
       
       // 管理端与用户端同属一个 Vite SPA；本地 5173=商业版、5174=开源版，直接用当前 origin
@@ -548,7 +763,6 @@ const Users: React.FC = () => {
       window.open(`${baseUrl}/login?impersonate=1&handoff=${encodeURIComponent(handoffKey)}`, '_blank', 'noopener,noreferrer');
     } catch (e) {
       console.error(e);
-      message.error('切换用户失败');
     }
   };
 
@@ -557,8 +771,10 @@ const Users: React.FC = () => {
       title: t('users.uid'),
       dataIndex: 'uid',
       key: 'uid',
-      render: (text: string) => (
-        <Text code style={{ color: '#fff', padding: '2px 6px', whiteSpace: 'nowrap', fontSize: 13 }}>{text}</Text>
+      render: (text: string, record: User) => (
+        <a onClick={() => handleEdit(record)} style={{ color: 'inherit' }}>
+          <Text code style={{ color: '#fff', padding: '2px 6px', whiteSpace: 'nowrap', fontSize: 13, cursor: 'pointer' }}>{text}</Text>
+        </a>
       ),
     },
     {
@@ -570,7 +786,9 @@ const Users: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <Space align="center" style={{ flexWrap: 'wrap' }}>
             <UserOutlined />
-            <Text strong>{text}</Text>
+            <a onClick={() => handleEdit(record)} style={{ color: 'inherit' }}>
+              <Text strong style={{ cursor: 'pointer' }}>{text}</Text>
+            </a>
             {record.nickname && <Text type="secondary">({record.nickname})</Text>}
             <Tag color={record.is_active ? 'success' : 'error'} style={{ fontSize: 11, padding: '0 4px', margin: 0, whiteSpace: 'nowrap' }}>
               {record.is_active ? t('common.active') : t('common.disabled')}
@@ -580,7 +798,7 @@ const Users: React.FC = () => {
             const referrer = allUsers.find(u => u.id === record.referred_by || u.uid === record.referred_by || u.username === record.referred_by);
             return (
               <Text type="secondary" style={{ fontSize: '12px', marginTop: 4 }}>
-                推荐人: {referrer ? `${referrer.username} (UID: ${referrer.uid})` : record.referred_by}
+                推荐人: {referrer ? `${referrer.username}${referrer.nickname ? ` (${referrer.nickname})` : ''} (UID: ${referrer.uid || referrer.id})` : record.referred_by}
               </Text>
             );
           })()}
@@ -594,12 +812,11 @@ const Users: React.FC = () => {
               onChange: async (val) => {
                 if (val === record.admin_remark) return;
                 try {
-                  await request.put(`/users/${record.id}`, { admin_remark: val });
+                  await request.put(`/users/${record.uid || record.id}`, { admin_remark: val });
                   setAllUsers(prev => prev.map(u => u.id === record.id ? { ...u, admin_remark: val } : u));
                   setUsers(prev => prev.map(u => u.id === record.id ? { ...u, admin_remark: val } : u));
                 } catch (e) {
                   console.error('Failed to update remark:', e);
-                  message.error('备注更新失败');
                 }
               },
               tooltip: '点击编辑用户备注',
@@ -683,6 +900,14 @@ const Users: React.FC = () => {
           />
           {!isAdminPage && (
             <Button 
+              icon={<IdcardOutlined />} 
+              style={{ color: '#722ed1', borderColor: '#722ed1' }}
+              onClick={() => handleEdit(record, '6')} 
+              title="用户实名认证"
+            />
+          )}
+          {!isAdminPage && (
+            <Button 
               icon={<LoginOutlined />} 
               style={{ color: '#1677ff', borderColor: '#1677ff' }}
               onClick={() => handleImpersonate(record)}
@@ -690,7 +915,7 @@ const Users: React.FC = () => {
             />
           )}
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
+          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
             <Button icon={<DeleteOutlined />} danger disabled={record.role === 'admin'} />
           </Popconfirm>
         </Space>
@@ -803,7 +1028,11 @@ const Users: React.FC = () => {
                 title={<Space><UserOutlined /><Text strong>{record.username}</Text>{record.nickname && <Text type="secondary">({record.nickname})</Text>}</Space>}
                 extra={<Tag color={record.is_active ? 'success' : 'error'}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>}
               >
-                <CardRow label="UID"><Text code style={{ color: '#fff', fontSize: 12 }}>{record.uid}</Text></CardRow>
+                <CardRow label="UID">
+                  <a onClick={() => handleEdit(record)}>
+                    <Text code style={{ color: '#fff', fontSize: 12, cursor: 'pointer' }}>{record.uid}</Text>
+                  </a>
+                </CardRow>
                 {isRealEmail(record.email) && <CardRow label="邮箱"><Text style={{ fontSize: 12 }}>{record.email}</Text></CardRow>}
                 {record.mobile && <CardRow label="手机号"><Text style={{ fontSize: 12 }}>{record.mobile}</Text></CardRow>}
                 
@@ -813,7 +1042,7 @@ const Users: React.FC = () => {
                   return (
                     <CardRow label="推荐人">
                       <Text type="secondary" style={{ fontSize: '12px' }}>
-                        {referrer ? `${referrer.username} (UID: ${referrer.uid})` : record.referred_by}
+                        {referrer ? `${referrer.username}${referrer.nickname ? ` (${referrer.nickname})` : ''} (UID: ${referrer.uid || referrer.id})` : record.referred_by}
                       </Text>
                     </CardRow>
                   );
@@ -831,12 +1060,11 @@ const Users: React.FC = () => {
                         onChange: async (val) => {
                           if (val === record.admin_remark) return;
                           try {
-                            await request.put(`/users/${record.id}`, { admin_remark: val });
+                            await request.put(`/users/${record.uid || record.id}`, { admin_remark: val });
                             setAllUsers(prev => prev.map(u => u.id === record.id ? { ...u, admin_remark: val } : u));
                             setUsers(prev => prev.map(u => u.id === record.id ? { ...u, admin_remark: val } : u));
                           } catch (e) {
                             console.error('Failed to update remark:', e);
-                            message.error('备注更新失败');
                           }
                         },
                         tooltip: '点击编辑用户备注',
@@ -894,10 +1122,13 @@ const Users: React.FC = () => {
                 <CardActions>
                   <Button size="small" icon={<WalletOutlined />} style={{ color: '#52c41a', borderColor: '#52c41a' }} onClick={() => handleRechargeClick(record)} title="充值" />
                   {!isAdminPage && (
+                    <Button size="small" icon={<IdcardOutlined />} style={{ color: '#722ed1', borderColor: '#722ed1' }} onClick={() => handleEdit(record, '6')} title="实名认证" />
+                  )}
+                  {!isAdminPage && (
                     <Button size="small" icon={<LoginOutlined />} style={{ color: '#1677ff', borderColor: '#1677ff' }} onClick={() => handleImpersonate(record)} title="登录此用户" />
                   )}
                   <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-                  <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
+                  <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
                     <Button size="small" icon={<DeleteOutlined />} danger disabled={record.role === 'admin'} />
                   </Popconfirm>
                 </CardActions>
@@ -931,22 +1162,37 @@ const Users: React.FC = () => {
       </>
       ) : (
         <div style={{ animation: 'fadeIn 0.3s' }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, gap: 16 }}>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => setIsModalVisible(false)}>返回</Button>
-            <Title level={3} style={{ margin: 0 }}>
-              {editingUser ? t('users.edit_user') : (isAdminPage ? '添加管理员' : '添加普通用户')}
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12, gap: screens.xs ? 8 : 16 }}>
+            <Button icon={<ArrowLeftOutlined />} onClick={handleBackToList}>返回</Button>
+            <Title level={screens.xs ? 4 : 3} style={{ margin: 0 }}>
+              {editingUser ? `${t('users.edit_user')}${editingUser.uid ? ` (UID: ${editingUser.uid})` : ''}` : (isAdminPage ? '添加管理员' : '添加普通用户')}
             </Title>
           </div>
-          <div style={{ maxWidth: 1200, width: '100%' }}>
-            <Form form={form} layout="vertical" onFinish={handleSave}>
-              <Tabs
-                defaultActiveKey="1"
-                items={[
+          {userLoading ? (
+            <div style={{ textAlign: 'center', padding: '80px 0' }}>
+              <Spin size="large" tip="正在加载用户信息..." />
+            </div>
+          ) : (
+            <div style={{ maxWidth: 1200, width: '100%' }}>
+              <Form form={form} layout="vertical" onFinish={handleSave}>
+                <Tabs
+                  activeKey={userEditActiveTab}
+                  onChange={handleTabChange}
+                  items={[
                   {
                     key: '1',
                     label: '用户基本信息',
                     children: (
                       <>
+          {editingUser?.uid && (
+            <Form.Item label="用户 UID">
+              <Input
+                value={editingUser.uid}
+                disabled
+                addonAfter={<Typography.Text copyable={{ text: editingUser.uid }} style={{ cursor: 'pointer' }} />}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="username"
             label={t('users.username')}
@@ -972,20 +1218,38 @@ const Users: React.FC = () => {
           <Form.Item name="admin_remark" label="用户备注 (管理员可见)">
             <Input.TextArea placeholder="写入简便备注例如: vip客户" rows={3} autoSize={{ minRows: 2, maxRows: 6 }} />
           </Form.Item>
-          <Form.Item name="referred_by" label="上级推荐人 (UID / User ID)">
+          <Form.Item
+            name="referred_by"
+            label="上级推荐人 (UID / 用户名)"
+            rules={[
+              {
+                validator: (_, value) => {
+                  if (!value) return Promise.resolve();
+                  if (editingUser) {
+                    const valStr = String(value).trim();
+                    if (
+                      valStr === String(editingUser.id) ||
+                      (editingUser.uid && valStr === String(editingUser.uid)) ||
+                      (editingUser.username && valStr === String(editingUser.username))
+                    ) {
+                      return Promise.reject(new Error('不能选择自己作为上级推荐人'));
+                    }
+                  }
+                  return Promise.resolve();
+                }
+              }
+            ]}
+          >
             <Select
               showSearch
               allowClear
               placeholder="输入用户名、UID 或邮箱快速搜索"
               filterOption={(input, option) => {
                 if (!option) return false;
-                const searchStr = String(option.label || '').toLowerCase();
-                return searchStr.includes(input.toLowerCase());
+                const searchKey = (option as any)?.searchKey || String(option?.label || '').toLowerCase();
+                return searchKey.includes(input.toLowerCase().trim());
               }}
-              options={allUsers.map(u => ({
-                value: String(u.id),
-                label: `${u.username} ${u.nickname ? `(${u.nickname})` : ''} - UID: ${u.uid || u.id} ${isRealEmail(u.email) ? `(${u.email})` : ''}`
-              }))}
+              options={referrerOptions}
             />
           </Form.Item>
           <Form.Item name="mobile" label="手机号">
@@ -1006,7 +1270,7 @@ const Users: React.FC = () => {
                 <Input />
              </Form.Item>
           )}
-          {editingUser && isAdminPage && (
+          {editingUser && isAdminPage && !(editingUser.role === 'admin' && !editingUser.admin_group_id) && (
             <Form.Item name="role" label={t('users.role')}>
               <Select onChange={(val) => setSelectedRole(val)}>
                 <Option value="user">User</Option>
@@ -1014,9 +1278,13 @@ const Users: React.FC = () => {
               </Select>
             </Form.Item>
           )}
-          {selectedRole === 'admin' && (
-            <Form.Item name="admin_group_id" label="管理员等级" tooltip="未分配则默认为全权限超级管理员">
-              <Select placeholder="选择分组" allowClear>
+          {selectedRole === 'admin' && !(editingUser?.role === 'admin' && !editingUser?.admin_group_id) && (
+            <Form.Item
+              name="admin_group_id"
+              label="管理员等级"
+              rules={[{ required: true, message: '请选择管理员等级' }]}
+            >
+              <Select placeholder="选择管理员等级">
                 {adminGroups.map(group => (
                   <Option key={group.id} value={group.id}>{group.name}</Option>
                 ))}
@@ -1058,6 +1326,10 @@ const Users: React.FC = () => {
                     label: '用户详细',
                     children: (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 8 }}>
+                        <div>
+                          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>用户 UID:</Typography.Text>
+                          <Typography.Text code copyable={{ text: editingUser.uid }} style={{ fontSize: 13 }}>{editingUser.uid || '未知'}</Typography.Text>
+                        </div>
                         <div>
                           <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>注册时间:</Typography.Text>
                           <Typography.Text>{editingUser.created_at ? formatApiDateTime(editingUser.created_at) : '未知'}</Typography.Text>
@@ -1221,7 +1493,7 @@ const Users: React.FC = () => {
                     children: (
                       <div style={{ marginTop: 8 }}>
                         <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16, fontSize: 13 }}>
-                          为该用户针对特定模型设置单独折扣。系统取 MIN(用户模型折扣, 全站折扣, 等级折扣) 中最低值，若模型开启折扣限价则 MAX(最低折扣, 限价) 保底。
+                          为该用户针对特定模型设置单独折扣。系统取 MIN(用户模型折扣, 全站折扣, 用户等级折扣) 最低值，再与渠道倍率相乘；若模型开启折扣限价则对乘积 MAX 保底。
                         </Typography.Text>
                         <Row gutter={24}>
                           {/* 左侧：已选模型及折扣设置 */}
@@ -1313,44 +1585,31 @@ const Users: React.FC = () => {
                     label: (
                       <span>
                         用户实名
-                        {userKyc?.status && userKyc.status !== 'none' ? (
-                          <Tag
-                            color={KYC_STATUS_META[(userKyc.status as UserKycStatus)]?.color || 'default'}
-                            style={{ marginLeft: 8 }}
-                          >
-                            {KYC_STATUS_META[(userKyc.status as UserKycStatus)]?.label || userKyc.status}
+                        {kycCount > 0 ? (
+                          <Tag color="blue" style={{ marginLeft: screens.xs ? 4 : 8, fontSize: screens.xs ? 10 : 12, padding: screens.xs ? '0 4px' : undefined }}>
+                            {screens.xs ? `${kycCount}` : `${kycCount} 条实名`}
                           </Tag>
                         ) : null}
                       </span>
                     ),
-                    children: kycLoading ? (
-                      <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
-                    ) : (
-                      <div style={{ marginTop: 8 }}>
-                        <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16, fontSize: 13 }}>
-                          录入或审核该用户的个人/企业实名信息。证件图片需先配置对象存储（站点设置 → 存储）。
-                        </Typography.Text>
-                        <UserKycFormFields
-                          form={form}
-                          mode="admin"
-                          targetUserId={editingUser.id}
-                          currentStatus={(userKyc?.status as UserKycStatus) || 'none'}
-                        />
-                        <Button type="primary" loading={kycSaving} onClick={handleSaveKyc} style={{ marginTop: 8 }}>
-                          保存实名信息
-                        </Button>
-                      </div>
-                    )
+                    children: (
+                      <UserKycListManager
+                        userId={editingUser.uid || editingUser.id}
+                        username={editingUser.username}
+                        onKycCountChange={(cnt) => setKycCount(cnt)}
+                      />
+                    ),
                   }] : [])
                 ]}
               />
 
               <div style={{ marginTop: 24, display: 'flex', gap: 12 }}>
-                <Button type="primary" onClick={() => form.submit()}>保存</Button>
-                <Button onClick={() => setIsModalVisible(false)}>取消</Button>
+                <Button type="primary" onClick={() => form.submit()} style={screens.xs ? { flex: 1 } : undefined}>保存</Button>
+                <Button onClick={handleBackToList} style={screens.xs ? { flex: 1 } : undefined}>取消</Button>
               </div>
             </Form>
           </div>
+          )}
         </div>
       )}
 
@@ -1365,64 +1624,70 @@ const Users: React.FC = () => {
         onCancel={() => setIsRechargeModalVisible(false)}
         onOk={() => rechargeForm.submit()}
         confirmLoading={rechargeLoading}
-        width={500}
+        width={560}
         destroyOnClose
       >
-        <div style={{ 
-          padding: '16px 20px', 
-          background: _isLight ? '#f8f9fa' : 'rgba(255,255,255,0.02)', 
-          borderRadius: 12, 
-          marginBottom: 24,
-          border: `1px solid ${_isLight ? '#f0f0f0' : 'rgba(255,255,255,0.06)'}`,
-          boxShadow: _isLight ? '0 2px 8px rgba(0,0,0,0.02)' : 'inset 0 1px 1px rgba(255,255,255,0.02)'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
             <div style={{ 
-              width: 32, height: 32, borderRadius: '50%', 
+              width: 24, height: 24, borderRadius: '50%', 
               background: _isLight ? '#e6f4ff' : 'rgba(22,119,255,0.15)', 
-              display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 12 
+              display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 8 
             }}>
-              <UserOutlined style={{ fontSize: 16, color: '#1677ff' }} />
+              <UserOutlined style={{ fontSize: 13, color: '#1677ff' }} />
             </div>
-            <div>
-              <Text type="secondary" style={{ fontSize: 12, display: 'block', lineHeight: 1.2 }}>{t('users.username')}</Text>
-              <Text strong style={{ fontSize: 16, lineHeight: 1.2 }}>{rechargingUser?.username}</Text>
-            </div>
+            <Text type="secondary" style={{ fontSize: 13, marginRight: 6 }}>{t('users.username')}:</Text>
+            <Text strong style={{ fontSize: 14 }}>{rechargingUser?.username}</Text>
           </div>
           
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px 32px' }}>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>系统钱包余额</Text>
-              <Text strong style={{ color: '#1677ff', fontSize: 18, fontFamily: 'monospace' }}>{currencySymbol}{(rechargingUser?.balance || 0).toFixed(6)}</Text>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 2, display: 'block' }}>系统钱包余额</Text>
+              <Text strong style={{ color: '#1677ff', fontSize: 16, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                {currencySymbol}{(rechargingUser?.balance || 0).toFixed(6)}
+              </Text>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <Text type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>赠送钱包余额</Text>
-              <Text strong style={{ color: '#faad14', fontSize: 18, fontFamily: 'monospace' }}>🎁 {currencySymbol}{(rechargingUser?.gift_balance || 0).toFixed(6)}</Text>
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 2, display: 'block' }}>赠送钱包余额</Text>
+              <Text strong style={{ color: '#faad14', fontSize: 16, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                🎁 {currencySymbol}{(rechargingUser?.gift_balance || 0).toFixed(6)}
+              </Text>
             </div>
-            {((rechargingUser?.credit_limit || 0) > 0) && (
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <Text type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>信控额度</Text>
-                <Text strong style={{ color: '#1890ff', fontSize: 18, fontFamily: 'monospace' }}>💳 {currencySymbol}{(rechargingUser?.credit_limit || 0).toFixed(6)}</Text>
-              </div>
-            )}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginBottom: 2, display: 'block' }}>信控额度</Text>
+              <Text strong style={{ color: '#1890ff', fontSize: 16, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                💳 {currencySymbol}{(rechargingUser?.credit_limit || 0).toFixed(6)}
+              </Text>
+            </div>
           </div>
         </div>
 
         <Form form={rechargeForm} layout="vertical" onFinish={handleRechargeSave} initialValues={{ actionType: 'increase', amount: '', walletType: 'system' }}>
-          <Form.Item name="walletType" label={<Text strong>充值到哪个钱包</Text>} rules={[{ required: true }]}>
-            <Radio.Group style={{ width: '100%', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              <Radio.Button value="system" style={{ borderRadius: 6 }}>系统钱包 (正常充值)</Radio.Button>
-              <Radio.Button value="gift" style={{ borderRadius: 6 }}>赠送钱包 (活动赠送)</Radio.Button>
-              <Radio.Button value="credit" style={{ borderRadius: 6 }}>💳 信控额度</Radio.Button>
+          <Form.Item name="walletType" label={<Text strong style={{ fontSize: 13 }}>充值到哪个钱包</Text>} rules={[{ required: true }]} style={{ marginBottom: 10 }}>
+            <Radio.Group style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              <Radio.Button value="system" style={{ textAlign: 'center', borderRadius: 6 }}>系统钱包 (正常充值)</Radio.Button>
+              <Radio.Button value="gift" style={{ textAlign: 'center', borderRadius: 6 }}>赠送钱包 (活动赠送)</Radio.Button>
+              <Radio.Button value="credit" style={{ textAlign: 'center', borderRadius: 6 }}>💳 信控额度</Radio.Button>
             </Radio.Group>
           </Form.Item>
+
+          <Alert
+            type="warning"
+            showIcon
+            message={
+              <Text strong style={{ fontSize: 13, color: _isLight ? '#d46b08' : '#faad14' }}>
+                所有用户赠送、消费补偿、返现请选择赠送钱包充值
+              </Text>
+            }
+            style={{ marginBottom: 14, borderRadius: 6, padding: '8px 12px' }}
+          />
           
-          <Form.Item name="actionType" label={<Text strong>操作类型</Text>} rules={[{ required: true }]}>
-            <Radio.Group style={{ width: '100%', display: 'flex', gap: 8 }}>
-              <Radio.Button value="increase" style={{ flex: 1, textAlign: 'center', borderRadius: 6 }}>
+          <Form.Item name="actionType" label={<Text strong style={{ fontSize: 13 }}>操作类型</Text>} rules={[{ required: true }]} style={{ marginBottom: 14 }}>
+            <Radio.Group style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+              <Radio.Button value="increase" style={{ textAlign: 'center', borderRadius: 6 }}>
                 增加金额 (+)
               </Radio.Button>
-              <Radio.Button value="decrease" style={{ flex: 1, textAlign: 'center', borderRadius: 6 }}>
+              <Radio.Button value="decrease" style={{ textAlign: 'center', borderRadius: 6 }}>
                 减少金额 (-)
               </Radio.Button>
             </Radio.Group>
@@ -1430,7 +1695,8 @@ const Users: React.FC = () => {
           
           <Form.Item 
             name="amount" 
-            label={<Text strong>{t('users.adjustment_amount')}</Text>} 
+            label={<Text strong style={{ fontSize: 13 }}>{t('users.adjustment_amount')}</Text>} 
+            style={{ marginBottom: 14 }}
             rules={[
               { required: true, message: '请输入调整金额' },
               {
@@ -1452,15 +1718,15 @@ const Users: React.FC = () => {
             ]}
           >
             <Input 
-              style={{ width: '100%' }} 
+              style={{ width: '100%', borderRadius: 6 }} 
               size="large"
               prefix={<span style={{ color: 'var(--ant-color-text-secondary)', marginRight: 4 }}>{currencySymbol}</span>}
               placeholder="0.000000"
             />
           </Form.Item>
           
-          <div style={{ marginBottom: 20 }}>
-            <Text type="secondary" style={{ fontSize: 13, marginBottom: 10, display: 'block' }}>
+          <div style={{ marginBottom: 16 }}>
+            <Text type="secondary" style={{ fontSize: 12, marginBottom: 8, display: 'block' }}>
               快捷输入：<span style={{ color: '#1677ff', fontWeight: 500 }}>{
                 rechargeWalletType === 'system' ? '系统钱包 (正常充值)' : 
                 rechargeWalletType === 'gift' ? '赠送钱包 (活动赠送)' : '💳 信控额度'
@@ -1469,21 +1735,22 @@ const Users: React.FC = () => {
             <div style={{ 
               display: 'grid', 
               gridTemplateColumns: 'repeat(4, 1fr)', 
-              gap: 12 
+              gap: 8 
             }}>
               {[10, 50, 100, 500, 1000, 10000, 20000, 100000].map(val => (
                 <Button 
                   key={val} 
                   style={{ 
-                    borderRadius: 8,
-                    height: 36,
+                    borderRadius: 6,
+                    height: 32,
                     width: '100%',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     fontWeight: 500,
+                    fontSize: 13,
                     color: rechargeActionType === 'decrease' ? '#ff4d4f' : '#52c41a', 
-                    borderColor: rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.5)' : 'rgba(82, 196, 26, 0.5)',
+                    borderColor: rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.4)' : 'rgba(82, 196, 26, 0.4)',
                     background: rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.04)' : 'rgba(82, 196, 26, 0.04)'
                   }}
                   onMouseEnter={(e) => {
@@ -1491,7 +1758,7 @@ const Users: React.FC = () => {
                     e.currentTarget.style.background = rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.1)' : 'rgba(82, 196, 26, 0.1)';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.5)' : 'rgba(82, 196, 26, 0.5)';
+                    e.currentTarget.style.borderColor = rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.4)' : 'rgba(82, 196, 26, 0.4)';
                     e.currentTarget.style.background = rechargeActionType === 'decrease' ? 'rgba(255, 77, 79, 0.04)' : 'rgba(82, 196, 26, 0.04)';
                   }}
                   onClick={() => {
@@ -1505,8 +1772,8 @@ const Users: React.FC = () => {
             </div>
           </div>
           
-          <Form.Item name="remark" label={<Text strong>{t('users.remark')}</Text>} style={{ marginBottom: 0 }}>
-            <Input.TextArea rows={3} placeholder="输入调整备注信息 (必填/选填，建议填写以便后续对账)" style={{ borderRadius: 8 }} />
+          <Form.Item name="remark" label={<Text strong style={{ fontSize: 13 }}>{t('users.remark')}</Text>} style={{ marginBottom: 0 }}>
+            <Input.TextArea rows={2} placeholder="输入调整备注信息 (必填/选填，建议填写以便后续对账)" style={{ borderRadius: 6 }} />
           </Form.Item>
         </Form>
       </Modal>

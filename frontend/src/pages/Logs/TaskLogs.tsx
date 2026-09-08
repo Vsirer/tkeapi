@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Table, Tag, Button, Space, Typography, DatePicker, Input, Select, Row, Col, Form, message, Grid, Descriptions, Card, Tooltip, theme, Radio, Popconfirm, Modal, Image, Carousel, Spin } from 'antd';
+import { Table, Tag, Button, Space, Typography, Input, Select, Row, Col, Form, message, Grid, Descriptions, Card, Tooltip, theme, Radio, Popconfirm, Modal, Image, Carousel, Spin } from 'antd';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
 import { RefreshCw, Search, Download, Image as ImageIcon, MessageSquare, Video, Wrench, LayoutGrid, CheckCircle2, XCircle, Cuboid, ListOrdered, Mic, MoreHorizontal } from 'lucide-react';
 import request from '../../utils/request';
@@ -14,15 +14,19 @@ import { QueryGuard, isRequestAborted } from '../../utils/queryGuard';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import { formatApiDateTime } from '../../utils/timedisplay';
-import { toDateRangeParams } from '../../utils/dateRangeParams';
+import { defaultLogDayRange, toDateRangeParams } from '../../utils/dateRangeParams';
+import LogDateTimeRangePicker from '../../components/LogDateTimeRangePicker';
 import { useLogDetailLoader } from '../../hooks/useLogDetailLoader';
+import { useDragScroll } from '../../hooks/useDragScroll';
 import { parsePluginTagMeta } from '../../utils/pluginTagMeta';
+import MediaPreviewModal from './components/MediaPreviewModal';
 dayjs.extend(utc);
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import useAuthStore from '../../store/auth';
+import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
 
-const { RangePicker } = DatePicker;
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
 
@@ -158,40 +162,6 @@ const extractUrls = (content: string | null): string[] => {
   }
 };
 
-const CustomMedia = ({ src, type }: { src: string; type: '图片' | '视频' }) => {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  return (
-    <div style={{ position: 'relative', minHeight: 150, minWidth: 200, display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'rgba(0,0,0,0.02)', border: '1px solid rgba(0,0,0,0.05)', borderRadius: 8, padding: 8, maxWidth: '100%' }}>
-      {loading && !error && <Spin style={{ position: 'absolute' }} tip={`正在加载${type}...`} />}
-      {error ? (
-        <div style={{ textAlign: 'center', color: '#ff4d4f', padding: 16 }}>
-          <div style={{ marginBottom: 8 }}>{type}加载失败，链接可能已失效或无法直接访问：</div>
-          <a href={src} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all', fontSize: 12 }}>{src}</a>
-        </div>
-      ) : (
-        type === '图片' ? (
-          <Image 
-            src={src} 
-            style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', opacity: loading ? 0 : 1, transition: 'opacity 0.3s' }}
-            onLoad={() => setLoading(false)}
-            onError={() => { setLoading(false); setError(true); }}
-          />
-        ) : (
-          <video 
-            src={src} 
-            controls 
-            style={{ maxWidth: '100%', maxHeight: '600px', opacity: loading ? 0 : 1, transition: 'opacity 0.3s' }}
-            onLoadedData={() => setLoading(false)}
-            onError={() => { setLoading(false); setError(true); }}
-          />
-        )
-      )}
-    </div>
-  );
-};
-
 const ShadcnTabs = ({ value, onChange, options, isLight, themeToken }: any) => {
   return (
     <div style={{
@@ -239,6 +209,8 @@ const ShadcnTabs = ({ value, onChange, options, isLight, themeToken }: any) => {
 const TaskLogs: React.FC = () => {
   const { t } = useTranslation();
   const { user } = useAuthStore();
+  const { settings } = useSettingsStore();
+  const adminPath = settings?.admin_path || 'admin';
   const isSuperAdmin = user?.role === 'admin' && !user?.admin_group_id;
   const isAdmin = user?.role === 'admin';
   const { themeMode } = useThemeStore();
@@ -265,6 +237,7 @@ const TaskLogs: React.FC = () => {
   const [userLevels, setUserLevels] = useState<any[]>([]);
   const queryGuardRef = useRef(new QueryGuard());
   const skipNextEffectFetchRef = useRef(false);
+  const dragScrollRef = useDragScroll<HTMLDivElement>();
   const rowIds = useMemo(() => data.map((l) => l.id), [data]);
   const {
     detailCache,
@@ -296,23 +269,33 @@ const TaskLogs: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [previewType, setPreviewType] = useState<'图片' | '视频'>('图片');
-
+  const [previewRecord, setPreviewRecord] = useState<TaskLog | null>(null);
 
   const handlePreview = async (record: TaskLog) => {
-    // 优先列表 preview_urls；缺链且有详情权限时再兜底（无权限不打详情）
     let urls = (record.preview_urls || []).filter((u) => !!u?.trim());
-    if (urls.length === 0) {
-      let content = detailCache[record.id]?.response_content ?? record.response_content ?? null;
-      if (!content && allowDetails) {
+    let currentRecord: TaskLog = { ...record, ...detailCache[record.id] };
+
+    // 如果还没有详情内容（如 request_content 用于解析 prompt），且允许详情，则自动拉取
+    if (urls.length === 0 || (!currentRecord.request_content && allowDetails)) {
+      if (allowDetails) {
         const detail = await loadLogDetail(record.id);
-        content = detail?.response_content ?? null;
+        if (detail) {
+          currentRecord = { ...record, ...detail };
+        }
       }
+    }
+
+    if (urls.length === 0) {
+      const content = currentRecord.response_content ?? null;
       if (content) urls = extractUrls(content);
     }
+
     if (urls.length === 0) {
       message.warning(t('task_logs.no_media', '未找到可预览的媒体链接'));
       return;
     }
+
+    setPreviewRecord(currentRecord);
     setPreviewUrls(urls);
     setPreviewType(record.action_type === '图片' ? '图片' : '视频');
     setPreviewOpen(true);
@@ -501,7 +484,7 @@ const TaskLogs: React.FC = () => {
       title: t('task_logs.submit_time', '提交时间'),
       dataIndex: 'created_at',
       key: 'submit_time',
-      width: 170,
+      width: 190,
       render: (v: string, r: TaskLog) => {
         return (
           <Space direction="vertical" size={0}>
@@ -559,7 +542,6 @@ const TaskLogs: React.FC = () => {
       filters: actionTypeFilter === '视觉' ? [
         { text: t('logs.type_image', '图片'), value: '图片' },
         { text: t('logs.type_video', '视频'), value: '视频' },
-        { text: '视频增强', value: '视频增强' },
       ] : actionTypeFilter === '全部' ? [
         { text: t('logs.type_image', '图片'), value: '图片' },
         { text: t('logs.type_video', '视频'), value: '视频' },
@@ -613,7 +595,8 @@ const TaskLogs: React.FC = () => {
     {
       title: t('task_logs.status', '状态'),
       key: 'status',
-      width: 120,
+      width: 140,
+      fixed: 'right' as const,
       render: (_: any, r: TaskLog) => {
         const status = getAsyncFinalStatus(r);
         if (status === 'pending') {
@@ -683,15 +666,28 @@ const TaskLogs: React.FC = () => {
       render: (_: any, r: TaskLog) => {
         const name = r.user_nickname || r.user_uid || r.user_id;
         const remark = r.user_admin_remark?.trim();
+        const displayUid = r.user_uid || r.user_id;
         return (
           <Space direction="vertical" size={0}>
             <Text style={{ fontSize: 12 }}>
-              {name}
+              {r.user_uid ? (
+                <Link to={`/${adminPath}/users/${r.user_uid}/basic`} style={{ fontWeight: 500 }}>
+                  {name}
+                </Link>
+              ) : (
+                name
+              )}
               {remark ? <Text type="secondary" style={{ fontSize: 12 }}> {remark}</Text> : null}
             </Text>
-            <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: r.user_uid || r.user_id, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}>
-              {r.user_uid || r.user_id}
-            </Text>
+            {r.user_uid ? (
+              <Link to={`/${adminPath}/users/${r.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                UID: {r.user_uid}
+              </Link>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: displayUid, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}>
+                {displayUid}
+              </Text>
+            )}
           </Space>
         );
       },
@@ -701,7 +697,7 @@ const TaskLogs: React.FC = () => {
   // ── 筛选栏 ───────────────────────────────────────────────────
   const filterBar = (
     <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-      <Form form={form} initialValues={{ dateRange: [dayjs().startOf('day'), dayjs().endOf('day')] }} onFinish={() => fetchLogs(1, pageSize)}>
+      <Form form={form} initialValues={{ dateRange: defaultLogDayRange() }} onFinish={() => fetchLogs(1, pageSize)}>
         <Space wrap size={[8, 8]}>
           {isAdmin && (
             <>
@@ -722,14 +718,19 @@ const TaskLogs: React.FC = () => {
             </>
           )}
           <Form.Item name="search_keyword" noStyle>
-            <Input placeholder={t('logs.search_keyword', '搜索日志 ID / 任务 ID / 渠道 AID')} prefix={<Search size={16} />} allowClear style={{ width: 260, fontSize: 12, height: 32 }} />
+            <Input placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID')} prefix={<Search size={16} />} allowClear style={{ width: 270, fontSize: 12, height: 32 }} />
           </Form.Item>
           <Form.Item name="model" noStyle>
             <Input placeholder={t('logs.model_name', '模型名称')} prefix={<Search size={16} />} allowClear style={{ width: 180, fontSize: 12, height: 32 }} />
           </Form.Item>
           <Form.Item name="dateRange" noStyle>
-            <RangePicker className="font-size-12" style={{ fontSize: 12, height: 32 }} />
+            <LogDateTimeRangePicker isAdmin={isAdmin} className="font-size-12" />
           </Form.Item>
+          {!isAdmin && (
+            <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
+              {t('logs.user_date_range_hint', '近1年可查，单次最长1个月，支持精确到秒')}
+            </Text>
+          )}
           <Button type="primary" htmlType="submit" icon={<Search size={14} />} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('task_logs.query', '查询')}</Button>
           <Button icon={<RefreshCw size={14} />} onClick={() => fetchLogs(page, pageSize)} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('common.refresh', '刷新')}</Button>
           {isAdmin && (
@@ -820,7 +821,31 @@ const TaskLogs: React.FC = () => {
             </Space>
           </CardRow>
         )}
-        {isAdmin && <CardRow label={t('logs.user', '用户')}><Space direction="vertical" size={0} align="end"><Text style={{ fontSize: 12 }}>{record.user_nickname || record.user_uid || record.user_id}{record.user_admin_remark?.trim() ? <Text type="secondary" style={{ fontSize: 12 }}> {record.user_admin_remark.trim()}</Text> : null}</Text><Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: record.user_uid || record.user_id }}>{record.user_uid || record.user_id}</Text></Space></CardRow>}
+        {isAdmin && (
+          <CardRow label={t('logs.user', '用户')}>
+            <Space direction="vertical" size={0} align="end">
+              <Text style={{ fontSize: 12 }}>
+                {record.user_uid ? (
+                  <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
+                    {record.user_nickname || record.user_uid || record.user_id}
+                  </Link>
+                ) : (
+                  record.user_nickname || record.user_uid || record.user_id
+                )}
+                {record.user_admin_remark?.trim() ? <Text type="secondary" style={{ fontSize: 12 }}> {record.user_admin_remark.trim()}</Text> : null}
+              </Text>
+              {record.user_uid ? (
+                <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                  UID: {record.user_uid}
+                </Link>
+              ) : (
+                <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: record.user_id }}>
+                  {record.user_id}
+                </Text>
+              )}
+            </Space>
+          </CardRow>
+        )}
         <CardRow label={t('logs.latency', '耗时')}><Text type="secondary" style={{ fontSize: 12 }}>🕗 {(() => {
           if (isAsyncPost(record) && status === 'pending') return t('task_logs.processing', '处理中...');
           const sec = record.latency_ms / 1000;
@@ -838,9 +863,11 @@ const TaskLogs: React.FC = () => {
       style={{ 
         background: screens.xs ? 'transparent' : (isLight ? '#fff' : 'rgba(255,255,255,0.02)'), 
         borderRadius: 12,
-        boxShadow: screens.xs ? 'none' : undefined
+        boxShadow: screens.xs ? 'none' : undefined,
+        maxWidth: '100%',
+        overflow: 'hidden'
       }} 
-      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px' } }}
+      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px', maxWidth: '100%', overflowX: 'hidden' } }}
     >
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -906,73 +933,60 @@ const TaskLogs: React.FC = () => {
           renderCard={renderMobileCard}
         />
       ) : (
-        <Table
-          columns={columns.map((c: any) => c ? { ...c, align: 'center' } : null).filter(Boolean) as any}
-          dataSource={data}
-          rowKey="id"
-          loading={loading}
-          expandable={
-            allowDetails 
-              ? { expandedRowKeys, expandedRowRender, onExpand: handleExpand, expandRowByClick: false } 
-              : undefined
-          }
-          pagination={{
-            current: page,
-            pageSize,
-            total,
-            showSizeChanger: true,
-            showQuickJumper: true,
-            showTotal: (totalCount) => t('task_logs.total_records', '共 {{total}} 条', { total: totalCount }),
-          }}
-          onChange={(pagination, filters) => {
-            const typeFilter = filters?.type;
-            const newSubFilter = (typeFilter && typeFilter.length > 0) ? (typeFilter[0] as string) : null;
-            
-            let shouldResetPage = false;
-            if (newSubFilter !== subTypeFilter) {
-              setSubTypeFilter(newSubFilter);
-              shouldResetPage = true;
+        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+          <Table
+            columns={columns.map((c: any) => c ? { ...c, align: 'center' } : null).filter(Boolean) as any}
+            dataSource={data}
+            rowKey="id"
+            loading={loading}
+            expandable={
+              allowDetails 
+                ? { expandedRowKeys, expandedRowRender, onExpand: handleExpand, expandRowByClick: false } 
+                : undefined
             }
-            if (shouldResetPage) {
-              setPage(1);
-            } else if (pagination.current !== page || pagination.pageSize !== pageSize) {
-              setPage(pagination.current || 1);
-              setPageSize(pagination.pageSize || 20);
-            }
-          }}
-          scroll={{ x: 'max-content' }}
-          size="middle"
-        />
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              showSizeChanger: true,
+              showQuickJumper: true,
+              showTotal: (totalCount) => t('task_logs.total_records', '共 {{total}} 条', { total: totalCount }),
+            }}
+            onChange={(pagination, filters) => {
+              const typeFilter = filters?.type;
+              const newSubFilter = (typeFilter && typeFilter.length > 0) ? (typeFilter[0] as string) : null;
+              
+              let shouldResetPage = false;
+              if (newSubFilter !== subTypeFilter) {
+                setSubTypeFilter(newSubFilter);
+                shouldResetPage = true;
+              }
+              if (shouldResetPage) {
+                setPage(1);
+              } else if (pagination.current !== page || pagination.pageSize !== pageSize) {
+                setPage(pagination.current || 1);
+                setPageSize(pagination.pageSize || 20);
+              }
+            }}
+            scroll={{ x: 1200 }}
+            sticky={{ offsetHeader: 0 }}
+            size="middle"
+          />
+        </div>
       )}
 
       {/* 媒体预览 Modal */}
-      <Modal
-        title={t('task_logs.preview_media', '媒体预览')}
+      <MediaPreviewModal
         open={previewOpen}
-        onCancel={() => { setPreviewOpen(false); setPreviewUrls([]); }}
-        footer={null}
-        width={800}
-        destroyOnClose
-        centered
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center', justifyContent: 'center' }}>
-          {previewType === '图片' ? (
-            <Image.PreviewGroup>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', justifyContent: 'center', width: '100%' }}>
-                {previewUrls.map((url, idx) => (
-                  <CustomMedia key={idx} src={url} type="图片" />
-                ))}
-              </div>
-            </Image.PreviewGroup>
-          ) : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', justifyContent: 'center', width: '100%' }}>
-              {previewUrls.map((url, idx) => (
-                <CustomMedia key={idx} src={url} type="视频" />
-              ))}
-            </div>
-          )}
-        </div>
-      </Modal>
+        onClose={() => {
+          setPreviewOpen(false);
+          setPreviewUrls([]);
+          setPreviewRecord(null);
+        }}
+        record={previewRecord}
+        urls={previewUrls}
+        type={previewType}
+      />
       {/* 默认类型设置 Modal */}
       <Modal
         title={null}

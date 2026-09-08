@@ -63,6 +63,9 @@ pub async fn list_users(
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+    axum::extract::Extension(ctx): axum::extract::Extension<
+        crate::admin_permission::AdminContext,
+    >,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<User>> {
     let operator_name = claims.username.clone();
@@ -75,6 +78,14 @@ pub async fn create_user(
             .collect();
         actual_email = format!("u_{}@tokensbyte.local", random_suffix);
     }
+
+    let role = request.role.as_deref().unwrap_or("user");
+    crate::admin_permission::require_edit(
+        &ctx,
+        crate::admin_permission::users_write_perm(role),
+    )?;
+    crate::admin_permission::assert_can_assign_admin_group(&state, request.admin_group_id, role)
+        .await?;
 
     let exists: bool = sqlx::query_scalar(
         &state
@@ -98,7 +109,6 @@ pub async fn create_user(
         .await
         .map_err(AppError::from)?;
 
-    let role = request.role.as_deref().unwrap_or("user");
     let user_group = request
         .user_group
         .as_deref()
@@ -109,6 +119,10 @@ pub async fn create_user(
     // Resolve referred_by to ID if it's a UID or Username
     if let Some(ref ref_val) = referred_by {
         if !ref_val.trim().is_empty() {
+            if ref_val == &request.username {
+                return Err(AppError::BadRequest("不能设置自己为推荐人".to_string()));
+            }
+
             let resolved_id: Option<String> = sqlx::query_scalar(&state.db.format_query(
                 "SELECT id FROM users WHERE id = ? OR uid = ? OR username = ? LIMIT 1",
             ))
@@ -195,22 +209,44 @@ pub async fn create_user(
     Ok(Json(user))
 }
 
-pub async fn update_user(
+pub async fn get_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<User>> {
-    let operator_name = claims.username.clone();
-    let operator_id = claims.sub.clone();
-    let mut user: User = sqlx::query_as(&state.db.format_query(
-        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
+    let user: User = sqlx::query_as(&state.db.format_query(
+        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ? OR u.uid = ?"
     ))
+    .bind(&id)
     .bind(&id)
     .fetch_optional(&state.db.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
+    Ok(Json(user))
+}
+
+pub async fn update_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+    axum::extract::Extension(ctx): axum::extract::Extension<
+        crate::admin_permission::AdminContext,
+    >,
+    Json(request): Json<UpdateUserRequest>,
+) -> AppResult<Json<User>> {
+    let operator_name = claims.username.clone();
+    let operator_id = claims.sub.clone();
+    let mut user: User = sqlx::query_as(&state.db.format_query(
+        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ? OR u.uid = ?"
+    ))
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let was_super_admin =
+        crate::admin_permission::is_super_admin(&user.role, user.admin_group_id);
     let old_balance = user.balance;
     let old_gift_balance = user.gift_balance;
     let old_credit_limit = user.credit_limit;
@@ -227,6 +263,22 @@ pub async fn update_user(
     .await?
     .flatten()
     .unwrap_or_else(|| old_user_group.clone());
+
+    crate::admin_permission::assert_super_admin_immutable(
+        &user.role,
+        user.admin_group_id,
+        request.role.as_deref(),
+        request.admin_group_id,
+    )?;
+    let write_role = if user.role == "admin" || request.role.as_deref() == Some("admin") {
+        "admin"
+    } else {
+        "user"
+    };
+    crate::admin_permission::require_edit(
+        &ctx,
+        crate::admin_permission::users_write_perm(write_role),
+    )?;
 
     if let Some(username) = request.username.filter(|u| u != &user.username) {
         crate::api::auth::validate_username(&username, false)?;
@@ -305,6 +357,13 @@ pub async fn update_user(
     }
     if user.role != "admin" {
         user.admin_group_id = None;
+    } else if !was_super_admin {
+        crate::admin_permission::assert_can_assign_admin_group(
+            &state,
+            user.admin_group_id,
+            &user.role,
+        )
+        .await?;
     }
     // 用户模型单独折扣（空字符串视为清空，存 NULL）
     if let Some(ref md) = request.model_discounts {
@@ -345,6 +404,13 @@ pub async fn update_user(
 
             if let Some(id) = resolved_id {
                 new_ref = Some(id);
+            }
+        }
+
+        // 检查不能设置自己为推荐人
+        if let Some(ref ref_id) = new_ref {
+            if ref_id == &user.id || ref_id == &user.uid || ref_id == &user.username {
+                return Err(AppError::BadRequest("不能设置自己为推荐人".to_string()));
             }
         }
 
@@ -394,7 +460,7 @@ pub async fn update_user(
     .bind(&user.timezone)
     .bind(user.credit_limit)
     .bind(user.pay_enabled)
-    .bind(&id)
+    .bind(&user.id)
     .execute(&mut *tx)
     .await?;
 
@@ -409,7 +475,7 @@ pub async fn update_user(
         sqlx::query(
             &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, 'manual', ?, ?, 'system')")
         )
-        .bind(&id)
+        .bind(&user.id)
         .bind(diff)
         .bind(remark)
         .bind(&operator_name)
@@ -428,7 +494,7 @@ pub async fn update_user(
         sqlx::query(
             &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, 'manual', ?, ?, 'gift')")
         )
-        .bind(&id)
+        .bind(&user.id)
         .bind(diff)
         .bind(remark)
         .bind(&operator_name)
@@ -447,7 +513,7 @@ pub async fn update_user(
         sqlx::query(
             &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, 'manual', ?, ?, 'credit')")
         )
-        .bind(&id)
+        .bind(&user.id)
         .bind(diff)
         .bind(remark)
         .bind(&operator_name)
@@ -472,7 +538,7 @@ pub async fn update_user(
         sqlx::query(&state.db.format_query(
             "INSERT INTO user_level_logs (user_id, old_level, old_level_name, new_level, new_level_name, operator, operator_id, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'admin')"
         ))
-        .bind(&id)
+        .bind(&user.id)
         .bind(&old_user_group)
         .bind(&old_level_name)
         .bind(&user.user_group)
@@ -489,86 +555,170 @@ pub async fn update_user(
     tx.commit().await?;
 
     if balance_changed {
-        crate::services::notification::spawn_low_balance_check(Arc::clone(&state), id.clone());
+        crate::services::notification::spawn_low_balance_check(Arc::clone(&state), user.id.clone());
     }
 
     Ok(Json(user))
+}
+
+async fn spawn_object_deletes(
+    state: &AppState,
+    plugin: &str,
+    rows: Vec<(String, String)>,
+    label: &'static str,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    use crate::services::object_store::StoreKind;
+    let all = crate::api::plugins::collect_object_stores(state, plugin).await;
+    for (key, provider) in rows {
+        let kind = StoreKind::parse(&provider);
+        let stores: Vec<_> = all
+            .iter()
+            .filter(|s| StoreKind::parse(s.provider()) == kind)
+            .cloned()
+            .collect();
+        if stores.is_empty() {
+            continue;
+        }
+        tasks.push(tokio::spawn(async move {
+            for store in stores {
+                match store.delete_file(&key).await {
+                    Ok(()) => tracing::info!("同步清理用户数据: {label} 文件删除成功: {key}"),
+                    Err(e) => {
+                        tracing::warn!("同步清理用户数据: {label} 文件删除失败: {key} - {e}")
+                    }
+                }
+            }
+        }));
+    }
 }
 
 pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+    axum::extract::Extension(ctx): axum::extract::Extension<
+        crate::admin_permission::AdminContext,
+    >,
 ) -> AppResult<Json<serde_json::Value>> {
+    let target: Option<(String, String, Option<i64>)> = sqlx::query_as(
+        &state
+            .db
+            .format_query("SELECT id, role, admin_group_id FROM users WHERE id = ? OR uid = ?"),
+    )
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    let (target_id, role, gid) = target.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
     // 防止管理员删除自己
-    if claims.sub == id {
+    if claims.sub == target_id {
         return Err(AppError::BadRequest(
             "不能删除当前登录的管理员账户".to_string(),
         ));
     }
 
+    if crate::admin_permission::is_super_admin(&role, gid) {
+        return Err(AppError::BadRequest("超级管理员不可删除".to_string()));
+    }
+    crate::admin_permission::require_edit(
+        &ctx,
+        crate::admin_permission::users_write_perm(&role),
+    )?;
+
     // 0. 在事务开启前，先查出该用户在 plugin_assets 与 playground_assets 中上传的全部云端文件，
     //    以进行同步且并发的物理清理，避免云端对象存储产生孤儿垃圾文件。
     //    注：不可在下面的数据库事务内执行网络 IO，以避免长时间占用数据库连接。
-    let assets: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+    let assets: Vec<(String, String, String)> = sqlx::query_as::<_, (String, String, String)>(
         &state
             .db
-            .format_query("SELECT file_url, plugin_ns FROM plugin_assets WHERE user_id = ?"),
+            .format_query("SELECT file_url, plugin_ns, COALESCE(storage_provider, 'tos') FROM plugin_assets WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .fetch_all(&state.db.pool)
     .await
     .unwrap_or_default();
 
-    let pg_assets: Vec<String> = sqlx::query_scalar::<_, String>(
-        &state.db.format_query("SELECT tos_object_key FROM playground_assets WHERE user_id = ? AND tos_object_key IS NOT NULL AND tos_object_key != ''")
+    let pg_assets: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+        &state.db.format_query("SELECT tos_object_key, COALESCE(storage_provider, 'tos') FROM playground_assets WHERE user_id = ? AND tos_object_key IS NOT NULL AND tos_object_key != ''")
     )
-    .bind(&id)
+    .bind(&target_id)
     .fetch_all(&state.db.pool)
     .await
     .unwrap_or_default();
 
-    let pg2026_assets: Vec<String> = sqlx::query_scalar::<_, String>(
-        &state.db.format_query("SELECT tos_object_key FROM playground_2026_project_assets WHERE user_id = ? AND tos_object_key IS NOT NULL AND tos_object_key != ''")
+    let mut pg2026_all: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+        &state.db.format_query("SELECT tos_object_key, COALESCE(storage_provider, 'tos') FROM playground_2026_project_assets WHERE user_id = ? AND tos_object_key IS NOT NULL AND tos_object_key != ''")
     )
-    .bind(&id)
+    .bind(&target_id)
     .fetch_all(&state.db.pool)
     .await
     .unwrap_or_default();
+    let pg2026_lib: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
+        &state.db.format_query("SELECT tos_object_key, COALESCE(storage_provider, 'tos') FROM playground_2026_assets WHERE user_id = ? AND tos_object_key IS NOT NULL AND tos_object_key != ''")
+    )
+    .bind(&target_id)
+    .fetch_all(&state.db.pool)
+    .await
+    .unwrap_or_default();
+    pg2026_all.extend(pg2026_lib);
 
-    if !assets.is_empty() || !pg_assets.is_empty() || !pg2026_assets.is_empty() {
+    if !assets.is_empty() || !pg_assets.is_empty() || !pg2026_all.is_empty() {
         // 并发生成 TOS 文件删除任务
         let mut delete_tasks = Vec::new();
 
         // 1. 处理 plugin_assets 关联的 TOS 文件删除 (包含国内版与国际版素材管理等插件)
         if !assets.is_empty() {
             // 缓存不同 plugin_ns 的 TosConfig，避免重复查库
-            let mut tos_configs = std::collections::HashMap::new();
+            let mut stores = std::collections::HashMap::new();
             for ns in assets
                 .iter()
-                .map(|(_, ns)| ns)
+                .map(|(_, ns, _)| ns.as_str())
                 .collect::<std::collections::HashSet<_>>()
             {
-                if let Some(config) = crate::api::plugins::get_tos_config(&state, ns).await {
-                    tos_configs.insert(ns.clone(), config);
-                }
+                stores.insert(
+                    ns.to_string(),
+                    crate::api::plugins::collect_object_stores(&state, ns).await,
+                );
             }
 
-            for (file_url, plugin_ns) in assets {
-                if let Some(tos_config) = tos_configs.get(&plugin_ns).cloned() {
+            for (file_url, plugin_ns, provider) in assets {
+                let kind = crate::services::object_store::StoreKind::parse(&provider);
+                let Some(list) = stores.get(&plugin_ns) else {
+                    continue;
+                };
+                let matched = list
+                    .iter()
+                    .find(|s| {
+                        crate::services::object_store::StoreKind::parse(s.provider()) == kind
+                            && s.extract_object_key(&file_url).is_some()
+                    })
+                    .cloned()
+                    .or_else(|| {
+                        list.iter()
+                            .find(|s| {
+                                crate::services::object_store::StoreKind::parse(s.provider())
+                                    == kind
+                            })
+                            .cloned()
+                    });
+                if let Some(tos_config) = matched {
                     if let Some(object_key) = tos_config.extract_object_key(&file_url) {
                         let task = tokio::spawn(async move {
-                            match crate::services::tos::delete_file(&tos_config, &object_key).await
-                            {
+                            match tos_config.delete_file(&object_key).await {
                                 Ok(()) => {
                                     tracing::info!(
-                                        "同步清理用户数据: plugin_assets TOS 文件删除成功: {}",
+                                        "同步清理用户数据: plugin_assets 文件删除成功: {}",
                                         object_key
                                     );
                                 }
                                 Err(e) => {
                                     tracing::warn!(
-                                        "同步清理用户数据: plugin_assets TOS 文件删除失败: {} - {}",
+                                        "同步清理用户数据: plugin_assets 文件删除失败: {} - {}",
                                         object_key,
                                         e
                                     );
@@ -581,63 +731,22 @@ pub async fn delete_user(
             }
         }
 
-        // 2. 处理 playground_assets (体验中心) 关联的 TOS 文件删除
-        if !pg_assets.is_empty() {
-            if let Some(tos_config) =
-                crate::api::plugins::get_tos_config(&state, "playground").await
-            {
-                for tos_key in pg_assets {
-                    let tos_config = tos_config.clone();
-                    let task = tokio::spawn(async move {
-                        match crate::services::tos::delete_file(&tos_config, &tos_key).await {
-                            Ok(()) => {
-                                tracing::info!(
-                                    "同步清理用户数据: playground_assets TOS 文件删除成功: {}",
-                                    tos_key
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "同步清理用户数据: playground_assets TOS 文件删除失败: {} - {}",
-                                    tos_key,
-                                    e
-                                );
-                            }
-                        }
-                    });
-                    delete_tasks.push(task);
-                }
-            }
-        }
-
-        // 2b. 处理 playground_2026_project_assets (创作中心2026) 关联的 TOS 文件删除
-        if !pg2026_assets.is_empty() {
-            if let Some(tos_config) =
-                crate::api::plugins::get_tos_config(&state, "playground_2026").await
-            {
-                for tos_key in pg2026_assets {
-                    let tos_config = tos_config.clone();
-                    let task = tokio::spawn(async move {
-                        match crate::services::tos::delete_file(&tos_config, &tos_key).await {
-                            Ok(()) => {
-                                tracing::info!(
-                                    "同步清理用户数据: playground_2026_project_assets TOS 文件删除成功: {}",
-                                    tos_key
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "同步清理用户数据: playground_2026_project_assets TOS 文件删除失败: {} - {}",
-                                    tos_key,
-                                    e
-                                );
-                            }
-                        }
-                    });
-                    delete_tasks.push(task);
-                }
-            }
-        }
+        spawn_object_deletes(
+            &state,
+            "playground",
+            pg_assets,
+            "playground_assets",
+            &mut delete_tasks,
+        )
+        .await;
+        spawn_object_deletes(
+            &state,
+            "playground_2026",
+            pg2026_all,
+            "playground_2026_project_assets",
+            &mut delete_tasks,
+        )
+        .await;
 
         // 超时保障机制：使用 tokio::time::timeout 给并发执行 of tasks 设置一个 30 秒的最大时间上限。
         // 即使云端网络异常卡死，接口也将在 30 秒内强制返回并继续主流程，绝不阻塞用户删除接口的正常响应。
@@ -659,8 +768,8 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM commissions WHERE user_id = ? OR from_user_id = ?"),
     )
-    .bind(&id)
-    .bind(&id)
+    .bind(&target_id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
@@ -670,7 +779,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM recharge_records WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
@@ -680,7 +789,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM api_tokens WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
@@ -690,7 +799,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM orders WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
@@ -700,7 +809,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM plugin_assets WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
@@ -710,13 +819,13 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM plugin_asset_groups WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
     // 7. 无外键但需清理的业务数据
     sqlx::query(&state.db.format_query("DELETE FROM logs WHERE user_id = ?"))
-        .bind(&id)
+        .bind(&target_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query(
@@ -724,7 +833,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM plugin_api_logs WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
     // marketing 关联（无外键但需清理）
@@ -733,7 +842,7 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM marketing_team_leaders WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -741,13 +850,13 @@ pub async fn delete_user(
             .db
             .format_query("DELETE FROM marketing_team_members WHERE user_id = ?"),
     )
-    .bind(&id)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await?;
 
     // 8. 最终删除用户主记录（playground_projects / playground_assets 已有 ON DELETE CASCADE）
     sqlx::query(&state.db.format_query("DELETE FROM users WHERE id = ?"))
-        .bind(&id)
+        .bind(&target_id)
         .execute(&mut *tx)
         .await?;
 
@@ -759,6 +868,9 @@ pub async fn recharge_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+    axum::extract::Extension(ctx): axum::extract::Extension<
+        crate::admin_permission::AdminContext,
+    >,
     Json(request): Json<RechargeRequest>,
 ) -> AppResult<Json<User>> {
     if request.amount.is_nan() || request.amount.is_infinite() {
@@ -770,12 +882,18 @@ pub async fn recharge_user(
     let mut tx = state.db.pool.begin().await?;
 
     let user: User = sqlx::query_as(&state.db.format_query(
-        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
+        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ? OR u.uid = ?"
     ))
+    .bind(&id)
     .bind(&id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    crate::admin_permission::require_edit(
+        &ctx,
+        crate::admin_permission::users_write_perm(&user.role),
+    )?;
 
     let remark = request
         .remark
@@ -793,7 +911,7 @@ pub async fn recharge_user(
             "UPDATE users SET credit_limit = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         ))
         .bind(new_credit)
-        .bind(&id)
+        .bind(&user.id)
         .execute(&mut *tx)
         .await?;
     } else if is_gift {
@@ -803,7 +921,7 @@ pub async fn recharge_user(
             "UPDATE users SET gift_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         ))
         .bind(new_gift)
-        .bind(&id)
+        .bind(&user.id)
         .execute(&mut *tx)
         .await?;
     } else {
@@ -813,7 +931,7 @@ pub async fn recharge_user(
             "UPDATE users SET balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         ))
         .bind(new_balance)
-        .bind(&id)
+        .bind(&user.id)
         .execute(&mut *tx)
         .await?;
     }
@@ -827,7 +945,7 @@ pub async fn recharge_user(
         "system"
     };
     let recharge_id: i64 = sqlx::query_scalar::<_, i64>(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id"))
-        .bind(&id)
+        .bind(&user.id)
         .bind(request_amount)
         .bind(recharge_type)
         .bind(&remark)
@@ -841,13 +959,13 @@ pub async fn recharge_user(
         if let Err(e) = crate::services::affiliate::award_commission(
             &state.db,
             &mut tx,
-            &id,
+            &user.id,
             recharge_id,
             request_amount,
         )
         .await
         {
-            tracing::error!(
+            tracing::warn!(
                 "Failed to award commission for recharge {}: {}",
                 recharge_id,
                 e
@@ -858,12 +976,12 @@ pub async fn recharge_user(
     tx.commit().await?;
 
     // 扣减可能触发提醒；充值回升需清除本轮标记
-    crate::services::notification::spawn_low_balance_check(Arc::clone(&state), id.clone());
+    crate::services::notification::spawn_low_balance_check(Arc::clone(&state), user.id.clone());
 
     let updated_user: User = sqlx::query_as(&state.db.format_query(
         "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
     ))
-    .bind(&id)
+    .bind(&user.id)
     .fetch_one(&state.db.pool)
     .await?;
 
@@ -873,16 +991,21 @@ pub async fn recharge_user(
 pub async fn impersonate_user(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+    axum::extract::Extension(ctx): axum::extract::Extension<
+        crate::admin_permission::AdminContext,
+    >,
     Path(id): Path<String>,
 ) -> AppResult<Json<LoginResponse>> {
     // 防御纵深：路由层已有 auth + admin_middleware，handler 再强制校验管理员身份
     if claims.role != "admin" {
         return Err(AppError::Forbidden("Admin access required".to_string()));
     }
+    crate::admin_permission::require_edit(&ctx, "users.list")?;
 
     let user: User = sqlx::query_as(&state.db.format_query(
-        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
+        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ? OR u.uid = ?"
     ))
+    .bind(&id)
     .bind(&id)
     .fetch_optional(&state.db.pool)
     .await?
@@ -921,12 +1044,21 @@ pub async fn get_user_level_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let real_user_id: Option<String> = sqlx::query_scalar(
+        &state.db.format_query("SELECT id FROM users WHERE id = ? OR uid = ? LIMIT 1"),
+    )
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    let target_id = real_user_id.unwrap_or_else(|| id.clone());
+
     let logs = sqlx::query(
         &state.db.format_query(
             "SELECT id, user_id, old_level, old_level_name, new_level, new_level_name, operator, operator_id, source, remark, created_at FROM user_level_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 100"
         )
     )
-    .bind(&id)
+    .bind(&target_id)
     .fetch_all(&state.db.pool)
     .await?;
 
@@ -984,22 +1116,17 @@ pub async fn query_consumption_stats_batch(
 
     let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
     let tz: chrono_tz::Tz = site_tz.parse().unwrap_or(chrono_tz::Asia::Shanghai);
-    let slices =
-        crate::api::date_helper::calculate_query_slices(start_date, end_date, tz);
+    let slices = crate::api::date_helper::calculate_query_slices(start_date, end_date, tz);
 
-    let placeholders = user_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = user_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
     let mut result: HashMap<String, ConsumptionStatsBatchItem> = HashMap::new();
-    let merge_row =
-        |map: &mut HashMap<String, ConsumptionStatsBatchItem>, row: ConsumptionStatsBatchRawRow| {
-            let entry = map.entry(row.user_id).or_default();
-            entry.system_cost += row.system_cost;
-            entry.gift_cost += row.gift_cost;
-        };
+    let merge_row = |map: &mut HashMap<String, ConsumptionStatsBatchItem>,
+                     row: ConsumptionStatsBatchRawRow| {
+        let entry = map.entry(row.user_id).or_default();
+        entry.system_cost += row.system_cost;
+        entry.gift_cost += row.gift_cost;
+    };
 
     if slices.has_history_days {
         let sql = format!(

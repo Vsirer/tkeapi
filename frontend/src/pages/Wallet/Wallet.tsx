@@ -19,6 +19,7 @@ import dayjs from 'dayjs';
 
 import RechargeModal from './RechargeModal';
 import { rechargeTypeColor, rechargeTypeFilters, rechargeTypeLabel } from '../../utils/rechargeType';
+import { copyWithFeedback } from '../../utils/clipboard';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -76,30 +77,9 @@ const Wallet: React.FC = () => {
     }
   };
 
-  const copyInviteLink = () => {
+  const copyInviteLink = async () => {
     const link = `${window.location.origin}/register?aff=${user?.uid}`;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(link).then(() => {
-          message.success(t('wallet.copy_invite_link_success'));
-        });
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = link;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand('copy');
-        message.success(t('wallet.copy_invite_link_success'));
-        textArea.remove();
-      }
-    } catch (e) {
-      console.error('Failed to copy text: ', e);
-      message.error(t('wallet.copy_failed'));
-    }
+    await copyWithFeedback(link, t('wallet.copy_invite_link_success'), t('wallet.copy_failed'));
   };
 
   const handleRedeem = async () => {
