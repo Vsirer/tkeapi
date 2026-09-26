@@ -66,6 +66,10 @@ services:
       - DATA_DIR=/app/data
       - TZ=Asia/Shanghai
       - LOG_DIR=/app/logs
+      - HTTP_CONNECT_TIMEOUT_SECS=${HTTP_CONNECT_TIMEOUT_SECS:-3}
+      - HTTP_POOL_MAX_IDLE_PER_HOST=${HTTP_POOL_MAX_IDLE_PER_HOST:-300}
+      - HTTP_POOL_IDLE_TIMEOUT_SECS=${HTTP_POOL_IDLE_TIMEOUT_SECS:-60}
+      - MAX_IN_FLIGHT_REQUESTS=${MAX_IN_FLIGHT_REQUESTS:-2000} # 全局在途请求反压上限（防雪崩保护，小规格主机建议 500-1000，高配主机可调至 5000+）
     command: /app/tokensbyte-server
     volumes:
       - ./data:/app/data
@@ -78,6 +82,8 @@ services:
     # 不暴露端口到宿主机，仅通过前端 nginx 反向代理访问
     networks:
       - app-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,11 +97,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3072M
-          cpus: '2.0'
+          memory: ${BACKEND_MEM_LIMIT:-3072M}
+          cpus: '${BACKEND_CPU_LIMIT:-2.0}'
         reservations:
-          memory: 256M
-          cpus: '0.5'
+          memory: ${BACKEND_MEM_RES:-256M}
+          cpus: '${BACKEND_CPU_RES:-0.5}'
 
   frontend:
     image: ${PROJECT_NAME:-tokensbyte}-frontend:latest
@@ -126,11 +132,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
-          cpus: '0.5'
+          memory: ${FRONTEND_MEM_LIMIT:-256M}
+          cpus: '${FRONTEND_CPU_LIMIT:-0.5}'
         reservations:
-          memory: 128M
-          cpus: '0.25'
+          memory: ${FRONTEND_MEM_RES:-128M}
+          cpus: '${FRONTEND_CPU_RES:-0.25}'
 
 networks:
   app-network:

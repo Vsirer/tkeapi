@@ -22,36 +22,26 @@ fi
 echo "✅ Docker 版本: $(docker --version)"
 echo ""
 
-# 优先导入项目专属联合离线包（优先匹配最新时间戳或固定名称）
-_latest_pkg=$(ls -t "${PROJECT_NAME}"-offline*.tar.gz 2>/dev/null | head -n 1)
-if [ -n "$_latest_pkg" ] && [ -f "$_latest_pkg" ]; then
-    echo "  → 导入联合镜像: $_latest_pkg"
-    docker load -i "$_latest_pkg"
-elif [ -f "tokensbyte-offline.tar.gz" ]; then
-    echo "  → 导入联合镜像: tokensbyte-offline.tar.gz"
-    docker load -i "tokensbyte-offline.tar.gz"
-else
-    # 查找所有 tar 文件
-    tar_files=$(ls *.tar 2>/dev/null || true)
+# 查找所有 tar 文件
+tar_files=$(ls *.tar 2>/dev/null || true)
 
-    if [ -z "$tar_files" ]; then
-        echo "❌ 错误: 当前目录未找到镜像文件 (.tar / .tar.gz)"
-        echo "   请将导出的镜像文件上传到此目录"
-        exit 1
-    fi
-
-    echo "📥 开始导入镜像..."
-    echo ""
-
-    # 导入每个镜像文件
-    for tar_file in *.tar; do
-        if [ -f "$tar_file" ]; then
-            echo "  → 导入: $tar_file"
-            docker load -i "$tar_file"
-            echo ""
-        fi
-    done
+if [ -z "$tar_files" ]; then
+    echo "❌ 错误: 当前目录未找到 .tar 镜像文件"
+    echo "   请将导出的镜像文件上传到此目录"
+    exit 1
 fi
+
+echo "📥 开始导入镜像..."
+echo ""
+
+# 导入每个镜像文件
+for tar_file in *.tar; do
+    if [ -f "$tar_file" ]; then
+        echo "  → 导入: $tar_file"
+        docker load -i "$tar_file"
+        echo ""
+    fi
+done
 
 echo "✅ 所有镜像导入完成！"
 echo ""

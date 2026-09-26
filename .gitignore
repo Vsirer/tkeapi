@@ -1,6 +1,7 @@
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
@@ -47,13 +48,14 @@ yarn-debug.log*
 yarn-error.log*
 
 # Workspace
+.agents/
 .gemini/
 /tmp/
 docker-images/
 backup/
 *.dump
 opensource/
-tokensbyte-server-bin
+tokensbyte-server-bin*
 tokensbyte-images*.tar.gz
 backend/git_log.txt
 backend/tokensbyte-server
