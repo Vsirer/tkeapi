@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -45,7 +45,7 @@ const stylesList: StyleOption[] = [
     gradientColors: ['#0891b2', '#06b6d4', '#10b981'],
     features: ['等宽Monospace字体', '左右分栏极客排版', '可交互代码终端 Widget', '网格点阵背景与硬朗线条'],
   },
-  {
+    {
     key: 'dark_gradient',
     name: '星空流光 SaaS',
     layoutName: '悬浮胶囊导航 + 3D 立体卡片墙',
@@ -54,6 +54,16 @@ const stylesList: StyleOption[] = [
     secondaryColor: '#d946ef',
     gradientColors: ['#8b5cf6', '#d946ef', '#ec4899'],
     features: ['悬浮毛玻璃胶囊 Header', '超大渐变流光文字 & 霓虹渐变边框', '3D 错落立体悬浮卡片墙', '呼吸感背景光晕效果'],
+  },
+  {
+    key: 'fai_art',
+    name: 'FAI艺术',
+    layoutName: '青蓝分栏 + 像素雕塑首屏',
+    desc: '复刻 fal.ai 主页的生成式艺术语言：高饱和青蓝 Hero，每次刷新随机展现 3 款艺术形态（青柠星核、落日熔岩、极光光环）与动态呼吸粒子，Outfit 超大字距标题，纯黑 4px 按钮的高对比波普排版。',
+    primaryColor: '#99edff',
+    secondaryColor: '#c8f000',
+    gradientColors: ['#99edff', '#c8f000', '#7c4dff'],
+    features: ['3款随机刷新艺术形态与动态呼吸', '青蓝分栏 Hero 与悬浮胶囊', '4px 纯黑按钮与白描边次按钮', '艺术大图模型画廊与极简微交互'],
   },
 ];
 
@@ -211,6 +221,48 @@ const PortalStyleSelection: React.FC = () => {
             <div style={{ flex: 1, height: 16, border: `1px solid ${primary}` }} />
             <div style={{ flex: 1, height: 16, border: `1px solid ${primary}` }} />
             <div style={{ flex: 1, height: 16, border: `1px solid ${primary}` }} />
+          </div>
+        </div>
+      );
+    } else if (styleKey === 'fai_art') {
+      return (
+        <div style={{
+          width: '100%',
+          height: 110,
+          background: '#99edff',
+          borderRadius: 6,
+          padding: 8,
+          position: 'relative',
+          overflow: 'hidden',
+          border: '1px solid rgba(18,18,22,0.08)',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: 10, marginBottom: 10 }}>
+            <div style={{ width: 16, height: 4, background: '#19191a', borderRadius: 1 }} />
+            <div style={{ display: 'flex', gap: 3 }}>
+              <div style={{ width: 8, height: 3, background: 'rgba(0,0,0,0.18)' }} />
+              <div style={{ width: 8, height: 3, background: 'rgba(0,0,0,0.18)' }} />
+            </div>
+            <div style={{ width: 14, height: 6, background: '#202022', borderRadius: 2 }} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, height: 72 }}>
+            <div style={{ width: '42%', position: 'relative' }}>
+              <div style={{ position: 'absolute', inset: 4, display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 1.5 }}>
+                {Array.from({ length: 24 }).map((_, i) => (
+                  <div key={i} style={{ background: i % 5 === 0 ? '#eaff6a' : '#c8f000', borderRadius: 0.5, opacity: (i % 7 === 0) ? 0 : 1 }} />
+                ))}
+              </div>
+              <div style={{ position: 'absolute', width: 22, height: 6, background: '#fff200', borderRadius: 99, top: 8, right: 4, transform: 'rotate(-24deg)' }} />
+              <div style={{ position: 'absolute', width: 28, height: 3, background: '#7c4dff', borderRadius: 99, bottom: 10, left: 6, transform: 'rotate(-18deg)' }} />
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 3 }}>
+              <div style={{ width: '92%', height: 7, background: '#111', borderRadius: 1 }} />
+              <div style={{ width: '70%', height: 7, background: '#111', borderRadius: 1 }} />
+              <div style={{ width: '55%', height: 3, background: 'rgba(0,0,0,0.28)', borderRadius: 1, marginTop: 2 }} />
+              <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                <div style={{ width: 22, height: 8, background: '#202022', borderRadius: 2 }} />
+                <div style={{ width: 22, height: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.2)', borderRadius: 2 }} />
+              </div>
+            </div>
           </div>
         </div>
       );

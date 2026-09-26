@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -22,15 +22,30 @@ interface SmartSvgIconProps {
 const SmartSvgIcon: React.FC<SmartSvgIconProps> = ({ src, alt = "", style = {}, className, onError }) => {
   const { themeMode } = useThemeStore();
   const isDark = themeMode === 'dark';
+
+  // 针对 kimi 等具有暗黑/亮色专属高保真矢量图的模型，根据主题动态切换资源并禁止整体反色
+  const isKimi = src ? src.toLowerCase().includes('kimi') : false;
+  const actualSrc = React.useMemo(() => {
+    if (!src) return '';
+    if (isKimi) {
+      if (src.includes('kimi-dark.svg') || src.includes('kimi-light.svg')) {
+        return isDark ? src.replace(/kimi-light\.svg/i, 'kimi-dark.svg') : src.replace(/kimi-dark\.svg/i, 'kimi-light.svg');
+      }
+      return isDark ? src.replace(/kimi\.svg/i, 'kimi-dark.svg') : src.replace(/kimi\.svg/i, 'kimi-light.svg');
+    }
+    return src;
+  }, [src, isKimi, isDark]);
+
   const [isInvertNeeded, setIsInvertNeeded] = useState<boolean>(() => {
+    if (isKimi) return false;
     return darkSvgCache[src] || false;
   });
 
   useEffect(() => {
     if (!src) return;
 
-    // 站点默认彩色图标：禁止暗色反色
-    if (src.toLowerCase().includes('default-model')) {
+    // 站点默认彩色图标及多色品牌图标：禁止暗色反色
+    if (src.toLowerCase().includes('default-model') || isKimi) {
       darkSvgCache[src] = false;
       setIsInvertNeeded(false);
       return;
@@ -118,7 +133,7 @@ const SmartSvgIcon: React.FC<SmartSvgIconProps> = ({ src, alt = "", style = {}, 
 
   return (
     <img
-      src={src}
+      src={actualSrc || src}
       alt={alt}
       style={finalStyle}
       className={className}

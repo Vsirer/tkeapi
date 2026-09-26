@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
@@ -13,12 +13,13 @@ import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import useAuthStore from '../../store/auth';
+import { listPagination } from '../../components/ListPagination';
 import { useThemeStore } from '../../store/theme';
 import type { WalletStats, RechargeRecord } from '../../types';
 import dayjs from 'dayjs';
 
 import RechargeModal from './RechargeModal';
-import { rechargeTypeColor, rechargeTypeFilters, rechargeTypeLabel } from '../../utils/rechargeType';
+import { rechargeTypeColor, rechargeTypeFilters, rechargeTypeLabel, extractOrderNo, cleanRemark } from '../../utils/rechargeType';
 import { copyWithFeedback } from '../../utils/clipboard';
 
 const { Title, Text } = Typography;
@@ -162,11 +163,34 @@ const Wallet: React.FC = () => {
 
   const columns: any[] = [
     {
-      title: t('wallet.time'),
-      dataIndex: 'created_at',
-      key: 'created_at',
+      title: t('wallet.order_no', { defaultValue: '订单号' }),
+      key: 'order_no',
       align: 'left' as const,
-      render: (text: string) => <Text style={{ color: subText }}>{dayjs(text).format('YYYY/MM/DD HH:mm:ss')}</Text>,
+      render: (_: unknown, record: RechargeRecord) => {
+        const orderNo = extractOrderNo(record);
+        if (orderNo) {
+          return (
+            <Text copyable style={{ fontFamily: 'monospace', fontSize: 12, color: mainText }}>
+              {orderNo}
+            </Text>
+          );
+        }
+        return <Text style={{ color: subText }}>-</Text>;
+      },
+    },
+    {
+      title: isEn ? 'Type' : '资金类型',
+      dataIndex: 'recharge_type',
+      key: 'recharge_type',
+      align: 'center' as const,
+      filters: rechargeTypeFilters(),
+      onFilter: (value: string | number | boolean, record: RechargeRecord) =>
+        record.recharge_type === value,
+      render: (type: string, record: RechargeRecord) => (
+        <Tag color={rechargeTypeColor(type)} bordered={false} style={{ margin: 0 }}>
+          {rechargeTypeLabel(type, record.wallet_type)}
+        </Tag>
+      ),
     },
     {
       title: t('wallet.amount', { defaultValue: `金额 (${currencyUnit})`, unit: currencyUnit }),
@@ -189,25 +213,21 @@ const Wallet: React.FC = () => {
       ),
     },
     {
-      title: isEn ? 'Type' : '资金类型',
-      dataIndex: 'recharge_type',
-      key: 'recharge_type',
-      align: 'center' as const,
-      filters: rechargeTypeFilters(),
-      onFilter: (value: string | number | boolean, record: RechargeRecord) =>
-        record.recharge_type === value,
-      render: (type: string, record: RechargeRecord) => (
-        <Tag color={rechargeTypeColor(type)} bordered={false} style={{ margin: 0 }}>
-          {rechargeTypeLabel(type, record.wallet_type)}
-        </Tag>
-      ),
+      title: t('wallet.time'),
+      dataIndex: 'created_at',
+      key: 'created_at',
+      align: 'left' as const,
+      render: (text: string) => <Text style={{ color: subText }}>{dayjs(text).format('YYYY/MM/DD HH:mm:ss')}</Text>,
     },
     {
-      title: t('wallet.remark'),
+      title: t('wallet.remark', { defaultValue: '备注' }),
       dataIndex: 'remark',
       key: 'remark',
       align: 'left' as const,
-      render: (text: string) => <Text style={{ color: mainText }}>{text || '-'}</Text>,
+      render: (_: unknown, record: RechargeRecord) => {
+        const cleaned = cleanRemark(record.remark, record.order_no);
+        return <Text style={{ color: cleaned ? mainText : subText }}>{cleaned || '-'}</Text>;
+      },
     },
   ];
 
@@ -542,7 +562,7 @@ const Wallet: React.FC = () => {
                   columns={columns}
                   rowKey="id"
                   loading={loading}
-                  pagination={{ pageSize: 10, showSizeChanger: false }}
+                  pagination={listPagination()}
                   size="middle"
                   scroll={{ x: 'max-content' }}
                   style={{ margin: 0 }}
@@ -559,7 +579,7 @@ const Wallet: React.FC = () => {
                   dataSource={modelDiscountData}
                   columns={modelColumns}
                   rowKey="mid"
-                  pagination={{ pageSize: 10, showSizeChanger: false }}
+                  pagination={listPagination()}
                   size="middle"
                   scroll={{ x: 'max-content' }}
                   style={{ margin: 0 }}

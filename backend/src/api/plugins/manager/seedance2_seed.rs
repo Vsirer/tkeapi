@@ -1,20 +1,21 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-//! 创作中心2026：Seedance 2.0 方案对齐官方视频生成 API。
+//! 创作中心2026：Seedance 方案对齐官方视频生成 API。
 //! 仅 playground_2026 覆写，不改旧创作中心默认方案。
+//! 编辑/延长是全能参考子能力开关，不是独立上传口。
 //! https://www.volcengine.com/docs/82379/1520757
 
 use serde_json::{json, Value};
 
 pub const SEEDANCE2_SCHEME_ID: &str = "seedance2.0";
 
-/// 官方能力：文生 / 图生（首帧）/ 首尾帧 / 全模态参考（图≤9 视频≤3 音频≤3）/ 编辑 / 延长。
-/// 全模态参考 = 站点「全能参考生视频」。首尾帧与全模态参考互斥。
+/// 官方能力：文生 / 图生（首帧）/ 首尾帧 / 全能参考；编辑与延长为全能参考子能力。
+/// IO 面板可选 2.0 或 2.5 上限。首尾帧与全能参考互斥。
 pub fn seedance2_video_scheme_io() -> Value {
     json!({
         "inputs": [
@@ -89,6 +90,24 @@ pub fn seedance2_video_scheme_io() -> Value {
                 "max": 3,
                 "expandable": true,
                 "default_count": 1
+            },
+            {
+                "key": "edit_video",
+                "label": "编辑视频",
+                "enabled": true,
+                "modality": "video",
+                "handle_prefix": "Edit Video",
+                "bind_key": "feature:edit_video",
+                "max": 0
+            },
+            {
+                "key": "extend_video",
+                "label": "延长视频",
+                "enabled": true,
+                "modality": "video",
+                "handle_prefix": "Extend Video",
+                "bind_key": "feature:extend_video",
+                "max": 0
             }
         ],
         "outputs": [
@@ -112,7 +131,7 @@ pub fn seedance2_scheme() -> Value {
         "name": "Seedance 2.0 方案",
         "type": "video",
         "is_system": true,
-        "description": "火山 Seedance 2.0：文生视频、图生视频（首帧）、首尾帧、全模态参考生视频（站点全能参考：图/视频/音频）、视频编辑、视频延长。首尾帧与全模态参考互斥。时长 4–15 秒，分辨率 480p/720p/1080p/4k。",
+        "description": "火山 Seedance：文生、图生（首帧）、首尾帧、全能参考（图/视频/音频）。编辑与延长是全能参考子能力（默认开）：编辑保持宽高比与时长，延长保持宽高比。IO 面板可选 2.0（图≤9 视频≤3 音频≤3，无参考按文生视频，参考音频须搭配参考图）或 2.5（图≤30 视频≤10 音频≤10，可任意搭配，时长最长 30 秒）。",
         "max_reference_images": 9,
         "params": [
             {
@@ -125,7 +144,7 @@ pub fn seedance2_scheme() -> Value {
                 "step": 1,
                 "default": 5,
                 "unit": "秒",
-                "hint": "官方 4–15 秒；编辑/延长可按模式另传 duration"
+                "hint": "2.0 文生/图生/全能参考 4–15 秒，2.5 为 4–30 秒。仅编辑由模型自选时长（请求传 -1）；延长视频可选手动秒数"
             },
             {
                 "key": "ratio",
@@ -135,7 +154,7 @@ pub fn seedance2_scheme() -> Value {
                 "options": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
                 "default": "16:9",
                 "quick": true,
-                "hint": "adaptive：按首帧/参考媒体自动选比例；编辑与延长建议 adaptive"
+                "hint": "文生、全能参考可选固定比例。首帧/首尾帧、编辑、延长必须 adaptive"
             },
             {
                 "key": "resolution",
@@ -224,7 +243,7 @@ pub fn seed_seedance2_scheme(schemes: &mut Vec<Value>) {
     }
 }
 
-/// Seedance 2.0 方案：去掉反向提示词（官方不支持）
+/// Seedance：去掉反向提示词；编辑/延长改为全能参考子能力开关
 pub fn sanitize_seedance2_saved_io(saved: &mut Value) {
     if let Some(inputs) = saved.get_mut("inputs").and_then(|v| v.as_array_mut()) {
         inputs.retain(|p| {
@@ -233,4 +252,74 @@ pub fn sanitize_seedance2_saved_io(saved: &mut Value) {
             key != Some("negative_prompt") && bind_key != Some("negative_prompt")
         });
     }
+    ensure_edit_extend_feature_toggles(saved);
 }
+
+fn port_key(p: &Value) -> &str {
+    p.get("key").and_then(|v| v.as_str()).unwrap_or("")
+}
+
+fn feature_edit_port() -> Value {
+    json!({
+        "key": "edit_video",
+        "label": "编辑视频",
+        "enabled": true,
+        "modality": "video",
+        "handle_prefix": "Edit Video",
+        "bind_key": "feature:edit_video",
+        "max": 0
+    })
+}
+
+fn feature_extend_port() -> Value {
+    json!({
+        "key": "extend_video",
+        "label": "延长视频",
+        "enabled": true,
+        "modality": "video",
+        "handle_prefix": "Extend Video",
+        "bind_key": "feature:extend_video",
+        "max": 0
+    })
+}
+
+fn coerce_feature_toggle(port: &mut Value, bind_key: &str) {
+    let enabled = port.get("enabled").cloned().unwrap_or(json!(true));
+    if let Some(obj) = port.as_object_mut() {
+        obj.insert("bind_key".into(), json!(bind_key));
+        obj.insert("max".into(), json!(0));
+        obj.insert("enabled".into(), enabled);
+        obj.remove("accepts");
+        obj.remove("accept_asset_kinds");
+        obj.remove("expandable");
+        obj.remove("required");
+    }
+}
+
+fn ensure_edit_extend_feature_toggles(saved: &mut Value) {
+    let Some(inputs) = saved.get_mut("inputs").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut has_edit = false;
+    let mut has_extend = false;
+    for p in inputs.iter_mut() {
+        match port_key(p) {
+            "edit_video" => {
+                has_edit = true;
+                coerce_feature_toggle(p, "feature:edit_video");
+            }
+            "extend_video" => {
+                has_extend = true;
+                coerce_feature_toggle(p, "feature:extend_video");
+            }
+            _ => {}
+        }
+    }
+    if !has_edit {
+        inputs.push(feature_edit_port());
+    }
+    if !has_extend {
+        inputs.push(feature_extend_port());
+    }
+}
+

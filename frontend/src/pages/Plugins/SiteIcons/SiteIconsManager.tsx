@@ -1,16 +1,19 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Typography, Input, Button, Space, Spin, message, Tag, Modal, Form, Select, Upload, Tooltip, Pagination, Empty, Popconfirm, Progress } from 'antd';
-import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, CloudDownloadOutlined, HistoryOutlined, InboxOutlined, CloseOutlined } from '@ant-design/icons';
+import { Typography, Input, Button, Space, Spin, message, Tag, Modal, Form, Select, Upload, Tooltip, Empty, Popconfirm, Progress, ColorPicker, InputNumber } from 'antd';
+import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, CloudDownloadOutlined, HistoryOutlined, InboxOutlined, CloseOutlined, ClearOutlined } from '@ant-design/icons';
 import request from '../../../utils/request';
 import { useThemeStore } from '../../../store/theme';
 import { formatApiDateTime } from '../../../utils/timedisplay';
+import PluginLogRetentionCard from '../components/PluginLogRetentionCard';
+import ListPagination, { useListPager } from '../../../components/ListPagination';
+import { applySvgEdits, fitSvgPreview, readSvgMeta, type SvgEdits } from './svgEdit';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -25,17 +28,27 @@ interface SyncLog {
   id: number; total_synced: number; total_new: number; total_updated: number;
   status: string; error_message: string | null; created_at: string;
 }
+interface StorageStatus {
+  success: boolean;
+  provider: string;
+  is_cloud: boolean;
+  bucket?: string;
+  endpoint?: string;
+  region?: string;
+  path_prefix?: string;
+}
 
 const SiteIconsManager: React.FC = () => {
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const [icons, setIcons] = useState<SiteIcon[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const { page, pageSize, setPage, setPageSize } = useListPager();
   const [loading, setLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSource, setFilterSource] = useState('');
+  const [storageInfo, setStorageInfo] = useState<StorageStatus | null>(null);
 
   // 同步状态
   const [syncing, setSyncing] = useState(false);
@@ -53,16 +66,40 @@ const SiteIconsManager: React.FC = () => {
   const [editingIcon, setEditingIcon] = useState<SiteIcon | null>(null);
   const [form] = Form.useForm();
   const [svgPreview, setSvgPreview] = useState('');
+  const [svgOriginal, setSvgOriginal] = useState('');
+  const [svgWidth, setSvgWidth] = useState(24);
+  const [svgHeight, setSvgHeight] = useState(24);
+  const [svgBg, setSvgBg] = useState<string | null>(null);
+  const [svgFill, setSvgFill] = useState<string | null>(null);
+  const [svgLoading, setSvgLoading] = useState(false);
+  const svgBaseRef = useRef('');
+  const editsRef = useRef<SvgEdits>({ width: 24, height: 24, background: null, iconColor: null });
   const [saving, setSaving] = useState(false);
   const [logModalVisible, setLogModalVisible] = useState(false);
   const [syncLogList, setSyncLogList] = useState<SyncLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [previewIcon, setPreviewIcon] = useState<SiteIcon | null>(null);
+  const [resetting, setResetting] = useState(false);
 
-  const fetchIcons = useCallback(async (p = page) => {
+  const fetchStorageStatus = useCallback(async () => {
+    try {
+      const res = await (request.get('/plugins/site-icons/storage-status') as any);
+      if (res?.data || res?.success) {
+        setStorageInfo(res.data || res);
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStorageStatus();
+  }, [fetchStorageStatus]);
+
+  const fetchIcons = useCallback(async (p = page, size = pageSize) => {
     try {
       setLoading(true);
-      const params: any = { page: p, size: 60 };
+      const params: any = { page: p, size };
       if (searchKeyword) params.q = searchKeyword;
       if (filterCategory) params.category = filterCategory;
       if (filterSource) params.source = filterSource;
@@ -70,9 +107,10 @@ const SiteIconsManager: React.FC = () => {
       if (res.data) setIcons(res.data);
       if (res.total != null) setTotal(res.total);
       setPage(res.page || p);
+      setPageSize(size);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, [searchKeyword, filterCategory, filterSource, page]);
+  }, [searchKeyword, filterCategory, filterSource, page, pageSize]);
 
   useEffect(() => { fetchIcons(1); }, [searchKeyword, filterCategory, filterSource]);
 
@@ -127,46 +165,180 @@ const SiteIconsManager: React.FC = () => {
   }, []);
 
   // ── CRUD ──
-  const handleDelete = async (id: number) => {
-    try { await request.delete(`/plugins/site-icons/${id}`); message.success('已删除'); fetchIcons(); }
-    catch (e) { console.error(e); }
+  const handleResetLibrary = () => {
+    Modal.confirm({
+      title: '清空重置图标库',
+      content: '将永久删除图标库中的全部图标，包括数据库记录、本地文件和云端文件，不保留任何图标数据。此操作无法恢复。',
+      okText: '确认清空',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setResetting(true);
+        try {
+          const res = await (request.post('/plugins/site-icons/reset', {}) as any);
+          if ((res?.local_failed || 0) + (res?.cloud_failed || 0) > 0) {
+            message.warning(res.message || '图标记录已清空，部分文件删除失败');
+          } else {
+            message.success('图标库已全部清空');
+          }
+          setIcons([]);
+          setTotal(0);
+          fetchIcons(1);
+        } catch (e) {
+          console.error(e);
+          return Promise.reject(e);
+        } finally {
+          setResetting(false);
+        }
+      },
+    });
   };
-  const handleOpenAdd = () => { setEditingIcon(null); form.resetFields(); setSvgPreview(''); setAddModalVisible(true); };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await request.delete(`/plugins/site-icons/${id}`);
+      message.success('已删除');
+      fetchIcons();
+    } catch (e: any) {
+      console.error(e);
+      const errMsg = e?.response?.data?.message || e?.message || '删除失败';
+      message.error(errMsg);
+    }
+  };
+  const absorbSvg = (text: string, replaceOriginal: boolean) => {
+    const meta = readSvgMeta(text);
+    const edits: SvgEdits = { width: meta.width, height: meta.height, background: meta.background, iconColor: null };
+    svgBaseRef.current = text;
+    editsRef.current = edits;
+    if (replaceOriginal) setSvgOriginal(text);
+    setSvgPreview(text);
+    setSvgWidth(meta.width);
+    setSvgHeight(meta.height);
+    setSvgBg(meta.background);
+    setSvgFill(null);
+  };
+  const patchSvg = (partial: Partial<SvgEdits>) => {
+    const next: SvgEdits = { ...editsRef.current, ...partial };
+    editsRef.current = next;
+    if (partial.width != null) setSvgWidth(partial.width);
+    if (partial.height != null) setSvgHeight(partial.height);
+    if ('background' in partial) setSvgBg(partial.background ?? null);
+    if ('iconColor' in partial) setSvgFill(partial.iconColor ?? null);
+    const base = svgBaseRef.current;
+    if (!base.includes('<svg')) return;
+    setSvgPreview(applySvgEdits(base, next));
+  };
+  const handleOpenAdd = () => {
+    setEditingIcon(null);
+    form.resetFields();
+    absorbSvg('', true);
+    setSvgLoading(false);
+    setAddModalVisible(true);
+  };
   const handleOpenEdit = (icon: SiteIcon) => {
     setEditingIcon(icon);
-    let tags: string[] = []; try { tags = JSON.parse(icon.tags || '[]'); } catch {}
+    let tags: string[] = [];
+    try { tags = JSON.parse(icon.tags || '[]'); } catch {}
     form.setFieldsValue({ name: icon.name, title: icon.title, category: icon.category, tags });
-    setSvgPreview(''); setAddModalVisible(true);
+    absorbSvg('', true);
+    setSvgLoading(true);
+    setAddModalVisible(true);
+    const loadFromFile = async () => {
+      const resp = await fetch(getSvgUrl(icon));
+      const text = (await resp.text()).trim();
+      if (!resp.ok || !text.includes('<svg')) throw new Error('svg');
+      absorbSvg(text, true);
+    };
+    request.get(`/plugins/site-icons/${icon.id}/content`, { skipErrorHandler: true } as any)
+      .then(async (res: any) => {
+        const text = typeof res?.data === 'string' ? res.data.trim() : '';
+        if (!text.includes('<svg')) {
+          await loadFromFile();
+          return;
+        }
+        absorbSvg(text, true);
+      })
+      .catch(() => loadFromFile())
+      .catch(() => {
+        message.warning('未能读取 SVG 源码，可手动粘贴');
+      })
+      .finally(() => setSvgLoading(false));
   };
   const handleSave = async () => {
     try {
-      const values = await form.validateFields(); setSaving(true);
+      const values = await form.validateFields();
+      setSaving(true);
       if (editingIcon) {
         const payload: any = { name: values.name, title: values.title, category: values.category, tags: values.tags || [] };
-        if (svgPreview) payload.svg_content = svgPreview;
+        const nextSvg = svgPreview.trim();
+        if (nextSvg && nextSvg !== svgOriginal.trim()) payload.svg_content = nextSvg;
         await request.put(`/plugins/site-icons/${editingIcon.id}`, payload);
         message.success('图标更新成功');
       } else {
-        if (!svgPreview) { message.warning('请上传或粘贴 SVG 内容'); setSaving(false); return; }
-        await request.post('/plugins/site-icons', { name: values.name, title: values.title, category: values.category, tags: values.tags || [], svg_content: svgPreview });
+        if (!svgPreview.trim()) {
+          message.warning('请上传或粘贴 SVG 内容');
+          setSaving(false);
+          return;
+        }
+        await request.post('/plugins/site-icons', {
+          name: values.name,
+          title: values.title,
+          category: values.category,
+          tags: values.tags || [],
+          svg_content: svgPreview.trim()
+        });
         message.success('图标添加成功');
       }
-      setAddModalVisible(false); fetchIcons();
-    } catch (e) { console.error(e); }
-    finally { setSaving(false); }
+      setAddModalVisible(false);
+      fetchIcons();
+    } catch (e: any) {
+      console.error(e);
+      const errMsg = e?.response?.data?.message || e?.message || '保存失败';
+      message.error(errMsg);
+    } finally {
+      setSaving(false);
+    }
   };
   const handleSvgUpload = (file: File) => {
     const reader = new FileReader();
-    reader.onload = (e) => { const c = e.target?.result as string; if (c.includes('<svg')) setSvgPreview(c); else message.error('无效的 SVG 文件'); };
-    reader.readAsText(file); return false;
+    reader.onload = (e) => {
+      const c = e.target?.result as string;
+      if (c && c.includes('<svg')) {
+        absorbSvg(c.trim(), !editingIcon);
+        message.success('SVG 文件读取成功');
+      } else {
+        message.error('无效的 SVG 文件，必须包含 <svg> 根标签');
+      }
+    };
+    reader.readAsText(file);
+    return false;
   };
   const fetchSyncLogs = async () => {
-    try { setLogsLoading(true); const res = await (request.get('/plugins/site-icons/sync-logs') as any); if (res.data) setSyncLogList(res.data); }
-    catch (e) { console.error(e); } finally { setLogsLoading(false); }
+    try {
+      setLogsLoading(true);
+      const res = await (request.get('/plugins/site-icons/sync-logs') as any);
+      if (res.data) setSyncLogList(res.data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLogsLoading(false);
+    }
   };
-  const getSvgUrl = (icon: SiteIcon) => icon.file_path ? `/assets/${icon.file_path}` : '';
+  const getSvgUrl = (icon: SiteIcon) => {
+    if (!icon?.file_path) return '';
+    const base = icon.file_path.startsWith('http://') || icon.file_path.startsWith('https://')
+      ? icon.file_path
+      : `/assets/${icon.file_path}`;
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}v=${encodeURIComponent(icon.updated_at || '')}`;
+  };
 
   const syncPercent = syncTotal > 0 ? Math.round((syncCurrent / syncTotal) * 100) : 0;
+  const iconTileStyle: React.CSSProperties = {
+    width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)', borderRadius: 8, overflow: 'hidden',
+  };
+  const iconImgStyle: React.CSSProperties = { maxWidth: 36, maxHeight: 36, objectFit: 'contain' };
 
   return (
     <div>
@@ -236,6 +408,13 @@ const SiteIconsManager: React.FC = () => {
             style={{ width: 130 }} options={[{ label: 'Lobe Icons', value: 'lobe-icons' }, { label: '手动添加', value: 'custom' }]} />
         </div>
         <Space>
+          <Tooltip title="永久删除全部图标、本地文件和云端文件，不保留任何数据">
+            <span>
+              <Button danger icon={<ClearOutlined />} loading={resetting} disabled={syncing || resetting} onClick={handleResetLibrary}>
+                清空重置
+              </Button>
+            </span>
+          </Tooltip>
           <Tooltip title="查看同步日志"><Button icon={<HistoryOutlined />} onClick={() => { setLogModalVisible(true); fetchSyncLogs(); }} /></Tooltip>
           <Button icon={<PlusOutlined />} onClick={handleOpenAdd}>手动添加</Button>
           <Button type="primary" icon={<CloudDownloadOutlined />} loading={syncing} onClick={handleSync} disabled={syncing}>
@@ -266,8 +445,8 @@ const SiteIconsManager: React.FC = () => {
                 onClick={() => setPreviewIcon(icon)}
               >
                 {icon.source === 'custom' && <Tag style={{ position: 'absolute', top: 4, right: 4, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: 'rgba(82,196,26,0.1)', border: '1px solid rgba(82,196,26,0.3)', color: '#52c41a', borderRadius: 3 }}>自定义</Tag>}
-                <div style={{ width: 48, height: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)', borderRadius: 8, overflow: 'hidden' }}>
-                  <img src={getSvgUrl(icon)} alt={icon.title || icon.name} style={{ maxWidth: 36, maxHeight: 36, objectFit: 'contain' }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                <div style={{ ...iconTileStyle, marginBottom: 8 }}>
+                  <img src={getSvgUrl(icon)} alt={icon.title || icon.name} style={iconImgStyle} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                 </div>
                 <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'center', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }} title={icon.title || icon.name}>{icon.title || icon.name}</Text>
                 <div className="icon-actions" style={{ position: 'absolute', bottom: 4, right: 4, display: 'flex', gap: 2, opacity: 0, transition: 'opacity 0.15s' }} onClick={e => e.stopPropagation()}>
@@ -279,27 +458,173 @@ const SiteIconsManager: React.FC = () => {
               </div>
             ))}
           </div>
-          {total > 60 && <div style={{ textAlign: 'center', marginTop: 20 }}><Pagination current={page} total={total} pageSize={60} onChange={p => fetchIcons(p)} showSizeChanger={false} showTotal={t => `共 ${t} 个图标`} /></div>}
+          {total > 0 && <div style={{ textAlign: 'center', marginTop: 20 }}><ListPagination current={page} total={total} pageSize={pageSize} onChange={(p, s) => fetchIcons(p, s)} /></div>}
         </>
       )}
 
       {/* ════ 添加/编辑 Modal ════ */}
-      <Modal title={editingIcon ? '编辑图标' : '添加自定义图标'} open={addModalVisible} onOk={handleSave} onCancel={() => setAddModalVisible(false)} confirmLoading={saving} okText={editingIcon ? '保存修改' : '添加图标'} width={520} destroyOnClose>
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="name" label="图标标识名" rules={[{ required: true, message: '请输入图标标识名' }]}><Input placeholder="例如: my-brand" disabled={!!editingIcon} /></Form.Item>
-          <Form.Item name="title" label="显示名称"><Input placeholder="例如: My Brand" /></Form.Item>
-          <Form.Item name="category" label="分类" initialValue="自定义"><Select options={[{ label: 'AI品牌', value: 'AI品牌' }, { label: '自定义', value: '自定义' }]} /></Form.Item>
-          <Form.Item name="tags" label="标签"><Select mode="tags" placeholder="输入标签后按回车" /></Form.Item>
-          <Form.Item label="SVG 内容" required={!editingIcon}>
-            <Dragger accept=".svg" showUploadList={false} beforeUpload={handleSvgUpload as any} style={{ background: _isLight ? '#fafafa' : '#1a1a1a', borderColor: 'rgba(255,255,255,0.12)' }}>
-              <p style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)' }}><InboxOutlined style={{ fontSize: 32 }} /></p>
-              <p style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 13 }}>点击或拖拽 SVG 文件到此处</p>
+      <Modal
+        title={editingIcon ? '编辑图标' : '添加自定义图标'}
+        open={addModalVisible}
+        onOk={handleSave}
+        onCancel={() => setAddModalVisible(false)}
+        confirmLoading={saving}
+        okText={editingIcon ? '保存修改' : '添加图标'}
+        width={680}
+        destroyOnClose
+      >
+        {/* 存储方式感知条 */}
+        <div style={{
+          marginTop: 12,
+          marginBottom: 16,
+          padding: '9px 14px',
+          borderRadius: 6,
+          background: _isLight ? '#f9fafb' : '#18181b',
+          border: _isLight ? '1px solid #e5e7eb' : '1px solid #27272a',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: 12
+        }}>
+          <span style={{ color: _isLight ? '#4b5563' : '#a1a1aa' }}>当前存储绑定</span>
+          {storageInfo?.is_cloud ? (
+            <Tag color="cyan" style={{ margin: 0, borderRadius: 4 }}>
+              云存储 ({storageInfo.provider.toUpperCase()}: {storageInfo.bucket || '已绑定'})
+            </Tag>
+          ) : (
+            <Tag style={{ margin: 0, background: _isLight ? '#f3f4f6' : '#27272a', color: _isLight ? '#374151' : '#d1d5db', border: 'none', borderRadius: 4 }}>
+              本地存储 (/data/assets)
+            </Tag>
+          )}
+        </div>
+
+        <Form form={form} layout="vertical">
+          <Form.Item
+            name="name"
+            label="图标标识名"
+            rules={[
+              { required: true, message: '请输入图标标识名' },
+              { pattern: /^[a-z0-9_-]+$/, message: '仅支持小写英文字母、数字、下划线和连字符 (例如 my-model)' }
+            ]}
+            extra="用于系统代码索引与模型 logo 字段（如 claude, deepseek）。保存时全站唯一。"
+          >
+            <Input
+              placeholder="例如: my-model"
+              disabled={!!editingIcon}
+              onChange={e => {
+                const val = e.target.value.toLowerCase().replace(/\s+/g, '-');
+                form.setFieldsValue({ name: val });
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            name="title"
+            label="显示名称"
+            extra="前台与列表展示给用户的友好名称，支持中文（例如：智谱清言、豆包、自建大模型）。"
+          >
+            <Input placeholder="例如: My Model" />
+          </Form.Item>
+          <Form.Item name="category" label="分类" initialValue="自定义">
+            <Select options={[{ label: 'AI品牌', value: 'AI品牌' }, { label: '自定义', value: '自定义' }]} />
+          </Form.Item>
+          <Form.Item name="tags" label="标签" extra="可选，按回车添加检索标签。">
+            <Select mode="tags" placeholder="例如: 国产, 视觉, 开源" />
+          </Form.Item>
+          <Form.Item label="SVG 内容" required={!editingIcon} extra="打开编辑会载入当前 SVG。可改尺寸、底色和深色填充，也可直接改源码。底色和填充会写进文件，深色图标在深色背景上也能看见。">
+            {svgLoading && <div style={{ textAlign: 'center', padding: 12 }}><Spin size="small" /></div>}
+            {svgPreview.includes('<svg') && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
+                  {([
+                    ['浅色底', '#f5f5f5', '#141414'],
+                    ['深色底', '#141414', '#ffffff'],
+                  ] as const).map(([label, background, ink]) => (
+                    <div key={label} style={{ textAlign: 'center' }}>
+                      <div style={{
+                        width: 96, height: 96, borderRadius: 8, background, color: ink,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        border: '1px solid rgba(128,128,128,0.28)',
+                      }}>
+                        <div dangerouslySetInnerHTML={{ __html: fitSvgPreview(svgPreview) }} />
+                      </div>
+                      <Text style={{ fontSize: 11, color: _isLight ? '#6b7280' : '#a1a1aa' }}>{label}</Text>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <Space wrap>
+                    <Text style={{ fontSize: 12 }}>尺寸</Text>
+                    <InputNumber min={1} max={512} value={svgWidth} onChange={v => typeof v === 'number' && patchSvg({ width: v })} />
+                    <Text style={{ fontSize: 12 }}>×</Text>
+                    <InputNumber min={1} max={512} value={svgHeight} onChange={v => typeof v === 'number' && patchSvg({ height: v })} />
+                  </Space>
+                  <Space wrap>
+                    <Text style={{ fontSize: 12 }}>底色</Text>
+                    {([
+                      ['无', null],
+                      ['白色', '#ffffff'],
+                      ['浅灰', '#f5f5f5'],
+                      ['深色', '#141414'],
+                    ] as const).map(([label, color]) => (
+                      <Button key={label} size="small" type={(svgBg || '').toLowerCase() === (color || '').toLowerCase() ? 'primary' : 'default'} onClick={() => patchSvg({ background: color })}>{label}</Button>
+                    ))}
+                    <ColorPicker size="small" disabledAlpha allowClear value={svgBg || undefined} onChange={color => patchSvg({ background: color.cleared ? null : color.toHexString() })} />
+                  </Space>
+                  <Space wrap>
+                    <Text style={{ fontSize: 12 }}>深色填充</Text>
+                    <Button size="small" type={svgFill ? 'default' : 'primary'} onClick={() => patchSvg({ iconColor: null })}>保持原色</Button>
+                    <Button size="small" type={svgFill?.toLowerCase() === '#ffffff' ? 'primary' : 'default'} onClick={() => patchSvg({ iconColor: '#ffffff' })}>改为白色</Button>
+                    <Button size="small" type={svgFill?.toLowerCase() === '#1677ff' ? 'primary' : 'default'} onClick={() => patchSvg({ iconColor: '#1677ff' })}>改为蓝色</Button>
+                    <ColorPicker size="small" disabledAlpha allowClear value={svgFill || undefined} onChange={color => patchSvg({ iconColor: color.cleared ? null : color.toHexString() })} />
+                  </Space>
+                  {svgOriginal && svgPreview.trim() !== svgOriginal.trim() && (
+                    <Button size="small" onClick={() => absorbSvg(svgOriginal, true)}>恢复原始 SVG</Button>
+                  )}
+                </div>
+              </div>
+            )}
+            <Dragger
+              accept=".svg"
+              showUploadList={false}
+              beforeUpload={handleSvgUpload as any}
+              style={{
+                background: _isLight ? '#fafafa' : '#18181b',
+                borderColor: _isLight ? '#e5e7eb' : '#27272a',
+                borderRadius: 8,
+                padding: '12px 0'
+              }}
+            >
+              <p style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', margin: '4px 0' }}>
+                <InboxOutlined style={{ fontSize: 28 }} />
+              </p>
+              <p style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, margin: '0 0 4px' }}>
+                点击或拖拽 SVG 文件到此处替换
+              </p>
             </Dragger>
             <div style={{ marginTop: 8 }}>
-              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>或直接粘贴 SVG 代码：</Text>
-              <TextArea rows={4} placeholder="<svg ...>...</svg>" value={svgPreview} onChange={e => setSvgPreview(e.target.value)} style={{ marginTop: 4, background: _isLight ? '#fafafa' : '#1a1a1a', borderColor: 'rgba(255,255,255,0.12)', fontFamily: 'monospace', fontSize: 12 }} />
+              <TextArea
+                rows={6}
+                placeholder="<svg viewBox='0 0 24 24' ...>...</svg>"
+                value={svgPreview}
+                onChange={e => {
+                  const v = e.target.value;
+                  svgBaseRef.current = v;
+                  const meta = readSvgMeta(v);
+                  editsRef.current = { width: meta.width, height: meta.height, background: meta.background, iconColor: null };
+                  setSvgPreview(v);
+                  setSvgWidth(meta.width);
+                  setSvgHeight(meta.height);
+                  setSvgBg(meta.background);
+                  setSvgFill(null);
+                }}
+                style={{
+                  background: _isLight ? '#fafafa' : '#18181b',
+                  borderColor: _isLight ? '#e5e7eb' : '#27272a',
+                  fontFamily: 'monospace',
+                  fontSize: 12
+                }}
+              />
             </div>
-            {svgPreview && <div style={{ marginTop: 8, padding: 12, borderRadius: 8, background: '#fff', textAlign: 'center', border: '1px solid rgba(0,0,0,0.06)' }}><div dangerouslySetInnerHTML={{ __html: svgPreview }} style={{ maxWidth: 64, maxHeight: 64, margin: '0 auto' }} /><Text style={{ fontSize: 11, color: '#666', display: 'block', marginTop: 4 }}>SVG 预览</Text></div>}
           </Form.Item>
         </Form>
       </Modal>
@@ -308,8 +633,8 @@ const SiteIconsManager: React.FC = () => {
       <Modal title={previewIcon ? previewIcon.title || previewIcon.name : ''} open={!!previewIcon} onCancel={() => setPreviewIcon(null)} footer={null} width={400}>
         {previewIcon && (
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ width: 120, height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px', background: '#fff', borderRadius: 12, border: '1px solid rgba(0,0,0,0.06)' }}>
-              <img src={getSvgUrl(previewIcon)} alt={previewIcon.name} style={{ maxWidth: 80, maxHeight: 80 }} />
+            <div style={{ ...iconTileStyle, margin: '0 auto 16px' }}>
+              <img src={getSvgUrl(previewIcon)} alt={previewIcon.name} style={iconImgStyle} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
             </div>
             <div style={{ textAlign: 'left', padding: '0 12px' }}>
               {([['标识名', previewIcon.name], ['显示名称', previewIcon.title || '-'], ['分类', previewIcon.category], ['文件路径', previewIcon.file_path], ['更新时间', formatApiDateTime(previewIcon.updated_at)]] as const).map(([label, val]) => (
@@ -326,6 +651,7 @@ const SiteIconsManager: React.FC = () => {
 
       {/* ════ 同步历史日志 Modal ════ */}
       <Modal title="同步历史日志" open={logModalVisible} onCancel={() => setLogModalVisible(false)} footer={null} width={600}>
+        <PluginLogRetentionCard pluginName="site_icons" title="图标同步日志保留天数" style={{ marginBottom: 12 }} />
         {logsLoading ? <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
          : syncLogList.length === 0 ? <Empty description="暂无同步记录" />
          : <div style={{ maxHeight: 400, overflow: 'auto' }}>

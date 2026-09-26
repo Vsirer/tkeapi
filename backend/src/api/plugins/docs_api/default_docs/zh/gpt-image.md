@@ -1,8 +1,6 @@
 # GPT-gpt-image-2 图像生成与编辑接入指南
 
-`gpt-image-2` 是 OpenAI 旗下最新一代旗舰图像生成与编辑模型（完美对齐并支持 DALL-E 旗舰生图标准），具备极高的提示词还原能力和清晰写实的画面质感。
-
-支持**文生图 (Generations)** 与**图像编辑 / 局部重绘 (Image Edits)**。
+OpenAI 兼容：`POST /v1/images/generations`、`POST /v1/images/edits`。[图片生成 API](https://developers.openai.com/api/reference/resources/images/methods/generate)
 
 ---
 
@@ -15,30 +13,50 @@
 
 ---
 
-## 2. 经典文生图 (Text-to-Image) 示例
+## 2. 文生图 (Text-to-Image)
 
-### 调用示例（curl）
+### A. 常用调用
+
 ```bash
 curl -X POST https://{{domain}}/v1/images/generations \
   -H "Authorization: Bearer sk-your_token_here" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-image-2",
-    "prompt": "一个极简主义风格的宇航员，站在红色荒凉的火星表面，背景是浩瀚的宇宙星空，高分辨率",
+    "prompt": "一个极简主义风格的宇航员，站在红色荒凉的火星表面，背景是浩瀚的宇宙星空",
     "size": "1024x1024",
+    "quality": "low",
     "n": 1,
+    "response_format": "url"
+  }'
+```
+
+### B. 透明背景
+
+`background=transparent` 须 `output_format` 为 `png` 或 `webp`（`jpeg` 无透明通道）。提示词写清主体孤立，不要实景、棋盘底或多余阴影。
+
+```bash
+curl -X POST https://{{domain}}/v1/images/generations \
+  -H "Authorization: Bearer sk-your_token_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "一枚扁平蓝色文件夹图标，干净描边，完全透明背景，无阴影无场景",
+    "size": "1024x1024",
+    "quality": "medium",
+    "background": "transparent",
+    "output_format": "png",
     "response_format": "url"
   }'
 ```
 
 ---
 
-## 3. 图像编辑与局部重绘 (Image Edits) 示例
+## 3. 图像编辑与局部重绘 (Image Edits)
 
-图像编辑路由为 `/v1/images/edits`，同时兼容 `JSON` 与 `Form-Data`：
+兼容 JSON（网关扩展：传图片 URL）与官方 Form-Data。编辑同样支持 `quality` / `background` / `output_format` / `size`。`gpt-image-2` 不支持 `input_fidelity`（输出默认已是高保真）。
 
-### A. 极简 JSON 传参方式 (直接传网络图片 URL)
-无需繁琐的文件流处理，直接通过 JSON 传递底图与遮罩图的网络公开直链。
+### A. JSON 传参（网络图片 URL）
 
 ```bash
 curl -X POST https://{{domain}}/v1/images/edits \
@@ -50,13 +68,13 @@ curl -X POST https://{{domain}}/v1/images/edits \
     "mask": "https://example.com/assets/mask_face.png",
     "prompt": "在遮罩涂抹的脸部区域加上一副酷炫的墨镜，保持逼真光影",
     "size": "1024x1024",
+    "quality": "medium",
     "n": 1,
     "response_format": "url"
   }'
 ```
 
-### B. OpenAI 标准 Form-Data 传参方式 (上传本地二进制文件)
-兼容官方标准，直接上传客户端本地图片执行修改。
+### B. OpenAI 标准 Form-Data（本地文件）
 
 ```bash
 curl -X POST https://{{domain}}/v1/images/edits \
@@ -66,6 +84,7 @@ curl -X POST https://{{domain}}/v1/images/edits \
   -F "mask=@/path/to/mask_face.png" \
   -F "prompt=在遮罩涂抹的脸部区域加上一副酷炫的墨镜，保持逼真光影" \
   -F "size=1024x1024" \
+  -F "quality=medium" \
   -F "n=1" \
   -F "response_format=url"
 ```
@@ -76,13 +95,20 @@ curl -X POST https://{{domain}}/v1/images/edits \
 
 | 参数名 | 类型 | 必填 | 默认值 | 描述 |
 | :--- | :--- | :--- | :--- | :--- |
-| `model` | `string` | **是** | - | 图像生成模型名，传入 `gpt-image-2`。 |
-| `prompt` | `string` | **是** | - | 画面描述提示词（文生图时限制 1000 字符内）。在图像编辑（edits）中，描述需要做出的具体改动。 |
-| `image` | `file / string` | 否 | - | **图像编辑 (edits) 必填**。需要编辑的底图文件（Form-Data 方式）或底图网络直链 URL（JSON 方式）。格式须为正方形 PNG 文件，小于 4MB。 |
-| `mask` | `file / string` | 否 | - | **图像编辑 (edits) 可选**。遮罩图（PNG 文件或网络直链），其中透明区域（Alpha通道）指示了需要进行擦除和重新绘制的部分。 |
-| `size` | `string` | 否 | `1024x1024` | 画面分辨率规格。可选：`1024x1024`、`1024x1792`、`1792x1024`。 |
-| `response_format` | `string` | 否 | `url` | 返回的格式，可选 `url` (图片下载链接) 或 `b64_json` (Base64 编码数据)。 |
-| `n` | `integer` | 否 | `1` | 生成图片数量。每次限制最多返回 1 张图片。 |
+| `model` | `string` | **是** | - | 传入 `gpt-image-2`（或快照 `gpt-image-2-2026-04-21`）。 |
+| `prompt` | `string` | **是** | - | 画面或改动描述。GPT Image 最长约 32000 字符。 |
+| `image` | `file / string / array` | 否 | - | **编辑必填**。底图：Form-Data 文件，或 JSON 的 URL。官方：`png` / `webp` / `jpg`，单张小于 50MB，最多 16 张。 |
+| `mask` | `file / string` | 否 | - | 编辑可选。透明区域（Alpha）为重绘范围。 |
+| `size` | `string` | 否 | `auto` | `auto`，或 `WIDTHxHEIGHT`。常用 `1024x1024`、`1024x1536`、`1536x1024`。两边须为 16 的倍数，比例 1:3～3:1，边长 ≤3840，总像素 655360～8294400。超过 `2560x1440` 为实验档。 |
+| `quality` | `string` | 否 | `auto` | 默认 `auto`，按所选模型自动选最佳质量。GPT 图像模型：`high` / `medium` / `low`。`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`（含 `2026-09-08` 快照）额外支持 `xhigh` / `max`。 |
+| `background` | `string` | 否 | `auto` | `transparent` / `opaque` / `auto`。透明须 `output_format=png` 或 `webp`（预览能力）。 |
+| `output_format` | `string` | 否 | `png` | `png` / `jpeg` / `webp`。 |
+| `output_compression` | `integer` | 否 | `100` | 仅 `jpeg` / `webp`，0–100。PNG 不要传。 |
+| `moderation` | `string` | 否 | `auto` | 内容审核：`auto` 或 `low`（更宽松）。 |
+| `n` | `integer` | 否 | `1` | 生成张数，官方 1–10；令牌或渠道可能另有上限。 |
+| `response_format` | `string` | 否 | `url` | 网关：`url` 或 `b64_json`。官方 GPT Image 原生返回 base64，本网关可用 `url`。 |
+
+`style` 仅 DALL·E 3，本模型不要传。
 
 ---
 

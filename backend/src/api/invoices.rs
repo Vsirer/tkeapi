@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::auth;
@@ -43,10 +43,10 @@ pub struct InvoiceConfigData {
 impl Default for InvoiceConfigData {
     fn default() -> Self {
         Self {
-            company_name: Some("TokensByte Inc.".to_string()),
-            company_address: Some("100 Innovation Way, Suite 300, San Francisco, CA 94107".to_string()),
-            tax_id: Some("US-987654321".to_string()),
-            contact_email: Some("billing@tokensbyte.com".to_string()),
+            company_name: None,
+            company_address: None,
+            tax_id: None,
+            contact_email: None,
             company_phone: None,
             company_website: None,
             currency_symbol: Some("$".to_string()),
@@ -210,6 +210,7 @@ pub struct AdminInvoiceListParams {
     pub keyword: Option<String>,
     pub start_date: Option<String>,
     pub end_date: Option<String>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -364,12 +365,11 @@ fn format_receipt_date(dt: DateTime<Utc>, user_tz_name: &str) -> String {
     format!("{month_name} {day}{suffix}, {year} at {} {tz_display}", time_part.trim())
 }
 
-pub async fn get_user_invoices(
-    State(state): State<Arc<AppState>>,
-    Extension(claims): Extension<auth::Claims>,
-) -> AppResult<Json<UserInvoicesResponse>> {
-    let user_id = &claims.sub;
-
+async fn load_user_invoices(
+    state: &Arc<AppState>,
+    user_id: &str,
+    is_admin: bool,
+) -> AppResult<UserInvoicesResponse> {
     // 1. 查询当前用户等级发票开关与时区
     let level_info: Option<(Option<i32>, Option<String>)> = sqlx::query_as(
         &state.db.format_query(
@@ -387,7 +387,6 @@ pub async fn get_user_invoices(
         None => (0, None),
     };
 
-    let is_admin = claims.role == "admin";
     let enabled = invoice_enabled_val == 1 || is_admin;
 
     // 2. 读取全局统一的发票设置 (settings 表中 key = 'invoice_settings')
@@ -399,11 +398,12 @@ pub async fn get_user_invoices(
     .await
     .unwrap_or(None);
 
-    let invoice_settings: crate::models::InvoiceSettings = if let Some(ref s) = global_inv_setting_str {
+    let mut invoice_settings: crate::models::InvoiceSettings = if let Some(ref s) = global_inv_setting_str {
         serde_json::from_str(s).unwrap_or_default()
     } else {
         Default::default()
     };
+    invoice_settings.clear_placeholder_issuer();
 
     let mode = invoice_settings.invoice_mode.clone();
 
@@ -487,23 +487,10 @@ pub async fn get_user_invoices(
     .await
     .unwrap_or_default();
 
-    // 5. 查询消费统计 (区分实际现金扣费与赠送金抵扣扣费)
-    let consumption_stats: (Option<f64>, Option<f64>, Option<f64>) = sqlx::query_as(
-        &state.db.format_query(
-            "SELECT \
-                SUM(cost), \
-                SUM(LEAST(cost, pre_deduct_gift)), \
-                SUM(GREATEST(cost - pre_deduct_gift, 0.0)) \
-             FROM logs WHERE user_id = ?"
-        )
-    )
-    .bind(user_id)
-    .fetch_one(&state.db.pool)
-    .await
-    .unwrap_or((None, None, None));
-
-    let total_gift_consumed = consumption_stats.1.unwrap_or(0.0);
-    let total_real_consumed = consumption_stats.2.unwrap_or(0.0);
+    // 5. 查询消费统计 (严格双轨：历史天优先走 usage_daily_stats，今日走 logs，确保归档后财务数据 100% 精准无损)
+    let tz = crate::time_system::parse_timedisplay(&tz_name);
+    let (_total_consumed, total_gift_consumed, total_real_consumed) =
+        crate::api::date_helper::query_user_consumption_summary(&state.db, user_id, tz).await;
 
     // 6. 查询已申请发票总额 (中国大陆模式)
     let invoiced_total: Option<f64> = sqlx::query_scalar(
@@ -525,6 +512,9 @@ pub async fn get_user_invoices(
 
     // A. 处理在线支付完成的订单 (均为实付资金，可作为发票与付款收据)
     for (order_id, out_trade_no, method, amount, trade_no, created_at, paid_at) in orders {
+        if amount <= 0.0 {
+            continue;
+        }
         total_real_paid += amount;
         let dt: DateTime<Utc> = paid_at
             .as_ref()
@@ -669,7 +659,7 @@ pub async fn get_user_invoices(
             let account_id = if !uid.is_empty() { uid } else { user_id.to_string() };
             (account_id, username, email, nickname, mobile)
         }
-        None => (user_id.to_string(), "Valued Customer".to_string(), String::new(), None, None),
+        None => (user_id.to_string(), String::new(), String::new(), None, None),
     };
 
     // 6. 查询完善用户信息 (user_kyc 表多记录)
@@ -822,7 +812,14 @@ pub async fn get_user_invoices(
             let has_cname = kyc.company_name.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
             let has_cdoc = kyc.company_doc_number.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
             if has_cname || has_cdoc {
-                let cname = kyc.company_name.as_deref().unwrap_or("Enterprise Entity").trim().to_string();
+                let cname = {
+                    let named = kyc.company_name.as_deref().unwrap_or("").trim().to_string();
+                    if !named.is_empty() {
+                        named
+                    } else {
+                        kyc.company_doc_number.as_deref().unwrap_or("").trim().to_string()
+                    }
+                };
                 let mut ent = BillingSubject {
                     id: Some(kyc.id),
                     subject_type: "enterprise".to_string(),
@@ -889,7 +886,7 @@ pub async fn get_user_invoices(
     customer_profile.enterprise_subject = enterprise_sub;
     customer_profile.subjects = all_subjects;
 
-    Ok(Json(UserInvoicesResponse {
+    Ok(UserInvoicesResponse {
         enabled,
         mode,
         config,
@@ -899,7 +896,33 @@ pub async fn get_user_invoices(
         receipts,
         china_requests,
         total_paid_amount: total_real_paid,
-    }))
+    })
+}
+
+pub async fn get_user_invoices(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+) -> AppResult<Json<UserInvoicesResponse>> {
+    let is_admin = claims.role == "admin";
+    let data = load_user_invoices(&state, &claims.sub, is_admin).await?;
+    Ok(Json(data))
+}
+
+pub async fn admin_get_user_invoices(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> AppResult<Json<UserInvoicesResponse>> {
+    let user_id: String = sqlx::query_scalar(
+        &state.db.format_query("SELECT id FROM users WHERE id = ? OR uid = ?"),
+    )
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let data = load_user_invoices(&state, &user_id, true).await?;
+    Ok(Json(data))
 }
 
 /// 生成发票申请单号
@@ -1164,6 +1187,15 @@ pub async fn admin_list_invoice_requests(
         }
     }
 
+    if let Some(ref uid) = params.user_id {
+        let u_trim = uid.trim();
+        if !u_trim.is_empty() && u_trim != "all" {
+            where_clause.push_str(" AND (r.user_id = ? OR u.uid = ?)");
+            binds.push(u_trim.to_string());
+            binds.push(u_trim.to_string());
+        }
+    }
+
     if let Some(ref start) = params.start_date {
         let s = start.trim();
         if !s.is_empty() {
@@ -1201,22 +1233,58 @@ pub async fn admin_list_invoice_requests(
         }
     }
 
-    // 1. 查询全局/汇总统计指标
-    let stats_sql = "SELECT \
-        COUNT(*)::bigint AS total_count, \
-        COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending_count, \
-        COUNT(*) FILTER (WHERE status = 'approved')::bigint AS approved_count, \
-        COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS rejected_count, \
-        COALESCE(SUM(amount) FILTER (WHERE status = 'approved'), 0.0) AS total_approved_amount, \
-        COALESCE(SUM(amount) FILTER (WHERE status = 'approved' AND created_at >= date_trunc('month', now())), 0.0) AS this_month_approved_amount \
-        FROM user_invoice_requests";
+    // 1. 查询统计指标（若指定 user_id 则仅统计该用户数据）
+    let (stats_sql, stats_binds): (String, Vec<String>) = if let Some(ref uid) = params.user_id {
+        let u_trim = uid.trim();
+        if !u_trim.is_empty() && u_trim != "all" {
+            (
+                "SELECT \
+                COUNT(*)::bigint AS total_count, \
+                COUNT(*) FILTER (WHERE r.status = 'pending')::bigint AS pending_count, \
+                COUNT(*) FILTER (WHERE r.status = 'approved')::bigint AS approved_count, \
+                COUNT(*) FILTER (WHERE r.status = 'rejected')::bigint AS rejected_count, \
+                COALESCE(SUM(r.amount) FILTER (WHERE r.status = 'approved'), 0.0) AS total_approved_amount, \
+                COALESCE(SUM(r.amount) FILTER (WHERE r.status = 'approved' AND r.created_at >= date_trunc('month', now())), 0.0) AS this_month_approved_amount \
+                FROM user_invoice_requests r LEFT JOIN users u ON r.user_id = u.id::text \
+                WHERE (r.user_id = ? OR u.uid = ?)".to_string(),
+                vec![u_trim.to_string(), u_trim.to_string()],
+            )
+        } else {
+            (
+                "SELECT \
+                COUNT(*)::bigint AS total_count, \
+                COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending_count, \
+                COUNT(*) FILTER (WHERE status = 'approved')::bigint AS approved_count, \
+                COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS rejected_count, \
+                COALESCE(SUM(amount) FILTER (WHERE status = 'approved'), 0.0) AS total_approved_amount, \
+                COALESCE(SUM(amount) FILTER (WHERE status = 'approved' AND created_at >= date_trunc('month', now())), 0.0) AS this_month_approved_amount \
+                FROM user_invoice_requests".to_string(),
+                vec![],
+            )
+        }
+    } else {
+        (
+            "SELECT \
+            COUNT(*)::bigint AS total_count, \
+            COUNT(*) FILTER (WHERE status = 'pending')::bigint AS pending_count, \
+            COUNT(*) FILTER (WHERE status = 'approved')::bigint AS approved_count, \
+            COUNT(*) FILTER (WHERE status = 'rejected')::bigint AS rejected_count, \
+            COALESCE(SUM(amount) FILTER (WHERE status = 'approved'), 0.0) AS total_approved_amount, \
+            COALESCE(SUM(amount) FILTER (WHERE status = 'approved' AND created_at >= date_trunc('month', now())), 0.0) AS this_month_approved_amount \
+            FROM user_invoice_requests".to_string(),
+            vec![],
+        )
+    };
 
-    let stats_row: Option<(i64, i64, i64, i64, f64, f64)> = sqlx::query_as(
-        &state.db.format_query(stats_sql)
-    )
-    .fetch_optional(&state.db.pool)
-    .await
-    .unwrap_or(None);
+    let formatted_stats_sql = state.db.format_query(&stats_sql);
+    let mut stats_q = sqlx::query_as::<_, (i64, i64, i64, i64, f64, f64)>(&formatted_stats_sql);
+    for b in &stats_binds {
+        stats_q = stats_q.bind(b);
+    }
+    let stats_row: Option<(i64, i64, i64, i64, f64, f64)> = stats_q
+        .fetch_optional(&state.db.pool)
+        .await
+        .unwrap_or(None);
 
     let stats = match stats_row {
         Some((total_count, pending_count, approved_count, rejected_count, total_approved_amount, this_month_approved_amount)) => {

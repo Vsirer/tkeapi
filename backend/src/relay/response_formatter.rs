@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 响应格式化引擎 (Response Formatter)
@@ -11,6 +11,7 @@
 //! /v1/video/generations、/v1/videos、/v1/videos/generations、/v1/tasks/）生效。
 //! 设计原则：采用递归扫描模式，确保无论上游结构如何变化，都能准确抓取 ID、状态和媒体 URL。
 
+use crate::relay::usage_extractor;
 use regex::Regex;
 use serde_json::{json, Value};
 
@@ -31,7 +32,7 @@ pub fn is_openai_compatible_path(raw_path: &str) -> bool {
     }
 
     // 3. OpenAI Videos 兼容别名（/v1/videos、/v1/videos/generations[/...]、/v1/videos/{task_id}）
-    //    排除可灵原生路径：text2video、image2video、multi-image2video、omni-video
+    //    排除可灵原生路径：text2video、image2video、omni-video
     if let Some(sub) = p.strip_prefix("videos") {
         if sub.is_empty() {
             return true; // /v1/videos
@@ -42,10 +43,7 @@ pub fn is_openai_compatible_path(raw_path: &str) -> bool {
             }
             // 单段 task_id 轮询：/v1/videos/{task_id}
             return !rest.contains('/')
-                && !matches!(
-                    rest,
-                    "text2video" | "image2video" | "multi-image2video" | "omni-video"
-                );
+                && !matches!(rest, "text2video" | "image2video" | "omni-video");
         }
     }
 
@@ -131,8 +129,8 @@ pub fn format_openai(
 /// 优先级：真实任务号字段优先；根级 `request_id` 仅作 fal 等无 task_id 厂商的最后兜底
 ///（DashScope 等同体常同时有 `request_id` + `output.task_id`，不可先取 request_id）。
 pub fn find_id(v: &Value) -> String {
-    let mut id = v
-        .get("task_id")
+    v.get("task_id")
+        .or_else(|| v.get("TaskId"))
         .or_else(|| v.get("id"))
         .or_else(|| v.pointer("/task/id")) // MiniMax H3: { task: { id, status } }
         .or_else(|| v.pointer("/data/taskCode"))
@@ -143,6 +141,9 @@ pub fn find_id(v: &Value) -> String {
         .or_else(|| v.pointer("/output/task_id")) // DashScope / 阿里百炼
         .or_else(|| v.pointer("/data/task/id"))
         .or_else(|| v.pointer("/Response/TaskId"))
+        .or_else(|| {
+            usage_extractor::tencent_aigc_task(v).and_then(|t| t.get("TaskId"))
+        })
         .or_else(|| v.get("request_id")) // fal.ai queue: { request_id, status }；须在真实 task_id 之后
         .and_then(|val| {
             // 兼容字符串和数字类型的 task_id（如火山方舟返回数字 ID）
@@ -153,20 +154,7 @@ pub fn find_id(v: &Value) -> String {
         })
         .unwrap_or_default()
         .trim_matches('"')
-        .to_string();
-
-    if id.is_empty() {
-        if let Some(resp) = v.get("Response") {
-            if let Some(val) = tencent_aigc_task(resp)
-                .and_then(|task| task.get("TaskId"))
-                .and_then(|val| val.as_str())
-            {
-                id = val.to_string();
-            }
-        }
-    }
-
-    id
+        .to_string()
 }
 
 /// 统一提取异步任务 ID。自动过滤聊天响应（包含 choices / candidates 字段）的干扰性通用会话 ID。
@@ -205,6 +193,7 @@ pub fn force_json_task_id(s: &mut String, task_id: &str) {
         json_root_insert_first(s, "id", &lit);
     }
     json_root_set(s, "task_id", &lit);
+    json_root_set(s, "TaskId", &lit);
 }
 
 #[derive(Clone, Copy)]
@@ -319,7 +308,14 @@ fn json_for_each_member(
         }
         i += 1;
         let (val_lo, val_hi) = json_skip_value(s, &mut i)?;
-        if !f(&key, JsonMember { key_lo, val_lo, val_hi }) {
+        if !f(
+            &key,
+            JsonMember {
+                key_lo,
+                val_lo,
+                val_hi,
+            },
+        ) {
             return Some(());
         }
         json_skip_ws(s, &mut i);
@@ -441,20 +437,10 @@ pub fn format_async_task_failed(
 ) -> String {
     let body = async_task_failed_body(task_id, message);
     let mut s = apply_format(raw_path, category, &body, true, Some(task_id));
-    force_json_task_id(&mut s, task_id);
+    if is_openai_compatible_path(raw_path) {
+        force_json_task_id(&mut s, task_id);
+    }
     s
-}
-
-/// 腾讯云 AIGC 任务节点：TaskType 动态键优先，已知键兜底（ErrCode / Message / FileInfos 共用）
-fn tencent_aigc_task(resp: &Value) -> Option<&Value> {
-    resp.get("TaskType")
-        .and_then(|t| t.as_str())
-        .and_then(|tt| resp.get(tt))
-        .or_else(|| {
-            ["AigcVideoTask", "AigcImageTask"]
-                .iter()
-                .find_map(|k| resp.get(*k))
-        })
 }
 
 /// 从任意厂商响应 JSON 中提取原始状态字，并自动应用特定平台的校验（如腾讯云 ErrCode、即梦 code）
@@ -463,8 +449,15 @@ pub fn extract_raw_status(v: &Value) -> String {
     if let Some(resp) = v.get("Response") {
         if let Some(status) = resp.get("Status").and_then(|s| s.as_str()) {
             if status.eq_ignore_ascii_case("FINISH") {
-                if tencent_aigc_task(resp)
+                if usage_extractor::tencent_aigc_task(resp)
                     .and_then(|t| t.get("ErrCode"))
+                    .and_then(|c| c.as_i64())
+                    .is_some_and(|c| c != 0)
+                {
+                    return "FAILED".to_string();
+                }
+                if resp
+                    .pointer("/ProcedureTask/ErrCode")
                     .and_then(|c| c.as_i64())
                     .is_some_and(|c| c != 0)
                 {
@@ -608,8 +601,23 @@ pub fn find_urls(v: &Value) -> Vec<String> {
     if let Some(u) = v.get("video_url").and_then(|u| u.as_str()) {
         push_unique(&mut urls, u);
     }
-    // 火山引擎 AI MediaKit 画质增强与字幕擦除：从响应中提取生成的视频地址 (/result/video_url)
+    // 火山引擎 AI MediaKit：视频 /result/video_url，图像 /result/image_url
     if let Some(u) = v.pointer("/result/video_url").and_then(|u| u.as_str()) {
+        push_unique(&mut urls, u);
+    }
+    if let Some(u) = v.pointer("/result/image_url").and_then(|u| u.as_str()) {
+        push_unique(&mut urls, u);
+    }
+    if let Some(u) = v
+        .pointer("/Response/ProcedureTask/MediaProcessResultSet/0/TranscodeTask/Output/Url")
+        .and_then(|u| u.as_str())
+    {
+        push_unique(&mut urls, u);
+    }
+    if let Some(u) = v
+        .pointer("/Response/ProcedureTask/MediaProcessResultSet/0/CoverBySnapshotTask/Output/CoverUrl")
+        .and_then(|u| u.as_str())
+    {
         push_unique(&mut urls, u);
     }
 
@@ -736,16 +744,15 @@ pub fn find_urls(v: &Value) -> Vec<String> {
         }
     }
 
-    // 6b. 腾讯云 VOD FileInfos；MPS SignedUrl（跳过 InputInfo，避免模特图当出图）
+    // 6b. 腾讯云 VOD FileInfos；MPS SignedUrl（跳过 last_frame_url 尾帧图）
     if let Some(resp) = v.get("Response") {
-        if let Some(task) = tencent_aigc_task(resp) {
+        if let Some(task) = usage_extractor::tencent_aigc_task(resp) {
             if let Some(arr) = task.pointer("/Output/FileInfos").and_then(|a| a.as_array()) {
                 for item in arr {
-                    if let Some(u) = item
-                        .get("FileUrl")
-                        .or_else(|| item.get("Url"))
-                        .and_then(|u| u.as_str())
-                    {
+                    if item.get("UsageType").and_then(|u| u.as_str()) == Some("last_frame_url") {
+                        continue;
+                    }
+                    if let Some(u) = item.get("FileUrl").and_then(|u| u.as_str()) {
                         push_unique(&mut urls, u);
                     }
                 }
@@ -910,13 +917,18 @@ fn openai_usage_node(v: &Value) -> Option<&Value> {
         .or_else(|| v.pointer("/data/usage"))
 }
 
-/// OpenAI usage 原样；否则根级 Gemini `usageMetadata` → OpenAI 字段
+/// OpenAI usage 原样；Gemini `usageMetadata` 或 腾讯云 `Output.Usage` → OpenAI 字段
 fn resolve_client_usage(v: &Value) -> Option<Value> {
     if let Some(u) = openai_usage_node(v) {
         return Some(u.clone());
     }
-    v.get("usageMetadata")
-        .map(crate::relay::usage_extractor::gemini_usage_metadata_to_openai)
+    if let Some(meta) = v.get("usageMetadata") {
+        return Some(usage_extractor::gemini_usage_metadata_to_openai(meta));
+    }
+    if let Some(usage) = usage_extractor::tencent_output_usage(v) {
+        return Some(usage_extractor::tencent_usage_to_openai(usage));
+    }
+    None
 }
 
 // ── URL/Base64 → OpenAI data item 统一转换（build_openai_sync 和 build_openai_poll 共用）──
@@ -946,7 +958,17 @@ fn build_openai_sync(
     let now = chrono::Utc::now().timestamp();
     let created = v.get("created").and_then(|c| c.as_i64()).unwrap_or(now);
 
-    let items: Vec<Value> = urls.iter().map(|u| build_data_item(u)).collect();
+    let extra = scan_extra_metadata(v);
+    let items: Vec<Value> = urls
+        .iter()
+        .map(|u| {
+            let mut item = build_data_item(u);
+            for (k, ev) in &extra {
+                item[k] = ev.clone();
+            }
+            item
+        })
+        .collect();
 
     let mut resp = json!({"created": created, "data": items});
     if let Some(fid) = fallback_id {
@@ -1041,6 +1063,10 @@ pub fn extract_error_message_from_value(v: &Value) -> Option<String> {
         // 腾讯云任务级：优先 Response.{TaskType}.Message，无 TaskType 时回退已知 Aigc* 节点
         .or_else(|| tencent_task_message(v))
         .or_else(|| {
+            v.pointer("/Response/ProcedureTask/Message")
+                .filter(|m| m.as_str().is_some_and(|s| !s.is_empty()))
+        })
+        .or_else(|| {
             v.pointer("/Response/Message")
                 .filter(|m| m.as_str().is_some_and(|s| !s.is_empty()))
         })
@@ -1072,13 +1098,16 @@ fn fastapi_detail_message(v: &Value) -> Option<String> {
             .collect();
         (!msgs.is_empty()).then(|| msgs.join("; "))
     } else {
-        detail.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+        detail
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     }
 }
 
-/// 腾讯云 VOD/混元任务节点 Message：复用 [`tencent_aigc_task`]
+/// 腾讯云 VOD/混元任务节点 Message：复用 [`usage_extractor::tencent_aigc_task`]
 fn tencent_task_message(v: &Value) -> Option<&Value> {
-    let msg = tencent_aigc_task(v.get("Response")?)?.get("Message")?;
+    let msg = usage_extractor::tencent_aigc_task(v.get("Response")?)?.get("Message")?;
     match msg.as_str() {
         Some(s) if !s.is_empty() => Some(msg),
         _ => None,
@@ -1112,12 +1141,28 @@ pub fn extract_error_code_from_value(v: &Value) -> Option<String> {
         })
 }
 
-/// 尾帧图：`content.last_frame_url` 或顶层 `last_frame_url`（火山方舟等）
+/// 尾帧图：`content.last_frame_url`、顶层 `last_frame_url`、OpenAI `data[0].last_frame_url`、腾讯云 VOD UsageType
 pub fn find_last_frame_url(v: &Value) -> Option<&str> {
-    v.pointer("/content/last_frame_url")
+    if let Some(url) = v
+        .pointer("/content/last_frame_url")
         .or_else(|| v.get("last_frame_url"))
+        .or_else(|| v.pointer("/data/0/last_frame_url"))
         .and_then(|u| u.as_str())
         .filter(|s| !s.is_empty())
+    {
+        return Some(url);
+    }
+
+    // 腾讯云 AIGC 任务 Output.FileInfos: UsageType 为 last_frame_url，地址为 FileUrl
+    let arr = usage_extractor::tencent_aigc_task(v)
+        .and_then(|t| t.pointer("/Output/FileInfos"))
+        .and_then(|a| a.as_array())?;
+    for item in arr {
+        if item.get("UsageType").and_then(|u| u.as_str()) == Some("last_frame_url") {
+            return item.get("FileUrl").and_then(|u| u.as_str()).filter(|s| !s.is_empty());
+        }
+    }
+    None
 }
 
 /// 从上游响应中扫描厂商特有的重要附加字段
@@ -1125,16 +1170,6 @@ fn scan_extra_metadata(v: &Value) -> serde_json::Map<String, Value> {
     let mut meta = serde_json::Map::new();
     if let Some(url) = find_last_frame_url(v) {
         meta.insert("last_frame_url".to_string(), json!(url));
-    }
-    // cover_url / thumbnail_url: 封面图（可灵旧协议、火山等）
-    let cover = v
-        .pointer("/data/task_result/videos/0/cover_url")
-        .or_else(|| v.pointer("/output/thumbnail_url"))
-        .or_else(|| v.get("cover_url"))
-        .or_else(|| v.get("thumbnail_url"))
-        .and_then(|u| u.as_str());
-    if let Some(url) = cover {
-        meta.insert("cover_url".to_string(), json!(url));
     }
     meta
 }
@@ -1267,3 +1302,5 @@ pub fn format_as_openai_error(v: &Value) -> Option<String> {
     }
     Some(to_json(&json!({ "error": openai_error_object(v) })))
 }
+
+

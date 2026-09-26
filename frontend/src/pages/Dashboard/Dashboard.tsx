@@ -1,14 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
-import { getAnnouncementLabel } from '../../utils/announcement';
-import { Row, Col, Card, Typography, Table, Space, List, Progress, Alert, Grid, Spin, Modal, Button, Divider, Tooltip as AntTooltip, DatePicker, Radio, Tag } from 'antd';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../../utils/announcement';
+import { Row, Col, Card, Typography, Table, Space, List, Progress, Alert, Grid, Spin, Modal, Button, Divider, Tooltip as AntTooltip, Radio, Tag } from 'antd';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
 import {
   BarChartOutlined,
@@ -167,18 +167,12 @@ const Dashboard: React.FC = () => {
       window.removeEventListener('resize', checkTruncation);
     };
   }, [pinnedAnnouncement, currentPinnedIndex, i18n.language]);
-  const { RangePicker } = DatePicker;
   const isAdmin = user?.role === 'admin';
   const [dateRange, setDateRange] = useState<[any, any] | null>(() => [
     dayjs().startOf('day'),
     dayjs().endOf('day'),
   ]);
   const [quickRange, setQuickRange] = useState<string>('today');
-
-  const applyTodayRange = () => {
-    setQuickRange('today');
-    setDateRange([dayjs().startOf('day'), dayjs().endOf('day')]);
-  };
 
   const handleQuickRangeChange = (e: any) => {
     const val = e.target.value;
@@ -197,15 +191,6 @@ const Dashboard: React.FC = () => {
         dayjs().subtract(1, 'month').endOf('month'),
       ]);
     }
-  };
-
-  const handleDateRangeChange = (vals: any) => {
-    if (!vals?.[0] || !vals?.[1]) {
-      applyTodayRange();
-      return;
-    }
-    setDateRange(vals);
-    setQuickRange('custom');
   };
 
   const showDayComparison = quickRange === 'today' || quickRange === 'yesterday';
@@ -722,12 +707,6 @@ const Dashboard: React.FC = () => {
             <Radio.Button value="month">{t('dashboard.month', '本月')}</Radio.Button>
             <Radio.Button value="last_month">{t('dashboard.last_month', '上月')}</Radio.Button>
           </Radio.Group>
-          <RangePicker
-            value={dateRange}
-            onChange={handleDateRangeChange}
-            allowClear={false}
-            style={{ width: screens.xs ? '100%' : 260 }}
-          />
         </div>
       </div>
 
@@ -1214,9 +1193,9 @@ const Dashboard: React.FC = () => {
                   >
                     {t('dashboard.pinned_notice', '置顶通知')}
                   </Tag>
-                  {selectedNoticeForModal.created_at && (
+                  {getAnnouncementDisplayTime(selectedNoticeForModal) && (
                     <span style={{ fontSize: '12px', color: _isLight ? '#71717a' : '#a1a1aa' }}>
-                      {dayjs(selectedNoticeForModal.created_at).format('YYYY-MM-DD HH:mm')}
+                      {dayjs(getAnnouncementDisplayTime(selectedNoticeForModal)).format('YYYY-MM-DD HH:mm')}
                     </span>
                   )}
                 </div>

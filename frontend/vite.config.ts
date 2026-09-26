@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import { defineConfig, loadEnv } from 'vite'
@@ -32,16 +32,11 @@ export default defineConfig(({ mode }) => {
               const targetPath = path.join(depsDir, fileName);
 
               if (!fs.existsSync(targetPath)) {
-                const prefixMatch = fileName.match(/^([a-zA-Z0-9_-]+-)[a-zA-Z0-9_]+\.js$/);
-                if (prefixMatch) {
-                  const prefix = prefixMatch[1];
-                  try {
-                    const existing = fs.readdirSync(depsDir).find(f => f.startsWith(prefix) && f.endsWith('.js'));
-                    if (existing) {
-                      req.url = req.url.replace(fileName, existing);
-                    }
-                  } catch (e) {}
-                }
+                // 当请求已失效的旧哈希依赖 chunk 时，返回 504 Outdated Optimize Dep 触发客户端自动整页刷新，避免混用多套 React 实例
+                res.statusCode = 504;
+                res.statusMessage = 'Outdated Optimize Dep';
+                res.end('Outdated Optimize Dep');
+                return;
               }
               res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             }
@@ -56,6 +51,9 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_ENABLE_PLUGINS': JSON.stringify(
         env.VITE_ENABLE_PLUGINS ?? 'true'
       ),
+    },
+    resolve: {
+      dedupe: ['react', 'react-dom', 'react-is', 'use-sync-external-store'],
     },
     server: {
       host: '0.0.0.0',
@@ -81,7 +79,35 @@ export default defineConfig(({ mode }) => {
           target: apiTarget,
           changeOrigin: true,
         },
+        '/anthropic': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/compatible-mode': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/compatible-api': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
         '/assets/icons/': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/text-to-video': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/image-to-video': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/omni-video': {
+          target: apiTarget,
+          changeOrigin: true,
+        },
+        '/tasks': {
           target: apiTarget,
           changeOrigin: true,
         },
@@ -112,6 +138,9 @@ export default defineConfig(({ mode }) => {
         'react-dom/client',
         'react-router-dom',
         'react-is',
+        'use-sync-external-store',
+        'use-sync-external-store/shim',
+        'use-sync-external-store/shim/with-selector',
         'antd',
         '@ant-design/icons',
         'dayjs',
@@ -135,6 +164,7 @@ export default defineConfig(({ mode }) => {
         '@react-three/fiber',
         'html2canvas',
         'jspdf',
+        'artplayer',
       ],
     },
     build: {

@@ -6,6 +6,7 @@
   "model_online_desc2": "大規模な通話が必要な場合は、特別割引を受けるためにカスタマー サービスにお問い合わせください。",
   "category": "能力分類",
   "provider": "サプライヤー",
+  "api_provider": "APIプロバイダー",
   "pricing_plan": "料金プラン",
   "updated_at": "更新時間",
   "kinds": "親切",
@@ -31,10 +32,13 @@
   "back_dashboard": "戻る",
   "back_list": "リストに戻る",
   "pricing_count": "{{count}} 個の価格",
+  "model_id_count": "{{count}} 個のモデルID",
   "unavailable": "利用不可",
   "default_pricing": "標準料金",
   "other_category": "その他",
   "unknown_provider": "プロバイダー",
   "upstream": "アップストリーム",
-  "default_group": "デフォルトグループ"
+  "default_group": "デフォルトグループ",
+  "new_badge": "新着",
+  "metric_type": "タイプ"
 }

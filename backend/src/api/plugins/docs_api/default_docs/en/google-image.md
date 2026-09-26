@@ -1,6 +1,6 @@
 # Google Gemini-3.1 Image Generation
 
-`gemini-3.1-flash-image-preview` via OpenAI-compatible `POST /v1/images/generations`. Use `ratio` and `resolution` as shown below.
+OpenAI-compatible: `POST /v1/images/generations`. Native: `/v1beta/models/{model}:generateContent`. [Image API](https://ai.google.dev/gemini-api/docs/image-generation?hl=zh-cn)
 
 ---
 

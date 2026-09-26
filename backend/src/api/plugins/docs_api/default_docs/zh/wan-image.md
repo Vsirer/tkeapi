@@ -1,6 +1,6 @@
 # 千问 图像生成
 
-通义千问图像通过 OpenAI 兼容 `POST /v1/images/generations` 调用。示例统一使用 **`qwen-image-3.0-pro`**。
+OpenAI 兼容：`POST /v1/images/generations`。原生路径：`/api/v1/services/aigc/multimodal-generation/generation`。[图片生成 API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference?spm=a2c4g.11186623.help-menu-2400256.d_2_2_0_0.4ef45598uDMl78)
 
 > 模型 ID 以平台「开放模型列表」为准。OpenAI 兼容路径请用 **`prompt` + `image` / `image_urls`**；不支持 `messages`、`style`、`quality`。
 

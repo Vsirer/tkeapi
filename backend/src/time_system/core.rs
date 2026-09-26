@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! timesystem 核心：强制 UTC+0 运行基准与 timedisplay 解析
@@ -91,6 +91,16 @@ pub fn parse_timedisplay(name: &str) -> Tz {
     DEFAULT_TIMEDISPLAY
         .parse()
         .unwrap_or(chrono_tz::Asia::Shanghai)
+}
+
+/// 用户端 timedisplay：合法请求头 / 个人时区，否则 timesystem UTC。
+pub fn resolve_user_end_timedisplay(header_tz: Option<&str>, user_tz: Option<&str>) -> Tz {
+    for raw in [header_tz, user_tz].into_iter().flatten() {
+        if let Some(tz) = try_parse_iana_timezone(raw) {
+            return tz;
+        }
+    }
+    chrono_tz::UTC
 }
 
 /// timedisplay 优先级：请求头覆盖 > 用户个人时区 > 站点默认 > 内置默认。

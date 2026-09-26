@@ -1,25 +1,30 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Radio, Empty, Pagination, Tooltip, Checkbox, Segmented } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Radio, Empty, Tooltip, Checkbox, Segmented } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, RightOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, FilterOutlined, FolderOutlined, UnorderedListOutlined, SettingOutlined, CheckSquareOutlined, CheckCircleOutlined, StopOutlined, FileTextOutlined, FileOutlined } from '@ant-design/icons';
+import ListPagination, { listPagination, useListPager } from '../../components/ListPagination';
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, RightOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, FilterOutlined, FolderOutlined, UnorderedListOutlined, SettingOutlined, CheckSquareOutlined, CheckCircleOutlined, StopOutlined, FileTextOutlined, FileOutlined, CloudUploadOutlined, CloudDownloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
 import { QueryGuard, isRequestAborted } from '../../utils/queryGuard';
 import { modelMatchesKeyword } from '../../utils/modelKeywordMatch';
-import { buildClassificationParams, type ModelSourceFilter } from '../../utils/classificationParams';
+import { buildClassificationParams, unclassifiedChip, type ModelSourceFilter } from '../../utils/classificationParams';
 import useSettingsStore from '../../store/settings';
 import { type ModelModel } from '../../types';
 import ClassificationFilter from '../../components/Models/ClassificationFilter';
 import ClassificationManager from '../../components/Models/ClassificationManager';
 import IconPicker from '../../components/IconPicker';
 import RateDisplay from './RateDisplay';
+import DiscountScheduleEditor from './DiscountScheduleEditor';
+import { discountScheduleOn, packDiscountSchedule, unpackDiscountSchedule, validateDiscountScheduleForm } from './discountSchedule';
+import { billingRulesEditPath, modelEditPath, modelListPath, modelNewPath } from './modelPaths';
 import { useThemeStore } from '../../store/theme';
 import SmartSvgIcon from '../../components/SmartSvgIcon';
 import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, ListOrdered, Sparkles } from 'lucide-react';
@@ -29,7 +34,8 @@ const { Title, Text } = Typography;
 
 const renderTypeSystemIcon = (name: string, size = 18) => {
   const lowerName = (name || '').toLowerCase();
-  if (lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={size} />;
+  if (lowerName.includes('画质增强') || lowerName.includes('quality enhancement') || lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={size} />;
+  if (lowerName.includes('图像增强') || lowerName.includes('image enhancement') || lowerName.includes('image-enhance') || lowerName.includes('imageenhance') || lowerName.includes('image_enhance')) return <Sparkles size={size} />;
   if (lowerName.includes('图片') || lowerName.includes('image')) return <ImageIcon size={size} />;
   if (lowerName.includes('视频') || lowerName.includes('video')) return <Video size={size} />;
   if (lowerName.includes('音频') || lowerName.includes('audio')) return <AudioLines size={size} />;
@@ -37,7 +43,11 @@ const renderTypeSystemIcon = (name: string, size = 18) => {
   if (lowerName.includes('embedding') || lowerName.includes('向量')) return <Cuboid size={size} />;
   if (lowerName.includes('rerank') || lowerName.includes('排序')) return <ListOrdered size={size} />;
   return null;
-};
+}
+
+function modelRowKey(record: ModelModel) {
+  return record.library_kind ? `${record.library_kind}-${record.id}` : String(record.id);
+}
 
 const ResizableHeaderCell = (props: any) => {
   const { onResize, width: initialWidth, minWidth, ...restProps } = props;
@@ -162,9 +172,7 @@ const getGmid = (originalId: string): string => {
 };
 
 // ===== 分组展示组件 =====
-const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; children: ModelModel[]; count: number }; columns: any[]; showHeader: boolean; getProviderName: (id?: number) => string | null; allBillingRules: any[]; currencySymbol: string; t: any; isLight: boolean; forceCollapsed?: boolean; onRefresh?: () => void; setModels?: React.Dispatch<React.SetStateAction<ModelModel[]>>; isBatchEditMode?: boolean; selectedRowKeys?: React.Key[]; setSelectedRowKeys?: React.Dispatch<React.SetStateAction<React.Key[]>> }> = ({ group, columns, showHeader, getProviderName, allBillingRules, currencySymbol, t, isLight, forceCollapsed, onRefresh, setModels, isBatchEditMode, selectedRowKeys = [], setSelectedRowKeys }) => {
-  const { settings } = useSettingsStore();
-  const adminPath = settings?.site?.admin_path || 'admin1688';
+const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; children: ModelModel[]; count: number }; columns: any[]; isLight: boolean; forceCollapsed?: boolean; onRefresh?: () => void; setModels?: React.Dispatch<React.SetStateAction<ModelModel[]>>; isBatchEditMode?: boolean; selectedRowKeys?: React.Key[]; setSelectedRowKeys?: React.Dispatch<React.SetStateAction<React.Key[]>>; isLibrary?: boolean }> = ({ group, columns, isLight, forceCollapsed, onRefresh, setModels, isBatchEditMode, selectedRowKeys = [], setSelectedRowKeys, isLibrary }) => {
   const [expanded, setExpanded] = useState(true);
   const [modalVisible, setModalVisible] = useState(false);
   const [desc, setDesc] = useState('');
@@ -179,17 +187,7 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
   }, [forceCollapsed]);
 
 
-  // 汇总信息
-  const providers = Array.from(new Set(group.children.map(m => getProviderName(m.provider_id)).filter(Boolean)));
-  const activeCount = group.children.filter(m => m.is_active === 1).length;
-  const billingNames = Array.from(new Set(
-    group.children.map(m => {
-      const br = allBillingRules.find(b => b.id === m.billing_rule_id);
-      return br ? br.name : null;
-    }).filter(Boolean)
-  ));
   const firstChild = group.children[0];
-
   const [groupDesc, setGroupDesc] = useState(firstChild?.description || '');
 
   useEffect(() => {
@@ -225,6 +223,17 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
       );
     } catch (err: any) {
       console.error('更新模型组简介失败:', err);
+    }
+  };
+
+  const applyGroupPatch = async (patch: { is_active?: number; enable_log_content?: number }) => {
+    const ids = group.children.map(c => c.id);
+    setModels?.(prev => prev.map(m => (ids.includes(m.id) ? { ...m, ...patch } : m)));
+    try {
+      await Promise.all(ids.map(id => request.put(`/models/${id}`, patch)));
+    } catch (err) {
+      console.error(err);
+      onRefresh?.();
     }
   };
 
@@ -376,8 +385,7 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
           </div>
         </div>
 
-        {/* 状态 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingRight: 8, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
           <Tooltip title="设置模型组简介说明">
             <Button
               type="text"
@@ -394,29 +402,16 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
               }}
             />
           </Tooltip>
-          {activeCount === group.count ? (
-            <div style={{ 
-              padding: '2px 8px', borderRadius: 4, fontWeight: 500, fontSize: 12,
-              background: isLight ? '#f5f5f5' : '#1f1f1f', 
-              color: isLight ? '#595959' : '#a6a6a6', border: isLight ? '1px solid #e8e8e8' : '1px solid #303030'
-            }}>
-              全部启用
+          {!isLibrary && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Text type="secondary" style={{ fontSize: 12, lineHeight: '20px', whiteSpace: 'nowrap' }}>启用</Text>
+              <Switch size="small" checked={group.children.every(m => m.is_active === 1)} onChange={(on) => applyGroupPatch({ is_active: on ? 1 : 0 })} />
             </div>
-          ) : activeCount === 0 ? (
-            <div style={{ 
-              padding: '2px 8px', borderRadius: 4, fontWeight: 500, fontSize: 12,
-              background: isLight ? '#fff' : '#141414', 
-              color: isLight ? '#bfbfbf' : '#595959', border: isLight ? '1px dashed #d9d9d9' : '1px dashed #434343'
-            }}>
-              全部禁用
-            </div>
-          ) : (
-            <div style={{ 
-              padding: '2px 8px', borderRadius: 4, fontWeight: 500, fontSize: 12,
-              background: isLight ? '#fafafa' : '#1a1a1a', 
-              color: isLight ? '#8c8c8c' : '#8c8c8c', border: isLight ? '1px solid #d9d9d9' : '1px solid #434343'
-            }}>
-              部分启用 ({activeCount}/{group.count})
+          )}
+          {!isLibrary && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Text type="secondary" style={{ fontSize: 12, lineHeight: '20px', whiteSpace: 'nowrap' }}>上下文</Text>
+              <Switch size="small" checked={group.children.every(m => m.enable_log_content === 1)} onChange={(on) => applyGroupPatch({ enable_log_content: on ? 1 : 0 })} />
             </div>
           )}
         </div>
@@ -469,7 +464,7 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
             className="expanded-model-table compact-table"
             dataSource={group.children}
             columns={columns}
-            rowKey="id"
+            rowKey={modelRowKey}
             size="small"
             pagination={false}
             showHeader={false}
@@ -480,8 +475,8 @@ const GroupedModelTable: React.FC<{ group: { key: string; model_id: string; chil
               onChange: (newKeys: React.Key[]) => {
                 if (setSelectedRowKeys) {
                   setSelectedRowKeys(prev => {
-                    const currentGroupIds = new Set(group.children.map(c => c.id));
-                    const otherGroupKeys = prev.filter(k => !currentGroupIds.has(k as number));
+                    const currentGroupRowKeys = new Set(group.children.map(c => modelRowKey(c)));
+                    const otherGroupKeys = prev.filter(k => !currentGroupRowKeys.has(String(k)));
                     return [...otherGroupKeys, ...newKeys];
                   });
                 }
@@ -563,11 +558,20 @@ const FeatureTagsSelect = ({ value = [], onChange, options = [] }: any) => {
 const Models: React.FC = () => {
   const { t, i18n } = useTranslation();
   const tableContainerRef = useRef<HTMLDivElement>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(30);
+  const { page: currentPage, pageSize, setPage: setCurrentPage, onChange } = useListPager();
   const isEn = i18n.language === 'en';
   const { settings } = useSettingsStore();
   const adminPath = settings?.site?.admin_path || 'admin1688';
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { id: routeParamId } = useParams<{ id?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const normalizedPath = location.pathname.replace(/\/$/, '');
+  const isNewRoute = /\/models\/new$/.test(normalizedPath);
+  const isLibraryEditRoute = /\/models\/library\/edit\/[^/]+$/.test(normalizedPath);
+  const isEditRoute = /\/models\/edit\/[^/]+$/.test(normalizedPath);
+  const routeEditId = (isEditRoute || isLibraryEditRoute) ? routeParamId : undefined;
+  const isEditorOpen = isNewRoute || isEditRoute || isLibraryEditRoute;
   const { themeMode } = useThemeStore();
   const isLight = themeMode === 'light';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
@@ -578,7 +582,6 @@ const Models: React.FC = () => {
   const [selectedCurrencyCode, setSelectedCurrencyCode] = useState<string>('');
   const [models, setModels] = useState<ModelModel[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isModalVisible, setIsModalVisible] = useState(false);
   const [showGroupsOnly, setShowGroupsOnly] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelModel | null>(null);
   const [billingType, setBillingType] = useState('tokens');
@@ -603,7 +606,13 @@ const Models: React.FC = () => {
   const [isApiProviderManagerVisible, setIsApiProviderManagerVisible] = useState(false);
   const [isTypeManagerVisible, setIsTypeManagerVisible] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [sourceFilter, setSourceFilter] = useState<ModelSourceFilter>('all');
+  const [sourceFilter, setSourceFilter] = useState<ModelSourceFilter>(() => (
+    /\/models\/library\/edit\//.test(window.location.pathname) || new URLSearchParams(window.location.search).get('source') === 'library'
+      ? 'library'
+      : 'custom'
+  ));
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const isLibrary = sourceFilter === 'library';
   type ActiveRightPanel = 'billing' | 'forwarding' | 'provider' | 'api_provider' | 'type' | 'billing_rule' | 'forward_rules';
   const [activeRightPanel, setActiveRightPanel] = useState<ActiveRightPanel | null>('provider');
   const [billingTypeFilter, setBillingTypeFilter] = useState<string>('all');
@@ -616,6 +625,9 @@ const Models: React.FC = () => {
   const [tableStatusFilter, setTableStatusFilter] = useState<string>('all');
   const modelsQueryGuard = useRef(new QueryGuard());
   const statsQueryGuard = useRef(new QueryGuard());
+  const newFormReadyRef = useRef(false);
+  const hydratedEditKeyRef = useRef<string | null>(null);
+  const [classificationsReady, setClassificationsReady] = useState(false);
 
   // 列表只按分类拉 /models；关键词本地筛
   const fetchModels = async () => {
@@ -629,6 +641,7 @@ const Models: React.FC = () => {
     } catch (e) {
       if (isRequestAborted(e)) return;
       console.error(e);
+      if (modelsQueryGuard.current.isCurrent(signal)) setModels([]);
     } finally {
       if (modelsQueryGuard.current.isCurrent(signal)) setLoading(false);
     }
@@ -641,9 +654,9 @@ const Models: React.FC = () => {
       const params = buildClassificationParams(selectedProvider, selectedApiProvider, selectedType, sourceFilter);
       const resp = await (request.get('/classifications/stats', { params, signal }) as any);
       if (!statsQueryGuard.current.isCurrent(signal)) return;
-      setProvidersStats(resp.providers || []);
-      setApiProvidersStats(resp.api_providers || []);
-      setTypesStats(resp.types || []);
+      setProvidersStats([...(resp.providers || []), unclassifiedChip(resp.unclassified_providers)]);
+      setApiProvidersStats([...(resp.api_providers || []), unclassifiedChip(resp.unclassified_api_providers)]);
+      setTypesStats([...(resp.types || []), unclassifiedChip(resp.unclassified_types)]);
     } catch (e) {
       if (isRequestAborted(e)) return;
       console.error(e);
@@ -666,6 +679,8 @@ const Models: React.FC = () => {
       setAllBillingRules(Array.isArray(brs) ? brs.filter(b => b.is_active === 1) : []);
     } catch (e) {
       console.error(e);
+    } finally {
+      setClassificationsReady(true);
     }
   };
 
@@ -686,6 +701,18 @@ const Models: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (isEditorOpen) return;
+    const src = searchParams.get('source') === 'library' ? 'library' : 'custom';
+    setSourceFilter(src);
+  }, [isEditorOpen, searchParams]);
+
+  useEffect(() => {
+    if (isLibraryEditRoute || (isEditRoute && searchParams.get('source') === 'library')) {
+      setSourceFilter('library');
+    }
+  }, [isLibraryEditRoute, isEditRoute, searchParams]);
+
 
   const formatPrice = (price: number | string | undefined | null) => {
     if (price === undefined || price === null || price === '') return '-';
@@ -701,16 +728,23 @@ const Models: React.FC = () => {
     return `${currencySymbol}${num}`;
   };
 
-  const handleAdd = () => {
+  const handleCloseEditor = () => {
+    navigate(modelListPath(adminPath, sourceFilter));
+  };
+
+  const initNewModelForm = () => {
     setEditingModel(null);
     setBillingType('tokens');
     setSaving(false);
     setAliasEnabled(false);
     form.resetFields();
-    setIsModalVisible(true);
   };
 
-  const handleEdit = (record: ModelModel) => {
+  const handleAdd = () => {
+    navigate(modelNewPath(adminPath));
+  };
+
+  const hydrateModelEditor = (record: ModelModel) => {
     setEditingModel(record);
     setBillingType('tokens');
     setSaving(false);
@@ -742,17 +776,61 @@ const Models: React.FC = () => {
       site_discount: record.site_discount ?? 1.0,
       global_discount_enabled: record.global_discount_enabled === 1,
       global_discount: record.global_discount ?? 1.0,
+      discount_schedule_enabled: unpackDiscountSchedule(record.discount_schedule).enabled,
+      discount_slots: unpackDiscountSchedule(record.discount_schedule).slots,
       logo: record.logo || undefined,
       remark: record.remark,
       description: record.description,
     });
     setAliasEnabled(!!(record.model_id_alias && record.model_id_alias.length > 0));
-    setIsModalVisible(true);
   };
 
-  const handleDelete = async (id: number) => {
+  const handleEdit = (record: ModelModel) => {
+    navigate(modelEditPath(adminPath, record.mid || record.id, record.library_kind));
+  };
+
+  useEffect(() => {
+    if (!isNewRoute) {
+      newFormReadyRef.current = false;
+      return;
+    }
+    if (newFormReadyRef.current) return;
+    newFormReadyRef.current = true;
+    initNewModelForm();
+  }, [isNewRoute]);
+
+  useEffect(() => {
+    if (!routeEditId) {
+      hydratedEditKeyRef.current = null;
+      return;
+    }
+    if (loading || !classificationsReady) return;
+    if (isLibraryEditRoute && sourceFilter !== 'library') return;
+    if (isEditRoute && searchParams.get('source') === 'library' && sourceFilter !== 'library') return;
+    const found = models.find((m) => {
+      if (isLibraryEditRoute && m.library_kind !== 'catalog') return false;
+      if (!isLibraryEditRoute && m.library_kind === 'catalog') return false;
+      return m.mid && String(m.mid) === String(routeEditId);
+    }) || models.find((m) => {
+      if (isLibraryEditRoute && m.library_kind !== 'catalog') return false;
+      if (!isLibraryEditRoute && m.library_kind === 'catalog') return false;
+      return String(m.id) === String(routeEditId);
+    });
+    if (found) {
+      const key = `${found.library_kind || 'listed'}-${found.mid || found.id}`;
+      if (hydratedEditKeyRef.current === key) return;
+      hydratedEditKeyRef.current = key;
+      hydrateModelEditor(found);
+    } else {
+      message.error('未找到指定模型');
+      handleCloseEditor();
+    }
+  }, [routeEditId, models, loading, classificationsReady, isLibraryEditRoute, isEditRoute, sourceFilter, searchParams]);
+
+  const handleDelete = async (record: ModelModel) => {
     try {
-      await request.delete(`/models/${id}`);
+      const url = record.library_kind === 'catalog' ? `/models/library/${record.id}` : `/models/${record.id}`;
+      await request.delete(url);
       message.success(t('common.success'));
       fetchModels();
       fetchClassificationsStats();
@@ -762,11 +840,56 @@ const Models: React.FC = () => {
     }
   };
 
+  const handlePublish = async (record: ModelModel) => {
+    const isUnlisted = record.library_kind === 'unlisted';
+    setPublishingId(modelRowKey(record));
+    try {
+      if (isUnlisted) {
+        await request.post(`/models/${record.id}/relist`);
+      } else {
+        await request.post(`/models/library/${record.id}/publish`);
+      }
+      fetchModels();
+      fetchClassificationsStats();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPublishingId(null);
+    }
+  };
+
+  const handleUnlist = async (record: ModelModel) => {
+    setPublishingId(modelRowKey(record));
+    try {
+      await request.post(`/models/${record.id}/unlist`);
+      fetchModels();
+      fetchClassificationsStats();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPublishingId(null);
+    }
+  };
+
   const handleSave = async (values: any) => {
     try {
       // Cleanup arrays internally managed
       values.is_active = values.is_active ? 1 : 0;
       values.enable_log_content = values.enable_log_content ? 1 : 0;
+      const scheduleOn = !!values.global_discount_enabled && !!values.discount_schedule_enabled;
+      const scheduleError = validateDiscountScheduleForm(
+        scheduleOn,
+        values.discount_slots,
+        !!values.site_discount_enabled,
+        true,
+      );
+      if (scheduleError) {
+        message.error(scheduleError);
+        return;
+      }
+      values.discount_schedule = packDiscountSchedule(scheduleOn, values.discount_slots);
+      delete values.discount_schedule_enabled;
+      delete values.discount_slots;
       values.site_discount_enabled = values.site_discount_enabled ? 1 : 0;
       values.global_discount_enabled = values.global_discount_enabled ? 1 : 0;
       values.feature_attributes = JSON.stringify(values.feature_attributes || []);
@@ -779,14 +902,18 @@ const Models: React.FC = () => {
       const br = allBillingRules.find(b => b.id === values.billing_rule_id);
 
       if (editingModel) {
-        await request.put(`/models/${editingModel.id}`, values);
+        if (editingModel.library_kind === 'catalog') {
+          await request.put(`/models/library/${editingModel.id}`, values);
+        } else {
+          await request.put(`/models/${editingModel.id}`, values);
+        }
       } else {
         const created = await request.post('/models', values) as ModelModel;
         setRecentlyAddedId(created?.id ?? null);
         setCurrentPage(1);
       }
       message.success(t('common.success'));
-      setIsModalVisible(false);
+      handleCloseEditor();
       fetchModels();
       fetchClassificationsStats();
       fetchAllClassifications();
@@ -824,15 +951,69 @@ const Models: React.FC = () => {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [batchLoading, setBatchLoading] = useState<boolean>(false);
 
-  const handleBatchChangeStatus = async (active: number) => {
-    if (selectedRowKeys.length === 0) return;
+  const getSelectedModels = (): ModelModel[] => {
+    const keySet = new Set(selectedRowKeys.map(String));
+    return models.filter(m => keySet.has(modelRowKey(m)) || keySet.has(String(m.id)));
+  };
+
+  const handleBatchUnlist = async () => {
+    const targetModels = getSelectedModels();
+    if (targetModels.length === 0) return;
     setBatchLoading(true);
     try {
       await Promise.all(
-        selectedRowKeys.map(id => request.put(`/models/${id}`, { is_active: active }))
+        targetModels.map(m => request.post(`/models/${m.id}/unlist`))
       );
-      message.success(`已成功${active === 1 ? '启用' : '禁用'} ${selectedRowKeys.length} 个模型`);
-      setModels(prev => prev.map(m => selectedRowKeys.includes(m.id) ? { ...m, is_active: active } : m));
+      setSelectedRowKeys([]);
+      fetchModels();
+      fetchClassificationsStats();
+    } catch (e) {
+      console.error(e);
+      fetchModels();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchPublish = async () => {
+    const targetModels = getSelectedModels();
+    if (targetModels.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(
+        targetModels.map(m => {
+          if (m.library_kind === 'unlisted') {
+            return request.post(`/models/${m.id}/relist`);
+          } else {
+            return request.post(`/models/library/${m.id}/publish`);
+          }
+        })
+      );
+      setSelectedRowKeys([]);
+      fetchModels();
+      fetchClassificationsStats();
+    } catch (e) {
+      console.error(e);
+      fetchModels();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchChangeStatus = async (active: number) => {
+    const targetModels = getSelectedModels();
+    if (targetModels.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(
+        targetModels.map(m => {
+          const url = m.library_kind === 'catalog' ? `/models/library/${m.id}` : `/models/${m.id}`;
+          return request.put(url, { is_active: active });
+        })
+      );
+      message.success(`已成功${active === 1 ? '启用' : '禁用'} ${targetModels.length} 个模型`);
+      const targetRowKeySet = new Set(targetModels.map(modelRowKey));
+      setModels(prev => prev.map(m => targetRowKeySet.has(modelRowKey(m)) ? { ...m, is_active: active } : m));
       fetchClassificationsStats();
     } catch (e) {
       console.error(e);
@@ -843,14 +1024,19 @@ const Models: React.FC = () => {
   };
 
   const handleBatchChangeLogContent = async (enable: number) => {
-    if (selectedRowKeys.length === 0) return;
+    const targetModels = getSelectedModels();
+    if (targetModels.length === 0) return;
     setBatchLoading(true);
     try {
       await Promise.all(
-        selectedRowKeys.map(id => request.put(`/models/${id}`, { enable_log_content: enable }))
+        targetModels.map(m => {
+          const url = m.library_kind === 'catalog' ? `/models/library/${m.id}` : `/models/${m.id}`;
+          return request.put(url, { enable_log_content: enable });
+        })
       );
-      message.success(`已成功${enable === 1 ? '开启' : '关闭'} ${selectedRowKeys.length} 个模型的日志记录`);
-      setModels(prev => prev.map(m => selectedRowKeys.includes(m.id) ? { ...m, enable_log_content: enable } : m));
+      message.success(`已成功${enable === 1 ? '开启' : '关闭'} ${targetModels.length} 个模型的日志记录`);
+      const targetRowKeySet = new Set(targetModels.map(modelRowKey));
+      setModels(prev => prev.map(m => targetRowKeySet.has(modelRowKey(m)) ? { ...m, enable_log_content: enable } : m));
     } catch (e) {
       console.error(e);
       fetchModels();
@@ -860,15 +1046,19 @@ const Models: React.FC = () => {
   };
 
   const handleBatchDelete = async () => {
-    if (selectedRowKeys.length === 0) return;
+    const targetModels = getSelectedModels();
+    if (targetModels.length === 0) return;
     setBatchLoading(true);
     try {
       await Promise.all(
-        selectedRowKeys.map(id => request.delete(`/models/${id}`))
+        targetModels.map(m => {
+          const url = m.library_kind === 'catalog' ? `/models/library/${m.id}` : `/models/${m.id}`;
+          return request.delete(url);
+        })
       );
-      message.success(`已成功删除 ${selectedRowKeys.length} 个模型`);
-      const deletedSet = new Set(selectedRowKeys.map(Number));
-      setModels(prev => prev.filter(m => !deletedSet.has(m.id)));
+      message.success(`已成功删除 ${targetModels.length} 个模型`);
+      const targetRowKeySet = new Set(targetModels.map(modelRowKey));
+      setModels(prev => prev.filter(m => !targetRowKeySet.has(modelRowKey(m))));
       setSelectedRowKeys([]);
       fetchClassificationsStats();
       fetchAllClassifications();
@@ -895,8 +1085,15 @@ const Models: React.FC = () => {
     return t ? (isEn && t.name_en ? t.name_en : t.name) : null;
   };
 
-  const [colWidths] = useState<number[]>([100, 200, 240, 130, 250, 80, 80, 90]);
+  const colWidths = isLibrary
+    ? [100, 200, 240, 130, 250, 80, 128]
+    : [100, 200, 240, 130, 250, 80, 80, 128];
   const currentWidthsRef = useRef([...colWidths]);
+  const libraryLayoutRef = useRef(isLibrary);
+  if (libraryLayoutRef.current !== isLibrary) {
+    libraryLayoutRef.current = isLibrary;
+    currentWidthsRef.current = [...colWidths];
+  }
 
   const handleResize = useMemo(() => {
     let animationFrameId: number | null = null;
@@ -948,6 +1145,7 @@ const Models: React.FC = () => {
         target.closest('.ant-table-filter-trigger') ||
         target.closest('.ant-typography-edit') ||
         target.closest('.ant-typography-editable-single-line') ||
+        target.closest('.model-remark-text') ||
         target.closest('.ant-switch') ||
         window.getSelection()?.toString()
       ) {
@@ -995,20 +1193,42 @@ const Models: React.FC = () => {
       key: 'mid',
       width: 100,
       render: (text: string, record: ModelModel) => (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)' }}>{text || '-'}</span>
-          <div style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, maxWidth: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, maxWidth: '100%' }}>
+            <Text 
+              className="monochrome-copy" 
+              copyable={text ? { text: String(text) } : false} 
+              style={{ 
+                fontFamily: 'monospace', 
+                fontSize: 12, 
+                lineHeight: 1.2, 
+                color: 'var(--text-secondary, #8c8c8c)',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              {text || '-'}
+            </Text>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, maxWidth: '100%' }}>
             <Text
+              className="model-remark-text"
               type="secondary"
-              style={{ fontSize: 12, maxWidth: 80, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}
-              title={record.remark}
-              editable={{
+              style={{ 
+                fontSize: 12, 
+                width: '100%',
+                color: record.remark ? undefined : 'var(--text-tertiary, #8c8c8c)',
+                cursor: isLibrary ? 'default' : 'pointer',
+              }}
+              ellipsis={{ tooltip: record.remark || false }}
+              editable={isLibrary ? undefined : {
                 tooltip: false,
                 text: record.remark || '',
+                triggerType: ['icon', 'text'],
                 onChange: (val) => handleUpdateRemark(record.id, val),
               }}
             >
-              {record.remark || <span style={{ opacity: 0.5 }}>添加备注</span>}
+              {record.remark || (isLibrary ? '-' : '添加备注')}
             </Text>
           </div>
         </div>
@@ -1054,13 +1274,14 @@ const Models: React.FC = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
               <span 
                 title={text}
-                style={{ fontWeight: 600, color: 'var(--text-color, inherit)', fontSize: 13, lineHeight: 1.2, wordBreak: 'break-all' }}
+                onClick={() => handleEdit(record)}
+                style={{ fontWeight: 600, color: 'var(--text-color, inherit)', fontSize: 13, lineHeight: 1.2, wordBreak: 'break-all', cursor: 'pointer' }}
               >
                 {text}
               </span>
-              {record.is_system === 1 && (
+              {!isLibrary && record.library_mid && (
                 <Tag color="blue" style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px', width: 'fit-content' }}>
-                  {t('models.source_system')}
+                  {t('models.from_library')}
                 </Tag>
               )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1179,7 +1400,7 @@ const Models: React.FC = () => {
             {br && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0, width: '100%', overflow: 'hidden' }}>
                 <a
-                  href={`/${settings?.site?.admin_path || 'admin1688'}/billing-rules?edit_id=${br.id}`}
+                  href={billingRulesEditPath(adminPath, br.pid || br.id)}
                   target="_blank"
                   rel="noreferrer"
                   title={br.name}
@@ -1215,15 +1436,19 @@ const Models: React.FC = () => {
         return (
           <Space direction="vertical" size={0}>
             <RateDisplay rule={br} currencySymbol={currencySymbol} formatPrice={formatPrice} />
-            {(record.pre_deduction ?? 0) > 0 && <Text style={{ fontSize: '11px', lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)' }}>预扣: {formatPrice(record.pre_deduction)}</Text>}
+            {(record.pre_deduction ?? 0) > 0 && (
+              <Text style={{ fontSize: '11px', lineHeight: 1.2, color: 'var(--text-secondary, #8c8c8c)' }}>
+                预扣: {formatPrice(record.pre_deduction)}{record.type_id && getTypeName(record.type_id)?.includes('视频') ? '/秒 (按秒预扣)' : ''}
+              </Text>
+            )}
             {record.site_discount_enabled === 1 && (
               <span style={{ fontSize: '10px', marginTop: 0, lineHeight: 1.2, color: 'var(--text-secondary, #595959)' }}>
-                {`折扣限价 ${Number(record.site_discount || 1).toFixed(2)} 倍率`}
+                {`折扣限价 ${Number(record.site_discount || 1).toFixed(2)} 倍率${discountScheduleOn(record.discount_schedule) ? ' · 时段' : ''}`}
               </span>
             )}
             {record.global_discount_enabled === 1 && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, padding: '0 4px', borderRadius: 3, fontSize: 10, background: 'rgba(114, 46, 209, 0.08)', color: '#722ed1', border: '1px solid rgba(114, 46, 209, 0.2)', lineHeight: '16px' }}>
-                {`全站折扣 ${Number(record.global_discount || 1).toFixed(2)} 倍率`}
+                {`全站折扣 ${Number(record.global_discount || 1).toFixed(2)} 倍率${discountScheduleOn(record.discount_schedule) ? ' · 时段' : ''}`}
               </span>
             )}
           </Space>
@@ -1243,7 +1468,7 @@ const Models: React.FC = () => {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Tooltip title="点击直接修改排序，数值越大越靠前">
               <Text
-                editable={{
+                editable={isLibrary ? undefined : {
                   tooltip: false,
                   text: String(order),
                   onChange: (newVal) => {
@@ -1271,7 +1496,7 @@ const Models: React.FC = () => {
         );
       },
     },
-    {
+    ...(isLibrary ? [] : [{
       title: t('common.status'),
       dataIndex: 'is_active',
       key: 'is_active',
@@ -1323,17 +1548,42 @@ const Models: React.FC = () => {
           )}
         </Space>
       ),
-    },
+    }]),
     {
       title: t('common.actions'),
       key: 'actions',
-      width: 90,
+      width: 128,
       render: (_: unknown, record: ModelModel) => (
         <Space size={4}>
-          <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} danger />
-          </Popconfirm>
+          {isLibrary ? (
+            <>
+              <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+              <Tooltip title={t('models.publish_model')}>
+                <Button
+                  icon={<CloudUploadOutlined />}
+                  loading={publishingId === modelRowKey(record)}
+                  onClick={() => handlePublish(record)}
+                />
+              </Tooltip>
+              <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                <Button icon={<DeleteOutlined />} danger />
+              </Popconfirm>
+            </>
+          ) : (
+            <>
+              <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+              <Tooltip title={t('models.unlist_model')}>
+                <Button
+                  icon={<CloudDownloadOutlined />}
+                  loading={publishingId === modelRowKey(record)}
+                  onClick={() => handleUnlist(record)}
+                />
+              </Tooltip>
+              <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                <Button icon={<DeleteOutlined />} danger />
+              </Popconfirm>
+            </>
+          )}
         </Space>
       ),
     },
@@ -1391,7 +1641,7 @@ const Models: React.FC = () => {
       });
     }
 
-    if (tableStatusFilter !== 'all') {
+    if (!isLibrary && tableStatusFilter !== 'all') {
       const active = tableStatusFilter === 'active' ? 1 : 0;
       list = list.filter(m => m.is_active === active);
     }
@@ -1423,7 +1673,7 @@ const Models: React.FC = () => {
       return b.id - a.id;
     });
     return list;
-  }, [models, searchKeyword, sortType, tableBillingTypeFilter, tableStatusFilter, allBillingRules, recentlyAddedId]);
+  }, [models, searchKeyword, sortType, tableBillingTypeFilter, tableStatusFilter, allBillingRules, recentlyAddedId, isLibrary]);
 
   // ===== 获取所有真实模型组 =====
   const allModelGroups = useMemo(() => {
@@ -1510,9 +1760,9 @@ const Models: React.FC = () => {
     if (showGroupsOnly) {
       const startIndex = (currentPage - 1) * pageSize;
       const pagedGroups = allModelGroups.slice(startIndex, startIndex + pageSize);
-      return pagedGroups.flatMap(g => g.children.map(m => m.id));
+      return pagedGroups.flatMap(g => g.children.map(m => modelRowKey(m)));
     }
-    return pagedModels.map(m => m.id);
+    return pagedModels.map(m => modelRowKey(m));
   }, [showGroupsOnly, currentPage, pageSize, allModelGroups, pagedModels]);
 
   useEffect(() => {
@@ -1594,9 +1844,9 @@ const Models: React.FC = () => {
           overflow: hidden !important;
         }
         .compact-table .col-idx-7 {
-          width: var(--col-width-7, 90px) !important;
-          min-width: var(--col-width-7, 90px) !important;
-          max-width: var(--col-width-7, 90px) !important;
+          width: var(--col-width-7, 128px) !important;
+          min-width: var(--col-width-7, 128px) !important;
+          max-width: var(--col-width-7, 128px) !important;
           overflow: hidden !important;
         }
         
@@ -1622,7 +1872,7 @@ const Models: React.FC = () => {
           background-color: transparent;
         }
       `}</style>
-      {!isModalVisible ? (
+      {!isEditorOpen ? (
         <>
         <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', justifyContent: 'space-between', marginBottom: 12, gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
@@ -1631,11 +1881,18 @@ const Models: React.FC = () => {
               <Text type="secondary" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{t('models.source_category')}</Text>
               <Segmented
                 value={sourceFilter}
-                onChange={(val) => setSourceFilter(val as ModelSourceFilter)}
+                onChange={(val) => {
+                  const next = val as ModelSourceFilter;
+                  setSourceFilter(next);
+                  setModels([]);
+                  setIsBatchEditMode(false);
+                  setSelectedRowKeys([]);
+                  setTableStatusFilter('all');
+                  setSearchParams(next === 'library' ? { source: 'library' } : {}, { replace: true });
+                }}
                 options={[
-                  { label: t('models.source_all'), value: 'all' },
                   { label: t('models.source_custom'), value: 'custom' },
-                  { label: t('models.source_system'), value: 'system' },
+                  { label: t('models.source_system'), value: 'library' },
                 ]}
               />
             </Space>
@@ -1677,9 +1934,16 @@ const Models: React.FC = () => {
             >
               {isBatchEditMode ? "退出选择" : "选择编辑"}
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>{t('models.add_model')}</Button>
+            {!isLibrary && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>{t('models.add_model')}</Button>
+            )}
           </Space>
         </div>
+        {isLibrary && (
+          <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 13 }}>
+            {t('models.library_hint')}
+          </Text>
+        )}
 
       <ClassificationFilter
         providers={providersStats}
@@ -1769,6 +2033,28 @@ const Models: React.FC = () => {
             >
               上下文关闭
             </Button>
+            {isLibrary ? (
+              <Button
+                size="small"
+                type="primary"
+                icon={<CloudUploadOutlined />}
+                disabled={selectedRowKeys.length === 0}
+                loading={batchLoading}
+                onClick={handleBatchPublish}
+              >
+                上架模型
+              </Button>
+            ) : (
+              <Button
+                size="small"
+                icon={<CloudDownloadOutlined />}
+                disabled={selectedRowKeys.length === 0}
+                loading={batchLoading}
+                onClick={handleBatchUnlist}
+              >
+                下架模型
+              </Button>
+            )}
             <Popconfirm
               title="确定要批量删除选中的模型吗？"
               description={`将一次性删除选中的 ${selectedRowKeys.length} 个模型，此操作不可撤销。`}
@@ -1797,19 +2083,13 @@ const Models: React.FC = () => {
         <MobileCardList
           dataSource={pagedModels}
           loading={loading}
-          rowKey="id"
-          pagination={{
+          rowKey={modelRowKey}
+          pagination={listPagination({
             current: currentPage,
-            pageSize: pageSize,
+            pageSize,
             total: totalCount,
-            onChange: (page, size) => {
-              setCurrentPage(page);
-              setPageSize(size);
-            },
-            showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '30', '50', '100'],
-            showTotal: (total) => `共 ${total} 个模型`,
-          }}
+            onChange,
+          })}
           renderCard={(record: any) => {
             const br = allBillingRules.find((b: any) => b.id === record.billing_rule_id);
             const billingTypeVal = br ? br.billing_type : 'tokens';
@@ -1820,12 +2100,13 @@ const Models: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     {isBatchEditMode && (
                       <Checkbox
-                        checked={selectedRowKeys.includes(record.id)}
+                        checked={selectedRowKeys.includes(modelRowKey(record))}
                         onChange={(e) => {
+                          const key = modelRowKey(record);
                           if (e.target.checked) {
-                            setSelectedRowKeys(prev => [...prev, record.id]);
+                            setSelectedRowKeys(prev => [...prev, key]);
                           } else {
-                            setSelectedRowKeys(prev => prev.filter(k => k !== record.id));
+                            setSelectedRowKeys(prev => prev.filter(k => k !== key));
                           }
                         }}
                       />
@@ -1844,25 +2125,34 @@ const Models: React.FC = () => {
                 }
                 extra={
                   <Space size={4}>
-                    {record.is_system === 1 && <Tag color="blue">{t('models.source_system')}</Tag>}
-                    <Tag color={record.is_active ? 'success' : 'error'}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>
+                    {!isLibrary && record.library_mid && <Tag color="blue">{t('models.from_library')}</Tag>}
+                    {!isLibrary && (
+                      <Tag color={record.is_active ? 'success' : 'error'}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>
+                    )}
                   </Space>
                 }
               >
                 <CardRow label="模型(MID)">
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, maxWidth: '100%', minWidth: 0 }}>
                     <Tag color="purple" style={{ fontFamily: 'monospace', fontSize: 11, margin: 0, marginLeft: -7 }}>{record.mid || '-'}</Tag>
-                    <div style={{ display: 'flex', alignItems: 'center', marginLeft: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', marginLeft: 1, maxWidth: '100%', minWidth: 0 }}>
                       <Text
+                        className="model-remark-text"
                         type="secondary"
-                        style={{ fontSize: 11 }}
-                        editable={{
+                        style={{ 
+                          fontSize: 11, 
+                          color: record.remark ? undefined : 'var(--text-tertiary, #8c8c8c)',
+                          cursor: isLibrary ? 'default' : 'pointer',
+                        }}
+                        ellipsis={{ tooltip: record.remark || false }}
+                        editable={isLibrary ? undefined : {
                           tooltip: false,
                           text: record.remark || '',
+                          triggerType: ['icon', 'text'],
                           onChange: (val) => handleUpdateRemark(record.id, val),
                         }}
                       >
-                        {record.remark}
+                        {record.remark || (isLibrary ? '-' : '添加备注')}
                       </Text>
                     </div>
                   </div>
@@ -1914,7 +2204,7 @@ const Models: React.FC = () => {
                     {br && (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                         <a
-                          href={`/${adminPath}/billing-rules?edit_id=${br.id}`}
+                          href={billingRulesEditPath(adminPath, br.pid || br.id)}
                           target="_blank"
                           rel="noreferrer"
                           style={{ fontSize: 11, color: 'var(--text-secondary, #8c8c8c)', textDecoration: 'underline' }}
@@ -1931,27 +2221,31 @@ const Models: React.FC = () => {
                     {br ? <RateDisplay rule={br} currencySymbol={currencySymbol} formatPrice={formatPrice} /> : <Text type="secondary" italic>未挂载</Text>}
                     {record.site_discount_enabled === 1 && (
                       <div>
-                        <Tag color="volcano" bordered={false} style={{ fontSize: '10px', margin: 0, padding: '0 4px', lineHeight: '16px' }}>
-                          {`折扣限价 ${Number(record.site_discount || 1).toFixed(2)} 倍率`}
+                        <Tag color="volcano" variant="filled" style={{ fontSize: '10px', margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+                          {`折扣限价 ${Number(record.site_discount || 1).toFixed(2)} 倍率${discountScheduleOn(record.discount_schedule) ? ' · 时段' : ''}`}
                         </Tag>
                       </div>
                     )}
                     {record.global_discount_enabled === 1 && (
                       <div>
-                        <Tag color="purple" bordered={false} style={{ fontSize: '10px', margin: 0, padding: '0 4px', lineHeight: '16px' }}>
-                          {`全站折扣 ${Number(record.global_discount || 1).toFixed(2)} 倍率`}
+                        <Tag color="purple" variant="filled" style={{ fontSize: '10px', margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+                          {`全站折扣 ${Number(record.global_discount || 1).toFixed(2)} 倍率${discountScheduleOn(record.discount_schedule) ? ' · 时段' : ''}`}
                         </Tag>
                       </div>
                     )}
                   </div>
                 </CardRow>
                 {(record.pre_deduction ?? 0) > 0 && (
-                  <CardRow label="预扣"><Text style={{ fontSize: 11, color: '#faad14' }}>{formatPrice(record.pre_deduction)}</Text></CardRow>
+                  <CardRow label="预扣">
+                    <Text style={{ fontSize: 11, color: '#faad14' }}>
+                      {formatPrice(record.pre_deduction)}{record.type_id && getTypeName(record.type_id)?.includes('视频') ? '/秒 (按秒预扣)' : ''}
+                    </Text>
+                  </CardRow>
                 )}
                 <CardRow label="页面排序">
                   <div style={{ display: 'flex', alignItems: 'center' }}>
                     <Text
-                      editable={{
+                      editable={isLibrary ? undefined : {
                         tooltip: false,
                         text: String(record.sort_order ?? 0),
                         onChange: (val) => {
@@ -1971,10 +2265,37 @@ const Models: React.FC = () => {
                   </div>
                 </CardRow>
                 <CardActions>
-                  <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-                  <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
-                    <Button size="small" icon={<DeleteOutlined />} danger />
-                  </Popconfirm>
+                  {isLibrary ? (
+                    <>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+                      <Button
+                        size="small"
+                        icon={<CloudUploadOutlined />}
+                        loading={publishingId === modelRowKey(record)}
+                        onClick={() => handlePublish(record)}
+                      >
+                        {t('models.publish_model')}
+                      </Button>
+                      <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                        <Button size="small" icon={<DeleteOutlined />} danger />
+                      </Popconfirm>
+                    </>
+                  ) : (
+                    <>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+                      <Button
+                        size="small"
+                        icon={<CloudDownloadOutlined />}
+                        loading={publishingId === modelRowKey(record)}
+                        onClick={() => handleUnlist(record)}
+                      >
+                        {t('models.unlist_model')}
+                      </Button>
+                      <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                        <Button size="small" icon={<DeleteOutlined />} danger />
+                      </Popconfirm>
+                    </>
+                  )}
                 </CardActions>
               </MobileCard>
             );
@@ -2035,7 +2356,7 @@ const Models: React.FC = () => {
                             className="compact-table"
                             dataSource={item.children}
                             columns={resizableColumns}
-                            rowKey="id"
+                            rowKey={modelRowKey}
                             size="small"
                             pagination={false}
                             showHeader={false}
@@ -2044,9 +2365,9 @@ const Models: React.FC = () => {
                             rowSelection={isBatchEditMode ? {
                               selectedRowKeys,
                               onChange: (newKeys: React.Key[]) => {
-                                const currentSinglesIds = new Set(item.children.map((c: any) => c.id));
+                                const currentSinglesRowKeys = new Set(item.children.map((c: any) => modelRowKey(c)));
                                 setSelectedRowKeys(prev => {
-                                  const otherKeys = prev.filter(k => !currentSinglesIds.has(k as number));
+                                  const otherKeys = prev.filter(k => !currentSinglesRowKeys.has(String(k)));
                                   return [...otherKeys, ...newKeys];
                                 });
                               }
@@ -2061,17 +2382,14 @@ const Models: React.FC = () => {
                         key={item.key}
                         group={item}
                         columns={resizableColumns}
-                        showHeader={false}
-                        getProviderName={getProviderName}
-                        allBillingRules={allBillingRules}
-                        currencySymbol={currencySymbol}
-                        t={t}
                         isLight={isLight}
                         forceCollapsed={showGroupsOnly}
                         onRefresh={fetchModels}
+                        setModels={setModels}
                         isBatchEditMode={isBatchEditMode}
                         selectedRowKeys={selectedRowKeys}
                         setSelectedRowKeys={setSelectedRowKeys}
+                        isLibrary={isLibrary}
                       />
                     );
                   })}
@@ -2082,18 +2400,12 @@ const Models: React.FC = () => {
           
           {!loading && totalCount > 0 && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 8px' }}>
-              <Pagination
+              <ListPagination
                 current={currentPage}
                 pageSize={pageSize}
                 total={totalCount}
-                onChange={(page, size) => {
-                  setCurrentPage(page);
-                  setPageSize(size);
-                }}
-                showSizeChanger
-                pageSizeOptions={['10', '20', '30', '50', '100']}
-                showTotal={(total) => `共 ${total} 个模型`}
-                 size={screens.xs ? 'small' : undefined}
+                onChange={onChange}
+                size={screens.xs ? 'small' : undefined}
               />
             </div>
           )}
@@ -2104,13 +2416,13 @@ const Models: React.FC = () => {
         <div style={{ animation: 'fadeIn 0.3s' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-              <Button icon={<ArrowLeftOutlined />} onClick={() => setIsModalVisible(false)}>返回</Button>
+              <Button icon={<ArrowLeftOutlined />} onClick={handleCloseEditor}>返回</Button>
               <Title level={3} style={{ margin: 0 }}>
                 {editingModel ? t('models.edit_model') : t('models.add_model')}
               </Title>
             </div>
             <Space>
-              <Button onClick={() => setIsModalVisible(false)}>取消</Button>
+              <Button onClick={handleCloseEditor}>取消</Button>
               <Button
                 type="primary"
                 loading={saving}
@@ -2360,9 +2672,22 @@ const Models: React.FC = () => {
                            </Form.Item>
                        </Col>
                        <Col span={12}>
-                           <Form.Item name="pre_deduction" label={<Text strong>{`预扣费 (${settings?.currency?.default_currency || 'USD'})`}</Text>} initialValue={0.0}>
-                              <InputNumber style={{ width: '100%' }} precision={6} min={0} />
-                           </Form.Item>
+                          <Form.Item noStyle shouldUpdate={(prev: any, cur: any) => prev.type_id !== cur.type_id}>
+                            {({ getFieldValue }: any) => {
+                              const typeId = getFieldValue('type_id');
+                              const isVideo = typeId ? (getTypeName(typeId)?.includes('视频') ?? false) : false;
+                              return (
+                                <Form.Item
+                                  name="pre_deduction"
+                                  label={<Text strong>{`预扣费 (${settings?.currency?.default_currency || 'USD'})`}</Text>}
+                                  initialValue={0.0}
+                                  extra={isVideo ? <span style={{ fontSize: 11, color: '#faad14' }}>提示：视频模型按「预扣费 × 视频秒数」进行预扣冻结，防止透支</span> : undefined}
+                                >
+                                  <InputNumber style={{ width: '100%' }} precision={6} min={0} />
+                                </Form.Item>
+                              );
+                            }}
+                          </Form.Item>
                        </Col>
                        <Col span={12}>
                            <Form.Item name="is_active" label={<Text strong>{t('common.status')}</Text>} valuePropName="checked" initialValue={true}>
@@ -2383,7 +2708,7 @@ const Models: React.FC = () => {
 
                     <Form.Item noStyle shouldUpdate={(prev: any, cur: any) => prev.site_discount_enabled !== cur.site_discount_enabled}>
                       {({ getFieldValue }: any) => getFieldValue('site_discount_enabled') ? (
-                        <Form.Item name="site_discount" label={<Text strong>折扣限价倍率</Text>} initialValue={1.0} extra="系统取 MIN(用户模型折扣, 全站折扣, 用户等级折扣) 与渠道倍率的乘积后，与此限价取 MAX 保底，保证有效倍率不低于此值">
+                        <Form.Item name="site_discount" label={<Text strong>折扣限价倍率</Text>} initialValue={1.0} extra="统一折扣限价。系统取折扣与渠道倍率的乘积后，与此值取 MAX 保底。全站折扣的时段规划命中时，改用该时段限价">
                           <InputNumber style={{ width: '100%' }} precision={2} step={0.1} min={0.01} />
                         </Form.Item>
                       ) : null}
@@ -2408,7 +2733,7 @@ const Models: React.FC = () => {
                             label={<Text strong>全站折扣倍率</Text>}
                             initialValue={1.0}
                             dependencies={['site_discount', 'site_discount_enabled']}
-                            extra="开启后所有用户使用此模型时参与折扣比较。系统取 MIN(用户模型折扣, 全站折扣, 用户等级折扣) 最低值，再与渠道倍率相乘；若开启折扣限价则对乘积 MAX 保底"
+                            extra="统一全站折扣，参与 MIN(用户模型折扣, 全站折扣, 用户等级折扣)，再与渠道倍率相乘。下方高级设置可按星期改写此时段的全站折扣和折扣限价"
                             rules={siteEnabled ? [{
                               validator: (_: any, value: number) =>
                                 value != null && value < siteDiscount
@@ -2421,6 +2746,11 @@ const Models: React.FC = () => {
                         );
                       }}
                     </Form.Item>
+
+                    <DiscountScheduleEditor
+                      isLight={isLight}
+                      timezoneName={settings?.site?.default_timezone || 'Asia/Shanghai'}
+                    />
                     
                   </div>
                 </Col>
@@ -2710,8 +3040,8 @@ const Models: React.FC = () => {
                                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, overflow: 'hidden' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                                           <span style={{ fontWeight: selected ? 600 : 500, fontSize: 13.5, color: selected ? '#1677ff' : 'inherit' }}>{b.name}</span>
-                                          {b.pid && <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>PID: {b.pid}</Tag>}
-                                          <Tag color={b.billing_type === 'tokens' ? 'green' : (b.billing_type === 'requests' ? 'orange' : 'purple')} bordered={false} style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>
+                                          {b.pid && <Tag color="blue" variant="filled" style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>PID: {b.pid}</Tag>}
+                                          <Tag color={b.billing_type === 'tokens' ? 'green' : (b.billing_type === 'requests' ? 'orange' : 'purple')} variant="filled" style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>
                                             {b.billing_type === 'tokens' ? '按Token' : (b.billing_type === 'requests' ? '按次' : '按时长')}
                                           </Tag>
                                         </div>
@@ -2779,7 +3109,7 @@ const Models: React.FC = () => {
                                   >
                                     <Radio.Button value="all">全部</Radio.Button>
                                     {categories.map(cat => (
-                                      <Radio.Button key={String(cat)} value={String(cat)}>{String(cat)}</Radio.Button>
+                                       <Radio.Button key={String(cat)} value={String(cat)}>{String(cat)}</Radio.Button>
                                     ))}
                                   </Radio.Group>
                                 </div>
@@ -2808,12 +3138,12 @@ const Models: React.FC = () => {
                                     >
                                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden', flex: 1, marginRight: 12 }}>
                                         {r.eid && (
-                                          <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 11, padding: '0 5px', lineHeight: '18px', flexShrink: 0 }}>
+                                          <Tag color="blue" variant="filled" style={{ margin: 0, fontSize: 11, padding: '0 5px', lineHeight: '18px', flexShrink: 0 }}>
                                             EID: {r.eid}
                                           </Tag>
                                         )}
                                         {r.category && (
-                                          <Tag color="purple" bordered={false} style={{ margin: 0, fontSize: 10, padding: '0 5px', lineHeight: '18px', flexShrink: 0 }}>
+                                          <Tag color="purple" variant="filled" style={{ margin: 0, fontSize: 10, padding: '0 5px', lineHeight: '18px', flexShrink: 0 }}>
                                             {r.category}
                                           </Tag>
                                         )}

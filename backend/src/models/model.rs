@@ -1,11 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
+use chrono::{Datelike, Timelike};
 use crate::time_system::DbTs;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,10 @@ pub struct Model {
     pub global_discount: f64, // 全站折扣倍率
     #[sqlx(default)]
     pub global_discount_enabled: i32, // 全站折扣开关（0=关，1=开）
+    /// 折扣限价 / 全站折扣的按天时段规划。`enabled=false` 或空串时使用上面的统一折扣
+    #[sqlx(default)]
+    #[serde(default)]
+    pub discount_schedule: String,
     #[sqlx(default)]
     pub logo: Option<String>,
     #[sqlx(default)]
@@ -44,10 +49,26 @@ pub struct Model {
     pub description: Option<String>,
     #[sqlx(default)]
     pub feature_attributes: Option<String>,
-    /// 1=系统预设，0=自定义
+    /// 1=模型库目录，0=上架模型（`models` 表内应恒为 0）
     #[sqlx(default)]
     #[serde(default)]
     pub is_system: i32,
+    /// 来源模型库 mid；自建上架为空
+    #[sqlx(default)]
+    #[serde(default)]
+    pub library_mid: Option<String>,
+    /// 1=上架（可调用/进渠道/进广场），0=下架（在模型库）
+    #[sqlx(default)]
+    #[serde(default)]
+    pub is_listed: i32,
+    /// 模型库列表：已被上架的份数（非表字段）
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub listed_count: i64,
+    /// 模型库条目：catalog=预置目录，unlisted=从运营列表回到仓库的模型行。仓库界面不另标状态。
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub library_kind: Option<String>,
     #[sqlx(default)]
     #[serde(default)]
     pub sort_order: i32,
@@ -102,23 +123,173 @@ fn default_applied_multiplier() -> f64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeMultiplier {
+    #[serde(default)]
     pub start: String,
+    #[serde(default)]
     pub end: String,
     pub multiplier: f64,
+    /// ISO 星期 1=周一 … 7=周日。空或缺省 = 每天
+    #[serde(default, deserialize_with = "deserialize_days")]
+    pub days: Vec<u8>,
+    /// 勾选日全天生效，不看 start/end；与同日时段并存时时段优先
+    #[serde(default)]
+    pub all_day: bool,
+}
+
+fn deserialize_days<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    Ok(Option::<Vec<u8>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TimeMultiplierConfig {
+    #[serde(default)]
+    enable_time_multipliers: bool,
+    #[serde(default)]
+    invert_time_multipliers: bool,
+    /// 反向开启时，未命中时段且当天没有全天规则时用此倍率；缺省则兼容旧逻辑 `1/窗口倍率`
+    #[serde(default)]
+    invert_remainder_multiplier: Option<f64>,
+    #[serde(default)]
+    time_multipliers: Vec<TimeMultiplier>,
+}
+
+fn prev_weekday(weekday: chrono::Weekday) -> chrono::Weekday {
+    use chrono::Weekday::*;
+    match weekday {
+        Mon => Sun,
+        Tue => Mon,
+        Wed => Tue,
+        Thu => Wed,
+        Fri => Thu,
+        Sat => Fri,
+        Sun => Sat,
+    }
+}
+
+fn weekday_applies(days: &[u8], weekday: chrono::Weekday) -> bool {
+    if days.is_empty() {
+        return true;
+    }
+    let n = weekday.number_from_monday() as u8;
+    days.contains(&n)
+}
+
+fn invert_remainder(multipliers: &[TimeMultiplier], weekday: chrono::Weekday) -> f64 {
+    let Some(item) = multipliers
+        .iter()
+        .find(|item| !item.all_day && weekday_applies(&item.days, weekday))
+    else {
+        return 1.0;
+    };
+    if item.multiplier <= 0.0 {
+        1.0
+    } else {
+        1.0 / item.multiplier
+    }
+}
+
+fn invert_rest_rate(
+    multipliers: &[TimeMultiplier],
+    weekday: chrono::Weekday,
+    remainder: Option<f64>,
+) -> f64 {
+    if !multipliers
+        .iter()
+        .any(|item| !item.all_day && weekday_applies(&item.days, weekday))
+    {
+        return 1.0;
+    }
+    if let Some(r) = remainder {
+        if r >= 0.0 {
+            return r;
+        }
+    }
+    invert_remainder(multipliers, weekday)
+}
+
+fn day_has_all_day(multipliers: &[TimeMultiplier], weekday: chrono::Weekday) -> bool {
+    multipliers
+        .iter()
+        .any(|item| item.all_day && weekday_applies(&item.days, weekday))
+}
+
+/// 半开区间 `[start, end)`；跨天窗口归属起始日，次日凌晨仍按起始日的 `days` 判定
+fn interval_matches(
+    item: &TimeMultiplier,
+    current_time: chrono::NaiveTime,
+    weekday: chrono::Weekday,
+) -> bool {
+    if item.all_day {
+        return false;
+    }
+    let Ok(start_t) = chrono::NaiveTime::parse_from_str(&item.start, "%H:%M") else {
+        return false;
+    };
+    let Ok(end_t) = chrono::NaiveTime::parse_from_str(&item.end, "%H:%M") else {
+        return false;
+    };
+    if start_t > end_t {
+        if current_time >= start_t {
+            weekday_applies(&item.days, weekday)
+        } else if current_time < end_t {
+            weekday_applies(&item.days, prev_weekday(weekday))
+        } else {
+            false
+        }
+    } else {
+        current_time >= start_t
+            && current_time < end_t
+            && weekday_applies(&item.days, weekday)
+    }
+}
+
+fn resolve_time_multiplier(
+    multipliers: &[TimeMultiplier],
+    invert: bool,
+    remainder: Option<f64>,
+    current_time: chrono::NaiveTime,
+    weekday: chrono::Weekday,
+) -> f64 {
+    if multipliers.is_empty() {
+        return 1.0;
+    }
+    let matched = multipliers
+        .iter()
+        .find(|item| interval_matches(item, current_time, weekday));
+    if let Some(item) = matched {
+        // 未填剩余倍率时保持旧反向：窗口改成 1.00；填了则窗口用填写值（即模型当前价）
+        if invert && remainder.is_none() && !day_has_all_day(multipliers, weekday) {
+            return 1.0;
+        }
+        return item.multiplier;
+    }
+    if let Some(item) = multipliers
+        .iter()
+        .find(|item| item.all_day && weekday_applies(&item.days, weekday))
+    {
+        return item.multiplier;
+    }
+    // 未规划倍率是一等配置：只要填了就生效，不必再开 invert。
+    // 旧反向（invert 且未填剩余）仍走倒数。
+    if remainder.is_some() || invert {
+        invert_rest_rate(multipliers, weekday, remainder)
+    } else {
+        1.0
+    }
 }
 
 impl BillingRule {
+    fn time_multiplier_config(&self) -> Option<TimeMultiplierConfig> {
+        if self.extended_config.is_empty() || self.extended_config == "{}" {
+            return None;
+        }
+        serde_json::from_str(&self.extended_config).ok()
+    }
+
     /// 是否启用时间段价格倍率（须显式 `enable_time_multipliers: true`）
     fn time_multipliers_enabled(&self) -> bool {
-        if self.extended_config.is_empty() || self.extended_config == "{}" {
-            return false;
-        }
-        let Ok(config) = serde_json::from_str::<serde_json::Value>(&self.extended_config) else {
-            return false;
-        };
-        config
-            .get("enable_time_multipliers")
-            .and_then(|v| v.as_bool())
+        self.time_multiplier_config()
+            .map(|c| c.enable_time_multipliers)
             .unwrap_or(false)
     }
 
@@ -129,60 +300,310 @@ impl BillingRule {
         }
         let tz: chrono_tz::Tz = default_tz.parse().unwrap_or(chrono_tz::Asia::Shanghai);
         let local_now = chrono::Utc::now().with_timezone(&tz);
-        self.multiplier_at_local_time(local_now.time())
+        self.multiplier_at_local_datetime(local_now.time(), local_now.weekday())
+    }
+
+
+    /// 按给定本地时钟与星期匹配时段倍率
+    pub fn multiplier_at_local_datetime(
+        &self,
+        current_time: chrono::NaiveTime,
+        weekday: chrono::Weekday,
+    ) -> f64 {
+        let Some(config) = self.time_multiplier_config() else {
+            return 1.0;
+        };
+        if !config.enable_time_multipliers {
+            return 1.0;
+        }
+        resolve_time_multiplier(
+            &config.time_multipliers,
+            config.invert_time_multipliers,
+            config.invert_remainder_multiplier,
+            current_time,
+            weekday,
+        )
     }
 
     /// 按给定本地时钟（时分秒）匹配时段倍率；半开区间 `[start, end)`，支持跨天
-    fn multiplier_at_local_time(&self, current_time: chrono::NaiveTime) -> f64 {
-        if !self.time_multipliers_enabled() {
-            return 1.0;
-        }
-        if self.extended_config.is_empty() || self.extended_config == "{}" {
-            return 1.0;
-        }
-
-        let config: serde_json::Value = match serde_json::from_str(&self.extended_config) {
-            Ok(v) => v,
-            Err(_) => return 1.0,
-        };
-
-        let multipliers_val = match config.get("time_multipliers") {
-            Some(v) => v,
-            None => return 1.0,
-        };
-
-        let multipliers: Vec<TimeMultiplier> = match serde_json::from_value(multipliers_val.clone())
-        {
-            Ok(v) => v,
-            Err(_) => return 1.0,
-        };
-
-        if multipliers.is_empty() {
-            return 1.0;
-        }
-
-        for item in multipliers {
-            let start = chrono::NaiveTime::parse_from_str(&item.start, "%H:%M");
-            let end = chrono::NaiveTime::parse_from_str(&item.end, "%H:%M");
-            if let (Ok(start_t), Ok(end_t)) = (start, end) {
-                let matched = if start_t > end_t {
-                    // 跨天：如 22:00-06:00 → [22:00,24:00) ∪ [00:00,06:00)
-                    current_time >= start_t || current_time < end_t
-                } else {
-                    current_time >= start_t && current_time < end_t
-                };
-                if matched {
-                    return item.multiplier;
-                }
-            }
-        }
-
-        1.0
+    pub fn multiplier_at_local_time(&self, current_time: chrono::NaiveTime) -> f64 {
+        self.multiplier_at_local_datetime(current_time, chrono::Utc::now().weekday())
     }
 
     /// 将当前时刻倍率写入 `applied_multiplier`（请求开始锁定）
     pub fn lock_time_multiplier(&mut self, default_tz: &str) {
         self.applied_multiplier = self.get_current_multiplier(default_tz);
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DiscountScheduleFile {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    slots: Vec<DiscountSlot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DiscountSlot {
+    #[serde(default)]
+    start: String,
+    #[serde(default)]
+    end: String,
+    #[serde(default)]
+    site_discount: f64,
+    #[serde(default)]
+    global_discount: f64,
+    #[serde(default, deserialize_with = "deserialize_days")]
+    days: Vec<u8>,
+    #[serde(default)]
+    all_day: bool,
+}
+
+fn parse_discount_schedule(raw: &str) -> Option<DiscountScheduleFile> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "{}" {
+        return None;
+    }
+    serde_json::from_str(raw).ok()
+}
+
+fn discount_slot_window(slot: &DiscountSlot) -> TimeMultiplier {
+    TimeMultiplier {
+        start: slot.start.clone(),
+        end: slot.end.clone(),
+        multiplier: 1.0,
+        days: slot.days.clone(),
+        all_day: slot.all_day,
+    }
+}
+
+fn matching_discount_slot<'a>(
+    slots: &'a [DiscountSlot],
+    current_time: chrono::NaiveTime,
+    weekday: chrono::Weekday,
+) -> Option<&'a DiscountSlot> {
+    let windows: Vec<TimeMultiplier> = slots.iter().map(discount_slot_window).collect();
+    if let Some((idx, _)) = windows
+        .iter()
+        .enumerate()
+        .find(|(_, item)| interval_matches(item, current_time, weekday))
+    {
+        return slots.get(idx);
+    }
+    let idx = windows
+        .iter()
+        .position(|item| item.all_day && weekday_applies(&item.days, weekday))?;
+    slots.get(idx)
+}
+
+pub fn discount_schedule_enabled(raw: &str) -> bool {
+    parse_discount_schedule(raw)
+        .map(|s| s.enabled && !s.slots.is_empty())
+        .unwrap_or(false)
+}
+
+/// 统一折扣为底。时段规划开启且命中时，只替换已开启的那一项。
+pub fn effective_model_discounts(
+    site_discount: f64,
+    global_discount: f64,
+    site_enabled: i32,
+    global_enabled: i32,
+    schedule_json: &str,
+    current_time: chrono::NaiveTime,
+    weekday: chrono::Weekday,
+) -> (f64, f64) {
+    let Some(schedule) = parse_discount_schedule(schedule_json) else {
+        return (site_discount, global_discount);
+    };
+    if !schedule.enabled || global_enabled != 1 {
+        return (site_discount, global_discount);
+    }
+    let Some(slot) = matching_discount_slot(&schedule.slots, current_time, weekday) else {
+        return (site_discount, global_discount);
+    };
+    let site = if site_enabled == 1 && slot.site_discount.is_finite() && slot.site_discount > 0.0 {
+        slot.site_discount
+    } else {
+        site_discount
+    };
+    let global = if global_enabled == 1
+        && slot.global_discount.is_finite()
+        && slot.global_discount > 0.0
+    {
+        slot.global_discount
+    } else {
+        global_discount
+    };
+    (site, global)
+}
+
+fn finite_positive(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
+fn slot_days(days: &[u8]) -> Vec<u8> {
+    if days.is_empty() {
+        return vec![1, 2, 3, 4, 5, 6, 7];
+    }
+    let mut out: Vec<u8> = days.iter().copied().filter(|d| (1..=7).contains(d)).collect();
+    out.sort_unstable();
+    out.dedup();
+    if out.is_empty() {
+        vec![1, 2, 3, 4, 5, 6, 7]
+    } else {
+        out
+    }
+}
+
+fn next_iso_day(day: u8) -> u8 {
+    if day == 7 { 1 } else { day + 1 }
+}
+
+struct DiscountInterval {
+    start: u16,
+    end: u16,
+    day: u8,
+    index: usize,
+}
+
+fn clock_minutes(raw: &str) -> Option<u16> {
+    let t = chrono::NaiveTime::parse_from_str(raw, "%H:%M").ok()?;
+    Some((t.hour() as u16) * 60 + t.minute() as u16)
+}
+
+fn expand_discount_intervals(slot: &DiscountSlot, index: usize) -> Result<Vec<DiscountInterval>, String> {
+    if slot.all_day {
+        return Ok(Vec::new());
+    }
+    let start = clock_minutes(&slot.start)
+        .ok_or_else(|| format!("第 {} 条时段的开始时间无效", index + 1))?;
+    let end = clock_minutes(&slot.end)
+        .ok_or_else(|| format!("第 {} 条时段的结束时间无效", index + 1))?;
+    if start == end {
+        return Err(format!("第 {} 条时段的起止时间不能相同", index + 1));
+    }
+    let mut out = Vec::new();
+    for day in slot_days(&slot.days) {
+        if start > end {
+            out.push(DiscountInterval { start, end: 1440, day, index });
+            out.push(DiscountInterval {
+                start: 0,
+                end,
+                day: next_iso_day(day),
+                index,
+            });
+        } else {
+            out.push(DiscountInterval { start, end, day, index });
+        }
+    }
+    Ok(out)
+}
+
+/// 保存前校验。关闭规划时不检查条目。
+pub fn validate_discount_schedule(
+    raw: &str,
+    site_enabled: bool,
+    global_enabled: bool,
+) -> Result<(), String> {
+    let Some(schedule) = parse_discount_schedule(raw) else {
+        if raw.trim().is_empty() || raw.trim() == "{}" {
+            return Ok(());
+        }
+        return Err("时段折扣配置无法解析".to_string());
+    };
+    if !schedule.enabled {
+        return Ok(());
+    }
+    if !global_enabled {
+        return Err("开启全站折扣后才能规划时段折扣".to_string());
+    }
+    if schedule.slots.is_empty() {
+        return Err("已开启时段折扣，请至少添加一条时段或全天规则".to_string());
+    }
+    let mut intervals = Vec::new();
+    let mut all_day: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (index, slot) in schedule.slots.iter().enumerate() {
+        if site_enabled && !finite_positive(slot.site_discount) {
+            return Err(format!("第 {} 条规则的折扣限价必须大于 0", index + 1));
+        }
+        if global_enabled && !finite_positive(slot.global_discount) {
+            return Err(format!("第 {} 条规则的全站折扣必须大于 0", index + 1));
+        }
+        if site_enabled
+            && global_enabled
+            && finite_positive(slot.site_discount)
+            && finite_positive(slot.global_discount)
+            && slot.global_discount < slot.site_discount
+        {
+            return Err(format!(
+                "第 {} 条规则的全站折扣 {:.2} 低于折扣限价 {:.2}",
+                index + 1,
+                slot.global_discount,
+                slot.site_discount
+            ));
+        }
+        if slot.all_day {
+            all_day.push((index, slot_days(&slot.days)));
+            continue;
+        }
+        intervals.extend(expand_discount_intervals(slot, index)?);
+    }
+    for i in 0..all_day.len() {
+        for j in (i + 1)..all_day.len() {
+            if let Some(day) = all_day[i].1.iter().find(|d| all_day[j].1.contains(d)) {
+                return Err(format!(
+                    "星期 {} 的全天规则重复（第 {} 条与第 {} 条）",
+                    day,
+                    all_day[i].0 + 1,
+                    all_day[j].0 + 1
+                ));
+            }
+        }
+    }
+    for a in 0..intervals.len() {
+        for b in (a + 1)..intervals.len() {
+            let left = &intervals[a];
+            let right = &intervals[b];
+            if left.index == right.index || left.day != right.day {
+                continue;
+            }
+            if left.start.max(right.start) < left.end.min(right.end) {
+                return Err(format!(
+                    "时段在星期 {} 重叠（第 {} 条与第 {} 条）",
+                    left.day,
+                    left.index + 1,
+                    right.index + 1
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Model {
+    pub fn apply_discount_schedule_at(
+        &mut self,
+        current_time: chrono::NaiveTime,
+        weekday: chrono::Weekday,
+    ) {
+        let (site, global) = effective_model_discounts(
+            self.site_discount,
+            self.global_discount,
+            self.site_discount_enabled,
+            self.global_discount_enabled,
+            &self.discount_schedule,
+            current_time,
+            weekday,
+        );
+        self.site_discount = site;
+        self.global_discount = global;
+    }
+
+    pub fn apply_discount_schedule_now(&mut self, default_tz: &str) {
+        let tz: chrono_tz::Tz = default_tz.parse().unwrap_or(chrono_tz::Asia::Shanghai);
+        let local = chrono::Utc::now().with_timezone(&tz);
+        self.apply_discount_schedule_at(local.time(), local.weekday());
     }
 }
 
@@ -379,6 +800,12 @@ pub struct ClassificationsResponse {
     pub providers: Vec<ClassificationCount>,
     pub api_providers: Vec<ClassificationCount>,
     pub types: Vec<ClassificationCount>,
+    #[serde(default)]
+    pub unclassified_providers: i64,
+    #[serde(default)]
+    pub unclassified_api_providers: i64,
+    #[serde(default)]
+    pub unclassified_types: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,6 +827,7 @@ pub struct CreateModelRequest {
     pub site_discount_enabled: Option<i32>,
     pub global_discount: Option<f64>,
     pub global_discount_enabled: Option<i32>,
+    pub discount_schedule: Option<String>,
     pub logo: Option<String>,
     pub remark: Option<String>,
     pub description: Option<String>,
@@ -426,6 +854,7 @@ pub struct UpdateModelRequest {
     pub site_discount_enabled: Option<i32>,
     pub global_discount: Option<f64>,
     pub global_discount_enabled: Option<i32>,
+    pub discount_schedule: Option<String>,
     pub logo: Option<String>,
     pub remark: Option<String>,
     pub description: Option<String>,
@@ -447,4 +876,79 @@ pub struct ClassificationRequest {
     pub is_active: i32,
     pub remark: Option<String>,
     pub logo: Option<String>,
+}
+
+#[cfg(test)]
+mod discount_schedule_tests {
+    use super::{effective_model_discounts, validate_discount_schedule};
+    use chrono::{NaiveTime, Weekday};
+
+    fn at(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn disabled_schedule_keeps_unified_rates() {
+        let (site, global) = effective_model_discounts(
+            1.0,
+            0.8,
+            1,
+            1,
+            r#"{"enabled":false,"slots":[{"all_day":true,"days":[1],"site_discount":0.5,"global_discount":0.5}]}"#,
+            at(10, 0),
+            Weekday::Mon,
+        );
+        assert_eq!(site, 1.0);
+        assert_eq!(global, 0.8);
+    }
+
+    #[test]
+    fn slot_overrides_only_enabled_dimension() {
+        let raw = r#"{"enabled":true,"slots":[{"start":"09:00","end":"12:00","days":[1],"site_discount":0.9,"global_discount":0.6}]}"#;
+        let (site, global) =
+            effective_model_discounts(1.0, 0.8, 1, 0, raw, at(10, 0), Weekday::Mon);
+        assert_eq!(site, 1.0);
+        assert_eq!(global, 0.8);
+        let (site, global) =
+            effective_model_discounts(1.0, 0.8, 1, 1, raw, at(15, 0), Weekday::Mon);
+        assert_eq!(site, 1.0);
+        assert_eq!(global, 0.8);
+    }
+
+    #[test]
+    fn all_day_loses_to_a_narrower_slot() {
+        let raw = r#"{"enabled":true,"slots":[
+            {"start":"09:00","end":"12:00","days":[1],"site_discount":0.5,"global_discount":0.5},
+            {"all_day":true,"days":[1],"site_discount":0.7,"global_discount":0.7}
+        ]}"#;
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(10, 0), Weekday::Mon);
+        assert_eq!(site, 0.5);
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(15, 0), Weekday::Mon);
+        assert_eq!(site, 0.7);
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(10, 0), Weekday::Tue);
+        assert_eq!(site, 1.0);
+    }
+
+    #[test]
+    fn overnight_window_belongs_to_the_start_day() {
+        let raw = r#"{"enabled":true,"slots":[{"start":"22:00","end":"02:00","days":[5],"site_discount":0.4,"global_discount":0.4}]}"#;
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(23, 0), Weekday::Fri);
+        assert_eq!(site, 0.4);
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(1, 0), Weekday::Sat);
+        assert_eq!(site, 0.4);
+        let (site, _) = effective_model_discounts(1.0, 1.0, 1, 1, raw, at(1, 0), Weekday::Fri);
+        assert_eq!(site, 1.0);
+    }
+
+    #[test]
+    fn rejects_overlap_and_floor_inversion() {
+        let overlap = r#"{"enabled":true,"slots":[
+            {"start":"09:00","end":"12:00","days":[1],"site_discount":1,"global_discount":1},
+            {"start":"11:00","end":"13:00","days":[1],"site_discount":1,"global_discount":1}
+        ]}"#;
+        assert!(validate_discount_schedule(overlap, true, true).is_err());
+        let inverted = r#"{"enabled":true,"slots":[{"all_day":true,"days":[1],"site_discount":0.9,"global_discount":0.5}]}"#;
+        assert!(validate_discount_schedule(inverted, true, true).is_err());
+        assert!(validate_discount_schedule(inverted, true, false).is_err());
+    }
 }

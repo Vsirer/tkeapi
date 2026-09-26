@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
@@ -49,10 +49,17 @@ pub struct RequestLog {
     pub upstream_url: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_request_id: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_group_aid: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub yid: Option<String>, // 读路径由 JOIN channel_configs.yid 填充，非 logs 列
+    /// 读路径 JOIN models.mid（l.model 匹配 mid 或 model_id）
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mid: Option<String>,
     /// 请求当时是否走 HA 组（写路径快照，非 JOIN 当前渠道）
     #[sqlx(default)]
     #[serde(default, skip_serializing_if = "is_zero_i32")]
@@ -82,6 +89,10 @@ pub struct RequestLog {
     #[sqlx(default)]
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub token_ha: i32,
+    /// 是否创作中心专用令牌（JOIN `only_playground` / `only_playground_2026`）
+    #[sqlx(default)]
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub token_pg: i32,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_nickname: Option<String>,
@@ -145,6 +156,9 @@ pub struct RequestLog {
     /// 任务是否已终结(1=已完成,0=进行中或待结算)
     #[sqlx(default)]
     pub is_completed: i16,
+    /// 视频模型输入是否包含视频(1=含视频, 0=无视频)
+    #[sqlx(default)]
+    pub has_video: i16,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_config_id: Option<i32>,
@@ -179,8 +193,12 @@ pub struct LogQuery {
     pub token_kid: Option<String>,
     pub task_id: Option<String>,
     pub search_keyword: Option<String>,
+    /// 视频模型输入形态过滤：1=含视频，0=无视频
+    pub has_video: Option<i16>,
     /// CSV 导出字段（逗号分隔 key）；空则全部。仅 `/logs/export` 使用。
     pub export_fields: Option<String>,
+    /// 客户端已知的总记录数（翻页时回传，避免重跑 COUNT）
+    pub known_total: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,6 +210,15 @@ pub struct LogListResponse {
     pub total_cost: f64,
     pub success_count: i64,
     pub fail_count: i64,
+    /// 输入 + 输出 token 合计（不含独立加计缓存，缓存已含在输入中）
+    pub total_tokens: i64,
+    /// 输入 token 合计（prompt_tokens）
+    pub total_prompt_tokens: i64,
+    /// 输出 token 合计（completion_tokens）
+    pub total_completion_tokens: i64,
+    /// 输出 token 中含视频部分（with_video，>0 时返回；无视频部分即 total_completion_tokens - total_with_video_tokens）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_with_video_tokens: Option<i64>,
     pub total_system_cost: Option<f64>,
     pub total_gift_cost: Option<f64>,
 }
@@ -205,6 +232,9 @@ pub struct LogDetailContent {
     pub post_response: Option<String>,
     pub upstream_req_content: Option<String>,
     pub billing_detail: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_request_id: Option<String>,
     /// 列表不查；展开按需。用户端已白名单投影。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_tag: Option<String>,

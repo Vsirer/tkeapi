@@ -1,20 +1,17 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Card, Form, Input, Button, Radio, Select, Alert, Typography,
-  Row, Col, Space, Divider, Tooltip, type FormInstance
+  Row, Col, Space, Divider, type FormInstance
 } from 'antd';
 import {
-  CloudServerOutlined, CheckCircleFilled,
-  ApiOutlined, StarFilled, StarOutlined, LinkOutlined,
-  ThunderboltOutlined, KeyOutlined, HddOutlined, GlobalOutlined,
-  SaveOutlined
+  ApiOutlined, LinkOutlined, SaveOutlined
 } from '@ant-design/icons';
 import { useThemeStore } from '../../store/theme';
 import { Link } from 'react-router-dom';
@@ -101,9 +98,10 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
   const watchedTosEndpoint = Form.useWatch(getFieldPath('tos_endpoint'), form);
   const watchedCosEndpoint = Form.useWatch(getFieldPath('cos_endpoint'), form);
 
-  const defaultProvider = watchedDefault || getStorageValue('default_provider') || 'tos';
-  const normalizedDefault = String(defaultProvider || 'tos').toLowerCase();
-  const isGlobalDefault = normalizedDefault === GLOBAL_KEY;
+  const rawDefault = watchedDefault !== undefined ? watchedDefault : getStorageValue('default_provider');
+  const normalizedDefault = String(rawDefault ?? '').trim().toLowerCase();
+  const isNoneDefault = !normalizedDefault || normalizedDefault === 'none';
+  const isGlobalDefault = !isNoneDefault && normalizedDefault === GLOBAL_KEY;
   const globalVendorMeta = getStorageProvider(globalSnapshot?.provider || 'tos');
   const [selectedProviderKey, setSelectedProviderKey] = useState<string>('tos');
   const userPickedPanel = useRef(false);
@@ -129,17 +127,17 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
     if (selectedProviderKey === GLOBAL_KEY && !globalSnapshot) {
       userPickedPanel.current = false;
       setSelectedProviderKey(
-        defaultProvider && defaultProvider !== GLOBAL_KEY ? defaultProvider : 'tos'
+        !isNoneDefault && normalizedDefault !== GLOBAL_KEY ? normalizedDefault : 'tos'
       );
       return;
     }
     if (userPickedPanel.current) return;
     const next =
-      defaultProvider === GLOBAL_KEY && !globalSnapshot
-        ? 'tos'
-        : (defaultProvider || 'tos');
+      !isNoneDefault && normalizedDefault !== GLOBAL_KEY
+        ? normalizedDefault
+        : 'tos';
     if (next !== selectedProviderKey) setSelectedProviderKey(next);
-  }, [defaultProvider, globalSnapshot, selectedProviderKey]);
+  }, [isNoneDefault, normalizedDefault, globalSnapshot, selectedProviderKey]);
 
   // 根据当前 endpoint 自动判断初始网络类型
   useEffect(() => {
@@ -234,28 +232,26 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
   }, [selectedProviderKey]);
 
   const currentDefaultMeta = useMemo(() => {
-    return getStorageProvider(defaultProvider);
-  }, [defaultProvider]);
+    if (isNoneDefault || isGlobalDefault) return null;
+    return getStorageProvider(normalizedDefault);
+  }, [isNoneDefault, isGlobalDefault, normalizedDefault]);
 
-  // 组装存储提供商卡片列表（包含全局跟随选项与具体厂商，自适应无限扩展）
+  // 组装存储提供商卡片列表
   const providerCards = useMemo(() => {
     const cards = [];
 
     if (globalSnapshot) {
       const isSelected = selectedProviderKey === GLOBAL_KEY;
-      const isDefault = isGlobalDefault;
+      const isDefault = !isNoneDefault && isGlobalDefault;
       cards.push({
         key: GLOBAL_KEY,
         name: '跟随站点',
-        shortName: 'Global',
-        brand: `站点: ${globalVendorMeta.name}${globalSnapshot.bucket ? ` · ${globalSnapshot.bucket}` : ''}`,
-        tag: '免填写',
-        icon: <GlobalOutlined />,
+        shortName: 'Site',
+        brand: `${globalVendorMeta.name}${globalSnapshot.bucket ? ` · ${globalSnapshot.bucket}` : ''}`,
         isSelected,
         isDefault,
         isGlobal: true,
-        statusDotColor: '#52c41a',
-        statusText: '站点已配置',
+        isConfigured: true,
         testResult: testResults[GLOBAL_KEY],
       });
     }
@@ -264,7 +260,7 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
 
     for (const p of STORAGE_PROVIDERS) {
       const isSelected = selectedProviderKey === p.key;
-      const isDefault = normalizedDefault === p.key;
+      const isDefault = !isNoneDefault && normalizedDefault === p.key;
       const configured = p.isConfigured(allValues);
 
       cards.push({
@@ -272,20 +268,17 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
         name: p.name,
         shortName: p.shortName,
         brand: p.brand,
-        tag: p.tag,
-        icon: <span>{p.shortName.slice(0, 1)}</span>,
         isSelected,
         isDefault,
         isGlobal: false,
-        statusDotColor: configured ? '#52c41a' : '#cbd5e1',
-        statusText: configured ? '已配置凭证' : '未配置',
+        isConfigured: configured,
         testResult: testResults[p.key],
       });
     }
 
     return cards;
   }, [
-    globalSnapshot, selectedProviderKey, isGlobalDefault,
+    globalSnapshot, selectedProviderKey, isNoneDefault, isGlobalDefault,
     globalVendorMeta, normalizedDefault, watchedDefault, watchedTosAk, watchedCosId,
     watchedTosEndpoint, watchedCosEndpoint, testResults
   ]);
@@ -293,235 +286,220 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
   const panelContent = (
     <div style={{ maxWidth: 840 }}>
       {/* 隐藏表单项，保证 default_provider 字段正常提交 */}
-      <Form.Item name={getFieldPath('default_provider')} hidden initialValue="tos">
+      <Form.Item name={getFieldPath('default_provider')} hidden>
         <Input />
       </Form.Item>
 
-      {/* 顶部：当前生效存储与多凭证策略说明 Banner */}
+      {/* 顶部：当前默认存储状态栏 (shadcn 极简黑白灰) */}
       <div style={{
-        background: isLight ? '#f8fafc' : 'rgba(255, 255, 255, 0.03)',
-        border: isLight ? '1px solid #e2e8f0' : '1px solid rgba(255, 255, 255, 0.08)',
-        borderRadius: 10,
-        padding: '14px 18px',
-        marginBottom: 18,
+        background: isLight ? '#fafafa' : '#18181b',
+        border: `1px solid ${isLight ? '#e4e4e7' : '#27272a'}`,
+        borderRadius: 8,
+        padding: '10px 16px',
+        marginBottom: 16,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexWrap: 'wrap',
         gap: 12
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: 38,
-            height: 38,
-            borderRadius: 8,
-            background: isLight ? '#e6f4ff' : 'rgba(22, 119, 255, 0.15)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#1677ff',
-            fontSize: 20
-          }}>
-            <CloudServerOutlined />
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Text strong style={{ fontSize: 14, color: isLight ? '#1e293b' : '#fff' }}>
-                当前默认存储：
-              </Text>
-              <span style={{
-                fontSize: 12,
-                padding: '2px 8px',
-                fontWeight: 600,
-                borderRadius: 4,
-                background: isLight ? '#e6f4ff' : 'rgba(22, 119, 255, 0.2)',
-                color: isLight ? '#0958d9' : '#69b1ff',
-                border: isLight ? '1px solid #91caff' : '1px solid rgba(22, 119, 255, 0.3)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4
-              }}>
-                <StarFilled style={{ color: '#faad14', fontSize: 11 }} />
-                {isGlobalDefault
-                  ? (globalSnapshot ? `跟随站点设置（${globalVendorMeta.name}）` : '跟随站点设置')
-                  : currentDefaultMeta.name}
-              </span>
-            </div>
-            <span style={{ fontSize: 12, marginTop: 3, display: 'block', color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>
-              {isGlobalDefault
-                ? '新上传文件写入站点设置中的对象存储；本插件已保存的厂商凭证仍保留，历史文件按原存储桶读取与删除。'
-                : '新上传文件将自动写入默认提供商；已配置的多套存储凭证均会保留，历史旧文件仍按原存储桶进行读取与删除。'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Text style={{ fontSize: 13, color: isLight ? '#71717a' : '#a1a1aa' }}>
+            默认存储
+          </Text>
+          {isNoneDefault ? (
+            <span style={{
+              fontSize: 12,
+              padding: '2px 8px',
+              borderRadius: 6,
+              background: isLight ? '#f4f4f5' : '#27272a',
+              color: isLight ? '#71717a' : '#a1a1aa',
+              border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
+              fontWeight: 500,
+            }}>
+              未设置 (停用对象存储)
             </span>
-          </div>
+          ) : isGlobalDefault ? (
+            <span style={{
+              fontSize: 12,
+              padding: '2px 8px',
+              borderRadius: 6,
+              background: isLight ? '#18181b' : '#fafafa',
+              color: isLight ? '#fafafa' : '#18181b',
+              fontWeight: 600,
+            }}>
+              {globalSnapshot ? `跟随站点 (${globalVendorMeta.name})` : '跟随站点'}
+            </span>
+          ) : currentDefaultMeta ? (
+            <span style={{
+              fontSize: 12,
+              padding: '2px 8px',
+              borderRadius: 6,
+              background: isLight ? '#18181b' : '#fafafa',
+              color: isLight ? '#fafafa' : '#18181b',
+              fontWeight: 600,
+            }}>
+              {currentDefaultMeta.name}
+            </span>
+          ) : null}
         </div>
+
+        {!isNoneDefault && (
+          <Button
+            size="small"
+            type="text"
+            onClick={() => handleSetDefaultProvider('none')}
+            style={{
+              fontSize: 12,
+              height: 24,
+              color: isLight ? '#71717a' : '#a1a1aa',
+              padding: '0 8px',
+            }}
+          >
+            取消默认
+          </Button>
+        )}
       </div>
 
-      {/* 提供商切换卡片栏 (自适应 Grid 网格排列，多存储提供商时自适应整齐对称) */}
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <Text strong style={{ fontSize: 13, color: isLight ? '#334155' : 'rgba(255, 255, 255, 0.75)' }}>
-            选择存储提供商进行配置：
+      {/* 存储服务商切换卡片栏 */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 8 }}>
+          <Text strong style={{ fontSize: 13, color: isLight ? '#09090b' : '#fafafa' }}>
+            存储服务商
           </Text>
-          <span style={{ fontSize: 12, color: isLight ? '#94a3b8' : 'rgba(255, 255, 255, 0.45)' }}>
-            {globalSnapshot ? '可跟随站点设置，或单独配置各存储服务' : '点击卡片切换配置，支持多提供商凭证热备'}
-          </span>
         </div>
 
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
-          gap: 12,
+          gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+          gap: 10,
         }}>
           {providerCards.map(card => {
+            const isSelected = card.isSelected;
             return (
               <div
                 key={card.key}
                 onClick={() => selectProviderPanel(card.key)}
                 style={{
-                  border: card.isSelected
-                    ? (isLight ? '2px solid #1677ff' : '2px solid #3b82f6')
-                    : (isLight ? '1px solid #e2e8f0' : '1px solid rgba(255, 255, 255, 0.1)'),
-                  background: card.isSelected
-                    ? (isLight ? 'rgba(22, 119, 255, 0.04)' : 'rgba(22, 119, 255, 0.1)')
-                    : (isLight ? '#ffffff' : '#141414'),
-                  borderRadius: 10,
+                  border: isSelected
+                    ? (isLight ? '2px solid #18181b' : '2px solid #fafafa')
+                    : (isLight ? '1px solid #e4e4e7' : '1px solid #27272a'),
+                  background: isSelected
+                    ? (isLight ? '#fafafa' : '#121215')
+                    : (isLight ? '#ffffff' : '#09090b'),
+                  borderRadius: 8,
                   padding: '12px 14px',
                   cursor: 'pointer',
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                  position: 'relative',
-                  boxShadow: card.isSelected ? '0 4px 14px rgba(22, 119, 255, 0.1)' : 'none',
+                  transition: 'all 0.15s ease',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
-                  minHeight: 110,
+                  minHeight: 100,
                 }}
               >
                 <div>
-                  {/* 第一行：图标 + 厂商名 + 标签 + 右侧默认状态/设为默认按钮 */}
                   <div style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     gap: 8,
-                    marginBottom: 6,
+                    marginBottom: 4,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
                       <div style={{
-                        width: 30,
-                        height: 30,
+                        width: 26,
+                        height: 26,
                         borderRadius: 6,
-                        background: card.isSelected
-                          ? '#1677ff'
-                          : (isLight ? '#f1f5f9' : 'rgba(255, 255, 255, 0.08)'),
-                        color: card.isSelected ? '#fff' : (isLight ? '#475569' : '#d1d5db'),
+                        background: isLight ? '#f4f4f5' : '#27272a',
+                        color: isLight ? '#18181b' : '#fafafa',
+                        border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: 14,
-                        fontWeight: 700,
+                        fontSize: 12,
+                        fontWeight: 600,
                         flexShrink: 0,
                       }}>
-                        {card.icon}
+                        {card.shortName.slice(0, 1)}
                       </div>
                       <span style={{
                         fontWeight: 600,
                         fontSize: 13,
-                        color: isLight ? '#0f172a' : '#f9fafb',
+                        color: isLight ? '#09090b' : '#fafafa',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                       }}>
                         {card.name}
                       </span>
-                      {card.tag && (
-                        <span style={{
-                          fontSize: 10,
-                          lineHeight: '16px',
-                          padding: '0 4px',
-                          borderRadius: 3,
-                          background: card.isGlobal
-                            ? (isLight ? 'rgba(82, 196, 26, 0.1)' : 'rgba(82, 196, 26, 0.2)')
-                            : (isLight ? 'rgba(22, 119, 255, 0.1)' : 'rgba(22, 119, 255, 0.2)'),
-                          color: card.isGlobal
-                            ? (isLight ? '#389e0d' : '#95de64')
-                            : (isLight ? '#1677ff' : '#69b1ff'),
-                          border: card.isGlobal
-                            ? (isLight ? '1px solid rgba(82, 196, 26, 0.25)' : '1px solid rgba(82, 196, 26, 0.35)')
-                            : (isLight ? '1px solid rgba(22, 119, 255, 0.25)' : '1px solid rgba(22, 119, 255, 0.35)'),
-                          fontWeight: 500,
-                          flexShrink: 0,
-                        }}>
-                          {card.tag}
-                        </span>
-                      )}
                     </div>
 
-                    <div style={{ flexShrink: 0 }}>
+                    <div style={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
                       {card.isDefault ? (
-                        <span style={{
-                          fontSize: 11,
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 3,
-                          background: isLight ? '#f6ffed' : 'rgba(82, 196, 26, 0.15)',
-                          color: isLight ? '#389e0d' : '#95de64',
-                          border: isLight ? '1px solid #b7eb8f' : '1px solid rgba(82, 196, 26, 0.3)',
-                          fontWeight: 500,
-                        }}>
-                          <StarFilled style={{ fontSize: 10 }} /> 默认生效
-                        </span>
-                      ) : (
-                        <Tooltip title={card.isGlobal ? '新上传文件使用站点设置中的对象存储，无需在此填写凭证' : '点击设为新上传文件的默认对象存储'}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{
+                            fontSize: 11,
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            background: isLight ? '#18181b' : '#fafafa',
+                            color: isLight ? '#fafafa' : '#18181b',
+                            fontWeight: 500,
+                          }}>
+                            默认
+                          </span>
                           <Button
                             size="small"
                             type="text"
-                            icon={<StarOutlined />}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSetDefaultProvider(card.key);
-                              selectProviderPanel(card.key);
-                            }}
+                            onClick={() => handleSetDefaultProvider('none')}
                             style={{
                               fontSize: 11,
                               height: 22,
                               padding: '0 4px',
-                              color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.5)',
+                              color: isLight ? '#71717a' : '#a1a1aa',
                             }}
                           >
-                            设为默认
+                            取消
                           </Button>
-                        </Tooltip>
+                        </div>
+                      ) : (
+                        <Button
+                          size="small"
+                          onClick={() => handleSetDefaultProvider(card.key)}
+                          style={{
+                            fontSize: 11,
+                            height: 22,
+                            padding: '0 6px',
+                            borderRadius: 4,
+                            background: isLight ? '#ffffff' : '#18181b',
+                            borderColor: isLight ? '#e4e4e7' : '#27272a',
+                            color: isLight ? '#18181b' : '#fafafa',
+                          }}
+                        >
+                          设为默认
+                        </Button>
                       )}
                     </div>
                   </div>
 
-                  {/* 第二行：厂商描述 / 桶信息 */}
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      paddingLeft: 38,
-                      marginBottom: 8,
-                    }}
-                    title={card.brand}
-                  >
+                  <div style={{
+                    fontSize: 11,
+                    color: isLight ? '#71717a' : '#71717a',
+                    paddingLeft: 34,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
                     {card.brand}
                   </div>
                 </div>
 
-                {/* 第三行：底部状态行 */}
                 <div style={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  marginTop: 6,
+                  marginTop: 8,
                   paddingTop: 8,
-                  borderTop: isLight ? '1px solid #f1f5f9' : '1px solid rgba(255, 255, 255, 0.06)',
+                  borderTop: `1px solid ${isLight ? '#f4f4f5' : '#1f1f23'}`,
                   fontSize: 11,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -529,45 +507,26 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                       width: 6,
                       height: 6,
                       borderRadius: '50%',
-                      background: card.statusDotColor,
+                      background: card.isConfigured ? '#22c55e' : (isLight ? '#d4d4d8' : '#3f3f46'),
                       display: 'inline-block',
                     }} />
                     <span style={{
-                      color: card.statusDotColor === '#52c41a'
-                        ? (isLight ? '#237804' : '#73d13d')
-                        : (isLight ? '#94a3b8' : 'rgba(255, 255, 255, 0.35)')
+                      color: card.isConfigured
+                        ? (isLight ? '#18181b' : '#fafafa')
+                        : (isLight ? '#a1a1aa' : '#52525b')
                     }}>
-                      {card.statusText}
+                      {card.isConfigured ? '已配置' : '未配置'}
                     </span>
                   </div>
 
-                  {card.testResult ? (
+                  {isSelected && (
                     <span style={{
                       fontSize: 10,
-                      padding: '0 5px',
-                      lineHeight: '16px',
-                      borderRadius: 3,
-                      background: card.testResult.success
-                        ? (isLight ? '#f6ffed' : 'rgba(82, 196, 26, 0.15)')
-                        : (isLight ? '#fff2f0' : 'rgba(255, 77, 79, 0.15)'),
-                      color: card.testResult.success
-                        ? (isLight ? '#389e0d' : '#95de64')
-                        : (isLight ? '#cf1322' : '#ff7875'),
-                      border: card.testResult.success
-                        ? (isLight ? '1px solid #b7eb8f' : '1px solid rgba(82, 196, 26, 0.3)')
-                        : (isLight ? '1px solid #ffccc7' : '1px solid rgba(255, 77, 79, 0.3)'),
+                      color: isLight ? '#71717a' : '#a1a1aa',
                     }}>
-                      {card.testResult.success ? '连通正常' : '连接失败'}
+                      当前配置
                     </span>
-                  ) : card.isSelected ? (
-                    <span style={{
-                      fontSize: 10,
-                      color: isLight ? '#1677ff' : '#4096ff',
-                      fontWeight: 500,
-                    }}>
-                      当前配置中
-                    </span>
-                  ) : null}
+                  )}
                 </div>
               </div>
             );
@@ -575,38 +534,31 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
         </div>
       </div>
 
-      {/* 聚焦的配置面板：跟随站点时展示精简概要，厂商卡展示可编辑表单 */}
+      {/* 聚焦的配置面板 */}
       {showGlobalPanel && globalSnapshot ? (
         <Card
-          bordered={true}
+          bordered
           style={{
-            borderRadius: 10,
-            background: isLight ? '#ffffff' : '#141414',
-            borderColor: isLight ? '#e2e8f0' : 'rgba(255, 255, 255, 0.1)',
+            borderRadius: 8,
+            background: isLight ? '#ffffff' : '#09090b',
+            borderColor: isLight ? '#e4e4e7' : '#27272a',
           }}
           title={
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: '#52c41a'
-                }} />
-                <Text strong style={{ fontSize: 14, color: isLight ? '#0f172a' : '#fff' }}>
-                  站点全局存储（跟随只读）
+                <Text strong style={{ fontSize: 14, color: isLight ? '#09090b' : '#fafafa' }}>
+                  站点全局存储 (跟随只读)
                 </Text>
                 {isGlobalDefault && (
                   <span style={{
                     fontSize: 11,
                     padding: '1px 6px',
                     borderRadius: 4,
-                    background: isLight ? '#f6ffed' : 'rgba(82, 196, 26, 0.15)',
-                    color: isLight ? '#389e0d' : '#95de64',
-                    border: isLight ? '1px solid #b7eb8f' : '1px solid rgba(82, 196, 26, 0.3)',
+                    background: isLight ? '#18181b' : '#fafafa',
+                    color: isLight ? '#fafafa' : '#18181b',
                     fontWeight: 500
                   }}>
-                    默认生效中
+                    默认
                   </span>
                 )}
               </div>
@@ -618,10 +570,10 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 4,
-                    color: isLight ? '#1677ff' : '#4096ff',
+                    color: isLight ? '#18181b' : '#fafafa',
                   }}
                 >
-                  <LinkOutlined /> 前往站点设置修改全局存储
+                  <LinkOutlined /> 站点设置
                 </Link>
               )}
             </div>
@@ -632,98 +584,87 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
               type={testResults[GLOBAL_KEY]!.success ? 'success' : 'error'}
               showIcon
               style={{ marginBottom: 14, borderRadius: 6 }}
-              message={testResults[GLOBAL_KEY]!.success ? '站点存储连接测试成功' : '连接测试失败'}
+              message={testResults[GLOBAL_KEY]!.success ? '连接测试成功' : '连接测试失败'}
               description={testResults[GLOBAL_KEY]!.message}
               closable
               onClose={() => setTestResults(prev => ({ ...prev, [GLOBAL_KEY]: null }))}
             />
           )}
 
-          {/* 精简的配置摘要条目 */}
           <div style={{
-            background: isLight ? '#f8fafc' : 'rgba(255, 255, 255, 0.03)',
-            border: isLight ? '1px solid #e2e8f0' : '1px solid rgba(255, 255, 255, 0.06)',
-            borderRadius: 8,
+            background: isLight ? '#fafafa' : '#18181b',
+            border: `1px solid ${isLight ? '#e4e4e7' : '#27272a'}`,
+            borderRadius: 6,
             padding: '12px 16px',
             fontSize: 13,
             lineHeight: 1.8,
-            color: isLight ? '#334155' : 'rgba(255, 255, 255, 0.75)'
           }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 24px' }}>
               <div>
-                <span style={{ color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>生效厂商：</span>
-                <Text strong style={{ color: isLight ? '#0f172a' : '#fff' }}>{globalVendorMeta.name}</Text>
+                <span style={{ color: isLight ? '#71717a' : '#a1a1aa' }}>生效厂商：</span>
+                <Text strong style={{ color: isLight ? '#09090b' : '#fafafa' }}>{globalVendorMeta.name}</Text>
               </div>
               <div>
-                <span style={{ color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>存储桶 (Bucket)：</span>
+                <span style={{ color: isLight ? '#71717a' : '#a1a1aa' }}>存储桶：</span>
                 <Text code>{globalSnapshot.bucket || '—'}</Text>
               </div>
               {globalSnapshot.region && (
                 <div>
-                  <span style={{ color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>地域：</span>
+                  <span style={{ color: isLight ? '#71717a' : '#a1a1aa' }}>地域：</span>
                   <Text code>{globalSnapshot.region}</Text>
                 </div>
               )}
               {globalSnapshot.endpoint && (
                 <div>
-                  <span style={{ color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>Endpoint：</span>
+                  <span style={{ color: isLight ? '#71717a' : '#a1a1aa' }}>节点：</span>
                   <Text code>{globalSnapshot.endpoint}</Text>
                 </div>
               )}
               {globalSnapshot.pathPrefix && (
                 <div>
-                  <span style={{ color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>路径前缀：</span>
+                  <span style={{ color: isLight ? '#71717a' : '#a1a1aa' }}>路径前缀：</span>
                   <Text code>{globalSnapshot.pathPrefix}</Text>
                 </div>
               )}
             </div>
-            <div style={{ fontSize: 12, marginTop: 6, color: isLight ? '#94a3b8' : 'rgba(255, 255, 255, 0.4)' }}>
-              {isGlobalDefault
-                ? '新上传写入站点对象存储；本插件已保存的厂商凭证仍保留，历史文件按原存储桶读取与删除。'
-                : '当前为站点存储预览（只读），不会改默认。点「设为默认」后新上传才走站点桶。'}
-            </div>
           </div>
 
-          {/* 底部操作栏 */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
+            justifyContent: 'flex-end',
             marginTop: 14,
             paddingTop: 12,
-            borderTop: isLight ? '1px solid #f1f5f9' : '1px solid rgba(255, 255, 255, 0.06)',
-            flexWrap: 'wrap',
+            borderTop: `1px solid ${isLight ? '#f4f4f5' : '#1f1f23'}`,
             gap: 10
           }}>
-            <div>
-              {!isGlobalDefault && (
-                <Button
-                  icon={<ThunderboltOutlined />}
-                  onClick={() => handleSetDefaultProvider(GLOBAL_KEY)}
-                  style={{ borderRadius: 6 }}
-                >
-                  设为默认对象存储
-                </Button>
-              )}
-            </div>
             <Space size="middle">
               <Button
                 icon={<ApiOutlined />}
                 onClick={() => handleTestConnection(GLOBAL_KEY)}
                 loading={testingKey === GLOBAL_KEY}
-                style={{ borderRadius: 6 }}
+                style={{
+                  borderRadius: 6,
+                  borderColor: isLight ? '#e4e4e7' : '#27272a',
+                  color: isLight ? '#18181b' : '#fafafa',
+                  background: isLight ? '#ffffff' : '#18181b',
+                }}
               >
-                测试站点存储连接
+                测试连接
               </Button>
               {standalone && onSaveStandalone && (
                 <Button
-                  type="primary"
                   icon={<SaveOutlined />}
                   loading={savingStandalone}
                   onClick={onSaveStandalone}
-                  style={{ borderRadius: 6 }}
+                  style={{
+                    borderRadius: 6,
+                    background: isLight ? '#18181b' : '#fafafa',
+                    borderColor: isLight ? '#18181b' : '#fafafa',
+                    color: isLight ? '#fafafa' : '#18181b',
+                  }}
                 >
-                  保存存储配置
+                  保存配置
                 </Button>
               )}
             </Space>
@@ -731,35 +672,28 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
         </Card>
       ) : (
       <Card
-        bordered={true}
+        bordered
         style={{
-          borderRadius: 10,
-          background: isLight ? '#fff' : '#141414',
-          borderColor: isLight ? '#e2e8f0' : 'rgba(255, 255, 255, 0.1)',
+          borderRadius: 8,
+          background: isLight ? '#fff' : '#09090b',
+          borderColor: isLight ? '#e4e4e7' : '#27272a',
         }}
         title={
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 0' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: activeProvider.brandColor || '#1677ff'
-              }} />
-              <Text strong style={{ fontSize: 15, color: isLight ? '#0f172a' : '#fff' }}>
-                {activeProvider.name} 配置
+              <Text strong style={{ fontSize: 14, color: isLight ? '#09090b' : '#fafafa' }}>
+                {activeProvider.name}
               </Text>
               {normalizedDefault === activeProvider.key && (
                 <span style={{
                   fontSize: 11,
                   padding: '1px 6px',
                   borderRadius: 4,
-                  background: isLight ? '#f6ffed' : 'rgba(82, 196, 26, 0.15)',
-                  color: isLight ? '#389e0d' : '#95de64',
-                  border: isLight ? '1px solid #b7eb8f' : '1px solid rgba(82, 196, 26, 0.3)',
+                  background: isLight ? '#18181b' : '#fafafa',
+                  color: isLight ? '#fafafa' : '#18181b',
                   fontWeight: 500
                 }}>
-                  当前默认
+                  默认
                 </span>
               )}
             </div>
@@ -768,9 +702,15 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                 href={activeProvider.docUrl}
                 target="_blank"
                 rel="noreferrer"
-                style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, color: '#1677ff' }}
+                style={{
+                  fontSize: 12,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  color: isLight ? '#71717a' : '#a1a1aa',
+                }}
               >
-                <LinkOutlined /> 控制台指引
+                <LinkOutlined /> 控制台
               </a>
             )}
           </div>
@@ -782,19 +722,18 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
             type={testResults[activeProvider.key]!.success ? 'success' : 'error'}
             showIcon
             style={{ marginBottom: 16, borderRadius: 6 }}
-            message={testResults[activeProvider.key]!.success ? `${activeProvider.name} 连接测试成功` : '连接测试失败'}
+            message={testResults[activeProvider.key]!.success ? '连接测试成功' : '连接测试失败'}
             description={testResults[activeProvider.key]!.message}
             closable
             onClose={() => setTestResults(prev => ({ ...prev, [activeProvider.key]: null }))}
           />
         )}
 
-        {/* 模块 1: 访问密钥凭证 */}
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
-            <KeyOutlined style={{ color: '#1677ff', fontSize: 14 }} />
-            <Text strong style={{ fontSize: 13, color: isLight ? '#1e293b' : 'rgba(255, 255, 255, 0.85)' }}>
-              1. 访问密钥凭证 (API Credentials)
+        {/* 模块 1: 访问凭证 */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 10 }}>
+            <Text strong style={{ fontSize: 13, color: isLight ? '#09090b' : '#fafafa' }}>
+              访问凭证
             </Text>
           </div>
           <Row gutter={16}>
@@ -812,8 +751,8 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                 name={getFieldPath(activeProvider.fieldKeys.keySecret)}
                 extra={
                   maskedSecrets[activeProvider.fieldKeys.keySecret] ? (
-                    <span style={{ fontSize: 11, color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>
-                      当前: {maskedSecrets[activeProvider.fieldKeys.keySecret]}（留空不修改）
+                    <span style={{ fontSize: 11, color: isLight ? '#71717a' : '#a1a1aa' }}>
+                      当前: {maskedSecrets[activeProvider.fieldKeys.keySecret]} (留空不修改)
                     </span>
                   ) : undefined
                 }
@@ -824,14 +763,13 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
           </Row>
         </div>
 
-        <Divider style={{ margin: '8px 0 16px', borderColor: isLight ? '#f1f5f9' : 'rgba(255, 255, 255, 0.06)' }} />
+        <Divider style={{ margin: '8px 0 16px', borderColor: isLight ? '#f4f4f5' : '#27272a' }} />
 
-        {/* 模块 2: 数据地域与存储桶 */}
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
-            <HddOutlined style={{ color: '#1677ff', fontSize: 14 }} />
-            <Text strong style={{ fontSize: 13, color: isLight ? '#1e293b' : 'rgba(255, 255, 255, 0.85)' }}>
-              2. 存储桶与地域设置 (Bucket & Region)
+        {/* 模块 2: 存储桶与地域 */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 10 }}>
+            <Text strong style={{ fontSize: 13, color: isLight ? '#09090b' : '#fafafa' }}>
+              存储桶与地域
             </Text>
           </div>
           <Row gutter={16}>
@@ -853,7 +791,7 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                         <Select.Option key={r.region} value={r.region} label={`${r.label} ${r.region}`}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <span>{r.label}</span>
-                            <span style={{ color: isLight ? '#94a3b8' : 'rgba(255, 255, 255, 0.35)', fontSize: 11 }}>{r.region.replace(/^bp-/, '')}</span>
+                            <span style={{ color: isLight ? '#a1a1aa' : '#52525b', fontSize: 11 }}>{r.region.replace(/^bp-/, '')}</span>
                           </div>
                         </Select.Option>
                       ))}
@@ -872,8 +810,8 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
                   style={{ width: '100%', display: 'flex' }}
                   onChange={(e) => handleNetworkTypeChange(activeProvider.key, e.target.value)}
                 >
-                  <Radio.Button value="external" style={{ flex: 1, textAlign: 'center' }}>公网 / 外网</Radio.Button>
-                  <Radio.Button value="internal" style={{ flex: 1, textAlign: 'center' }}>专线 / 内网</Radio.Button>
+                  <Radio.Button value="external" style={{ flex: 1, textAlign: 'center' }}>公网</Radio.Button>
+                  <Radio.Button value="internal" style={{ flex: 1, textAlign: 'center' }}>内网</Radio.Button>
                 </Radio.Group>
               </Form.Item>
             </Col>
@@ -882,7 +820,6 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
               <Form.Item
                 label="Endpoint 节点地址"
                 name={getFieldPath(activeProvider.fieldKeys.endpoint)}
-                extra={<span style={{ fontSize: 11, color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>选择地域后自动填充，也可手动输入</span>}
               >
                 <Input placeholder="选择地域后自动生成" />
               </Form.Item>
@@ -892,7 +829,6 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
               <Form.Item
                 label="Bucket 存储桶"
                 name={getFieldPath(activeProvider.fieldKeys.bucket)}
-                extra={<span style={{ fontSize: 11, color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>{activeProvider.fieldKeys.bucketExtra || '对象存储桶名称'}</span>}
               >
                 <Input placeholder="如 my-storage-bucket" />
               </Form.Item>
@@ -900,14 +836,13 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
           </Row>
         </div>
 
-        <Divider style={{ margin: '8px 0 16px', borderColor: isLight ? '#f1f5f9' : 'rgba(255, 255, 255, 0.06)' }} />
+        <Divider style={{ margin: '8px 0 16px', borderColor: isLight ? '#f4f4f5' : '#27272a' }} />
 
-        {/* 模块 3: 访问与 CDN 加速 */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
-            <GlobalOutlined style={{ color: '#1677ff', fontSize: 14 }} />
-            <Text strong style={{ fontSize: 13, color: isLight ? '#1e293b' : 'rgba(255, 255, 255, 0.85)' }}>
-              3. 访问与加速配置 (可选)
+        {/* 模块 3: 域名与路径 (选填) */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 10 }}>
+            <Text strong style={{ fontSize: 13, color: isLight ? '#09090b' : '#fafafa' }}>
+              域名与路径 (选填)
             </Text>
           </div>
           <Row gutter={16}>
@@ -915,16 +850,14 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
               <Form.Item
                 label="路径前缀"
                 name={getFieldPath(activeProvider.fieldKeys.pathPrefix)}
-                extra={<span style={{ fontSize: 11, color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>选填，如 assets/ 或 uploads/</span>}
               >
                 <Input placeholder="如 assets/" />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
               <Form.Item
-                label="自定义域名 / CDN 加速"
+                label="自定义域名 / CDN"
                 name={getFieldPath(activeProvider.fieldKeys.customDomain)}
-                extra={<span style={{ fontSize: 11, color: isLight ? '#64748b' : 'rgba(255, 255, 255, 0.45)' }}>选填，例如 https://cdn.example.com</span>}
               >
                 <Input placeholder="如 https://cdn.example.com" />
               </Form.Item>
@@ -936,59 +869,40 @@ export const StorageConfigPanel: React.FC<StorageConfigPanelProps> = ({
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          marginTop: 16,
-          paddingTop: 14,
-          borderTop: isLight ? '1px solid #f1f5f9' : '1px solid rgba(255, 255, 255, 0.06)',
-          flexWrap: 'wrap',
+          justifyContent: 'flex-end',
+          marginTop: 14,
+          paddingTop: 12,
+          borderTop: `1px solid ${isLight ? '#f4f4f5' : '#1f1f23'}`,
           gap: 10
         }}>
-          <div>
-            {normalizedDefault === activeProvider.key ? (
-              <span style={{
-                fontSize: 12,
-                padding: '4px 10px',
-                borderRadius: 4,
-                background: isLight ? '#f6ffed' : 'rgba(82, 196, 26, 0.15)',
-                color: isLight ? '#389e0d' : '#95de64',
-                border: isLight ? '1px solid #b7eb8f' : '1px solid rgba(82, 196, 26, 0.3)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                fontWeight: 500
-              }}>
-                <CheckCircleFilled /> 已是系统默认对象存储
-              </span>
-            ) : (
-              <Button
-                icon={<ThunderboltOutlined />}
-                onClick={() => handleSetDefaultProvider(activeProvider.key)}
-                style={{ borderRadius: 6 }}
-              >
-                设为默认对象存储
-              </Button>
-            )}
-          </div>
-
           <Space size="middle">
             <Button
               icon={<ApiOutlined />}
               onClick={() => handleTestConnection(activeProvider.key)}
               loading={testingKey === activeProvider.key}
-              style={{ borderRadius: 6 }}
+              style={{
+                borderRadius: 6,
+                borderColor: isLight ? '#e4e4e7' : '#27272a',
+                color: isLight ? '#18181b' : '#fafafa',
+                background: isLight ? '#ffffff' : '#18181b',
+              }}
             >
-              测试 {activeProvider.shortName} 连接
+              测试连接
             </Button>
 
             {standalone && onSaveStandalone && (
               <Button
-                type="primary"
                 icon={<SaveOutlined />}
                 loading={savingStandalone}
                 onClick={onSaveStandalone}
-                style={{ borderRadius: 6 }}
+                style={{
+                  borderRadius: 6,
+                  background: isLight ? '#18181b' : '#fafafa',
+                  borderColor: isLight ? '#18181b' : '#fafafa',
+                  color: isLight ? '#fafafa' : '#18181b',
+                }}
               >
-                保存存储配置
+                保存配置
               </Button>
             )}
           </Space>

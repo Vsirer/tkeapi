@@ -1,5 +1,7 @@
 # MiniMax Video Generation Example
 
+OpenAI-compatible: `POST /v1/video/generations`. Native: `/v2/video_generation`. [Video API](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)
+
 `MiniMax-H3` supports text-to-video, first/last-frame image-to-video, and multimodal reference-to-video (image / video / audio). Two access styles are supported:
 
 - OpenAI-compatible: `POST /v1/video/generations` then `GET /v1/video/generations/{task_id}`

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -22,7 +22,6 @@ import UserKycFormFields, {
   kycToFormValues,
   bothKycToFormValues,
   formValuesToKycPayload,
-  KYC_STATUS_META,
 } from '../../components/UserKycFormFields';
 import UserKycDetailViewer from '../../components/UserKycDetailViewer';
 
@@ -243,30 +242,31 @@ const Profile: React.FC = () => {
   // ── 监听微信回调 URL 参数 ──────────────────────────────────
   useEffect(() => {
     const action = searchParams.get('wechat_action');
-    if (!action) return;
-    // 消费掉参数，避免刷新重复触发
-    searchParams.delete('wechat_action');
-    setSearchParams(searchParams, { replace: true });
+    if (action) {
+      // 消费掉参数，避免刷新重复触发
+      searchParams.delete('wechat_action');
+      setSearchParams(searchParams, { replace: true });
 
-    switch (action) {
-      case 'verified':
-        message.success(t('profile.wechat_verify_success', '身份验证通过，请用新微信扫码绑定'));
-        setWechatBindStep('bind');
-        setWechatQRKey(Date.now());
-        setModalType('bind_wechat');
-        setIsModalVisible(true);
-        break;
-      case 'verify_failed':
-        message.error(t('profile.wechat_verify_failed', '验证失败：扫码微信与当前绑定的微信不一致'));
-        break;
-      case 'bindok':
-        message.success(t('profile.wechat_bind_success', '微信绑定成功'));
-        setIsModalVisible(false);
-        fetchProfile();
-        break;
-      case 'bindconflict':
-        message.error(t('profile.wechat_bind_conflict', '此微信已绑定其他账号'));
-        break;
+      switch (action) {
+        case 'verified':
+          message.success(t('profile.wechat_verify_success', '身份验证通过，请用新微信扫码绑定'));
+          setWechatBindStep('bind');
+          setWechatQRKey(Date.now());
+          setModalType('bind_wechat');
+          setIsModalVisible(true);
+          break;
+        case 'verify_failed':
+          message.error(t('profile.wechat_verify_failed', '验证失败：扫码微信与当前绑定的微信不一致'));
+          break;
+        case 'bindok':
+          message.success(t('profile.wechat_bind_success', '微信绑定成功'));
+          setIsModalVisible(false);
+          fetchProfile();
+          break;
+        case 'bindconflict':
+          message.error(t('profile.wechat_bind_conflict', '此微信已绑定其他账号'));
+          break;
+      }
     }
 
     const googleAction = searchParams.get('google_action');
@@ -327,6 +327,21 @@ const Profile: React.FC = () => {
     }
     setIsModalVisible(true);
   };
+
+  // ── 监听 URL 快速绑定跳转参数（例如弹窗引导的 ?bind=mobile 或 ?bind=email） ────
+  useEffect(() => {
+    const bindTarget = searchParams.get('bind');
+    if (!bindTarget) return;
+
+    searchParams.delete('bind');
+    setSearchParams(searchParams, { replace: true });
+
+    if (bindTarget === 'mobile') {
+      handleAction('bind_mobile');
+    } else if (bindTarget === 'email') {
+      handleAction('bind_email');
+    }
+  }, [searchParams, setSearchParams]);
 
   const handleUpdate = async (values: any) => {
     try {
@@ -655,8 +670,26 @@ const Profile: React.FC = () => {
           ? !!(enterpriseKyc?.company_name || enterpriseKyc?.company_email)
           : !!(personalKyc?.real_name || personalKyc?.personal_email);
         const activeStatus = (activeKyc?.status as UserKycStatus) || 'none';
-        const activeMeta = KYC_STATUS_META[activeStatus] || KYC_STATUS_META.none;
         const isApproved = kycEnabled && activeStatus === 'approved';
+
+        let tagColor = 'default';
+        let tagLabel = isEn ? 'Not Verified' : '未实名';
+
+        if (activeStatus === 'approved') {
+          tagColor = 'success';
+          tagLabel = isEn
+            ? (isEnterprise ? 'Enterprise Verified' : 'Personal Verified')
+            : (isEnterprise ? '企业实名' : '个人实名');
+        } else if (activeStatus === 'pending') {
+          tagColor = 'processing';
+          tagLabel = isEn ? 'Under Review' : '实名审核中';
+        } else if (activeStatus === 'rejected') {
+          tagColor = 'error';
+          tagLabel = isEn ? 'Rejected' : '已驳回';
+        } else if (activeStatus === 'expired') {
+          tagColor = 'warning';
+          tagLabel = isEn ? 'Expired' : '已过期';
+        }
 
         const items = isEnterprise ? [
           { key: 'company_name', label: isEn ? 'Company Name' : '企业名称', value: enterpriseKyc?.company_name },
@@ -681,13 +714,8 @@ const Profile: React.FC = () => {
                 {kycLoading ? (
                   <Spin size="small" />
                 ) : kycEnabled ? (
-                  <Tag color={activeMeta.color}>
-                    {isEn ? (
-                      activeStatus === 'approved' ? 'Verified' :
-                      activeStatus === 'pending' ? 'Pending Review' :
-                      activeStatus === 'rejected' ? 'Rejected' :
-                      activeStatus === 'expired' ? 'Expired' : 'Not Verified'
-                    ) : activeMeta.label}
+                  <Tag color={tagColor}>
+                    {tagLabel}
                   </Tag>
                 ) : null}
               </div>

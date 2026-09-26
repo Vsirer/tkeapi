@@ -1,22 +1,25 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ModelSelector from '../../components/ModelSelector';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Segmented, Tooltip, Divider, Alert, List, Progress, Drawer, Checkbox, Spin, Radio } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Row, Col, Switch, Grid, Segmented, Tooltip, Divider, Alert, List, Progress, Checkbox, Spin, Radio, Popover } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, UnorderedListOutlined, AppstoreOutlined, PlayCircleOutlined, SearchOutlined, ApartmentOutlined, CloudServerOutlined, SettingOutlined, ThunderboltOutlined, ReloadOutlined, GlobalOutlined, ClearOutlined, StopOutlined, ExperimentOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { listPagination } from '../../components/ListPagination';
+import { PlusOutlined, EditOutlined, DeleteOutlined, ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, UnorderedListOutlined, AppstoreOutlined, PlayCircleOutlined, SearchOutlined, ApartmentOutlined, CloudServerOutlined, SettingOutlined, ThunderboltOutlined, ReloadOutlined, ClearOutlined, StopOutlined, ExperimentOutlined, VideoCameraOutlined, CalculatorOutlined, CheckSquareOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams, useSearchParams, Navigate } from 'react-router-dom';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import type { Channel, ChannelCategory } from '../../types';
 import { useThemeStore } from '../../store/theme';
 import ChannelCategoryManager from '../../components/Channels/ChannelCategoryManager';
+import { ChannelBillingSimulator } from './components/ChannelBillingSimulator';
+import { channelAnalysisPath, channelEditPath, channelListPath, channelNewPath } from './channelPaths';
 import { getStorageProvider, STORAGE_PROVIDERS } from '../../components/Storage';
 import {
   parseQuotaLimitInput,
@@ -73,17 +76,14 @@ function parseComfyuiServerIds(cfg: Record<string, any> | undefined): number[] {
   return n > 0 ? [n] : [];
 }
 
-/** 按 valid 剪枝 Record 顶层 key；无变化时返回原引用 */
-function pruneRecordKeys<T>(prev: Record<string, T>, valid: Set<string>): Record<string, T> {
-  let changed = false;
-  const next = { ...prev };
-  for (const k of Object.keys(next)) {
-    if (!valid.has(k)) {
-      delete next[k];
-      changed = true;
-    }
-  }
-  return changed ? next : prev;
+function formatMeltdownRemain(sec: number): string {
+  const n = Math.max(0, Math.floor(sec));
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  if (h > 0) return `${h}小时${m}分${String(s).padStart(2, '0')}秒`;
+  if (m > 0) return `${m}分${String(s).padStart(2, '0')}秒`;
+  return `${s}秒`;
 }
 
 /** 设置/删除某模型某 scope 的分辨率映射表 */
@@ -141,6 +141,188 @@ function resScopeKey(modelId: string, scope: string) {
   return `${modelId}:${scope}`;
 }
 
+/** 已选条目对应的当前模型请求 ID；模型表还没对上时保持原 key */
+function selectionModelId(models: any[], midOrId: string): string {
+  const key = String(midOrId);
+  const match = models.find(m => String(m?.mid) === key);
+  const id = match?.model_id != null ? String(match.model_id).trim() : '';
+  return id || key;
+}
+
+/**
+ * 渠道映射在库里按 model_id 存。编辑态改挂到已选 mid 上，
+ * 这样模型请求 ID 被改掉之后，输入框不会因为 key 对不上把刚填的值丢掉。
+ * 渠道只绑定一个模型、且只剩一个已不存在的旧 key 时，把旧 key 回挂到这个 mid。
+ */
+function rekeyMappingToSelection<T>(
+  stored: Record<string, T> | null | undefined,
+  selected: string[],
+  models: any[],
+): Record<string, T> {
+  const src = stored || {};
+  const next: Record<string, T> = {};
+  const consumed = new Set<string>();
+  for (const raw of selected) {
+    const mid = String(raw);
+    const modelId = selectionModelId(models, mid);
+    if (modelId !== mid && Object.prototype.hasOwnProperty.call(src, modelId) && !consumed.has(modelId)) {
+      next[mid] = src[modelId];
+      consumed.add(modelId);
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(src, mid) && !consumed.has(mid)) {
+      next[mid] = src[mid];
+      consumed.add(mid);
+    }
+  }
+  const live = new Set<string>();
+  for (const m of models) {
+    if (m?.mid) live.add(String(m.mid));
+    if (m?.model_id) live.add(String(m.model_id));
+  }
+  const pending = selected.map(String).filter(mid => !Object.prototype.hasOwnProperty.call(next, mid));
+  const dead = Object.keys(src).filter(k => !consumed.has(k) && !live.has(k));
+  // 渠道只绑了一个模型时，旧请求 ID 只能属于它；多个模型时不猜测，避免把别名挂错
+  if (selected.length === 1 && pending.length === 1 && dead.length === 1) {
+    next[pending[0]] = src[dead[0]];
+    consumed.add(dead[0]);
+  }
+  for (const [k, v] of Object.entries(src)) {
+    if (!consumed.has(k) && !Object.prototype.hasOwnProperty.call(next, k)) next[k] = v;
+  }
+  return next;
+}
+
+/** 保存时把已选 mid 写回当前 model_id；对不上的旧 key 原样保留 */
+function rekeyMappingToModelId<T>(
+  bySelection: Record<string, T>,
+  models: any[],
+  selected: string[],
+): Record<string, T> {
+  const selectedSet = new Set(selected.map(String));
+  const next: Record<string, T> = {};
+  for (const [key, value] of Object.entries(bySelection)) {
+    const outKey = selectedSet.has(key) ? selectionModelId(models, key) : key;
+    if (!Object.prototype.hasOwnProperty.call(next, outKey)) next[outKey] = value;
+  }
+  return next;
+}
+
+function dropRecordKeys<T>(prev: Record<string, T>, drop: Set<string>): Record<string, T> {
+  let changed = false;
+  const next = { ...prev };
+  for (const k of Object.keys(next)) {
+    if (drop.has(k)) {
+      delete next[k];
+      changed = true;
+    }
+  }
+  return changed ? next : prev;
+}
+
+function channelBoundModels(record: Channel): string[] {
+  if (!Array.isArray(record.models)) return [];
+  return record.models.filter((m) => !!m && String(m).trim());
+}
+
+type ModelLocateRow = {
+  name: string;
+  modelId: string;
+  mid: string;
+  listed: boolean;
+  channels: Channel[];
+};
+
+type ModelLocateResult = {
+  rows: ModelLocateRow[];
+  orphans: { key: string; channels: Channel[] }[];
+  channelIds: Set<number>;
+  matchedModelCount: number;
+};
+
+/** 按模型名称 / 模型 ID / MID（含模型 ID 别名）找出「选择模型」里绑定了它的渠道分组 */
+function locateModelsInChannels(
+  query: string,
+  listed: any[],
+  unlisted: any[],
+  channels: Channel[],
+): ModelLocateResult | null {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+
+  const catalog = new Map<string, { name: string; modelId: string; mid: string; alias: string; listed: boolean }>();
+  const put = (m: any, isListed: boolean) => {
+    const mid = String(m?.mid || '').trim();
+    const modelId = String(m?.model_id || '').trim();
+    const key = mid || modelId;
+    if (!key || catalog.has(key)) return;
+    catalog.set(key, {
+      name: String(m?.name || modelId || mid),
+      modelId,
+      mid,
+      alias: String(m?.model_id_alias || '').trim(),
+      listed: isListed,
+    });
+  };
+  for (const m of listed) put(m, true);
+  for (const m of unlisted) put(m, false);
+
+  const hit = (name: string, modelId: string, mid: string, alias: string) =>
+    [name, modelId, mid, alias].some((v) => v && v.toLowerCase().includes(q));
+
+  const byKey = new Map<string, Channel[]>();
+  for (const c of channels) {
+    for (const k of channelBoundModels(c)) {
+      const list = byKey.get(k);
+      if (list) list.push(c);
+      else byKey.set(k, [c]);
+    }
+  }
+
+  const channelIds = new Set<number>();
+  const consumed = new Set<string>();
+  const rows: ModelLocateRow[] = [];
+  let matchedModelCount = 0;
+
+  for (const model of catalog.values()) {
+    if (!hit(model.name, model.modelId, model.mid, model.alias)) continue;
+    matchedModelCount += 1;
+    const seen = new Set<number>();
+    const used: Channel[] = [];
+    for (const k of [model.mid, model.modelId]) {
+      if (!k) continue;
+      consumed.add(k);
+      for (const c of byKey.get(k) || []) {
+        if (seen.has(c.id)) continue;
+        seen.add(c.id);
+        used.push(c);
+        channelIds.add(c.id);
+      }
+    }
+    if (used.length === 0) continue;
+    used.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    rows.push({
+      name: model.name,
+      modelId: model.modelId,
+      mid: model.mid,
+      listed: model.listed,
+      channels: used,
+    });
+  }
+  rows.sort((a, b) => b.channels.length - a.channels.length || a.name.localeCompare(b.name, 'zh-CN'));
+
+  const orphans: { key: string; channels: Channel[] }[] = [];
+  for (const [k, chs] of byKey) {
+    if (consumed.has(k) || !k.toLowerCase().includes(q)) continue;
+    const used = [...chs].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+    orphans.push({ key: k, channels: used });
+    for (const c of used) channelIds.add(c.id);
+  }
+  orphans.sort((a, b) => a.key.localeCompare(b.key));
+
+  return { rows, orphans, channelIds, matchedModelCount };
+}
+
 const Channels: React.FC = () => {
   const { themeMode } = useThemeStore();
   const isLight = themeMode === 'light';
@@ -154,30 +336,37 @@ const Channels: React.FC = () => {
     return (localStorage.getItem('channels_view_mode') as 'list' | 'card') || 'card';
   });
   const [availableModels, setAvailableModels] = useState<any[]>([]);
+  const [unlistedModels, setUnlistedModels] = useState<any[]>([]);
   const [availableUserLevels, setAvailableUserLevels] = useState<any[]>([]);
   const [presets, setPresets] = useState<any[]>([]);
   const [activePlugins, setActivePlugins] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
-  const [isModalVisible, setIsModalVisible] = useState(() => {
-    return new URLSearchParams(window.location.search).has('edit');
-  });
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [form] = Form.useForm();
   const navigate = useNavigate();
   const location = useLocation();
+  const { id: routeParamId } = useParams<{ id?: string }>();
+  const [searchParams] = useSearchParams();
+  const normalizedPath = location.pathname.replace(/\/$/, '');
+  const isNewRoute = /\/channels\/new$/.test(normalizedPath);
+  const isEditRoute = /\/channels\/edit\/[^/]+$/.test(normalizedPath);
+  const routeEditId = isEditRoute ? routeParamId : undefined;
+  const isEditorOpen = isNewRoute || isEditRoute;
+  const editQueryId = searchParams.get('edit');
 
   const handleCloseModal = () => {
-    setIsModalVisible(false);
-    if (location.state && (location.state as any).from === 'model-display') {
+    if (location.state && (location.state as { from?: string }).from === 'model-display') {
       navigate(`/${adminPath}/channels/model-display`);
+    } else {
+      navigate(channelListPath(adminPath));
     }
   };
   const [showMapping, setShowMapping] = useState(false);
   const [activeMappingInputs, setActiveMappingInputs] = useState<string[]>([]);
   const [modelMappingState, setModelMappingState] = useState<Record<string, string>>({});
-  // 高可用渠道组：按子渠道独立别名映射 { model_id: { sub_channel_id: alias } }
+  // 高可用渠道组：编辑态按已选 mid 存 { mid: { sub_channel_id: alias } }，保存时写成 model_id
   const [haModelMappingState, setHaModelMappingState] = useState<Record<string, Record<string, string>>>({});
-  // 分辨率映射：{ model_id: { "default"|subId: { "480p"|"1k": alias } } }
+  // 分辨率映射：编辑态 { mid: { "default"|subId: { "480p"|"1k": alias } } }
   const [resModelMappingState, setResModelMappingState] = useState<ResModelMapping>({});
   const [expandedHaModels, setExpandedHaModels] = useState<string[]>([]);
   // 展开的分辨率高级面板 key：`${modelId}:${scopeKey}`
@@ -202,16 +391,88 @@ const Channels: React.FC = () => {
   // 熔断状态 Map: { channelId: { channel_meltdown, sub_channels } }
   const [meltdownMap, setMeltdownMap] = useState<Record<number, any>>({});
   const [meltdownLoading, setMeltdownLoading] = useState<Record<number, boolean>>({});
+  const [subMeltLoading, setSubMeltLoading] = useState<Record<string, boolean>>({});
 
-  // useRef to hold reliable copies of models/levels outside AntD form store
+  // 计费全链路模拟仿真状态
+  const [simulatingChannel, setSimulatingChannel] = useState<Channel | null>(null);
+
+  // 快速编辑上游渠道倍率、优先级、权重
+  const [quickEditModalOpen, setQuickEditModalOpen] = useState(false);
+  const [quickEditTarget, setQuickEditTarget] = useState<any>(null);
+  const [quickEditLoading, setQuickEditLoading] = useState(false);
+  const [quickEditForm] = Form.useForm();
+
+  const handleQuickEditPreset = (target: any) => {
+    if (!target || target.id === -99) return;
+    setQuickEditTarget(target);
+    quickEditForm.setFieldsValue({
+      rate: target.rate ?? 1.0,
+      priority: Number(target.priority ?? 0),
+      weight: Number(target.weight ?? 1),
+    });
+    setQuickEditModalOpen(true);
+  };
+
+  const handleSaveQuickEdit = async () => {
+    try {
+      const values = await quickEditForm.validateFields();
+      if (!quickEditTarget?.id) return;
+      setQuickEditLoading(true);
+
+      const newRate = Number(values.rate ?? 1.0);
+      const newPriority = Number(values.priority ?? 0);
+      const newWeight = Number(values.weight ?? 1);
+
+      await request.put(`/channel-configs/${quickEditTarget.id}`, {
+        rate: newRate,
+        priority: newPriority,
+        weight: newWeight,
+      });
+
+      setPresets((prev) =>
+        prev.map((p) =>
+          p.id === quickEditTarget.id
+            ? { ...p, rate: newRate, priority: newPriority, weight: newWeight }
+            : p
+        )
+      );
+
+      const currentPresetId = form.getFieldValue('preset_id');
+      if (currentPresetId === quickEditTarget.id) {
+        form.setFieldsValue({
+          rate: newRate,
+          priority: newPriority,
+          weight: newWeight,
+        });
+      }
+
+      fetchPresets();
+      setQuickEditModalOpen(false);
+      setQuickEditTarget(null);
+    } catch (err: any) {
+      if (err?.errorFields) return;
+      console.error('快速更新上游渠道配置失败:', err);
+      message.error(err?.message || '更新上游渠道配置失败');
+    } finally {
+      setQuickEditLoading(false);
+    }
+  };
+
+  // useRef to hold reliable copies of models/levels/category outside AntD form store
   // (form store gets corrupted when model_mapping Form.Items are registered)
   const modelsRef = useRef<string[]>([]);
   const levelsRef = useRef<string[]>([]);
+  const categoryIdRef = useRef<number | null>(null);
+  const hydratedEditIdRef = useRef<string | null>(null);
+  const newFormReadyRef = useRef(false);
+  const saveIntentRef = useRef<'stay' | 'exit'>('exit');
+  const keepEditorIdRef = useRef<string | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<number | 'all'>(1);
   const [categoryFilter, setCategoryFilter] = useState<number | 'all' | 'unclassified'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'default' | 'volcengine' | 'ha' | 'comfyui'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [modelLocateQuery, setModelLocateQuery] = useState('');
   const [configObj, setConfigObj] = useState<Record<string, any>>({});
   /** 站点存储设置（仅用于渠道 TOS 厂商选择；无密钥展示需求） */
   const [siteStorage, setSiteStorage] = useState<Record<string, any> | null>(null);
@@ -221,6 +482,8 @@ const Channels: React.FC = () => {
   const haMaxRetries = haRules.find(r => r.id === (configObj.rule || haDef))?.retries || 3;
   const [categories, setCategories] = useState<ChannelCategory[]>([]);
   const [isCategoryManagerVisible, setIsCategoryManagerVisible] = useState(false);
+  const [boundEditor, setBoundEditor] = useState<{ id: number; keys: string[]; checked: string[] } | null>(null);
+  const [boundSaving, setBoundSaving] = useState(false);
 
   // 清除画质增强凭证关联（取消选择时复用）
   const clearVolcengineEnhance = () => {
@@ -248,7 +511,14 @@ const Channels: React.FC = () => {
     return 'default';
   };
 
+  const modelLocate = useMemo(
+    () => locateModelsInChannels(modelLocateQuery, availableModels, unlistedModels, channels),
+    [modelLocateQuery, availableModels, unlistedModels, channels],
+  );
+
   const filteredChannels = channels.filter(c => {
+    if (modelLocate && !modelLocate.channelIds.has(c.id)) return false;
+
     let matchStatus = true;
     if (statusFilter !== 'all') {
       matchStatus = c.status === statusFilter;
@@ -294,6 +564,16 @@ const Channels: React.FC = () => {
     try {
       const resp = await (request.get('/models') as unknown as Promise<{ data: any[] }>);
       setAvailableModels(resp.data || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchUnlistedModels = async () => {
+    try {
+      const resp = await (request.get('/models', { params: { source: 'library' } }) as unknown as Promise<{ data: any[] }>);
+      const rows = Array.isArray(resp?.data) ? resp.data : [];
+      setUnlistedModels(rows.filter((m) => m.library_kind === 'unlisted'));
     } catch (e) {
       console.error(e);
     }
@@ -352,6 +632,200 @@ const Channels: React.FC = () => {
   };
 
   const activeCategories = categories.filter(c => !!c.is_active);
+
+  const unlistedByKey = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const m of unlistedModels) {
+      if (m.mid) map.set(String(m.mid), m);
+      if (m.model_id && !map.has(String(m.model_id))) map.set(String(m.model_id), m);
+    }
+    return map;
+  }, [unlistedModels]);
+
+  const modelByKey = useMemo(() => {
+    const map = new Map<string, { modelId: string; mid: string; isActive: boolean; listed: boolean }>();
+    for (const m of availableModels) {
+      const info = {
+        modelId: m.model_id || m.name || m.mid,
+        mid: m.mid || '',
+        isActive: m.is_active !== 0 && m.is_active !== false,
+        listed: true,
+      };
+      if (m.mid) map.set(String(m.mid), info);
+      if (m.model_id) map.set(String(m.model_id), info);
+    }
+    return map;
+  }, [availableModels]);
+
+  const resolveBoundModel = (key: string) => {
+    const hit = modelByKey.get(key);
+    if (hit) return hit;
+    return { modelId: key, mid: key, isActive: false, listed: false };
+  };
+
+  const confirmBoundModels = async () => {
+    if (!boundEditor) return;
+    const channel = channels.find((c) => c.id === boundEditor.id);
+    if (!channel) {
+      setBoundEditor(null);
+      return;
+    }
+    const original = channelBoundModels(channel);
+    const remove = new Set(boundEditor.checked);
+    const next = original.filter((k) => !remove.has(k));
+    if (remove.size === 0 || next.length === original.length) {
+      setBoundEditor(null);
+      return;
+    }
+    setBoundSaving(true);
+    try {
+      await request.put(`/channels/${boundEditor.id}`, { models: next });
+      setChannels((prev) => prev.map((c) => (c.id === boundEditor.id ? { ...c, models: next } : c)));
+      message.success(`已解除绑定 ${remove.size} 个模型`);
+      setBoundEditor(null);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setBoundSaving(false);
+    }
+  };
+
+  const toggleBoundCheck = (channelId: number, key: string) => {
+    setBoundEditor((prev) => {
+      if (!prev || prev.id !== channelId) return prev;
+      const on = prev.checked.includes(key);
+      return { ...prev, checked: on ? prev.checked.filter((k) => k !== key) : [...prev.checked, key] };
+    });
+  };
+
+  const renderBoundModels = (record: Channel, compact = false) => {
+    const savedKeys = channelBoundModels(record);
+    const count = savedKeys.length;
+    const tagStyle: React.CSSProperties = compact
+      ? { margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, cursor: count ? 'pointer' : 'default' }
+      : { margin: 0, padding: '0 6px', fontSize: 11, height: 20, lineHeight: '18px', borderRadius: 4, cursor: count ? 'pointer' : 'default' };
+    if (count === 0) {
+      if (compact) return null;
+      return <Text type="secondary" style={{ fontSize: 12 }}>未绑定</Text>;
+    }
+    const editing = boundEditor?.id === record.id;
+    const listKeys = editing ? boundEditor.keys : savedKeys;
+    const checkedKeys = editing ? boundEditor.checked : [];
+    const checkedCount = checkedKeys.length;
+    return (
+      <Popover
+        open={editing}
+        onOpenChange={(open) => {
+          if (boundSaving) return;
+          if (open) setBoundEditor({ id: record.id, keys: [...savedKeys], checked: [] });
+          else setBoundEditor(null);
+        }}
+        title={
+          <div style={{ fontSize: 12, fontWeight: 600 }}>
+            已绑定模型 ({listKeys.length})
+          </div>
+        }
+        content={
+          <div
+            style={{ minWidth: 280, maxWidth: 380 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {listKeys.map((key) => {
+                const item = resolveBoundModel(key);
+                const midText = item.mid && item.mid !== item.modelId ? item.mid : '';
+                const checked = checkedKeys.includes(key);
+                return (
+                  <div
+                    key={key}
+                    onClick={() => toggleBoundCheck(record.id, key)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '3px 6px',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      background: checked
+                        ? (isLight ? 'rgba(255,77,79,0.06)' : 'rgba(255,77,79,0.12)')
+                        : (isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)'),
+                      border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.08)',
+                    }}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={boundSaving}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleBoundCheck(record.id, key)}
+                    />
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 12,
+                        lineHeight: '18px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: item.listed && item.isActive ? undefined : 'var(--text-secondary, #8c8c8c)',
+                      }}
+                      title={midText ? `${item.modelId}  ${midText}` : item.modelId}
+                    >
+                      {item.modelId}
+                      {midText ? (
+                        <span style={{ marginLeft: 8, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11, opacity: 0.65 }}>
+                          {midText}
+                        </span>
+                      ) : null}
+                    </span>
+                    {!item.listed ? (
+                      <Tag style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '14px', height: 16, borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>
+                        已下架
+                      </Tag>
+                    ) : !item.isActive ? (
+                      <Tag style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '14px', height: 16, borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>
+                        已禁用
+                      </Tag>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 8, paddingTop: 8, borderTop: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.08)' }}>
+              <Button
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                disabled={!checkedCount || boundSaving}
+              >
+                删除{checkedCount > 0 ? ` ${checkedCount}` : ''}
+              </Button>
+              <Button
+                type="primary"
+                size="small"
+                loading={boundSaving}
+                onClick={() => { void confirmBoundModels(); }}
+              >
+                确定
+              </Button>
+            </div>
+          </div>
+        }
+        placement="bottom"
+        trigger="click"
+      >
+        <Tag style={{
+          ...tagStyle,
+          background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)',
+          color: isLight ? '#18181b' : '#f4f4f5',
+          border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)',
+          fontWeight: 500
+        }}>
+          {compact ? `${count} 模型` : `${count} 个模型`}
+        </Tag>
+      </Popover>
+    );
+  };
 
   const fetchPluginsAndPools = async () => {
     try {
@@ -426,6 +900,27 @@ const Channels: React.FC = () => {
     }
   };
 
+  const refreshChannelMeltdown = async (channelId: number) => {
+    try {
+      const updated = await request.get(`/channels/${channelId}/meltdown`) as any;
+      setMeltdownMap(prev => ({ ...prev, [channelId]: updated }));
+    } catch { /* ignore */ }
+  };
+
+  const handleSetSubMeltdown = async (channelId: number, configId: number, melted: boolean) => {
+    const loadKey = `${channelId}-${configId}`;
+    setSubMeltLoading(prev => ({ ...prev, [loadKey]: true }));
+    try {
+      await request.post(`/channels/${channelId}/meltdown/sub`, { config_id: configId, melted });
+      message.success(melted ? '已手动熔断该上游' : '已恢复该上游');
+      await refreshChannelMeltdown(channelId);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubMeltLoading(prev => ({ ...prev, [loadKey]: false }));
+    }
+  };
+
   // 手动清零渠道已用额度（总/日/月）
   const handleResetQuota = async (channelId: number) => {
     try {
@@ -440,6 +935,7 @@ const Channels: React.FC = () => {
   useEffect(() => {
     fetchChannels();
     fetchModels();
+    fetchUnlistedModels();
     fetchUserLevels();
     fetchPresets();
     fetchCategories();
@@ -454,25 +950,39 @@ const Channels: React.FC = () => {
     }
   }, [channels]);
 
+  // 编辑高可用组时，熔断倒计时每秒递减
+  useEffect(() => {
+    if (!editingChannel || editingChannel.provider_type !== 'high_availability_group') return;
+    const channelId = editingChannel.id;
+    const timer = setInterval(() => {
+      setMeltdownMap(prev => {
+        const cur = prev[channelId];
+        const subs = cur?.sub_channels;
+        if (!subs?.some((s: any) => s.is_melted && (s.remaining_seconds || 0) > 0)) return prev;
+        return {
+          ...prev,
+          [channelId]: {
+            ...cur,
+            sub_channels: subs.map((s: any) => {
+              if (!s.is_melted) return s;
+              const remaining = Math.max(0, (s.remaining_seconds || 0) - 1);
+              return remaining <= 0
+                ? { ...s, is_melted: false, remaining_seconds: 0 }
+                : { ...s, remaining_seconds: remaining };
+            }),
+          },
+        };
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [editingChannel?.id, editingChannel?.provider_type]);
+
   // 选中的渠道类型在列表中已不存在时，回退到「全部」
   useEffect(() => {
     if (typeFilter === 'all') return;
     const stillExists = channels.some((ch) => getChannelTypeKey(ch) === typeFilter);
     if (!stillExists) setTypeFilter('all');
   }, [channels, typeFilter]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const editId = params.get('edit');
-    if (editId && channels.length > 0 && availableModels.length > 0) {
-      const channelId = parseInt(editId);
-      const ch = channels.find(c => c.id === channelId);
-      if (ch) {
-        window.history.replaceState(null, '', window.location.pathname);
-        handleEdit(ch);
-      }
-    }
-  }, [channels, availableModels]);
 
   const loadSiteStorage = async () => {
     try {
@@ -483,7 +993,7 @@ const Channels: React.FC = () => {
     }
   };
 
-  const handleAdd = () => {
+  const initNewChannelForm = () => {
     setEditingChannel(null);
     setEnableQuota(false);
     form.resetFields();
@@ -502,10 +1012,13 @@ const Channels: React.FC = () => {
     setUpstreamTab('preset');
     modelsRef.current = [];
     levelsRef.current = [];
+    const stateCategoryId = (location.state as { categoryId?: number | null } | null)?.categoryId;
+    const defaultCategoryId = typeof stateCategoryId === 'number'
+      ? stateCategoryId
+      : (typeof categoryFilter === 'number' ? categoryFilter : null);
+    categoryIdRef.current = defaultCategoryId;
     void loadSiteStorage();
-    setIsModalVisible(true);
 
-    const defaultCategoryId = typeof categoryFilter === 'number' ? categoryFilter : null;
     setTimeout(() => {
       form.setFieldsValue({
         name: '',
@@ -532,8 +1045,27 @@ const Channels: React.FC = () => {
     }, 0);
   };
 
-  const handleEdit = (record: Channel) => {
+  const handleAdd = () => {
+    navigate(channelNewPath(adminPath), {
+      state: { categoryId: typeof categoryFilter === 'number' ? categoryFilter : null },
+    });
+  };
+
+  useEffect(() => {
+    if (!isNewRoute) {
+      newFormReadyRef.current = false;
+      return;
+    }
+    if (newFormReadyRef.current) return;
+    newFormReadyRef.current = true;
+    initNewChannelForm();
+  }, [isNewRoute]);
+
+  const hydrateChannelEditor = (record: Channel) => {
     setEditingChannel(record);
+    if (record.provider_type === 'high_availability_group') {
+      void refreshChannelMeltdown(record.id);
+    }
     let mapping: Record<string, string> = {};
     try {
       mapping = typeof record.model_mapping === 'string' ? JSON.parse(record.model_mapping) : (record.model_mapping || {});
@@ -542,10 +1074,12 @@ const Channels: React.FC = () => {
     // models 兼容处理：新格式存 mid，旧格式存 model_id，需要统一转为 mid
     const rawModels = Array.isArray(record.models) ? record.models : [];
     const modelsForForm = rawModels.map((val: string) => {
-      if (availableModels.find(m => m.mid === val)) return val;
-      const match = availableModels.find(m => m.model_id === val);
-      return match ? match.mid : val;
+      const key = String(val);
+      if (availableModels.find(m => String(m.mid) === key)) return key;
+      const match = availableModels.find(m => String(m.model_id) === key);
+      return match ? String(match.mid) : key;
     });
+    const mappingBySel = rekeyMappingToSelection(mapping, modelsForForm, availableModels);
 
     const levelIds = (record.exclude_user_groups && record.exclude_user_groups.length > 0)
       ? record.exclude_user_groups
@@ -554,6 +1088,7 @@ const Channels: React.FC = () => {
     // Sync refs (reliable source of truth for save)
     modelsRef.current = modelsForForm;
     levelsRef.current = levelIds;
+    categoryIdRef.current = record.category_id || null;
     setChannelModelMids(modelsForForm);
 
     const hasMapping = Object.values(mapping).some(v => v && String(v).trim());
@@ -563,8 +1098,8 @@ const Channels: React.FC = () => {
     const wq = record.weekly_quota_limit ?? -1;
     const mq = record.monthly_quota_limit ?? -1;
     setEnableQuota(q >= 0 || dq >= 0 || wq >= 0 || mq >= 0);
-    setModelMappingState(mapping);
-    setActiveMappingInputs(Object.keys(mapping).filter(k => mapping[k] && String(mapping[k]).trim()));
+    setModelMappingState(mappingBySel);
+    setActiveMappingInputs(Object.keys(mappingBySel).filter(k => mappingBySel[k] && String(mappingBySel[k]).trim()));
     setIsExcludeMode(!!record.exclude_user_groups && record.exclude_user_groups.length > 0);
     setActiveRightPanel('models');
     setPresetSearchText('');
@@ -593,10 +1128,18 @@ const Channels: React.FC = () => {
     void loadSiteStorage();
 
     // 恢复高可用子渠道独立映射（必须在 parsedConfig 解析之后）
-    const haMapping = parsedConfig?.ha_model_mapping || {};
+    const haMapping = rekeyMappingToSelection<Record<string, string>>(
+      parsedConfig?.ha_model_mapping || {},
+      modelsForForm,
+      availableModels,
+    );
     setHaModelMappingState(haMapping);
-    // 恢复分辨率映射（读入时规范化 key，与后端命中规则一致）
-    const resMapping = cleanResModelMapping(parsedConfig?.res_model_mapping);
+    // 恢复分辨率映射（读入时规范化 key，与后端命中规则一致），再按已选 mid 回挂
+    const resMapping = rekeyMappingToSelection(
+      cleanResModelMapping(parsedConfig?.res_model_mapping),
+      modelsForForm,
+      availableModels,
+    );
     setResModelMappingState(resMapping);
     // 自动展开：有明文 HA 映射或分辨率映射的模型 + 已配置的分辨率高级面板
     const resExpanded = Object.entries(resMapping).flatMap(([mid, scopes]) =>
@@ -611,11 +1154,15 @@ const Channels: React.FC = () => {
         Object.values(resMapping[mid] || {}).some(m => countFilled(m) > 0),
       ),
     ])));
+    const resConfiguredModelIds = Object.keys(resMapping).filter(mid =>
+      Object.values(resMapping[mid] || {}).some(m => countFilled(m) > 0),
+    );
+    if (resConfiguredModelIds.length > 0) {
+      setActiveMappingInputs(prev => Array.from(new Set([...prev, ...resConfiguredModelIds])));
+    }
     if (resExpanded.length > 0 || Object.values(haMapping).some(sub => countFilled(sub as Record<string, unknown>) > 0)) {
       setShowMapping(true);
     }
-
-    setIsModalVisible(true);
 
     setTimeout(() => {
       form.setFieldsValue({
@@ -643,6 +1190,32 @@ const Channels: React.FC = () => {
     }, 0);
   };
 
+  const handleEdit = (record: Channel) => {
+    navigate(channelEditPath(adminPath, record.id));
+  };
+
+  useEffect(() => {
+    if (!routeEditId) {
+      if (!keepEditorIdRef.current) hydratedEditIdRef.current = null;
+      return;
+    }
+    if (keepEditorIdRef.current === routeEditId || hydratedEditIdRef.current === routeEditId) {
+      hydratedEditIdRef.current = routeEditId;
+      keepEditorIdRef.current = null;
+      return;
+    }
+    if (channels.length === 0 || availableModels.length === 0) return;
+    const channelId = parseInt(routeEditId, 10);
+    const ch = channels.find(c => c.id === channelId);
+    if (ch) {
+      hydratedEditIdRef.current = routeEditId;
+      hydrateChannelEditor(ch);
+    } else if (!loading) {
+      message.error('渠道并未找到，请检查！');
+      navigate(channelListPath(adminPath));
+    }
+  }, [channels, availableModels, routeEditId, loading]);
+
   const handleDelete = async (id: number) => {
     try {
       await request.delete(`/channels/${id}`);
@@ -668,48 +1241,147 @@ const Channels: React.FC = () => {
     }
   };
 
+  const [isBatchEditMode, setIsBatchEditMode] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchCategoryKey, setBatchCategoryKey] = useState(0);
+
+  const batchChecked = (id: number) => selectedRowKeys.some(k => Number(k) === id);
+
+  const toggleBatchKey = (id: number, checked: boolean) => {
+    setSelectedRowKeys(prev => {
+      const has = prev.some(k => Number(k) === id);
+      if (checked) return has ? prev : [...prev, id];
+      return prev.filter(k => Number(k) !== id);
+    });
+  };
+
+  const handleBatchChangeStatus = async (status: number) => {
+    const idSet = new Set(selectedRowKeys.map(k => Number(k)));
+    const targets = channels.filter(c => idSet.has(c.id));
+    if (targets.length === 0) return;
+    const skipped = status === 1
+      ? targets.filter(c => c.provider_type === 'high_availability_group' && !activePlugins['high_availability_channel'])
+      : [];
+    const skippedIds = new Set(skipped.map(c => c.id));
+    const actionable = targets.filter(c => !skippedIds.has(c.id));
+    if (actionable.length === 0) {
+      message.warning('高可用上游渠道系统插件未开启，无法启用所选渠道');
+      return;
+    }
+    setBatchLoading(true);
+    try {
+      await Promise.all(actionable.map(c => request.put(`/channels/${c.id}`, { status })));
+      const done = new Set(actionable.map(c => c.id));
+      setChannels(prev => prev.map(c => done.has(c.id) ? { ...c, status } : c));
+      message.success(status === 1 ? `已激活 ${actionable.length} 个渠道分组` : `已禁用 ${actionable.length} 个渠道分组`);
+      if (skipped.length > 0) {
+        message.warning(`已跳过 ${skipped.length} 个高可用渠道（插件未开启）`);
+      }
+    } catch (e) {
+      console.error(e);
+      fetchChannels();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchChangeCategory = async (categoryId: number | null) => {
+    const idSet = new Set(selectedRowKeys.map(k => Number(k)));
+    const targets = channels.filter(c => idSet.has(c.id));
+    if (targets.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(targets.map(c => request.put(`/channels/${c.id}`, { category_id: categoryId })));
+      const done = new Set(targets.map(c => c.id));
+      setChannels(prev => prev.map(c => done.has(c.id) ? { ...c, category_id: categoryId } : c));
+      const name = categoryId == null ? '未分类' : (categories.find(c => c.id === categoryId)?.name || '所选分类');
+      message.success(`已将 ${targets.length} 个渠道分组改为「${name}」`);
+    } catch (e) {
+      console.error(e);
+      fetchChannels();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    const ids = channels.filter(c => batchChecked(c.id)).map(c => c.id);
+    if (ids.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(ids.map(id => request.delete(`/channels/${id}`)));
+      message.success(`已删除 ${ids.length} 个渠道分组`);
+      setSelectedRowKeys([]);
+      setChannels(prev => prev.filter(c => !ids.includes(c.id)));
+    } catch (e) {
+      console.error(e);
+      fetchChannels();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
   const handleTest = (record: Channel) => {
-    navigate(`/${adminPath}/channels/test/${record.id}`);
+    navigate(channelAnalysisPath(adminPath, record.id));
+  };
+
+  const handleOpenEditorAnalysis = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    if (submitting) return;
+    let values: any;
+    try {
+      values = await form.validateFields();
+    } catch {
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const saved = await performSaveChannel(values);
+      if (!saved?.id) return;
+      message.success(t('common.success'));
+      setChannels(prev => {
+        const exists = prev.some(c => c.id === saved.id);
+        return exists ? prev.map(c => c.id === saved.id ? { ...c, ...saved } : c) : [saved, ...prev];
+      });
+      setEditingChannel(saved);
+      hydratedEditIdRef.current = String(saved.id);
+      keepEditorIdRef.current = String(saved.id);
+      navigate(channelAnalysisPath(adminPath, saved.id, 'edit'), {
+        state: { from: 'edit', origin: (location.state as { from?: string } | null)?.from },
+      });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleModelsChange = (nextModels: string[]) => {
+    const nextSet = new Set(nextModels.map(String));
+    const removed = new Set(modelsRef.current.map(String).filter(id => !nextSet.has(id)));
+    for (const mid of [...removed]) {
+      const modelId = selectionModelId(availableModels, mid);
+      if (modelId !== mid) removed.add(modelId);
+    }
+
     form.setFieldsValue({ models: nextModels });
     modelsRef.current = nextModels;
     setChannelModelMids(nextModels);
 
-    const currentMapping = modelMappingState;
-    const validModelIds = new Set(nextModels.map(mid => {
-      const match = availableModels.find(m => m.mid === mid);
-      return match ? match.model_id : mid;
-    }));
+    if (removed.size === 0) return;
 
-    let mappingChanged = false;
-    const newMapping = { ...currentMapping };
-    for (const key of Object.keys(newMapping)) {
-      if (!validModelIds.has(key)) {
-        delete newMapping[key];
-        mappingChanged = true;
-      }
-    }
-
-    if (mappingChanged) {
-      setModelMappingState(newMapping);
-      form.setFieldsValue({ model_mapping: newMapping });
-      setActiveMappingInputs(prev => prev.filter(id => validModelIds.has(id)));
-    }
-
-    // 同步清理 HA / 分辨率映射中已移除的模型
-    setHaModelMappingState(prev => pruneRecordKeys(prev, validModelIds));
-    setResModelMappingState(prev => pruneRecordKeys(prev, validModelIds));
-    setExpandedHaModels(prev => prev.filter(id => validModelIds.has(id)));
-    setExpandedResScopes(prev => prev.filter(k => validModelIds.has(k.split(':')[0])));
+    // 只删掉这次取消勾选的模型，模型请求 ID 变化不会把仍选中的别名清掉
+    setModelMappingState(prev => dropRecordKeys(prev, removed));
+    setActiveMappingInputs(prev => prev.filter(id => !removed.has(id)));
+    setHaModelMappingState(prev => dropRecordKeys(prev, removed));
+    setResModelMappingState(prev => dropRecordKeys(prev, removed));
+    setExpandedHaModels(prev => prev.filter(id => !removed.has(id)));
+    setExpandedResScopes(prev => prev.filter(k => !removed.has(k.split(':')[0])));
   };
 
-  const handleSave = async (values: any) => {
-    if (submitting) return;
-    setSubmitting(true);
+  const performSaveChannel = async (values: any): Promise<Channel | null> => {
     const finalMapping: Record<string, string> = {};
-    const currentModelMapping = modelMappingState;
+    const currentModelMapping = rekeyMappingToModelId(modelMappingState, availableModels, modelsRef.current);
     if (showMapping && currentModelMapping) {
       for (const [k, v] of Object.entries(currentModelMapping)) {
         if (v && String(v).trim()) {
@@ -718,43 +1390,19 @@ const Channels: React.FC = () => {
       }
     }
 
-
     // Read models and levels from refs (immune to form store corruption)
     const reliableModels = modelsRef.current;
     const reliableLevels = levelsRef.current;
+    const reliableCategoryId = categoryIdRef.current;
 
-    if (reliableModels.length === 0) {
-      message.error('请选择至少一个模型');
-      setSubmitting(false);
-      return;
+    const name = String(values.name || '').trim();
+    if (!name) {
+      message.error('请填写名称');
+      return null;
     }
 
     const isHaGroup = values.provider_type === 'high_availability_group';
-    if (isHaGroup && selectedSubChannelAids.length === 0) {
-      message.error('高可用虚拟组必须至少绑定一个子渠道');
-      setSubmitting(false);
-      return;
-    }
-
-    if (!isHaGroup && values.provider_type !== 'volcengine' && values.provider_type !== 'comfyui' && !values.preset_id) {
-      message.error('请选择上游渠道（预设、卡池或插件上游至少选其一）');
-      setSubmitting(false);
-      return;
-    }
-
-    // 画质增强渠道必须关联凭证
-    if (values.provider_type === 'volcengine' && !configObj.volcengine_enhance_credential_id) {
-      message.error('请选择画质增强凭证');
-      setSubmitting(false);
-      return;
-    }
-
     const comfyServerIds = parseComfyuiServerIds(configObj);
-    if (values.provider_type === 'comfyui' && comfyServerIds.length === 0) {
-      message.error('请至少选择一个 ComfyUI 服务节点');
-      setSubmitting(false);
-      return;
-    }
     const comfyServerId = comfyServerIds[0];
 
     // Ensure only one upstream is used and others are explicitly cleared
@@ -767,7 +1415,7 @@ const Channels: React.FC = () => {
     let finalHaModelMapping: Record<string, Record<string, string>> | undefined;
     if (isHaGroup && showMapping) {
       const cleaned: Record<string, Record<string, string>> = {};
-      for (const [modelId, subMap] of Object.entries(haModelMappingState)) {
+      for (const [modelId, subMap] of Object.entries(rekeyMappingToModelId(haModelMappingState, availableModels, modelsRef.current))) {
         const validEntries: Record<string, string> = {};
         for (const [subId, alias] of Object.entries(subMap)) {
           if (alias && String(alias).trim() && selectedSubChannelAids.includes(Number(subId))) {
@@ -788,7 +1436,7 @@ const Channels: React.FC = () => {
     if (showMapping) {
       // HA：过滤已解绑子渠；非 HA：传 [] 仅保留 default
       const cleaned = cleanResModelMapping(
-        resModelMappingState,
+        rekeyMappingToModelId(resModelMappingState, availableModels, modelsRef.current),
         isHaGroup ? selectedSubChannelAids : [],
       );
       if (Object.keys(cleaned).length > 0) {
@@ -812,6 +1460,7 @@ const Channels: React.FC = () => {
       : {
           tos_storage_enabled: configObj.tos_storage_enabled,
           tos_storage_days: configObj.tos_storage_days,
+          tos_storage_b64_enabled: configObj.tos_storage_b64_enabled !== false,
           ...(tosProvider ? { tos_storage_provider: tosProvider } : {}),
           // 画质增强凭证关联：通过凭证 ID 实时查询最新密钥，保证数据一致性
           ...(values.provider_type === 'volcengine' && configObj.volcengine_enhance_credential_id
@@ -829,6 +1478,7 @@ const Channels: React.FC = () => {
 
     const data = {
       ...values,
+      name,
       models: reliableModels,
       provider_type: values.provider_type || 'custom',
       model_mapping: finalMapping,
@@ -836,7 +1486,7 @@ const Channels: React.FC = () => {
       exclude_user_groups: isExcludeMode ? reliableLevels : [],
       config: finalConfig,
       sort_order: values.sort_order || 0,
-      category_id: values.category_id ?? null,
+      category_id: reliableCategoryId,
       priority: values.priority || 0,
       rate: typeof values.rate === 'number' ? values.rate : 1.0,
       quota_limit: (!enableQuota || values.quota_limit === undefined || values.quota_limit === null) ? -1 : Number(values.quota_limit),
@@ -849,8 +1499,7 @@ const Channels: React.FC = () => {
       const hierarchyErr = validateQuotaHierarchy(data);
       if (hierarchyErr) {
         message.error(hierarchyErr);
-        setSubmitting(false);
-        return;
+        return null;
       }
     }
     delete data.level_select;
@@ -863,21 +1512,48 @@ const Channels: React.FC = () => {
     }
 
     try {
+      let saved: any;
       if (editingChannel) {
         // 密钥未修改（与加载时原值相同）或为空时不提交，防止覆盖（插件上游例外：必须清空）
         if (data.provider_type !== 'volcengine' && data.provider_type !== 'comfyui' && (!data.api_key || data.api_key === (editingChannel as any).api_key)) {
           delete data.api_key;
         }
-        await request.put(`/channels/${editingChannel.id}`, data);
-        message.success(t('common.success'));
+        saved = await request.put(`/channels/${editingChannel.id}`, data);
       } else {
-        await request.post('/channels', data);
-        message.success(t('common.success'));
+        saved = await request.post('/channels', data);
       }
-      handleCloseModal();
-      fetchChannels();
+      return (saved?.data || saved) as Channel;
     } catch (e) {
       console.error(e);
+      return null;
+    }
+  };
+
+  const handleSave = async (values: any) => {
+    if (submitting) return;
+    const stay = saveIntentRef.current === 'stay';
+    saveIntentRef.current = 'exit';
+    setSubmitting(true);
+    try {
+      const saved = await performSaveChannel(values);
+      if (!saved?.id) return;
+      message.success(t('common.success'));
+      setChannels(prev => {
+        const exists = prev.some(c => c.id === saved.id);
+        return exists ? prev.map(c => c.id === saved.id ? { ...c, ...saved } : c) : [saved, ...prev];
+      });
+      if (stay) {
+        setEditingChannel(saved);
+        hydratedEditIdRef.current = String(saved.id);
+        if (!routeEditId || String(saved.id) !== routeEditId) {
+          keepEditorIdRef.current = String(saved.id);
+          navigate(channelEditPath(adminPath, saved.id), { replace: true, state: location.state });
+        }
+        fetchChannels();
+      } else {
+        handleCloseModal();
+        fetchChannels();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -956,11 +1632,19 @@ const Channels: React.FC = () => {
       key: 'status',
       width: 75,
       render: (status: number) => (
-        <Space size={5} style={{ color: status === 1 ? '#52c41a' : '#ff4d4f' }}>
-          <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: status === 1 ? '#52c41a' : '#ff4d4f' }} />
-          <span style={{ fontSize: 12 }}>{status === 1 ? '启用' : '禁用'}</span>
+        <Space size={6} style={{ color: status === 1 ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#a1a1aa' : '#71717a') }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: status === 1 ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#d4d4d8' : '#3f3f46') }} />
+          <span style={{ fontSize: 12, fontWeight: status === 1 ? 500 : 400 }}>{status === 1 ? '启用' : '禁用'}</span>
         </Space>
       ),
+    },
+    {
+      title: '绑定模型',
+      key: 'bound_models',
+      width: 105,
+      align: 'center' as const,
+      sorter: (a: Channel, b: Channel) => channelBoundModels(a).length - channelBoundModels(b).length,
+      render: (_: unknown, record: Channel) => renderBoundModels(record),
     },
     {
       title: '优先级',
@@ -987,20 +1671,20 @@ const Channels: React.FC = () => {
           const allNames = excludeGroups.map(resolveName).join(', ');
           return (
             <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
-              <Tag color="orange" style={tagStyle}>排除</Tag>
+              <Tag style={{ ...tagStyle, background: isLight ? '#18181b' : '#f4f4f5', color: isLight ? '#ffffff' : '#18181b', border: 'none', fontWeight: 600 }}>排除</Tag>
               {visible.map((id: string) => (
-                <Tag key={id} color="red" style={{ ...tagStyle, opacity: 0.85 }}>{resolveName(id)}</Tag>
+                <Tag key={id} style={{ ...tagStyle, background: 'transparent', color: isLight ? '#71717a' : '#a1a1aa', border: isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46' }}>{resolveName(id)}</Tag>
               ))}
               {hiddenCount > 0 && (
                 <Tooltip title={`排除等级: ${allNames}`}>
-                  <Tag style={{ ...tagStyle, cursor: 'pointer' }}>+{hiddenCount}</Tag>
+                  <Tag style={{ ...tagStyle, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#71717a' : '#a1a1aa', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }}>+{hiddenCount}</Tag>
                 </Tooltip>
               )}
             </div>
           );
         }
         if (!groups || groups.length === 0) {
-          return <Tag color="green" style={tagStyle}>全部等级</Tag>;
+          return <Tag style={{ ...tagStyle, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)', fontWeight: 500 }}>全部等级</Tag>;
         }
         const visible = groups.slice(0, 2);
         const hiddenCount = groups.length - visible.length;
@@ -1008,11 +1692,11 @@ const Channels: React.FC = () => {
         return (
           <div style={{ display: 'flex', flexWrap: 'nowrap', gap: 3, alignItems: 'center' }}>
             {visible.map((id: string) => (
-              <Tag key={id} color="blue" style={tagStyle}>{resolveName(id)}</Tag>
+              <Tag key={id} style={{ ...tagStyle, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#27272a' : '#e4e4e7', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>{resolveName(id)}</Tag>
             ))}
             {hiddenCount > 0 && (
               <Tooltip title={`允许等级: ${allNames}`}>
-                <Tag style={{ ...tagStyle, cursor: 'pointer' }}>+{hiddenCount}</Tag>
+                <Tag style={{ ...tagStyle, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#71717a' : '#a1a1aa', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }}>+{hiddenCount}</Tag>
               </Tooltip>
             )}
           </div>
@@ -1028,15 +1712,45 @@ const Channels: React.FC = () => {
     {
       title: '使用上游',
       key: 'upstream',
+      filters: [
+        { text: '预设渠道', value: 'preset' },
+        { text: '高可用渠道', value: 'ha' },
+      ],
+      onFilter: (value: any, record: Channel) => {
+        if (value === 'preset') {
+          return record.provider_type !== 'high_availability_group' && !!record.preset_id;
+        }
+        if (value === 'ha') {
+          return record.provider_type === 'high_availability_group';
+        }
+        return true;
+      },
       render: (_: any, record: Channel) => {
-        const tagStyle: React.CSSProperties = { borderRadius: 4, margin: 0, padding: '0 4px', fontSize: 10, height: 18, lineHeight: '16px', flexShrink: 0 };
+        const tagStyle: React.CSSProperties = {
+          borderRadius: 4,
+          margin: 0,
+          padding: '0 5px',
+          fontSize: 10,
+          height: 18,
+          lineHeight: '16px',
+          flexShrink: 0,
+          background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)',
+          color: isLight ? '#18181b' : '#f4f4f5',
+          border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)'
+        };
         if (record.provider_type === 'high_availability_group') {
           const parsed = parseChannelConfig(record);
           const subCount = parsed.sub_channels ? parsed.sub_channels.length : 0;
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Tag color={activePlugins['high_availability_channel'] ? 'purple' : 'red'} style={tagStyle}>
+                <Tag style={{
+                  ...tagStyle,
+                  background: activePlugins['high_availability_channel'] ? (isLight ? '#18181b' : '#f4f4f5') : 'transparent',
+                  color: activePlugins['high_availability_channel'] ? (isLight ? '#ffffff' : '#18181b') : (isLight ? '#71717a' : '#a1a1aa'),
+                  border: activePlugins['high_availability_channel'] ? 'none' : (isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46'),
+                  fontWeight: 600
+                }}>
                   {activePlugins['high_availability_channel'] ? '高可用' : '高可用未开启'}
                 </Tag>
                 <Text strong style={{ fontSize: 12, lineHeight: 1.25 }}>高可用虚拟渠道组</Text>
@@ -1050,7 +1764,7 @@ const Channels: React.FC = () => {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1, maxWidth: 260 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Tag color="magenta" style={tagStyle}>画质增强</Tag>
+                <Tag style={tagStyle}>画质增强</Tag>
                 <Text strong style={{ fontSize: 12, lineHeight: 1.25 }} ellipsis={{ tooltip: name }}>{name}</Text>
               </div>
               {baseUrl ? (
@@ -1066,7 +1780,7 @@ const Channels: React.FC = () => {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1, maxWidth: 260 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Tag color="geekblue" style={tagStyle}>ComfyUI</Tag>
+                <Tag style={tagStyle}>ComfyUI</Tag>
                 <Text strong style={{ fontSize: 12, lineHeight: 1.25 }} ellipsis={{ tooltip: name }}>{name}</Text>
               </div>
               {baseUrl ? (
@@ -1083,8 +1797,12 @@ const Channels: React.FC = () => {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Tag color="cyan" style={tagStyle}>预设渠道</Tag>
-                {presetDisabled && <Tag color="error" style={tagStyle}>已禁用</Tag>}
+                <Tag style={tagStyle}>预设渠道</Tag>
+                {presetDisabled && (
+                  <Tag style={{ ...tagStyle, background: 'transparent', color: isLight ? '#a1a1aa' : '#71717a', border: isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46' }}>
+                    已禁用
+                  </Tag>
+                )}
                 <Text strong style={{ fontSize: 12, lineHeight: 1.25 }}>{preset ? preset.name : '未知预设'}</Text>
               </div>
               <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.2, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
@@ -1100,7 +1818,6 @@ const Channels: React.FC = () => {
       title: '渠道分类',
       dataIndex: 'category_id',
       key: 'category_id',
-      sorter: (a: Channel, b: Channel) => (a.category_id || 0) - (b.category_id || 0),
       render: (categoryId: number | null) => {
         const name = resolveCategoryName(categoryId);
         return name ? (
@@ -1147,8 +1864,8 @@ const Channels: React.FC = () => {
               size="small"
               className="channel-table-action-btn"
               icon={record.status === 1
-                ? <PlayCircleOutlined style={{ color: '#52c41a' }} />
-                : <StopOutlined style={{ color: '#ff4d4f' }} />}
+                ? <PlayCircleOutlined style={{ color: isLight ? '#18181b' : '#f4f4f5' }} />
+                : <StopOutlined style={{ color: isLight ? '#a1a1aa' : '#71717a' }} />}
               onClick={() => handleToggleStatus(record)}
             />
           </Tooltip>
@@ -1158,7 +1875,7 @@ const Channels: React.FC = () => {
                 type="text"
                 size="small"
                 className="channel-table-action-btn"
-                icon={<ReloadOutlined style={{ color: '#1890ff' }} />}
+                icon={<ReloadOutlined style={{ color: isLight ? '#52525b' : '#a1a1aa' }} />}
                 onClick={() => handleResetMeltdown(record.id)}
                 loading={meltdownLoading[record.id]}
               />
@@ -1171,6 +1888,15 @@ const Channels: React.FC = () => {
               className="channel-table-action-btn"
               icon={<ExperimentOutlined />}
               onClick={() => handleTest(record)}
+            />
+          </Tooltip>
+          <Tooltip title={t('channels.simulate_billing_short', '计费模拟')}>
+            <Button
+              type="text"
+              size="small"
+              className="channel-table-action-btn"
+              icon={<CalculatorOutlined />}
+              onClick={() => setSimulatingChannel(record)}
             />
           </Tooltip>
           <Tooltip title="清零额度">
@@ -1245,8 +1971,8 @@ const Channels: React.FC = () => {
             ? `额度：${currencySymbol}${fmt(item.used)} / ∞（无限）`
             : `${item.label}额度：${currencySymbol}${fmt(item.used)} / ${currencySymbol}${fmt(Number(item.limit))}（${pct}%）`;
           const stroke = showUnlimited
-            ? (isLight ? '#a1a1aa' : 'rgba(255,255,255,0.28)')
-            : (pct >= 100 ? '#ef4444' : QUOTA_RING_BLUE[item.key]);
+            ? (isLight ? '#d4d4d8' : 'rgba(255,255,255,0.2)')
+            : (pct >= 100 ? (isLight ? '#71717a' : '#a1a1aa') : (isLight ? '#18181b' : '#f4f4f5'));
 
           return (
             <Tooltip key={item.key} title={tip}>
@@ -1280,7 +2006,9 @@ const Channels: React.FC = () => {
     );
   };
 
-  const hasEditParam = new URLSearchParams(window.location.search).has('edit');
+  if (editQueryId && !isEditRoute) {
+    return <Navigate to={channelEditPath(adminPath, editQueryId)} replace state={location.state} />;
+  }
 
   return (
     <Card variant="borderless">
@@ -1291,7 +2019,7 @@ const Channels: React.FC = () => {
         }
         .channels-grid-list .ant-list-items {
           display: grid !important;
-          grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)) !important;
+          grid-template-columns: repeat(auto-fill, minmax(max(248px, calc(100% / 6)), 1fr)) !important;
           gap: 10px !important;
         }
         .channels-grid-list .ant-list-item {
@@ -1432,8 +2160,21 @@ const Channels: React.FC = () => {
         .channel-table-action-btn:hover {
           background: ${isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'} !important;
         }
+        .channel-name-form-item .ant-form-item-label {
+          width: 100%;
+        }
+        .channel-name-form-item .ant-form-item-label > label {
+          width: 100%;
+          max-width: 100%;
+          display: flex;
+        }
+        .channel-name-form-item .channel-name-label-row {
+          flex: 1;
+          min-width: 0;
+          width: 100%;
+        }
       `}</style>
-      {!isModalVisible ? (
+      {!isEditorOpen ? (
         <div style={{ width: '100%' }}>
           <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', justifyContent: 'space-between', marginBottom: 24, gap: 12 }}>
             <Title level={4} style={{ margin: 0, fontSize: screens.xs ? 18 : 20, fontWeight: 600 }}>{t('channels.title')}</Title>
@@ -1459,24 +2200,148 @@ const Channels: React.FC = () => {
                 }}
               />
               <Input.Search
-                placeholder="搜索 AID 或 名称"
+                placeholder="AID或名称"
                 allowClear
                 onSearch={setSearchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ width: 200 }}
+                style={{ width: 160 }}
               />
-              <Button icon={<SyncOutlined />} onClick={fetchChannels}>{t('common.refresh')}</Button>
+              <Input.Search
+                placeholder="模型名称/模型ID/MID"
+                allowClear
+                value={modelLocateQuery}
+                onChange={(e) => setModelLocateQuery(e.target.value)}
+                style={{ width: 240 }}
+              />
+              <Button
+                icon={<CheckSquareOutlined />}
+                type={isBatchEditMode ? 'primary' : 'default'}
+                danger={isBatchEditMode}
+                onClick={() => {
+                  setIsBatchEditMode(!isBatchEditMode);
+                  if (isBatchEditMode) setSelectedRowKeys([]);
+                }}
+              >
+                {isBatchEditMode ? '退出选择' : '选择编辑'}
+              </Button>
               <Button type="default" icon={<ApartmentOutlined />} onClick={() => navigate(`/${adminPath}/channels/model-display`)}>模型渠道显示</Button>
               <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>{t('channels.add_channel')}</Button>
             </Space>
           </div>
 
+          {modelLocate && (
+              <div style={{
+                marginTop: -8,
+                marginBottom: 16,
+                padding: '12px 16px',
+                borderRadius: 8,
+                backgroundColor: isLight ? '#fafafa' : '#111113',
+                border: isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                maxHeight: 320,
+                overflowY: 'auto',
+              }}>
+                {modelLocate.rows.length === 0 && modelLocate.orphans.length === 0 ? (
+                  <Text type="secondary" style={{ fontSize: 13 }}>
+                    {modelLocate.matchedModelCount > 0
+                      ? `匹配到 ${modelLocate.matchedModelCount} 个模型，没有渠道分组在「路由与范围配置 · 选择模型」里使用`
+                      : `没有名称、模型 ID 或 MID 匹配「${modelLocateQuery.trim()}」的模型`}
+                  </Text>
+                ) : (
+                  <>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      以下渠道分组在「选择模型」中使用了该模型，点击分组名称可编辑
+                    </Text>
+                    {modelLocate.rows.map((row) => (
+                      <div key={row.mid || row.modelId}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                          <Text strong style={{ fontSize: 13 }}>{row.name}</Text>
+                          {row.modelId ? (
+                            <Text type="secondary" style={{ fontSize: 12 }}>ID: {row.modelId}</Text>
+                          ) : null}
+                          {row.mid ? (
+                            <Text type="secondary" style={{ fontSize: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>MID: {row.mid}</Text>
+                          ) : null}
+                          {!row.listed && (
+                            <Tag style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>已下架</Tag>
+                          )}
+                          <Text type="secondary" style={{ fontSize: 12 }}>{row.channels.length} 个分组</Text>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {row.channels.map((c) => (
+                            <div
+                              key={c.id}
+                              onClick={() => handleEdit(c)}
+                              style={{
+                                padding: '3px 10px',
+                                borderRadius: 6,
+                                fontSize: 13,
+                                cursor: 'pointer',
+                                backgroundColor: isLight ? '#ffffff' : '#18181b',
+                                color: isLight ? '#18181b' : '#f4f4f5',
+                                border: isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
+                              }}
+                            >
+                              {c.name}
+                              <span style={{ marginLeft: 6, opacity: 0.6, fontSize: 11, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                                {c.group_aid || '-'}
+                              </span>
+                              {c.status !== 1 ? <span style={{ marginLeft: 6, opacity: 0.55, fontSize: 11 }}>已禁用</span> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {modelLocate.orphans.map((row) => (
+                      <div key={row.key}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                          <Text strong style={{ fontSize: 13 }}>{row.key}</Text>
+                          <Tag style={{ margin: 0, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>未在模型库</Tag>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{row.channels.length} 个分组</Text>
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {row.channels.map((c) => (
+                            <div
+                              key={c.id}
+                              onClick={() => handleEdit(c)}
+                              style={{
+                                padding: '3px 10px',
+                                borderRadius: 6,
+                                fontSize: 13,
+                                cursor: 'pointer',
+                                backgroundColor: isLight ? '#ffffff' : '#18181b',
+                                color: isLight ? '#18181b' : '#f4f4f5',
+                                border: isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
+                              }}
+                            >
+                              {c.name}
+                              <span style={{ marginLeft: 6, opacity: 0.6, fontSize: 11, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                                {c.group_aid || '-'}
+                              </span>
+                              {c.status !== 1 ? <span style={{ marginLeft: 6, opacity: 0.55, fontSize: 11 }}>已禁用</span> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {modelLocate.channelIds.size > filteredChannels.length && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        下方列表受当前状态、分类、类型或名称筛选影响，未展示其中 {modelLocate.channelIds.size - filteredChannels.length} 个分组
+                      </Text>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
           <div style={{
-            backgroundColor: isLight ? '#fafafa' : '#141414',
+            backgroundColor: isLight ? '#fafafa' : '#111113',
             padding: '12px 16px',
             borderRadius: 8,
             marginBottom: 16,
-            border: isLight ? '1px solid #e8e8e8' : '1px solid #303030',
+            border: isLight ? '1px solid #e4e4e7' : '1px solid #27272a',
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
@@ -1503,21 +2368,22 @@ const Channels: React.FC = () => {
                       key={String(item.key)}
                       onClick={() => setCategoryFilter(item.key)}
                       style={{
-                        padding: '4px 12px',
-                        borderRadius: 16,
-                        fontSize: 14,
-                        backgroundColor: selected ? '#1677ff' : (isLight ? '#f0f0f0' : '#1d1d1d'),
-                        color: selected ? '#fff' : (isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)'),
-                        border: isLight ? '1px solid #d9d9d9' : '1px solid #303030',
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        fontWeight: selected ? 500 : 400,
+                        backgroundColor: selected ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#ffffff' : '#18181b'),
+                        color: selected ? (isLight ? '#ffffff' : '#09090b') : (isLight ? '#52525b' : '#a1a1aa'),
+                        border: selected ? (isLight ? '1px solid #18181b' : '1px solid #f4f4f5') : (isLight ? '1px solid #e4e4e7' : '1px solid #27272a'),
                         cursor: 'pointer',
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 6,
-                        transition: 'all 0.2s',
+                        transition: 'all 0.15s ease',
                       }}
                     >
                       {item.label}
-                      <span style={{ opacity: 0.6 }}>{item.count}</span>
+                      <span style={{ opacity: 0.6, fontSize: 11 }}>{item.count}</span>
                     </div>
                   );
                 })}
@@ -1525,7 +2391,7 @@ const Channels: React.FC = () => {
                   <Button
                     type="text"
                     size="small"
-                    icon={<SettingOutlined style={{ color: '#1677ff' }} />}
+                    icon={<SettingOutlined style={{ color: isLight ? '#71717a' : '#a1a1aa' }} />}
                     onClick={() => setIsCategoryManagerVisible(true)}
                     style={{ marginLeft: 8 }}
                   />
@@ -1563,21 +2429,22 @@ const Channels: React.FC = () => {
                           key={item.key}
                           onClick={() => setTypeFilter(item.key)}
                           style={{
-                            padding: '4px 12px',
-                            borderRadius: 16,
-                            fontSize: 14,
-                            backgroundColor: selected ? '#1677ff' : (isLight ? '#f0f0f0' : '#1d1d1d'),
-                            color: selected ? '#fff' : (isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)'),
-                            border: isLight ? '1px solid #d9d9d9' : '1px solid #303030',
+                            padding: '3px 10px',
+                            borderRadius: 6,
+                            fontSize: 13,
+                            fontWeight: selected ? 500 : 400,
+                            backgroundColor: selected ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#ffffff' : '#18181b'),
+                            color: selected ? (isLight ? '#ffffff' : '#09090b') : (isLight ? '#52525b' : '#a1a1aa'),
+                            border: selected ? (isLight ? '1px solid #18181b' : '1px solid #f4f4f5') : (isLight ? '1px solid #e4e4e7' : '1px solid #27272a'),
                             cursor: 'pointer',
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 6,
-                            transition: 'all 0.2s',
+                            transition: 'all 0.15s ease',
                           }}
                         >
                           {item.label}
-                          <span style={{ opacity: 0.6 }}>{item.count}</span>
+                          <span style={{ opacity: 0.6, fontSize: 11 }}>{item.count}</span>
                         </div>
                       );
                     })}
@@ -1587,21 +2454,101 @@ const Channels: React.FC = () => {
             })()}
           </div>
 
+          {isBatchEditMode && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 8,
+              padding: '8px 14px',
+              marginBottom: 12,
+              borderRadius: 8,
+              backgroundColor: isLight ? '#e6f4ff' : '#111b26',
+              border: isLight ? '1px solid #91caff' : '1px solid #154173',
+            }}>
+              <Space wrap size={10} style={{ alignItems: 'center' }}>
+                <Button
+                  size="small"
+                  onClick={() => {
+                    const ids = filteredChannels.map(c => c.id);
+                    setSelectedRowKeys(prev => Array.from(new Set([...prev.map(k => Number(k)), ...ids])));
+                  }}
+                >
+                  全选
+                </Button>
+                <Button size="small" disabled={selectedRowKeys.length === 0} onClick={() => setSelectedRowKeys([])}>
+                  取消选择
+                </Button>
+                <Text strong style={{ fontSize: 13, color: isLight ? '#0958d9' : '#1677ff', marginLeft: 4 }}>
+                  已选择 <span style={{ fontSize: 15, fontWeight: 700 }}>{selectedRowKeys.length}</span> 项
+                </Text>
+              </Space>
+              <Space wrap size={8}>
+                <Select
+                  key={batchCategoryKey}
+                  size="small"
+                  placeholder="修改分类"
+                  style={{ width: 140 }}
+                  disabled={selectedRowKeys.length === 0 || batchLoading}
+                  options={[
+                    { label: '未分类', value: 0 },
+                    ...activeCategories.map(c => ({ label: c.name, value: c.id })),
+                  ]}
+                  onChange={(value) => {
+                    handleBatchChangeCategory(value === 0 ? null : value);
+                    setBatchCategoryKey(k => k + 1);
+                  }}
+                />
+                <Button size="small" type="primary" icon={<CheckCircleOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading} onClick={() => handleBatchChangeStatus(1)}>
+                  激活
+                </Button>
+                <Button size="small" icon={<StopOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading} onClick={() => handleBatchChangeStatus(0)}>
+                  禁用
+                </Button>
+                <Popconfirm
+                  title="确定要批量删除选中的渠道分组吗？"
+                  description={`将一次性删除选中的 ${selectedRowKeys.length} 个渠道分组，此操作不可撤销。`}
+                  onConfirm={handleBatchDelete}
+                  okText="确认删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true, loading: batchLoading }}
+                  disabled={selectedRowKeys.length === 0}
+                >
+                  <Button size="small" danger type="primary" icon={<DeleteOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading}>
+                    批量删除
+                  </Button>
+                </Popconfirm>
+              </Space>
+            </div>
+          )}
+
           {screens.xs ? (
             <MobileCardList
               dataSource={filteredChannels}
               loading={loading}
               rowKey="id"
-              pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'], showTotal: (total) => `共 ${total} 条` }}
+              pagination={listPagination()}
               renderCard={(record: any) => {
                 const groups = record.user_groups;
                 const excludeGroups = record.exclude_user_groups;
                 return (
                   <MobileCard
-                    title={<Text strong>{record.name}</Text>}
+                    title={
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {isBatchEditMode && (
+                          <Checkbox
+                            checked={batchChecked(record.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => toggleBatchKey(record.id, e.target.checked)}
+                          />
+                        )}
+                        <Text strong>{record.name}</Text>
+                      </div>
+                    }
                     extra={
-                      <Space size={6} style={{ color: record.status === 1 ? '#52c41a' : '#ff4d4f' }}>
-                        <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: record.status === 1 ? '#52c41a' : '#ff4d4f' }} />
+                      <Space size={6} style={{ color: record.status === 1 ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#a1a1aa' : '#71717a') }}>
+                        <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: record.status === 1 ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#d4d4d8' : '#3f3f46') }} />
                         <span style={{ fontSize: 12 }}>{record.status === 1 ? t('common.active') : t('common.disabled')}</span>
                       </Space>
                     }
@@ -1610,22 +2557,25 @@ const Channels: React.FC = () => {
                     <CardRow label="支持等级">
                       {excludeGroups && excludeGroups.length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-                          <Tag color="orange" style={{ borderRadius: 4, margin: 0, fontSize: 11 }}>排除</Tag>
+                          <Tag style={{ borderRadius: 4, margin: 0, fontSize: 11, background: isLight ? '#18181b' : '#f4f4f5', color: isLight ? '#ffffff' : '#18181b', border: 'none', fontWeight: 600 }}>排除</Tag>
                           {excludeGroups.map((id: string) => {
                             const lv = availableUserLevels.find((l: any) => l.id.toString() === id || l.group_key === id);
-                            return <Tag key={id} color="red" style={{ borderRadius: 4, margin: 0, fontSize: 11, opacity: 0.85 }}>{lv ? lv.name : id}</Tag>;
+                            return <Tag key={id} style={{ borderRadius: 4, margin: 0, fontSize: 11, background: 'transparent', color: isLight ? '#71717a' : '#a1a1aa', border: isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46' }}>{lv ? lv.name : id}</Tag>;
                           })}
                         </div>
                       ) : (!groups || groups.length === 0) ? (
-                        <Tag color="green" style={{ borderRadius: 4, margin: 0, fontSize: 11 }}>全部等级</Tag>
+                        <Tag style={{ borderRadius: 4, margin: 0, fontSize: 11, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)', fontWeight: 500 }}>全部等级</Tag>
                       ) : (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                           {groups.map((id: string) => {
                             const lv = availableUserLevels.find((l: any) => l.id.toString() === id || l.group_key === id);
-                            return <Tag key={id} color="blue" style={{ borderRadius: 4, margin: 0, fontSize: 11 }}>{lv ? lv.name : id}</Tag>;
+                            return <Tag key={id} style={{ borderRadius: 4, margin: 0, fontSize: 11, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#27272a' : '#e4e4e7', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>{lv ? lv.name : id}</Tag>;
                           })}
                         </div>
                       )}
+                    </CardRow>
+                    <CardRow label="绑定模型">
+                      {renderBoundModels(record)}
                     </CardRow>
                     <CardRow label="已用/额度">
                       {renderQuotaRings(record)}
@@ -1637,7 +2587,15 @@ const Channels: React.FC = () => {
                           const subCount = parsed.sub_channels ? parsed.sub_channels.length : 0;
                           return (
                             <Space size={4}>
-                              <Tag color={activePlugins['high_availability_channel'] ? 'purple' : 'red'} style={{ borderRadius: 4, margin: 0, fontSize: 10 }}>
+                              <Tag style={{
+                                borderRadius: 4,
+                                margin: 0,
+                                fontSize: 10,
+                                background: activePlugins['high_availability_channel'] ? (isLight ? '#18181b' : '#f4f4f5') : 'transparent',
+                                color: activePlugins['high_availability_channel'] ? (isLight ? '#ffffff' : '#18181b') : (isLight ? '#71717a' : '#a1a1aa'),
+                                border: activePlugins['high_availability_channel'] ? 'none' : (isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46'),
+                                fontWeight: 600
+                              }}>
                                 {activePlugins['high_availability_channel'] ? '高可用' : '高可用插件未开启'}
                               </Tag>
                               <Text style={{ fontSize: 12 }}>
@@ -1651,7 +2609,7 @@ const Channels: React.FC = () => {
                           const { name, baseUrl } = resolveVolcEnhanceUpstream(record);
                           return (
                             <Space size={4} wrap>
-                              <Tag color="magenta" style={{ borderRadius: 4, margin: 0, fontSize: 10 }}>画质增强</Tag>
+                              <Tag style={{ borderRadius: 4, margin: 0, fontSize: 10, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>画质增强</Tag>
                               <Text style={{ fontSize: 12 }}>
                                 {name}{baseUrl ? ` (${baseUrl})` : ''}
                               </Text>
@@ -1663,7 +2621,7 @@ const Channels: React.FC = () => {
                           const { name, baseUrl } = resolveComfyuiUpstream(record);
                           return (
                             <Space size={4} wrap>
-                              <Tag color="geekblue" style={{ borderRadius: 4, margin: 0, fontSize: 10 }}>ComfyUI</Tag>
+                              <Tag style={{ borderRadius: 4, margin: 0, fontSize: 10, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>ComfyUI</Tag>
                               <Text style={{ fontSize: 12 }}>
                                 {name}{baseUrl ? ` (${baseUrl})` : ''}
                               </Text>
@@ -1676,8 +2634,8 @@ const Channels: React.FC = () => {
                           const presetDisabled = preset && (preset.status ?? 1) !== 1;
                           return (
                             <Space size={4} wrap>
-                              <Tag color="cyan" style={{ borderRadius: 4, margin: 0, fontSize: 10 }}>预设</Tag>
-                              {presetDisabled && <Tag color="error" style={{ borderRadius: 4, margin: 0, fontSize: 10 }}>上游已禁用</Tag>}
+                              <Tag style={{ borderRadius: 4, margin: 0, fontSize: 10, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>预设</Tag>
+                              {presetDisabled && <Tag style={{ borderRadius: 4, margin: 0, fontSize: 10, background: 'transparent', color: isLight ? '#a1a1aa' : '#71717a', border: isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46' }}>上游已禁用</Tag>}
                               <Text style={{ fontSize: 12 }}>
                                 {preset?.name || '未知预设'} ({preset?.yid ? `YID: ${preset.yid}` : `ID: ${record.preset_id}`})
                               </Text>
@@ -1755,7 +2713,7 @@ const Channels: React.FC = () => {
                               <Text style={{ fontSize: 12, color: isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }} ellipsis>
                                 {sub.name}
                               </Text>
-                              <Tag color="red" style={{ borderRadius: 4, margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '16px' }}>
+                              <Tag style={{ borderRadius: 4, margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '16px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>
                                 剩余 {sub.remaining_seconds}s
                               </Tag>
                             </div>
@@ -1770,8 +2728,8 @@ const Channels: React.FC = () => {
                           type="text"
                           size="small"
                           icon={record.status === 1
-                            ? <PlayCircleOutlined style={{ color: '#52c41a' }} />
-                            : <StopOutlined style={{ color: '#ff4d4f' }} />}
+                            ? <PlayCircleOutlined style={{ color: isLight ? '#18181b' : '#f4f4f5' }} />
+                            : <StopOutlined style={{ color: isLight ? '#a1a1aa' : '#71717a' }} />}
                           onClick={() => handleToggleStatus(record)}
                         />
                       </Tooltip>
@@ -1780,7 +2738,7 @@ const Channels: React.FC = () => {
                           <Button
                             type="text"
                             size="small"
-                            icon={<ReloadOutlined style={{ color: '#1890ff' }} />}
+                            icon={<ReloadOutlined style={{ color: isLight ? '#52525b' : '#a1a1aa' }} />}
                             onClick={() => handleResetMeltdown(record.id)}
                             loading={meltdownLoading[record.id]}
                           />
@@ -1788,6 +2746,9 @@ const Channels: React.FC = () => {
                       )}
                       <Tooltip title="测试">
                         <Button type="text" size="small" icon={<ExperimentOutlined />} onClick={() => handleTest(record)} />
+                      </Tooltip>
+                      <Tooltip title={t('channels.simulate_billing_short', '计费模拟')}>
+                        <Button type="text" size="small" icon={<CalculatorOutlined />} onClick={() => setSimulatingChannel(record)} />
                       </Tooltip>
                       <Tooltip title="清零额度">
                         <Popconfirm title="确定清零该渠道的总/日/周/月已用额度吗？" onConfirm={() => handleResetQuota(record.id)}>
@@ -1815,21 +2776,24 @@ const Channels: React.FC = () => {
               columns={columns}
               rowKey="id"
               loading={loading}
-              pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'], showTotal: (total) => `共 ${total} 条` }}
+              pagination={listPagination()}
               scroll={{ x: 'max-content' }}
+              rowSelection={isBatchEditMode ? {
+                selectedRowKeys,
+                preserveSelectedRowKeys: true,
+                onChange: (keys) => setSelectedRowKeys(keys),
+              } : undefined}
             />
           ) : (
             <List
               className="channels-grid-list"
               dataSource={filteredChannels}
               loading={loading}
-              pagination={{
+              pagination={listPagination({
                 pageSize: 24,
-                showSizeChanger: true,
                 pageSizeOptions: ['24', '48', '72', '96'],
-                showTotal: (total) => `共 ${total} 个渠道`,
                 size: 'small',
-              }}
+              })}
               renderItem={(record: Channel) => {
                 const groups = record.user_groups || [];
                 const excludeGroups = record.exclude_user_groups || [];
@@ -1864,7 +2828,17 @@ const Channels: React.FC = () => {
                     : '高可用虚拟渠道组 (未绑定上游)';
                   upstreamTag = (
                     <Tooltip title={<div style={{ whiteSpace: 'pre-wrap' }}>{tip}</div>}>
-                      <Tag color={activePlugins['high_availability_channel'] ? 'purple' : 'red'} style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>
+                      <Tag style={{
+                        margin: 0,
+                        padding: '0 5px',
+                        fontSize: 10,
+                        lineHeight: '18px',
+                        borderRadius: 4,
+                        background: activePlugins['high_availability_channel'] ? (isLight ? '#18181b' : '#f4f4f5') : 'transparent',
+                        color: activePlugins['high_availability_channel'] ? (isLight ? '#ffffff' : '#18181b') : (isLight ? '#71717a' : '#a1a1aa'),
+                        border: activePlugins['high_availability_channel'] ? 'none' : (isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46'),
+                        fontWeight: 600
+                      }}>
                         {activePlugins['high_availability_channel'] ? `高可用 · ${subIds.length}` : '高可用未开启'}
                       </Tag>
                     </Tooltip>
@@ -1873,14 +2847,14 @@ const Channels: React.FC = () => {
                   const { name, baseUrl } = resolveVolcEnhanceUpstream(record);
                   upstreamTag = (
                     <Tooltip title={<div style={{ whiteSpace: 'pre-wrap' }}>{baseUrl ? `画质增强: ${name}\n${baseUrl}` : `画质增强: ${name}`}</div>}>
-                      <Tag color="magenta" style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>画质增强</Tag>
+                      <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>画质增强</Tag>
                     </Tooltip>
                   );
                 } else if (record.provider_type === 'comfyui') {
                   const { name, baseUrl } = resolveComfyuiUpstream(record);
                   upstreamTag = (
                     <Tooltip title={<div style={{ whiteSpace: 'pre-wrap' }}>{baseUrl ? `ComfyUI: ${name}\n${baseUrl}` : `ComfyUI: ${name}`}</div>}>
-                      <Tag color="geekblue" style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>ComfyUI</Tag>
+                      <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>ComfyUI</Tag>
                     </Tooltip>
                   );
                 } else if (record.preset_id) {
@@ -1888,7 +2862,7 @@ const Channels: React.FC = () => {
                   const presetDisabled = preset && (preset.status ?? 1) !== 1;
                   upstreamTag = (
                     <Tooltip title={preset ? `预设: ${preset.name} (YID: ${preset.yid || '无'})${presetDisabled ? ' · 已禁用' : ''}` : '未知预设'}>
-                      <Tag color={presetDisabled ? 'error' : 'cyan'} style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>
+                      <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: presetDisabled ? 'transparent' : (isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)'), color: presetDisabled ? (isLight ? '#a1a1aa' : '#71717a') : (isLight ? '#18181b' : '#f4f4f5'), border: presetDisabled ? (isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46') : (isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)') }}>
                         {presetDisabled ? '上游已禁用' : '预设'}
                       </Tag>
                     </Tooltip>
@@ -1899,11 +2873,11 @@ const Channels: React.FC = () => {
                   <List.Item style={{ height: '100%', marginBottom: 0, width: '100%' }}>
                     <Card
                       className={`channel-dash-card${record.status === 0 ? ' channel-card-disabled' : ''}`}
-                      onDoubleClick={() => handleEdit(record)}
+                      onDoubleClick={() => { if (!isBatchEditMode) handleEdit(record); }}
                       style={{
                         background: isLight ? '#fff' : '#1a1a1a',
                         borderRadius: 8,
-                        border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.1)',
+                        border: isLight ? '1px solid #d4d4d8' : '1px solid rgba(255, 255, 255, 0.1)',
                         boxShadow: 'none',
                         display: 'flex',
                         flexDirection: 'column',
@@ -1915,6 +2889,13 @@ const Channels: React.FC = () => {
                     >
                       {/* 头部：状态 + 名称 */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, minHeight: 24 }}>
+                        {isBatchEditMode && (
+                          <Checkbox
+                            checked={batchChecked(record.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => toggleBatchKey(record.id, e.target.checked)}
+                          />
+                        )}
                         <Tooltip title={record.status === 1 ? '点击禁用' : '点击启用'}>
                           <button
                             type="button"
@@ -1927,7 +2908,7 @@ const Channels: React.FC = () => {
                               padding: 0,
                               flexShrink: 0,
                               cursor: 'pointer',
-                              backgroundColor: record.status === 1 ? '#52c41a' : (isLight ? '#d1d5db' : 'rgba(255,255,255,0.28)'),
+                              backgroundColor: record.status === 1 ? (isLight ? '#18181b' : '#f4f4f5') : (isLight ? '#d1d5db' : 'rgba(255,255,255,0.28)'),
                             }}
                             aria-label={record.status === 1 ? '禁用' : '启用'}
                           />
@@ -1953,28 +2934,40 @@ const Channels: React.FC = () => {
                         </Tooltip>
                       </div>
 
-                      {/* 标签行：上游 + 等级 */}
+                      {/* 标签行：上游 + 绑定模型 + 等级 */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minHeight: 20 }}>
                         {upstreamTag}
+                        {renderBoundModels(record, true)}
                         {levelMode === 'all' ? (
-                          <Tag color="green" style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>全部等级</Tag>
+                          <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#18181b' : '#f4f4f5', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>全部等级</Tag>
                         ) : (
                           <>
                             {levelMode === 'exclude' && (
-                              <Tag color="orange" style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>排除</Tag>
+                              <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: isLight ? '#18181b' : '#f4f4f5', color: isLight ? '#ffffff' : '#18181b', border: 'none', fontWeight: 600 }}>排除</Tag>
                             )}
                             {visibleLevels.map((id: string) => (
                               <Tag
                                 key={id}
-                                color={levelMode === 'exclude' ? 'red' : 'blue'}
-                                style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, maxWidth: 72, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                style={{
+                                  margin: 0,
+                                  padding: '0 5px',
+                                  fontSize: 10,
+                                  lineHeight: '18px',
+                                  borderRadius: 4,
+                                  maxWidth: 72,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  background: levelMode === 'exclude' ? 'transparent' : (isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)'),
+                                  color: levelMode === 'exclude' ? (isLight ? '#71717a' : '#a1a1aa') : (isLight ? '#27272a' : '#e4e4e7'),
+                                  border: levelMode === 'exclude' ? (isLight ? '1px dashed #d4d4d8' : '1px dashed #3f3f46') : (isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)')
+                                }}
                               >
                                 {resolveName(id)}
                               </Tag>
                             ))}
                             {moreLevels > 0 && (
                               <Tooltip title={levelIds.slice(2).map(resolveName).join('、')}>
-                                <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4 }}>+{moreLevels}</Tag>
+                                <Tag style={{ margin: 0, padding: '0 5px', fontSize: 10, lineHeight: '18px', borderRadius: 4, background: isLight ? '#f4f4f5' : 'rgba(255,255,255,0.06)', color: isLight ? '#71717a' : '#a1a1aa', border: isLight ? '1px solid #e4e4e7' : '1px solid rgba(255,255,255,0.1)' }}>+{moreLevels}</Tag>
                               </Tooltip>
                             )}
                           </>
@@ -2083,7 +3076,7 @@ const Channels: React.FC = () => {
                                 className="channel-dash-action-btn"
                                 type="text"
                                 size="small"
-                                icon={<ReloadOutlined style={{ fontSize: 12, color: '#1677ff' }} />}
+                                icon={<ReloadOutlined style={{ fontSize: 12, color: isLight ? '#52525b' : '#a1a1aa' }} />}
                                 loading={meltdownLoading[record.id]}
                                 onClick={() => handleResetMeltdown(record.id)}
                               />
@@ -2096,6 +3089,15 @@ const Channels: React.FC = () => {
                               size="small"
                               icon={<ExperimentOutlined style={{ fontSize: 12 }} />}
                               onClick={() => handleTest(record)}
+                            />
+                          </Tooltip>
+                          <Tooltip title={t('channels.simulate_billing_short', '计费模拟')}>
+                            <Button
+                              className="channel-dash-action-btn"
+                              type="text"
+                              size="small"
+                              icon={<CalculatorOutlined style={{ fontSize: 12 }} />}
+                              onClick={() => setSimulatingChannel(record)}
                             />
                           </Tooltip>
                           <Tooltip title="编辑">
@@ -2134,36 +3136,83 @@ const Channels: React.FC = () => {
             <Title level={3} style={{ margin: 0 }}>
               {editingChannel ? t('channels.edit_channel') : t('channels.add_channel')}
             </Title>
+            {editingChannel && (
+              <Button
+                icon={<CalculatorOutlined />}
+                onClick={() => setSimulatingChannel(editingChannel)}
+                style={{ marginLeft: 'auto' }}
+              >
+                {t('channels.simulate_billing_short', '计费模拟')}
+              </Button>
+            )}
           </div>
           <div style={{ maxWidth: 1600, width: '100%' }}>
-            <Spin spinning={hasEditParam && !editingChannel} size="large">
-              <Form form={form} layout="vertical" onFinish={handleSave} preserve={true}>
+            <Spin spinning={isEditRoute && !editingChannel} size="large">
+              <Form
+                form={form}
+                layout="vertical"
+                onFinish={handleSave}
+                onFinishFailed={(info) => {
+                  const nameErr = info.errorFields?.find((f) => f.name?.[0] === 'name');
+                  if (nameErr) message.error(nameErr.errors?.[0] || '请填写名称');
+                }}
+                preserve={true}
+              >
               <Row gutter={24}>
                 {/* 左侧基本配置栏 */}
                 <Col xs={24} md={10} xl={10}>
                   <div style={{ padding: 16, background: isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)', borderRadius: 8, height: '100%', position: 'sticky', top: 24 }}>
-                    <Form.Item name="name" label={
-                      <Space>
-                        <Text strong>{t('channels.name')}</Text>
-                        {editingChannel?.group_aid && (
-                          <Text type="secondary" style={{ fontSize: 12 }}>AID: {editingChannel.group_aid}</Text>
-                        )}
-                      </Space>
-                    } rules={[{ required: true }]}>
+                    <Form.Item
+                      name="name"
+                      className="channel-name-form-item"
+                      colon={false}
+                      labelCol={{ style: { width: '100%' } }}
+                      label={
+                        <div className="channel-name-label-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 8 }}>
+                          <Space size={8}>
+                            <Text strong>{t('channels.name')}</Text>
+                            {editingChannel?.group_aid && (
+                              <Text type="secondary" style={{ fontSize: 12 }}>AID: {editingChannel.group_aid}</Text>
+                            )}
+                          </Space>
+                          <Button
+                            size="small"
+                            htmlType="button"
+                            icon={<ExperimentOutlined />}
+                            loading={submitting}
+                            onClick={handleOpenEditorAnalysis}
+                            style={{
+                              height: 24,
+                              padding: '0 8px',
+                              fontSize: 12,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              borderRadius: 4,
+                              marginLeft: 'auto',
+                              flexShrink: 0,
+                            }}
+                          >
+                            测试
+                          </Button>
+                        </div>
+                      }
+                      rules={[{ required: true, whitespace: true, message: '请填写名称' }]}
+                    >
                       <Input placeholder="e.g. OpenAI Primary" />
                     </Form.Item>
 
                     <Row gutter={16}>
-                      <Col span={12}>
+                      <Col span={8}>
                         <Form.Item name="sort_order" label={<Text strong>页面排序</Text>} initialValue={0}>
                           <InputNumber min={0} max={9999} style={{ width: '100%' }} placeholder="越大越靠前" />
                         </Form.Item>
                       </Col>
-                      <Col span={12}>
+                      <Col span={10}>
                         <Form.Item name="category_id" label={<Text strong>渠道分类</Text>}>
                           <Select
                             allowClear
                             placeholder="选择分类"
+                            onChange={(v) => { categoryIdRef.current = v ?? null; }}
                             options={categories
                               .filter(c => !!c.is_active || c.id === form.getFieldValue('category_id') || c.id === editingChannel?.category_id)
                               .map(c => ({ label: c.name, value: c.id }))}
@@ -2184,14 +3233,20 @@ const Channels: React.FC = () => {
                           />
                         </Form.Item>
                       </Col>
+                      <Col span={6}>
+                        <Form.Item
+                          name="status"
+                          label={<Text strong>状态</Text>}
+                          valuePropName="checked"
+                          getValueProps={(value) => ({ checked: (value ?? 1) === 1 })}
+                          getValueFromEvent={(checked: boolean) => (checked ? 1 : 0)}
+                          normalize={(value) => (value ? 1 : 0)}
+                          initialValue={1}
+                        >
+                          <Switch checkedChildren="启用" unCheckedChildren="禁用" style={{ marginTop: 4 }} />
+                        </Form.Item>
+                      </Col>
                     </Row>
-
-                    <Form.Item name="status" label={<Text strong>状态</Text>} initialValue={1}>
-                      <Select>
-                        <Option value={1}>启用</Option>
-                        <Option value={0}>禁用</Option>
-                      </Select>
-                    </Form.Item>
 
                     <Form.Item name="provider_type" style={{ display: 'none' }}><Input /></Form.Item>
                     <Form.Item name="preset_id" style={{ display: 'none' }}><Input /></Form.Item>
@@ -2224,9 +3279,21 @@ const Channels: React.FC = () => {
                           displayDetail = preset?.yid ? `YID: ${preset.yid}` : `ID: ${currentPreset}`;
                           if (preset) {
                             displayRate = (
-                              <Space size={4}>
-                                {(preset.status ?? 1) !== 1 && <Tag color="error" style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', border: 'none' }}>已禁用</Tag>}
-                                <Tag color="orange" style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', border: 'none' }}>倍率: {preset.rate ?? 1.0}x</Tag>
+                              <Space size={4} style={{ alignItems: 'center' }}>
+                                {(preset.status ?? 1) !== 1 && <Tag style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>已禁用</Tag>}
+                                <Tag style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>倍率: {preset.rate ?? 1.0}x</Tag>
+                                <Tag style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {preset.priority ?? 0}</Tag>
+                                <Tag style={{ margin: 0, borderRadius: 4, fontSize: 10, padding: '0 4px', lineHeight: '18px', background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {preset.weight ?? 1}</Tag>
+                                <Button
+                                  type="text"
+                                  size="small"
+                                  icon={<EditOutlined style={{ fontSize: 11 }} />}
+                                  style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleQuickEditPreset(preset);
+                                  }}
+                                />
                               </Space>
                             );
                           }
@@ -2273,16 +3340,13 @@ const Channels: React.FC = () => {
                               <span style={{ fontSize: 12, color: isActive ? 'var(--text)' : 'var(--text-secondary)' }}>
                                 {displayType !== '无' ? (
                                   <Tag
-                                    color={
-                                      providerType === 'high_availability_group'
-                                        ? 'purple'
-                                        : providerType === 'volcengine'
-                                          ? 'magenta'
-                                          : providerType === 'comfyui'
-                                            ? 'geekblue'
-                                            : 'cyan'
-                                    }
-                                    style={{ margin: 0, borderRadius: 4 }}
+                                    style={{
+                                      margin: 0,
+                                      borderRadius: 4,
+                                      background: isLight ? '#f4f4f5' : '#27272a',
+                                      color: isLight ? '#18181b' : '#f4f4f5',
+                                      border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`
+                                    }}
                                   >
                                     {displayType}
                                   </Tag>
@@ -2324,7 +3388,15 @@ const Channels: React.FC = () => {
                                   <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }} onClick={(e) => e.stopPropagation()}>
                                     {presets
                                       .filter(p => selectedSubChannelAids.includes(p.id))
-                                      .map((p) => (
+                                      .sort((a, b) => (Number(b.priority) || 0) - (Number(a.priority) || 0))
+                                      .map((p) => {
+                                        const meltInfo = editingChannel
+                                          ? (meltdownMap[editingChannel.id]?.sub_channels || []).find((s: any) => Number(s.config_id) === p.id)
+                                          : undefined;
+                                        const isMelted = !!meltInfo?.is_melted;
+                                        const remain = Number(meltInfo?.remaining_seconds || 0);
+                                        const loadKey = editingChannel ? `${editingChannel.id}-${p.id}` : '';
+                                        return (
                                         <div 
                                           key={p.id} 
                                           style={{ 
@@ -2332,45 +3404,73 @@ const Channels: React.FC = () => {
                                             justifyContent: 'space-between', 
                                             alignItems: 'center', 
                                             padding: '4px 8px', 
-                                            background: isLight ? 'rgba(0,0,0,0.015)' : 'rgba(255,255,255,0.015)', 
+                                            background: isMelted
+                                              ? (isLight ? 'rgba(255, 77, 79, 0.08)' : 'rgba(255, 77, 79, 0.12)')
+                                              : (isLight ? 'rgba(0,0,0,0.015)' : 'rgba(255,255,255,0.015)'),
                                             borderRadius: 4,
-                                            border: isLight ? '1px dashed rgba(0,0,0,0.06)' : '1px dashed rgba(255,255,255,0.06)',
+                                            border: isMelted
+                                              ? '1px solid rgba(255, 77, 79, 0.45)'
+                                              : (isLight ? '1px dashed rgba(0,0,0,0.06)' : '1px dashed rgba(255,255,255,0.06)'),
                                             opacity: (p.status ?? 1) !== 1 ? 0.75 : 1,
                                           }}
                                         >
-                                          <div style={{ display: 'flex', alignItems: 'center', overflow: 'hidden', maxWidth: '45%' }}>
-                                            <span style={{ fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>
+                                          <div style={{ display: 'flex', alignItems: 'center', overflow: 'hidden', minWidth: 0, flex: 1, marginRight: 8 }}>
+                                            <span style={{ fontSize: 11, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isMelted ? '#ff4d4f' : undefined }} title={p.name}>
                                               {p.name}
                                             </span>
-                                            {p.yid && (
-                                              <Typography.Text keyboard style={{ color: '#1677ff', fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '14px', marginLeft: 6, flexShrink: 0 }}>YID: {p.yid}</Typography.Text>
+                                             {p.yid && (
+                                               <Typography.Text keyboard style={{ color: isMelted ? (isLight ? '#18181b' : '#f4f4f5') : 'var(--text-secondary)', fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '14px', marginLeft: 6, flexShrink: 0 }}>YID: {p.yid}</Typography.Text>
+                                             )}
+                                             {(p.status ?? 1) !== 1 && (
+                                               <Tag style={{ margin: '0 0 0 6px', fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, flexShrink: 0, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>已禁用</Tag>
+                                             )}
+                                             {isMelted && (
+                                               <Tag style={{ margin: '0 0 0 6px', fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, flexShrink: 0, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>
+                                                 熔断 {formatMeltdownRemain(remain)}
+                                               </Tag>
+                                             )}
+                                           </div>
+                                           <Space size={4} style={{ flexShrink: 0, alignItems: 'center' }}>
+                                             <Tag style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>倍率: {p.rate ?? 1.0}x</Tag>
+                                             <Tag style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {(p as any).priority ?? 0}</Tag>
+                                             <Tag style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {(p as any).weight ?? 1}</Tag>
+                                            {editingChannel && (
+                                              <Tooltip title={isMelted ? '开启后立即恢复该上游' : '关闭后手动熔断该上游'}>
+                                                <Switch
+                                                  size="small"
+                                                  checked={!isMelted}
+                                                  loading={!!subMeltLoading[loadKey]}
+                                                  onChange={(checked) => handleSetSubMeltdown(editingChannel.id, p.id, !checked)}
+                                                />
+                                              </Tooltip>
                                             )}
-                                            {(p.status ?? 1) !== 1 && (
-                                              <Tag color="error" style={{ margin: '0 0 0 6px', fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, flexShrink: 0 }}>已禁用</Tag>
-                                            )}
-                                          </div>
-                                          <Space size={4} style={{ flexShrink: 0, alignItems: 'center' }}>
-                                            <Tag color="orange" style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2 }}>倍率: {p.rate ?? 1.0}x</Tag>
-                                            <Tag color="blue" style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2 }}>优先级: {(p as any).priority ?? 0}</Tag>
-                                            <Tag color="cyan" style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2 }}>权重: {(p as any).weight ?? 1}</Tag>
-                                            <Tooltip title="移除该上游">
-                                              <Button
-                                                type="text"
-                                                size="small"
-                                                danger
-                                                icon={<CloseOutlined style={{ fontSize: 10 }} />}
-                                                style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  const next = selectedSubChannelAids.filter((id: number) => id !== p.id);
-                                                  setSelectedSubChannelAids(next);
-                                                  setConfigObj(prev => ({ ...prev, sub_channels: next }));
-                                                }}
-                                              />
-                                            </Tooltip>
+                                            <Button
+                                              type="text"
+                                              size="small"
+                                              icon={<EditOutlined style={{ fontSize: 11 }} />}
+                                              style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleQuickEditPreset(p);
+                                              }}
+                                            />
+                                            <Button
+                                              type="text"
+                                              size="small"
+                                              danger
+                                              icon={<CloseOutlined style={{ fontSize: 10 }} />}
+                                              style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                const next = selectedSubChannelAids.filter((id: number) => id !== p.id);
+                                                setSelectedSubChannelAids(next);
+                                                setConfigObj(prev => ({ ...prev, sub_channels: next }));
+                                              }}
+                                            />
                                           </Space>
                                         </div>
-                                      ))
+                                        );
+                                      })
                                     }
                                   </div>
                                 )}
@@ -2396,8 +3496,8 @@ const Channels: React.FC = () => {
                                             {s?.name || `节点 #${id}`}
                                           </span>
                                           <Space size={4} style={{ flexShrink: 0, alignItems: 'center' }}>
-                                            <Tag color="blue" style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2 }}>优先级: {s?.priority ?? 0}</Tag>
-                                            <Tag color="cyan" style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2 }}>权重: {s?.weight ?? 1}</Tag>
+                                            <Tag style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {s?.priority ?? 0}</Tag>
+                                            <Tag style={{ margin: 0, fontSize: 10, lineHeight: '14px', height: 16, padding: '0 4px', borderRadius: 2, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {s?.weight ?? 1}</Tag>
                                             <Tooltip title="移除此节点">
                                               <Button
                                                 type="text"
@@ -2456,15 +3556,22 @@ const Channels: React.FC = () => {
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
                                     {m.map((mid: string) => {
                                       const match = availableModels.find((model: any) => model.mid === mid);
+                                      const archived = match ? undefined : unlistedByKey.get(String(mid));
+                                      const delisted = !match;
+                                      const label = match ? match.name : (archived?.model_id || archived?.name || mid);
+                                      const remark = match?.remark || archived?.remark;
+                                      const shownMid = match?.mid || archived?.mid || mid;
+                                      const mutedTagStyle: React.CSSProperties = { borderRadius: 4, margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '18px', marginLeft: 8, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` };
                                       return (
                                         <div key={mid} style={{ padding: '6px 8px', background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)', borderRadius: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                          <span style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8 }}>
-                                            {match ? match.name : mid}
-                                            {(!match || match.is_active === 0) && <Tag color="error" bordered={false} style={{ borderRadius: 4, margin: 0, padding: '0 4px', fontSize: 10, lineHeight: '18px', marginLeft: 8 }}>已禁用</Tag>}
-                                            {match && match.remark && <span style={{ color: 'var(--text-secondary)', fontWeight: 'normal', marginLeft: 4 }}>({match.remark})</span>}
+                                          <span style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8, color: delisted ? 'var(--text-secondary)' : undefined }}>
+                                            {label}
+                                            {remark ? <span style={{ color: 'var(--text-secondary)', fontWeight: 'normal', marginLeft: 4 }}>({remark})</span> : null}
+                                            {delisted && <Tag style={mutedTagStyle}>已下架</Tag>}
+                                            {match && match.is_active === 0 && <Tag style={mutedTagStyle}>已禁用</Tag>}
                                           </span>
                                           <Space size={4} style={{ flexShrink: 0 }}>
-                                            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>MID: {match ? match.mid : mid}</span>
+                                            <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>MID: {shownMid}</span>
                                             <Button 
                                               type="text" 
                                               size="small" 
@@ -2510,9 +3617,11 @@ const Channels: React.FC = () => {
                                 </div>
                                 {showMapping && mappedEntries.length > 0 && (
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                                    {mappedEntries.slice(0, 8).map(([k, v]) => (
+                                    {mappedEntries.slice(0, 8).map(([k, v]) => {
+                                      const label = selectionModelId(availableModels, k);
+                                      return (
                                       <div key={k} style={{ padding: '6px 8px', background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)', borderRadius: 4, display: 'flex', alignItems: 'center' }}>
-                                        <span style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8 }} title={k}>{k}</span>
+                                        <span style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8 }} title={label}>{label}</span>
                                         <span style={{ fontSize: 11, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 8, textAlign: 'right' }} title={String(v)}>➔ {String(v)}</span>
                                         <Button 
                                           type="text" 
@@ -2531,20 +3640,21 @@ const Channels: React.FC = () => {
                                           }}
                                         />
                                       </div>
-                                    ))}
+                                      );
+                                    })}
                                     {mappedEntries.length > 8 && <div style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center', marginTop: 2 }}>...还有 {mappedEntries.length - 8} 个</div>}
                                   </div>
                                 )}
                                 {showMapping && isHaMode && haMappingCount > 0 && (
-                                  <div style={{ padding: '6px 8px', background: isLight ? 'rgba(22,119,255,0.04)' : 'rgba(22,119,255,0.08)', borderRadius: 4, marginTop: mappedEntries.length > 0 ? 6 : 0, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                    <ApartmentOutlined style={{ fontSize: 11, color: '#1677ff' }} />
-                                    <span style={{ fontSize: 11, color: '#1677ff', fontWeight: 500 }}>子渠道独立映射: {haMappingCount} 条</span>
+                                  <div style={{ padding: '6px 8px', background: isLight ? '#f4f4f5' : '#27272a', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`, borderRadius: 4, marginTop: mappedEntries.length > 0 ? 6 : 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <ApartmentOutlined style={{ fontSize: 11, color: isLight ? '#18181b' : '#f4f4f5' }} />
+                                    <span style={{ fontSize: 11, color: isLight ? '#18181b' : '#f4f4f5', fontWeight: 500 }}>子渠道独立映射: {haMappingCount} 条</span>
                                   </div>
                                 )}
                                 {showMapping && resMappingCount > 0 && (
-                                  <div style={{ padding: '6px 8px', background: isLight ? 'rgba(250,140,22,0.06)' : 'rgba(250,140,22,0.1)', borderRadius: 4, marginTop: (mappedEntries.length > 0 || haMappingCount > 0) ? 6 : 0, display: 'flex', alignItems: 'center', gap: 4 }}>
-                                    <SettingOutlined style={{ fontSize: 11, color: '#fa8c16' }} />
-                                    <span style={{ fontSize: 11, color: '#fa8c16', fontWeight: 500 }}>分辨率映射: {resMappingCount} 档</span>
+                                  <div style={{ padding: '6px 8px', background: isLight ? '#f4f4f5' : '#27272a', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`, borderRadius: 4, marginTop: (mappedEntries.length > 0 || haMappingCount > 0) ? 6 : 0, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <SettingOutlined style={{ fontSize: 11, color: isLight ? '#18181b' : '#f4f4f5' }} />
+                                    <span style={{ fontSize: 11, color: isLight ? '#18181b' : '#f4f4f5', fontWeight: 500 }}>分辨率映射: {resMappingCount} 档</span>
                                   </div>
                                 )}
                               </div>
@@ -2798,6 +3908,21 @@ const Channels: React.FC = () => {
                       </div>
                       {configObj.tos_storage_enabled && (
                         <div style={{ marginTop: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, padding: '6px 0', borderBottom: isLight ? '1px dashed #f0f0f0' : '1px dashed rgba(255,255,255,0.08)' }}>
+                            <div>
+                              <Text strong style={{ fontSize: 13 }}>Base64 数据转存</Text>
+                              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                                开启后 Base64 转存至对象存储返回 URL，关闭则直接原样返回
+                              </div>
+                            </div>
+                            <Switch
+                              checked={configObj.tos_storage_b64_enabled !== false}
+                              onChange={(v) => setConfigObj({
+                                ...configObj,
+                                tos_storage_b64_enabled: v,
+                              })}
+                            />
+                          </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                             <Text style={{ fontSize: 13, whiteSpace: 'nowrap' }}>存储有效期</Text>
                             <InputNumber
@@ -2853,7 +3978,7 @@ const Channels: React.FC = () => {
                   <div style={{ padding: 24, background: isLight ? '#fff' : 'rgba(255,255,255,0.02)', border: isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)', borderRadius: 8, minHeight: 600 }}>
                     
                     <div style={{ display: activeRightPanel === 'models' ? 'block' : 'none', animation: 'fadeIn 0.2s' }}>
-                          <Form.Item name="models" rules={[{ required: true, message: '请选择至少一个模型' }]} style={{ marginBottom: 0 }} hidden>
+                          <Form.Item name="models" style={{ marginBottom: 0 }} hidden>
                             <Select mode="multiple" />
                           </Form.Item>
                           <ModelSelector
@@ -3138,16 +4263,26 @@ const Channels: React.FC = () => {
                                               <span style={{ fontSize: 11, color: 'var(--text-secondary)', marginLeft: 8 }}>
                                                 {c.provider_type ? `(${c.provider_type})` : ''}
                                               </span>
-                                              <Typography.Text keyboard style={{ color: '#1677ff', fontSize: 11, marginLeft: 8 }}>YID: {c.yid || '-'}</Typography.Text>
+                                              <Typography.Text keyboard style={{ color: 'var(--text-secondary)', fontSize: 11, marginLeft: 8 }}>YID: {c.yid || '-'}</Typography.Text>
                                               {isConfigDisabled && (
-                                                <Tag color="error" style={{ margin: '0 0 0 8px', fontSize: 11 }}>已禁用</Tag>
+                                                <Tag style={{ margin: '0 0 0 8px', fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>已禁用</Tag>
                                               )}
                                             </Checkbox>
-                                            <Space size={4}>
-                                               <Tag color="orange" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>倍率: {c.rate ?? 1.0}x</Tag>
-                                               <Tag color="blue" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>优先级: {(c as any).priority ?? 0}</Tag>
-                                               <Tag color="cyan" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>权重: {(c as any).weight ?? 1}</Tag>
-                                            </Space>
+                                             <Space size={4} style={{ alignItems: 'center' }}>
+                                                <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>倍率: {c.rate ?? 1.0}x</Tag>
+                                                <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {(c as any).priority ?? 0}</Tag>
+                                                <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {(c as any).weight ?? 1}</Tag>
+                                                  <Button
+                                                    type="text"
+                                                    size="small"
+                                                    icon={<EditOutlined style={{ fontSize: 11 }} />}
+                                                    style={{ width: 22, height: 22, minWidth: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleQuickEditPreset(c);
+                                                    }}
+                                                  />
+                                             </Space>
                                           </div>
                                         );
                                       })}
@@ -3261,28 +4396,38 @@ const Channels: React.FC = () => {
                                         isSelected = currentPreset === item.id;
                                         cardSubtitle = item.yid ? `YID: ${item.yid}` : 'YID: -';
                                         extraTag = (
-                                          <Space size={4}>
-                                             {isConfigDisabled && <Tag color="error" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>已禁用</Tag>}
-                                             <Tag color="default" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>{item.provider_type}</Tag>
-                                             <Tag color="orange" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>倍率: {item.rate ?? 1.0}x</Tag>
-                                             <Tag color="blue" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>优先级: {(item as any).priority ?? 0}</Tag>
-                                             <Tag color="cyan" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>权重: {(item as any).weight ?? 1}</Tag>
+                                          <Space size={4} style={{ alignItems: 'center' }}>
+                                              {isConfigDisabled && <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>已禁用</Tag>}
+                                              <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>{item.provider_type}</Tag>
+                                              <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>倍率: {item.rate ?? 1.0}x</Tag>
+                                              <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {(item as any).priority ?? 0}</Tag>
+                                              <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {(item as any).weight ?? 1}</Tag>
+                                              <Button
+                                                type="text"
+                                                size="small"
+                                                icon={<EditOutlined style={{ fontSize: 11 }} />}
+                                                style={{ width: 22, height: 22, minWidth: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: 0, padding: 0 }}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleQuickEditPreset(item);
+                                                }}
+                                              />
                                           </Space>
                                         );
                                       } else if (upstreamTab === 'volcengine_enhance') {
                                         isSelected = configObj.volcengine_enhance_credential_id === item.id;
                                         cardSubtitle = `基址: ${item.base_url || '-'}`;
-                                        extraTag = <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>火山凭证</Tag>;
+                                        extraTag = <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>火山凭证</Tag>;
                                       } else if (upstreamTab === 'comfyui') {
                                         const selectedIds = parseComfyuiServerIds(configObj);
                                         isSelected = selectedIds.includes(item.id);
                                         cardSubtitle = item.base_url ? `基址: ${item.base_url}` : '';
                                         extraTag = (
                                           <Space size={4}>
-                                            {item.is_active !== 1 && <Tag color="error" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>停用</Tag>}
-                                            <Tag color="blue" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>优先级: {item.priority ?? 0}</Tag>
-                                            <Tag color="cyan" style={{ margin: 0, fontSize: 11, borderRadius: 4 }}>权重: {item.weight ?? 1}</Tag>
-                                            <Tag color="geekblue" style={{ margin: 0, fontSize: 11 }}>服务节点</Tag>
+                                            {item.is_active !== 1 && <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#71717a' : '#a1a1aa', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>停用</Tag>}
+                                            <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>优先级: {item.priority ?? 0}</Tag>
+                                            <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>权重: {item.weight ?? 1}</Tag>
+                                            <Tag style={{ margin: 0, fontSize: 11, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>服务节点</Tag>
                                           </Space>
                                         );
                                       }
@@ -3296,13 +4441,16 @@ const Channels: React.FC = () => {
                                                 if (!isHa) {
                                                   setSelectedSubChannelAids([]);
                                                 }
-                                                const currentCat = form.getFieldValue('category_id');
+                                                const currentCat = categoryIdRef.current;
                                                 form.setFieldsValue({
                                                   preset_id: item.id,
                                                   rate: item.rate ?? 1.0,
                                                   provider_type: item.provider_type || 'custom',
-                                                  category_id: (currentCat !== undefined && currentCat !== null) ? currentCat : (item.category_id || null),
                                                 });
+                                                if (currentCat == null && item.category_id) {
+                                                  categoryIdRef.current = item.category_id;
+                                                  form.setFieldsValue({ category_id: item.category_id });
+                                                }
                                               } else {
                                                 setSelectedSubChannelAids([]);
                                                 if (upstreamTab === 'volcengine_enhance') {
@@ -3353,7 +4501,7 @@ const Channels: React.FC = () => {
                                                 {cardTitle}
                                               </span>
                                               {upstreamTab === 'preset' ? (
-                                                <Typography.Text keyboard style={{ color: '#1677ff', fontSize: 11, margin: 0 }}>
+                                                <Typography.Text keyboard style={{ color: 'var(--text-secondary)', fontSize: 11, margin: 0 }}>
                                                   {item.yid ? `YID: ${item.yid}` : 'YID: -'}
                                                 </Typography.Text>
                                               ) : (
@@ -3467,11 +4615,11 @@ const Channels: React.FC = () => {
                         <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>开启后可为每个模型指定上游别名，解决上下游模型名称不一致的问题。</Text>
                         
                         {showMapping ? (
-                          <Form.Item shouldUpdate={(prev, curr) => prev.models !== curr.models || prev.provider_type !== curr.provider_type || prev.category_id !== curr.category_id} noStyle>
+                          <Form.Item shouldUpdate={(prev, curr) => prev.provider_type !== curr.provider_type || prev.category_id !== curr.category_id} noStyle>
                             {() => {
                               const providerType = form.getFieldValue('provider_type');
                               const isHaMode = providerType === 'high_availability_group';
-                              const selectedModels = form.getFieldValue('models') || [];
+                              const selectedModels = channelModelMids;
                               if (selectedModels.length === 0) {
                                 return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text)', background: isLight ? '#f9fafb' : 'rgba(255,255,255,0.04)', borderRadius: 8 }}>请先在左侧选择模型</div>;
                               }
@@ -3535,7 +4683,7 @@ const Channels: React.FC = () => {
                                 );
                               };
 
-                              const renderResAdvancedPanel = (modelId: string, scope: string, presets: string[]) => {
+                              const renderResAdvancedPanel = (modelId: string, scope: string, presets: string[], indent: boolean = true) => {
                                 const scopeMap = resModelMappingState[modelId]?.[scope] || {};
                                 const scopeKey = resScopeKey(modelId, scope);
                                 if (!expandedResScopes.includes(scopeKey)) return null;
@@ -3545,7 +4693,7 @@ const Channels: React.FC = () => {
                                 return (
                                   <div style={{
                                     marginTop: 6,
-                                    marginLeft: 128,
+                                    marginLeft: indent ? 128 : 0,
                                     padding: '8px 10px',
                                     borderRadius: 6,
                                     background: isLight ? 'rgba(22,119,255,0.04)' : 'rgba(22,119,255,0.08)',
@@ -3588,12 +4736,97 @@ const Channels: React.FC = () => {
                                 );
                               };
 
+                              const isHaModeWithSubs = isHaMode && haSubChannels.length > 0;
+
+                              const updateModelAlias = (modelId: string, val: string) => {
+                                setModelMappingState(prev => {
+                                  if (!val.trim()) {
+                                    const next = { ...prev };
+                                    delete next[modelId];
+                                    return next;
+                                  }
+                                  return { ...prev, [modelId]: val };
+                                });
+                              };
+
+                              const clearModelAlias = (modelId: string) => {
+                                setModelMappingState(prev => {
+                                  const next = { ...prev };
+                                  delete next[modelId];
+                                  return next;
+                                });
+                              };
+
+                              const updateSubAlias = (modelId: string, subId: string, val: string) => {
+                                setHaModelMappingState(prev => ({
+                                  ...prev,
+                                  [modelId]: { ...(prev[modelId] || {}), [subId]: val },
+                                }));
+                              };
+
+                              const clearSubAlias = (modelId: string, subId: string) => {
+                                setHaModelMappingState(prev => {
+                                  const next = { ...prev };
+                                  const subMap = { ...(next[modelId] || {}) };
+                                  delete subMap[subId];
+                                  if (Object.keys(subMap).length === 0) delete next[modelId];
+                                  else next[modelId] = subMap;
+                                  return next;
+                                });
+                              };
+
+                              const renderMappingRow = (
+                                modelId: string,
+                                scope: string,
+                                label: React.ReactNode,
+                                value: string,
+                                placeholder: string,
+                                presets: string[],
+                                onChange: (val: string) => void,
+                                onClear: () => void,
+                                showTrash?: boolean,
+                              ) => (
+                                <div key={scope} style={{ marginBottom: 4 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {label}
+                                    <Input
+                                      size="small"
+                                      placeholder={placeholder}
+                                      value={value}
+                                      onChange={(e) => onChange(e.target.value)}
+                                      style={{ flex: 1 }}
+                                    />
+                                    {renderResAdvancedBtn(modelId, scope)}
+                                    {showTrash ? (
+                                      <Button icon={<DeleteOutlined />} size="small" onClick={onClear} />
+                                    ) : value ? (
+                                      <Button
+                                        type="text"
+                                        size="small"
+                                        icon={<CloseOutlined style={{ fontSize: 10 }} />}
+                                        style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', margin: 0, padding: 0 }}
+                                        onClick={onClear}
+                                      />
+                                    ) : null}
+                                  </div>
+                                  {renderResAdvancedPanel(modelId, scope, presets, Boolean(label))}
+                                </div>
+                              );
+
                               return (
                                 <div style={{ maxHeight: 'calc(100vh - 340px)', minHeight: 300, overflowY: 'auto', paddingRight: 12 }}>
-                                  {isHaMode && haSubChannels.length > 0 && (
+                                  {isHaModeWithSubs ? (
                                     <Alert
                                       message="高可用子渠道独立映射"
-                                      description="可为每个子渠道设置独立的模型别名；开启高级设置可按分辨率（视频 480p/…、图片 1k/…）映射不同上游模型名。优先级：子渠该分辨率 → 默认别名该分辨率 → 明文别名（未填档位即回退）。"
+                                      description="可为每个子渠道设置独立的模型别名；开启高级设置可按分辨率（视频 480p/…、图片 1k/…）映射不同上游模型名。优先级：子渠该分辨率 → 该子渠明文别名（未填档位即回退）。"
+                                      type="info"
+                                      showIcon
+                                      style={{ borderRadius: 6, marginBottom: 16 }}
+                                    />
+                                  ) : (
+                                    <Alert
+                                      message="模型别名与分辨率映射"
+                                      description="可为模型指定上游别名；开启【高级】可按分辨率（视频 480p/720p/1080p…、图片 1k/2k/4k…）分别映射不同上游模型名，未填档位自动回退到明文别名。"
                                       type="info"
                                       showIcon
                                       style={{ borderRadius: 6, marginBottom: 16 }}
@@ -3601,19 +4834,21 @@ const Channels: React.FC = () => {
                                   )}
                                   <Row gutter={16}>
                                     {selectedModels.map((midOrId: string) => {
-                                      const match = availableModels.find(m => m.mid === midOrId);
-                                      const actualModelId = match ? match.model_id : midOrId;
+                                      const mapKey = String(midOrId);
+                                      const match = availableModels.find(m => String(m.mid) === mapKey);
+                                      const actualModelId = match?.model_id ? String(match.model_id) : mapKey;
                                       const resPresets = resPresetsForHint(
                                         match?.type_name,
                                         match?.name,
                                         actualModelId,
                                         channelCategoryName,
                                       );
-                                      const isActive = activeMappingInputs.includes(actualModelId);
-                                      const currentMapping = modelMappingState;
-                                      const hasValue = currentMapping[actualModelId] && String(currentMapping[actualModelId]).trim();
-                                      const isHaExpanded = expandedHaModels.includes(actualModelId);
-                                      const haSubMapping = haModelMappingState[actualModelId] || {};
+                                      const isActive = activeMappingInputs.includes(mapKey);
+                                      const hasValue = Boolean(modelMappingState[mapKey] && String(modelMappingState[mapKey]).trim());
+                                      const resDefaultCount = countFilled(resModelMappingState[mapKey]?.default);
+                                      const hasAnyMapping = Boolean(hasValue || resDefaultCount > 0);
+                                      const isHaExpanded = expandedHaModels.includes(mapKey);
+                                      const haSubMapping = haModelMappingState[mapKey] || {};
                                       const haSubMappingCount = countFilled(haSubMapping);
 
                                       return (
@@ -3633,27 +4868,27 @@ const Channels: React.FC = () => {
                                               </div>
                                               
                                               <Space size={4}>
-                                                {!isActive && !(isHaMode && haSubChannels.length > 0) && (
+                                                {!isActive && !isHaModeWithSubs && (
                                                   <Button 
-                                                    type={hasValue ? "default" : "dashed"} 
+                                                    type={hasAnyMapping ? "default" : "dashed"} 
                                                     size="small" 
                                                     icon={<PlusOutlined />}
-                                                    onClick={() => setActiveMappingInputs(prev => [...prev, actualModelId])}
+                                                    onClick={() => setActiveMappingInputs(prev => [...prev, mapKey])}
                                                     style={{ flexShrink: 0 }}
                                                   >
-                                                    {hasValue ? "编辑别名" : "添加映射"}
+                                                    {hasAnyMapping ? `编辑别名${resDefaultCount > 0 ? ` (${resDefaultCount}档)` : ''}` : "添加映射"}
                                                   </Button>
                                                 )}
-                                                {isHaMode && haSubChannels.length > 0 && (
+                                                {isHaModeWithSubs && (
                                                   <Button
                                                     type={isHaExpanded ? 'primary' : 'default'}
                                                     size="small"
                                                     icon={<ApartmentOutlined />}
                                                     onClick={() => {
                                                       setExpandedHaModels(prev =>
-                                                        prev.includes(actualModelId)
-                                                          ? prev.filter(id => id !== actualModelId)
-                                                          : [...prev, actualModelId]
+                                                        prev.includes(mapKey)
+                                                          ? prev.filter(id => id !== mapKey)
+                                                          : [...prev, mapKey]
                                                       );
                                                     }}
                                                     style={{
@@ -3671,37 +4906,29 @@ const Channels: React.FC = () => {
                                               </Space>
                                             </div>
 
-                                            {/* 默认别名输入 */}
-                                            {isActive && !(isHaMode && haSubChannels.length > 0) && (
-                                              <div style={{ marginTop: 12, display: 'flex', gap: 8, animation: 'fadeIn 0.2s' }}>
-                                                <div style={{ marginBottom: 0, flex: 1 }}>
-                                                  <Input 
-                                                    placeholder={`请输入上游调用的实际名称，不填则默认：${actualModelId}`} 
-                                                    autoFocus 
-                                                    value={modelMappingState[actualModelId] || ''}
-                                                    onChange={(e) => {
-                                                      const val = e.target.value;
-                                                      setModelMappingState(prev => ({ ...prev, [actualModelId]: val }));
-                                                    }}
-                                                    addonBefore={isHaMode ? <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>默认</span> : undefined}
-                                                  />
-                                                </div>
-                                                <Button 
-                                                  icon={<DeleteOutlined />} 
-                                                  onClick={() => {
-                                                    setActiveMappingInputs(prev => prev.filter(id => id !== actualModelId));
-                                                    setModelMappingState(prev => {
-                                                      const next = { ...prev };
-                                                      delete next[actualModelId];
-                                                      return next;
-                                                    });
-                                                  }}
-                                                />
+                                            {/* 普通渠道别名与高级分辨率设置 */}
+                                            {isActive && !isHaModeWithSubs && (
+                                              <div style={{ marginTop: 12, animation: 'fadeIn 0.2s' }}>
+                                                {renderMappingRow(
+                                                  mapKey,
+                                                  'default',
+                                                  null,
+                                                  modelMappingState[mapKey] || '',
+                                                  `请输入上游调用的实际名称，不填则默认：${actualModelId}`,
+                                                  resPresets,
+                                                  (val) => updateModelAlias(mapKey, val),
+                                                  () => {
+                                                    setActiveMappingInputs(prev => prev.filter(id => id !== mapKey));
+                                                    clearModelAlias(mapKey);
+                                                    clearResScope(mapKey, 'default');
+                                                  },
+                                                  true,
+                                                )}
                                               </div>
                                             )}
 
                                             {/* HA 子渠道独立映射 */}
-                                            {isHaMode && isHaExpanded && haSubChannels.length > 0 && (
+                                            {isHaModeWithSubs && isHaExpanded && (
                                               <div style={{ 
                                                 marginTop: 12, 
                                                 padding: '10px 12px', 
@@ -3712,123 +4939,23 @@ const Channels: React.FC = () => {
                                               }}>
                                                 <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 }}>
                                                   <ApartmentOutlined style={{ marginRight: 4 }} />
-                                                  子渠道独立映射（覆盖默认别名）
+                                                  子渠道独立映射
                                                 </div>
                                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                                                  {/* 默认别名 (回退) */}
-                                                  <div style={{ 
-                                                    paddingBottom: 6, 
-                                                    borderBottom: isLight ? '1px dashed #f0f0f0' : '1px dashed rgba(255,255,255,0.06)',
-                                                    marginBottom: 4 
-                                                  }}>
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                      <div style={{ 
-                                                        minWidth: 120, 
-                                                        maxWidth: 160, 
-                                                        flexShrink: 0,
-                                                        fontSize: 12,
-                                                        fontWeight: 600,
-                                                        color: 'var(--text-secondary)',
-                                                      }}>
-                                                        <GlobalOutlined style={{ marginRight: 4, color: '#fa8c16' }} />
-                                                        默认别名 (回退)
-                                                      </div>
-                                                      <Input
-                                                        size="small"
-                                                        placeholder={actualModelId}
-                                                        value={modelMappingState[actualModelId] || ''}
-                                                        onChange={(e) => {
-                                                          const val = e.target.value;
-                                                          setModelMappingState(prev => {
-                                                            if (!val.trim()) {
-                                                              const next = { ...prev };
-                                                              delete next[actualModelId];
-                                                              return next;
-                                                            }
-                                                            return { ...prev, [actualModelId]: val };
-                                                          });
-                                                        }}
-                                                        style={{ flex: 1 }}
-                                                      />
-                                                      {renderResAdvancedBtn(actualModelId, 'default')}
-                                                      {modelMappingState[actualModelId] && (
-                                                        <Button
-                                                          type="text"
-                                                          size="small"
-                                                          icon={<CloseOutlined style={{ fontSize: 10 }} />}
-                                                          style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', margin: 0, padding: 0 }}
-                                                          onClick={() => {
-                                                            setModelMappingState(prev => {
-                                                              const next = { ...prev };
-                                                              delete next[actualModelId];
-                                                              return next;
-                                                            });
-                                                          }}
-                                                        />
-                                                      )}
-                                                    </div>
-                                                    {renderResAdvancedPanel(actualModelId, 'default', resPresets)}
-                                                  </div>
                                                   {haSubChannels.map((sub: any) => {
                                                     const subIdStr = String(sub.id);
-                                                    const subAlias = haSubMapping[subIdStr] || '';
-                                                    return (
-                                                      <div key={sub.id}>
-                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                          <div style={{ 
-                                                            minWidth: 120, 
-                                                            maxWidth: 160, 
-                                                            flexShrink: 0,
-                                                            fontSize: 12,
-                                                            fontWeight: 500,
-                                                            overflow: 'hidden',
-                                                            textOverflow: 'ellipsis',
-                                                            whiteSpace: 'nowrap'
-                                                          }} title={`${sub.name} (YID: ${sub.yid || '-'})`}>
-                                                            <CloudServerOutlined style={{ marginRight: 4, color: '#1677ff' }} />
-                                                            {sub.name}
-                                                          </div>
-                                                          <Input
-                                                            size="small"
-                                                            placeholder={modelMappingState[actualModelId] || actualModelId}
-                                                            value={subAlias}
-                                                            onChange={(e) => {
-                                                              const val = e.target.value;
-                                                              setHaModelMappingState(prev => ({
-                                                                ...prev,
-                                                                [actualModelId]: {
-                                                                  ...(prev[actualModelId] || {}),
-                                                                  [subIdStr]: val,
-                                                                }
-                                                              }));
-                                                            }}
-                                                            style={{ flex: 1 }}
-                                                          />
-                                                          {renderResAdvancedBtn(actualModelId, subIdStr)}
-                                                          {subAlias && (
-                                                            <Button
-                                                              type="text"
-                                                              size="small"
-                                                              icon={<CloseOutlined style={{ fontSize: 10 }} />}
-                                                              style={{ width: 20, height: 20, minWidth: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', margin: 0, padding: 0 }}
-                                                              onClick={() => {
-                                                                setHaModelMappingState(prev => {
-                                                                  const next = { ...prev };
-                                                                  const subMap = { ...(next[actualModelId] || {}) };
-                                                                  delete subMap[subIdStr];
-                                                                  if (Object.keys(subMap).length === 0) {
-                                                                    delete next[actualModelId];
-                                                                  } else {
-                                                                    next[actualModelId] = subMap;
-                                                                  }
-                                                                  return next;
-                                                                });
-                                                              }}
-                                                            />
-                                                          )}
-                                                        </div>
-                                                        {renderResAdvancedPanel(actualModelId, subIdStr, resPresets)}
-                                                      </div>
+                                                    return renderMappingRow(
+                                                      mapKey,
+                                                      subIdStr,
+                                                      <div style={{ minWidth: 120, maxWidth: 160, flexShrink: 0, fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${sub.name} (YID: ${sub.yid || '-'})`}>
+                                                        <CloudServerOutlined style={{ marginRight: 4, color: 'var(--text-secondary)' }} />
+                                                        {sub.name}
+                                                      </div>,
+                                                      haSubMapping[subIdStr] || '',
+                                                      actualModelId,
+                                                      resPresets,
+                                                      (val) => updateSubAlias(mapKey, subIdStr, val),
+                                                      () => clearSubAlias(mapKey, subIdStr),
                                                     );
                                                   })}
                                                 </div>
@@ -3854,7 +4981,34 @@ const Channels: React.FC = () => {
 
               <div style={{ marginTop: 24, paddingTop: 24, borderTop: isLight ? '1px solid #e5e4e7' : '1px solid rgba(255,255,255,0.08)', display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
                 <Button size="large" onClick={() => handleCloseModal()}>取消</Button>
-                <Button size="large" type="primary" htmlType="submit" loading={submitting} style={{ minWidth: 120 }}>保存设置</Button>
+                <Button
+                  size="large"
+                  htmlType="button"
+                  loading={submitting}
+                  onClick={async () => {
+                    saveIntentRef.current = 'stay';
+                    try {
+                      const values = await form.validateFields();
+                      await handleSave(values);
+                    } catch (err: any) {
+                      saveIntentRef.current = 'exit';
+                      const nameErr = err?.errorFields?.find((f: { name?: (string | number)[] }) => f.name?.[0] === 'name');
+                      if (nameErr) message.error(nameErr.errors?.[0] || '请填写名称');
+                    }
+                  }}
+                >
+                  保存更新
+                </Button>
+                <Button
+                  size="large"
+                  type="primary"
+                  htmlType="submit"
+                  loading={submitting}
+                  onClick={() => { saveIntentRef.current = 'exit'; }}
+                  style={{ minWidth: 120 }}
+                >
+                  保存退出
+                </Button>
               </div>
             </Form>
           </Spin>
@@ -3866,6 +5020,115 @@ const Channels: React.FC = () => {
         visible={isCategoryManagerVisible}
         onClose={() => setIsCategoryManagerVisible(false)}
         onUpdate={fetchCategories}
+      />
+
+      {/* 快速编辑上游配置倍率、优先级、权重 */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <EditOutlined style={{ fontSize: 15 }} />
+            <span>快速编辑上游配置</span>
+            {quickEditTarget?.name && (
+              <Tag style={{ margin: 0, borderRadius: 4, background: isLight ? '#f4f4f5' : '#27272a', color: isLight ? '#18181b' : '#f4f4f5', border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}` }}>
+                {quickEditTarget.name}
+              </Tag>
+            )}
+            {quickEditTarget?.yid && (
+              <Typography.Text keyboard style={{ color: 'var(--text-secondary)', fontSize: 11, margin: 0 }}>
+                YID: {quickEditTarget.yid}
+              </Typography.Text>
+            )}
+          </div>
+        }
+        open={quickEditModalOpen}
+        onCancel={() => {
+          if (!quickEditLoading) {
+            setQuickEditModalOpen(false);
+            setQuickEditTarget(null);
+          }
+        }}
+        onOk={handleSaveQuickEdit}
+        confirmLoading={quickEditLoading}
+        okText="保存"
+        cancelText="取消"
+        width={560}
+        destroyOnClose
+        styles={{
+          header: {
+            background: 'transparent',
+            borderBottom: `1px solid ${isLight ? '#f4f4f5' : '#27272a'}`,
+            paddingBottom: 12,
+          },
+          body: {
+            paddingTop: 16,
+            paddingBottom: 8,
+          },
+          footer: {
+            borderTop: `1px solid ${isLight ? '#f4f4f5' : '#27272a'}`,
+            paddingTop: 12,
+          },
+        }}
+      >
+        <Form form={quickEditForm} layout="vertical">
+          <Row gutter={12} wrap={false}>
+            <Col flex="1">
+              <Form.Item
+                name="rate"
+                label={<span style={{ fontWeight: 500, fontSize: 13, whiteSpace: 'nowrap' }}>渠道倍率 (Rate)</span>}
+                tooltip="上游计费扣费倍率，默认 1.0"
+                rules={[{ required: true, message: '请输入倍率' }]}
+                style={{ marginBottom: 0 }}
+              >
+                <InputNumber
+                  min={0}
+                  step={0.1}
+                  style={{ width: '100%', borderRadius: 6 }}
+                  placeholder="1.0"
+                  addonAfter="x"
+                />
+              </Form.Item>
+            </Col>
+            <Col flex="1">
+              <Form.Item
+                name="priority"
+                label={<span style={{ fontWeight: 500, fontSize: 13, whiteSpace: 'nowrap' }}>调度优先级 (Priority)</span>}
+                tooltip="数字越大优先级越高，高可用组优先走高优先级渠道"
+                rules={[{ required: true, message: '请输入优先级' }]}
+                style={{ marginBottom: 0 }}
+              >
+                <InputNumber
+                  step={1}
+                  style={{ width: '100%', borderRadius: 6 }}
+                  placeholder="0"
+                />
+              </Form.Item>
+            </Col>
+            <Col flex="1">
+              <Form.Item
+                name="weight"
+                label={<span style={{ fontWeight: 500, fontSize: 13, whiteSpace: 'nowrap' }}>分流权重 (Weight)</span>}
+                tooltip="同一优先级下的分流权重比例，必须大于等于 1"
+                rules={[{ required: true, message: '请输入权重' }]}
+                style={{ marginBottom: 0 }}
+              >
+                <InputNumber
+                  min={1}
+                  step={1}
+                  style={{ width: '100%', borderRadius: 6 }}
+                  placeholder="1"
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
+
+      <ChannelBillingSimulator
+        open={!!simulatingChannel}
+        onClose={() => setSimulatingChannel(null)}
+        channelId={simulatingChannel?.id || 0}
+        channelName={simulatingChannel?.name}
+        channelData={simulatingChannel}
       />
 
     </Card>

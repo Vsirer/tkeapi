@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 模型广场：内存缓存、`notify_marketplace_data_changed`、管理/公开 API。见 `mod.rs` 模块注释。
@@ -61,6 +61,7 @@ pub fn get_marketplace_cache() -> &'static RwLock<MarketplaceCache> {
 
 pub async fn notify_marketplace_data_changed(state: &Arc<AppState>) {
     get_marketplace_cache().write().await.invalidate();
+    crate::relay::router::invalidate_channel_cache();
 
     #[cfg(feature = "plugin_site_portal")]
     {
@@ -159,7 +160,7 @@ pub(crate) async fn get_marketplace_models(
     let models: Vec<crate::models::Model> = sqlx::query_as(
         &state
             .db
-            .format_query("SELECT * FROM models ORDER BY sort_order DESC, id DESC"),
+            .format_query("SELECT * FROM models WHERE is_listed = 1 ORDER BY sort_order DESC, id DESC"),
     )
     .fetch_all(&state.db.pool)
     .await?;
@@ -239,11 +240,7 @@ pub(crate) async fn get_marketplace_models(
             "is_active": m.is_active,
             "mp_enabled": mp_enabled,
             "sort_order": m.sort_order,
-            "mp_sort_order": if m.sort_order != 0 {
-                m.sort_order as i64
-            } else {
-                model_conf.get("sort_order").and_then(|v| v.as_i64()).unwrap_or(0)
-            },
+            "mp_sort_order": m.sort_order as i64,
             "mp_description": model_conf.get("description").and_then(|v| v.as_str()).unwrap_or(""),
             "mp_description_en": model_conf.get("description_en").and_then(|v| v.as_str()).unwrap_or(""),
             "mp_level_ids": parse_mp_level_ids(&model_conf),
@@ -804,13 +801,19 @@ pub async fn get_marketplace_public(
     let models: Vec<crate::models::Model> = sqlx::query_as(
         &state
             .db
-            .format_query("SELECT * FROM models WHERE is_active = 1 ORDER BY sort_order DESC, id DESC"),
+            .format_query("SELECT * FROM models WHERE is_active = 1 AND is_listed = 1 ORDER BY sort_order DESC, id DESC"),
     )
     .fetch_all(&state.db.pool)
     .await?;
 
     let providers: Vec<crate::models::ModelProvider> = sqlx::query_as(&state.db.format_query(
         "SELECT * FROM model_providers WHERE is_active = 1 ORDER BY sort_order DESC, id ASC",
+    ))
+    .fetch_all(&state.db.pool)
+    .await?;
+
+    let api_providers: Vec<crate::models::ModelProvider> = sqlx::query_as(&state.db.format_query(
+        "SELECT * FROM model_api_providers ORDER BY sort_order DESC, id ASC",
     ))
     .fetch_all(&state.db.pool)
     .await?;
@@ -846,10 +849,13 @@ pub async fn get_marketplace_public(
     let mut ha_model_subs: std::collections::HashMap<String, Vec<serde_json::Value>> =
         std::collections::HashMap::new();
     let mut ha_model_ids = std::collections::HashSet::new();
+    let mut ha_model_sub_ids: std::collections::HashMap<String, std::collections::HashSet<i64>> =
+        std::collections::HashMap::new();
 
     for (models_str, config_str) in ha_channels {
         if let Ok(m_ids) = serde_json::from_str::<Vec<String>>(&models_str) {
             let mut subs = Vec::new();
+            let mut sub_sids = std::collections::HashSet::new();
             if let Ok(config_val) = serde_json::from_str::<serde_json::Value>(&config_str) {
                 if let Some(sub_channel_ids) =
                     config_val.get("sub_channels").and_then(|v| v.as_array())
@@ -866,6 +872,7 @@ pub async fn get_marketplace_public(
                                     "rate": cfg.rate,
                                     "is_ha": true,
                                 }));
+                                sub_sids.insert(sid);
                             }
                         }
                     }
@@ -873,6 +880,12 @@ pub async fn get_marketplace_public(
             }
             for m_id in m_ids {
                 ha_model_ids.insert(m_id.clone());
+                if !sub_sids.is_empty() {
+                    let sids_entry = ha_model_sub_ids
+                        .entry(m_id.clone())
+                        .or_insert_with(std::collections::HashSet::new);
+                    sids_entry.extend(&sub_sids);
+                }
                 if !subs.is_empty() {
                     let entry = ha_model_subs.entry(m_id).or_insert_with(Vec::new);
                     // Avoid duplicates if multiple HA groups have the same model
@@ -924,6 +937,10 @@ pub async fn get_marketplace_public(
         }
     }
 
+    for subs in ha_model_subs.values_mut() {
+        *subs = merge_ha_subchannels_by_rate(std::mem::take(subs));
+    }
+
     // 读取展示模式
     let display_mode = configs
         .get("mp_display_mode")
@@ -932,7 +949,14 @@ pub async fn get_marketplace_public(
     let is_blacklist = display_mode == "blacklist";
 
     let mut marketplace_models: Vec<serde_json::Value> = Vec::new();
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    let volc_plugin_on =
+        crate::api::plugins::is_plugin_enabled(&state, "volcengine_enhance").await;
     for m in &models {
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        if !volc_plugin_on && crate::api::plugins::is_volc_preset_mid(&m.mid) {
+            continue;
+        }
         let config_key = format!("mp_model_id_{}", m.id);
         let model_conf: serde_json::Value = configs
             .get(&config_key)
@@ -947,14 +971,7 @@ pub async fn get_marketplace_public(
             continue;
         }
 
-        let sort_order = if m.sort_order != 0 {
-            m.sort_order as i64
-        } else {
-            model_conf
-                .get("sort_order")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-        };
+        let sort_order = m.sort_order as i64;
         let description = model_conf
             .get("description")
             .and_then(|v| v.as_str())
@@ -969,6 +986,10 @@ pub async fn get_marketplace_public(
             .and_then(|pid| providers.iter().find(|p| p.id == pid))
             .map(|p| p.name.clone())
             .unwrap_or_default();
+
+        let api_provider = m
+            .api_provider_id
+            .and_then(|pid| api_providers.iter().find(|p| p.id == pid));
 
         let type_name = m
             .type_id
@@ -1019,6 +1040,9 @@ pub async fn get_marketplace_public(
                 .map(|p| p.name_en.clone())
                 .unwrap_or_default(),
             "provider_logo": provider_logo,
+            "api_provider_id": m.api_provider_id,
+            "api_provider_name": api_provider.map(|p| p.name.clone()).unwrap_or_default(),
+            "api_provider_name_en": api_provider.map(|p| p.name_en.clone()).unwrap_or_default(),
             "type_id": m.type_id,
             "type_name": type_name,
             "type_name_en": m.type_id
@@ -1036,6 +1060,7 @@ pub async fn get_marketplace_public(
             "global_discount_enabled": m.global_discount_enabled,
             "billing": billing_info,
             "has_ha": ha_model_ids.contains(&m.mid),
+            "ha_sub_count": ha_model_sub_ids.get(&m.mid).map(|s| s.len()).unwrap_or(0),
             "ha_subchannels": ha_model_subs.get(&m.mid).cloned().unwrap_or_default(),
             "created_at": m.created_at,
             "_mp_enabled": is_enabled,
@@ -1077,4 +1102,18 @@ pub async fn get_marketplace_public(
     }
 
     Ok(Json(finalize_marketplace_cache(&internal, viewer)))
+}
+
+/// 广场计价只展示倍率：高可用组绑定多个上游时，相同倍率合并为一条。
+fn merge_ha_subchannels_by_rate(subs: Vec<Value>) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(subs.len());
+    for sub in subs {
+        let rate = sub.get("rate").and_then(Value::as_f64).unwrap_or(1.0);
+        let key = (rate * 1_000_000.0).round() as i64;
+        if seen.insert(key) {
+            out.push(sub);
+        }
+    }
+    out
 }

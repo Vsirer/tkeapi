@@ -1,15 +1,16 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Modal, Input, Spin, Empty, Typography, Pagination, Tooltip } from 'antd';
+import { Modal, Input, Spin, Empty, Typography, Tooltip } from 'antd';
 import { SearchOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
 import { useThemeStore } from '../../store/theme';
+import ListPagination, { useListPager } from '../ListPagination';
 
 const { Text } = Typography;
 
@@ -39,13 +40,13 @@ const IconPicker: React.FC<IconPickerProps> = ({ value, onChange, placeholder = 
   const [open, setOpen] = useState(false);
   const [icons, setIcons] = useState<SiteIconItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const { page, pageSize, setPage, setPageSize } = useListPager();
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [recentIcons, setRecentIcons] = useState<SiteIconItem[]>([]);
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const fetchIcons = useCallback(async (p = 1, q = keyword) => {
+  const fetchIcons = useCallback(async (p = 1, q = keyword, size = pageSize) => {
     if (!q.trim()) {
       setIcons([]);
       setTotal(0);
@@ -53,18 +54,19 @@ const IconPicker: React.FC<IconPickerProps> = ({ value, onChange, placeholder = 
     }
     try {
       setLoading(true);
-      const params: any = { page: p, size: 60 };
+      const params: any = { page: p, size };
       if (q) params.q = q;
       const res = await (request.get('/plugins/site-icons/public', { params }) as any);
       if (res.data) setIcons(res.data);
       if (res.total != null) setTotal(res.total);
       setPage(res.page || p);
+      setPageSize(size);
     } catch {
       // silent
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pageSize]);
 
   useEffect(() => {
     if (open) {
@@ -152,7 +154,13 @@ const IconPicker: React.FC<IconPickerProps> = ({ value, onChange, placeholder = 
     onChange?.(null);
   };
 
-  const getSvgUrl = (icon: SiteIconItem) => `/assets/${icon.file_path}`;
+  const getSvgUrl = (icon: SiteIconItem) => {
+    if (!icon?.file_path) return '';
+    if (icon.file_path.startsWith('http://') || icon.file_path.startsWith('https://')) {
+      return icon.file_path;
+    }
+    return `/assets/${icon.file_path}`;
+  };
 
   // 获取当前选中图标的显示信息
   const selectedIcon = value ? icons.find(i => i.name === value) : null;
@@ -233,14 +241,13 @@ const IconPicker: React.FC<IconPickerProps> = ({ value, onChange, placeholder = 
                 {icons.map(icon => renderIconItem(icon))}
               </div>
 
-              {total > 60 && (
+              {total > 0 && (
                 <div style={{ textAlign: 'center', marginTop: 12 }}>
-                  <Pagination
+                  <ListPagination
                     current={page}
                     total={total}
-                    pageSize={60}
-                    onChange={p => fetchIcons(p, keyword)}
-                    showSizeChanger={false}
+                    pageSize={pageSize}
+                    onChange={(p, s) => fetchIcons(p, keyword, s)}
                     size="small"
                   />
                 </div>

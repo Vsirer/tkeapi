@@ -1,12 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use super::proxy;
-use super::task::{normalize_task_status, poll_task_result, PollOutcome, PollTaskOpts};
+use super::task::normalize_task_status;
 use crate::error::{AppError, AppResult};
 use crate::models::{BillingRule, Channel};
 use crate::relay::{forward, response_formatter};
@@ -14,80 +14,11 @@ use crate::AppState;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// 增强版本 → (billing version, 火山 mid)；非法返回 None
-fn cascade_enhance_pair(version: &str) -> Option<(&'static str, &'static str)> {
-    match version.trim().to_ascii_lowercase().as_str() {
-        "fast" => Some(("fast", "vve-ft")),
-        "standard" => Some(("standard", "vve-sd")),
-        "pro" => Some(("pro", "vve-pf")),
-        "ai" => Some(("ai", "vve-gt")),
-        _ => None,
-    }
-}
-
-/// 阶段二超分分辨率入参：非大模型 + 目标 480p → 整型 `resolution_limit=480`（锁标准 480p）；否则字符串 `resolution`
-fn cascade_s2_apply_resolution_param(payload: &mut serde_json::Value, target_res: &str, mid: &str) {
-    let Some(obj) = payload.as_object_mut() else {
-        return;
-    };
-    obj.remove("resolution");
-    obj.remove("resolution_limit");
-    let res = target_res.trim().to_ascii_lowercase();
-    // 非 vve-gt：MediaKit resolution_limit 为像素上限整型，与字符串 resolution 互斥
-    if !mid.trim().eq_ignore_ascii_case("vve-gt") && res == "480p" {
-        obj.insert("resolution_limit".to_string(), serde_json::json!(496));
-    } else {
-        obj.insert("resolution".to_string(), serde_json::json!(res));
-    }
-}
-
-/// 优先用转发规则 res_enhance[目标分辨率]；缺省/非法/分辨率不支持的 ai → 标准版
-pub(crate) fn cascade_resolve_enhance(
-    target_res: &str,
-    res_enhance: &HashMap<String, String>,
-) -> (&'static str, &'static str) {
-    let key = target_res.trim().to_ascii_lowercase();
-    res_enhance
-        .get(&key)
-        .and_then(|ver| {
-            let pair = cascade_enhance_pair(ver)?;
-            // 大模型增强（ai）仅 720p / 1080p / 2k
-            if pair.0 == "ai" && !matches!(key.as_str(), "720p" | "1080p" | "2k") {
-                None
-            } else {
-                Some(pair)
-            }
-        })
-        .unwrap_or(("standard", "vve-sd"))
-}
-
-/// 标准版增强场景枚举（仅 tool_version=standard 生效）
-fn cascade_scene_pair(scene: &str) -> Option<&'static str> {
-    match scene.trim().to_ascii_lowercase().as_str() {
-        "common" => Some("common"),
-        "ugc" => Some("ugc"),
-        "short_series" => Some("short_series"),
-        "aigc" => Some("aigc"),
-        "old_film" => Some("old_film"),
-        _ => None,
-    }
-}
-
-/// 仅标准增强返回场景；配置合法则用配置，否则 common；非标准 → None
-pub(crate) fn cascade_resolve_scene(
-    cascade_version: &str,
-    target_res: &str,
-    res_scene: &HashMap<String, String>,
-) -> Option<&'static str> {
-    if cascade_version != "standard" {
-        return None;
-    }
-    Some(
-        res_scene
-            .get(&target_res.trim().to_ascii_lowercase())
-            .and_then(|s| cascade_scene_pair(s))
-            .unwrap_or("common"),
-    )
+#[cfg(feature = "plugin_volcengine_enhance")]
+use crate::api::plugins::is_volc_enhance_version;
+#[cfg(not(feature = "plugin_volcengine_enhance"))]
+fn is_volc_enhance_version(_: &str) -> bool {
+    false
 }
 
 fn cascade_is_res(s: &str) -> bool {
@@ -95,22 +26,6 @@ fn cascade_is_res(s: &str) -> bool {
         s.trim().to_ascii_lowercase().as_str(),
         "480p" | "720p" | "768p" | "1080p" | "2k" | "4k"
     )
-}
-
-/// 与 cascade_enhance_pair 同源，避免版本枚举双份维护
-fn cascade_is_version(s: &str) -> bool {
-    cascade_enhance_pair(s).is_some()
-}
-
-/// 目标分辨率允许的底座列表（首项为默认一级；单元素即锁定不可改）
-fn cascade_allowed_bases(target: &str) -> &'static [&'static str] {
-    match target.trim().to_ascii_lowercase().as_str() {
-        "480p" => &["480p"],
-        "720p" => &["480p", "720p"],
-        "1080p" => &["720p", "480p", "1080p"],
-        "2k" | "4k" => &["1080p", "720p", "480p"],
-        _ => &["720p"],
-    }
 }
 
 /// 有分辨率计费时返回已启用集合；非分辨率计费或无配置则返回 None
@@ -149,19 +64,20 @@ fn cascade_billing_enabled_resolutions(
                     .collect()
             })
             .unwrap_or_default();
+        let ver_filter = cascade_version.trim();
         for key in pt.keys() {
             let lower = key.to_ascii_lowercase();
             let parts: Vec<&str> = lower.split('|').collect();
             let res = match parts.as_slice() {
-                [ver, res, ..] if cascade_is_version(ver) && cascade_is_res(res) => {
+                [ver, res, ..] if is_volc_enhance_version(ver) && cascade_is_res(res) => {
                     has_res_billing = true;
-                    if cascade_version.is_empty() || ver.eq_ignore_ascii_case(cascade_version) {
+                    if ver_filter.is_empty() || ver.eq_ignore_ascii_case(ver_filter) {
                         Some(*res)
                     } else {
                         None
                     }
                 }
-                [attr, res] if !cascade_is_version(attr) && cascade_is_res(res) => {
+                [attr, res] if !is_volc_enhance_version(attr) && cascade_is_res(res) => {
                     has_res_billing = true;
                     Some(*res)
                 }
@@ -227,160 +143,189 @@ pub(crate) fn cascade_resolve_base(
     res_base: &HashMap<String, String>,
 ) -> &'static str {
     let key = target.trim().to_ascii_lowercase();
-    let allowed = cascade_allowed_bases(&key);
+    let allowed: &'static [&'static str] = match key.as_str() {
+        "480p" => &["480p"],
+        "720p" => &["480p", "720p"],
+        "1080p" => &["720p", "480p", "1080p"],
+        "2k" | "4k" => &["1080p", "720p", "480p"],
+        _ => &["720p"],
+    };
     res_base
         .get(&key)
         .and_then(|configured| {
             let b = configured.trim().to_ascii_lowercase();
             allowed.iter().copied().find(|a| a.eq_ignore_ascii_case(&b))
         })
-        .unwrap_or_else(|| allowed.first().copied().unwrap_or("720p"))
+        .unwrap_or(allowed[0])
 }
 
-/// MediaKit 共用上下文（state + 增强渠道鉴权），避免裁剪/抽帧重复传参。
-struct CascadeMk<'a> {
-    state: &'a AppState,
-    ch: &'a Channel,
-    auth_type: &'a str,
-}
-
-/// MediaKit 异步工具：POST → `poll_task_result`（5→1s）→ 取 `out_ptr`。
-/// POST 提交失败重试仍用短退避，与任务状态轮询分离。
-async fn cascade_mk_url(
-    mk: &CascadeMk<'_>,
-    path: &str,
-    payload: serde_json::Value,
-    out_ptr: &str,
-) -> Option<String> {
-    let resolved = forward::ResolvedForward {
-        auth_type: mk.auth_type.to_string(),
-        upstream_path: path.to_string(),
-        poll_path: Some("/api/v1/tasks/${task_id}".to_string()),
-        ..Default::default()
-    };
-    let url = forward::build_upstream_url(&mk.ch.base_url, &resolved, "", &mk.ch.api_key);
-
-    let mut attempt = 0u32;
-    let task_id = loop {
-        attempt += 1;
-        let mut body = payload.clone();
-        let builder =
-            crate::services::http_client::with_upstream_timeout(forward::apply_request_auth(
-                mk.state
-                    .http_client
-                    .post(&url)
-                    .header("Content-Type", "application/json"),
-                &resolved,
-                &mk.ch.api_key,
-                &mut body,
-                &mk.ch.base_url,
-            ));
-        let retry = match builder.send().await {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                if status != 200 {
-                    crate::relay::proxy::is_poll_transport_retryable(status)
-                } else {
-                    let text = resp.text().await.unwrap_or_default();
-                    let post: serde_json::Value =
-                        serde_json::from_str(&text).unwrap_or(serde_json::json!({}));
-                    let id = response_formatter::find_id(&post);
-                    if !id.is_empty() && !response_formatter::is_upstream_error_response(&post) {
-                        break id;
-                    }
-                    false
-                }
-            }
-            Err(_) => true,
-        };
-        if retry && attempt < 5 {
-            let delay = (2u64 << (attempt - 1)).min(10);
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            continue;
-        }
-        return None;
-    };
-
-    let PollOutcome::Succeeded(body) =
-        poll_task_result(mk.state, mk.ch, &resolved, &task_id, PollTaskOpts::default()).await
-    else {
-        return None;
-    };
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::json!({}));
-    v.pointer(out_ptr)
-        .and_then(|u| u.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
-/// 仅 480→720 且 ratio∈{16:9,9:16}：MediaKit 居中裁成标准 480p；否则/失败返回原 URL。
-/// 角点：16:9→(2,6,862,490)；9:16→(6,2,490,862)。S1 明确非 480p 时跳过；ratio 优先 S1，缺则 hints。
-async fn cascade_ensure_standard_480p_video(
-    mk: &CascadeMk<'_>,
-    video_url: &str,
+/// 480→720 且 ratio∈{16:9,9:16} 的裁剪角点。仅信 S1 回显分辨率；ratio 优先 S1，缺则 hints。
+fn cascade_crop_rect(
     stage1_resp: &serde_json::Value,
     target_resolution: &str,
     field_hints: &[&serde_json::Value],
-) -> String {
-    fn root<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
-        v.get(key)
-            .and_then(|x| x.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    }
+    resolved: &forward::ResolvedForward,
+    post: bool,
+) -> Option<(i32, i32, i32, i32)> {
     if !target_resolution.eq_ignore_ascii_case("720p") {
-        return video_url.to_string();
+        return None;
     }
-    // 勿用用户入参 resolution=720p 误判；仅信 S1 回显
-    if root(stage1_resp, "resolution").is_some_and(|r| !r.eq_ignore_ascii_case("480p")) {
-        return video_url.to_string();
+    if cascade_json_root_str(stage1_resp, "resolution")
+        .is_some_and(|r| !r.eq_ignore_ascii_case("480p"))
+    {
+        return None;
     }
-    let Some(ratio) =
-        root(stage1_resp, "ratio").or_else(|| field_hints.iter().find_map(|h| root(h, "ratio")))
+    let ratio = cascade_json_root_str(stage1_resp, "ratio").or_else(|| {
+        field_hints
+            .iter()
+            .find_map(|h| cascade_json_root_str(h, "ratio"))
+    })?;
+    let is_tencent = resolved.cascade_engine.eq_ignore_ascii_case("tencent");
+    if post {
+        match ratio {
+            "16:9" => Some(
+                resolved
+                    .crop_coords_720p
+                    .get("16:9")
+                    .copied()
+                    .unwrap_or((1, 0, 1281, 720)),
+            ),
+            "9:16" => Some(
+                resolved
+                    .crop_coords_720p
+                    .get("9:16")
+                    .copied()
+                    .unwrap_or((0, 1, 720, 1281)),
+            ),
+            _ => None,
+        }
+    } else {
+        match ratio {
+            "16:9" => Some(
+                resolved
+                    .crop_coords_480p
+                    .get("16:9")
+                    .copied()
+                    .unwrap_or(if is_tencent {
+                        (0, 5, 864, 491)
+                    } else {
+                        (2, 6, 862, 490)
+                    }),
+            ),
+            "9:16" => Some(
+                resolved
+                    .crop_coords_480p
+                    .get("9:16")
+                    .copied()
+                    .unwrap_or(if is_tencent {
+                        (5, 0, 491, 864)
+                    } else {
+                        (6, 2, 490, 862)
+                    }),
+            ),
+            _ => None,
+        }
+    }
+}
+
+fn cascade_engine(plugin_tag: &str) -> String {
+    cascade_json_ptr(plugin_tag, "/cascade/engine", true).unwrap_or_else(|| "volc".into())
+}
+
+async fn cascade_maybe_crop(
+    state: &AppState,
+    engine: &str,
+    video_url: &str,
+    s1: &serde_json::Value,
+    target_res: &str,
+    hints: &[&serde_json::Value],
+    resolved: &forward::ResolvedForward,
+    post: bool,
+    ch: &Channel,
+    auth_type: &str,
+    relay_log_id: i64,
+) -> String {
+    let Some((tlx, tly, brx, bry)) = cascade_crop_rect(s1, target_res, hints, resolved, post)
     else {
         return video_url.to_string();
     };
-    let (tlx, tly, brx, bry) = match ratio {
-        "16:9" => (2, 6, 862, 490),
-        "9:16" => (6, 2, 490, 862),
-        _ => return video_url.to_string(),
+    let cropped = match engine {
+        "tencent" => {
+            #[cfg(feature = "plugin_tencent_enhance")]
+            {
+                crate::api::plugins::crop_tencent_cascade_video(
+                    state,
+                    video_url,
+                    tlx,
+                    tly,
+                    brx,
+                    bry,
+                    Some(relay_log_id),
+                )
+                .await
+                .ok()
+            }
+            #[cfg(not(feature = "plugin_tencent_enhance"))]
+            {
+                let _ = (state, tlx, tly, brx, bry, relay_log_id);
+                None
+            }
+        }
+        _ => {
+            #[cfg(feature = "plugin_volcengine_enhance")]
+            {
+                crate::api::plugins::crop_volc_cascade_video(
+                    state,
+                    ch,
+                    auth_type,
+                    video_url,
+                    tlx,
+                    tly,
+                    brx,
+                    bry,
+                    Some(relay_log_id),
+                )
+                .await
+                .ok()
+            }
+            #[cfg(not(feature = "plugin_volcengine_enhance"))]
+            {
+                let _ = (ch, auth_type, tlx, tly, brx, bry);
+                None
+            }
+        }
     };
-
-    cascade_mk_url(
-        mk,
-        "/api/v1/tools/crop-video",
-        serde_json::json!({
-            "video_url": video_url,
-            "top_left_x": tlx,
-            "top_left_y": tly,
-            "bottom_right_x": brx,
-            "bottom_right_y": bry,
-        }),
-        "/result/video_url",
-    )
-    .await
-    .unwrap_or_else(|| video_url.to_string())
+    cropped.unwrap_or_else(|| video_url.to_string())
 }
 
-/// S2 成功落库前：stage1 usage×res_mul；S1 有尾帧则对 S2 视频抽帧写入 `s2.last_frame_url`（不改 stage1）。
-pub(crate) async fn cascade_on_s2_succeeded(
+fn cascade_s2_ready(plugin_tag: &str) -> Option<(String, String)> {
+    let v = serde_json::from_str::<serde_json::Value>(plugin_tag).ok()?;
+    let r = v.get("cascade")?.get("s2_ready")?;
+    Some((
+        r.get("s1")?.as_str()?.to_string(),
+        r.get("s2")?.as_str()?.to_string(),
+    ))
+}
+
+/// 倍率 + 后裁 + 抽尾帧。失败跳过，不整单失败。
+async fn cascade_s2_postprocess(
     state: &AppState,
-    ch: &Channel,
-    auth_type: &str,
+    poll: &CascadePollTarget<'_>,
     s1_raw: &mut String,
     s2_raw: &mut String,
-    res_mul: &HashMap<String, f64>,
     plugin_tag: &str,
+    request_content: &str,
+    relay_log_id: i64,
 ) {
-    let mk = CascadeMk {
-        state,
-        ch,
-        auth_type,
-    };
-    let mut s1: serde_json::Value =
-        serde_json::from_str(s1_raw).unwrap_or(serde_json::json!({}));
-    let res = cascade_resolve_target_resolution(plugin_tag, "");
-    let mul = forward::lookup_res_mul(res_mul, &res);
+    let s2_ch = poll.channel.as_ref();
+    let resolved = poll.resolved.as_ref();
+    let s2_auth = resolved.auth_type.as_str();
+    let engine = cascade_engine(plugin_tag);
+    let mut s1: serde_json::Value = serde_json::from_str(s1_raw).unwrap_or(serde_json::json!({}));
+    let res = cascade_json_str(plugin_tag, "/cascade/resolution")
+        .or_else(|| cascade_json_str(request_content, "/resolution"))
+        .unwrap_or_else(|| "720p".into());
+    let mul = forward::lookup_res_mul(&resolved.res_mul, &res);
     if (mul - 1.0).abs() > 1e-9 {
         forward::scale_usage_in_json(&mut s1, mul);
         if let Some(u) = s1.get("usage") {
@@ -388,36 +333,158 @@ pub(crate) async fn cascade_on_s2_succeeded(
         }
     }
 
-    if response_formatter::find_last_frame_url(&s1).is_none() {
-        return;
-    }
     let mut s2: serde_json::Value = serde_json::from_str(s2_raw).unwrap_or(serde_json::json!({}));
-    let Some(video_url) = s2
-        .pointer("/result/video_url")
-        .and_then(|u| u.as_str())
-        .filter(|s| !s.is_empty())
-    else {
-        return;
-    };
-    let Some(frame) = cascade_mk_url(
-        &mk,
-        "/api/v1/tools/extract-frames",
-        serde_json::json!({
-            "video_url": video_url,
-            "snapshot_type": "SpecifiedFrames",
-            "specified_frames": [-1],
-        }),
-        "/result/snapshots/0/image_url",
-    )
-    .await
-    else {
-        crate::relay_debug!("[Cascade S2] 尾帧跳过");
-        return;
-    };
-    if let Some(obj) = s2.as_object_mut() {
-        obj.insert("last_frame_url".into(), serde_json::json!(frame));
+    let mut s2_modified = false;
+
+    // 增强后裁剪：crop_480p 且时机 post 时，把 S2 的 720p 裁到标准画布
+    if resolved.crop_480p
+        && resolved.crop_timing == "post"
+        && s2.get("cropped_720p").and_then(|v| v.as_bool()) != Some(true)
+    {
+        if let Some(video_url) = response_formatter::find_urls(&s2)
+            .into_iter()
+            .next()
+            .filter(|s| !s.is_empty())
+        {
+            let req_hint: serde_json::Value =
+                serde_json::from_str(request_content).unwrap_or(serde_json::json!({}));
+            let cropped_url = cascade_maybe_crop(
+                state,
+                &engine,
+                &video_url,
+                &s1,
+                &res,
+                &[&req_hint],
+                resolved,
+                true,
+                s2_ch,
+                s2_auth,
+                relay_log_id,
+            )
+            .await;
+            if cropped_url != video_url {
+                if let Some(res_obj) = s2.pointer_mut("/result").and_then(|v| v.as_object_mut()) {
+                    res_obj.insert("video_url".into(), serde_json::json!(cropped_url));
+                }
+                if let Some(obj) = s2.as_object_mut() {
+                    obj.insert("cropped_720p".into(), serde_json::json!(true));
+                }
+                s2_modified = true;
+            }
+        }
     }
-    *s2_raw = s2.to_string();
+
+    if response_formatter::find_last_frame_url(&s1).is_some() {
+        if let Some(video_url) = response_formatter::find_urls(&s2)
+            .into_iter()
+            .next()
+            .filter(|s| !s.is_empty())
+        {
+            let frame: Option<String> = match engine.as_str() {
+                "tencent" => {
+                    #[cfg(feature = "plugin_tencent_enhance")]
+                    {
+                        crate::api::plugins::extract_tencent_last_frame(
+                            state,
+                            &video_url,
+                            Some(relay_log_id),
+                        )
+                        .await
+                        .ok()
+                    }
+                    #[cfg(not(feature = "plugin_tencent_enhance"))]
+                    {
+                        let _ = state;
+                        None
+                    }
+                }
+                _ => {
+                    #[cfg(feature = "plugin_volcengine_enhance")]
+                    {
+                        crate::api::plugins::extract_volc_last_frame(
+                            state,
+                            s2_ch,
+                            s2_auth,
+                            &video_url,
+                            Some(relay_log_id),
+                        )
+                        .await
+                        .ok()
+                    }
+                    #[cfg(not(feature = "plugin_volcengine_enhance"))]
+                    {
+                        None
+                    }
+                }
+            };
+            if let Some(frame) = frame {
+                if let Some(obj) = s2.as_object_mut() {
+                    obj.insert("last_frame_url".into(), serde_json::json!(frame));
+                }
+                s2_modified = true;
+            } else {
+                crate::relay_debug!("[Cascade S2] 尾帧跳过");
+            }
+        }
+    }
+
+    if s2_modified {
+        *s2_raw = s2.to_string();
+    }
+}
+
+/// S2 成功落库前：进程内防并发；usage×res_mul；按需后裁；S1 有尾帧则抽帧写入 `s2.last_frame_url`。
+/// 已有 `s2_ready` 则立刻交 Guard 给结算；否则后台做后处理，本次回 None（调用方回处理中）。
+pub(crate) async fn cascade_on_s2_succeeded<'a>(
+    state: &'a Arc<AppState>,
+    log_id: i64,
+    poll: &CascadePollTarget<'_>,
+    s1_raw: &mut String,
+    s2_raw: &mut String,
+    plugin_tag: &str,
+    request_content: &str,
+) -> Option<CascadeS2InflightGuard<'a>> {
+    if let Some((s1, s2)) = cascade_s2_ready(plugin_tag) {
+        *s1_raw = s1;
+        *s2_raw = s2;
+        return CascadeS2InflightGuard::try_acquire(&state.cascade_s2_inflight, log_id);
+    }
+    if state.cascade_s2_inflight.contains_key(&log_id) {
+        return None;
+    }
+    let state_bg = Arc::clone(state);
+    let poll = poll.to_owned();
+    let mut s1 = s1_raw.clone();
+    let mut s2 = s2_raw.clone();
+    let plugin_tag = plugin_tag.to_string();
+    let request_content = request_content.to_string();
+    tokio::spawn(async move {
+        let Some(_g) =
+            CascadeS2InflightGuard::try_acquire(&state_bg.cascade_s2_inflight, log_id)
+        else {
+            return;
+        };
+        cascade_s2_postprocess(
+            &state_bg,
+            &poll,
+            &mut s1,
+            &mut s2,
+            &plugin_tag,
+            &request_content,
+            log_id,
+        )
+        .await;
+        let mut v = serde_json::from_str::<serde_json::Value>(&plugin_tag)
+            .unwrap_or(serde_json::json!({}));
+        v["cascade"]["s2_ready"] = serde_json::json!({ "s1": s1, "s2": s2 });
+        let t = v.to_string();
+        let _ = sqlx::query(&state_bg.db.format_query("UPDATE logs SET plugin_tag = ? WHERE id = ?"))
+            .bind(&t)
+            .bind(log_id)
+            .execute(&state_bg.db.pool)
+            .await;
+    });
+    None
 }
 
 /// 阶段一出参 + 阶段二增强请求；`s1_raw` 空（未开 enable_log）→ None。
@@ -427,30 +494,6 @@ fn cascade_upstream_req_combined(s1_raw: &str, s2: &serde_json::Value) -> Option
     }
     let s1: serde_json::Value = serde_json::from_str(s1_raw).unwrap_or(serde_json::json!({}));
     Some(serde_json::json!({ "stage1": s1, "stage2": s2 }).to_string())
-}
-
-/// 阶段二 POST HTTP200 无有效 task_id 时的分类（文案/状态码由调用方拼，避免 cascade↔proxy 耦合）。
-enum CascadeS2Post200Fail {
-    /// 上游业务错误体
-    Upstream(serde_json::Value),
-    /// 非错误体但解析不到 task_id（调用方宜 warn 原文）
-    MissingTaskId,
-}
-
-/// 阶段二 POST HTTP200：有 task_id → Ok；否则 Err 分类。
-fn cascade_s2_parse_post_200(
-    text: &str,
-) -> Result<(String, serde_json::Value), CascadeS2Post200Fail> {
-    let post: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::json!({}));
-    let id = response_formatter::find_id(&post);
-    if !id.is_empty() {
-        return Ok((id, post));
-    }
-    if response_formatter::is_upstream_error_response(&post) {
-        Err(CascadeS2Post200Fail::Upstream(post))
-    } else {
-        Err(CascadeS2Post200Fail::MissingTaskId)
-    }
 }
 
 /// JSON 指针取非空字符串；`lower=true` 时转小写（分辨率等），任务 id 等保持原样
@@ -475,11 +518,116 @@ pub(crate) fn cascade_json_str(json: &str, pointer: &str) -> Option<String> {
     cascade_json_ptr(json, pointer, true)
 }
 
-/// 级联对外任务号：`cgt-{YYYYMMDDHHmmss}-{5位随机}`
-fn cascade_new_client_task_id() -> String {
-    let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
-    let u = ulid::Ulid::new().to_string().to_lowercase();
-    format!("cgt-{}-{}", ts, &u[21..26])
+fn cascade_json_root_str<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+async fn cascade_s2_maybe_pre_crop(
+    state: &AppState,
+    ctx: &CascadeS2SubmitCtx,
+    s1_json: &serde_json::Value,
+    target_resolution: &str,
+    engine: &str,
+    ch: &Channel,
+    auth_type: &str,
+) -> String {
+    if !(ctx.resolved.crop_480p && ctx.resolved.crop_timing != "post") {
+        return ctx.base_video_url.clone();
+    }
+    let req_hint: serde_json::Value =
+        serde_json::from_str(&ctx.request_content).unwrap_or(serde_json::json!({}));
+    let up_hint: serde_json::Value =
+        serde_json::from_str(&ctx.upstream_req).unwrap_or(serde_json::json!({}));
+    cascade_maybe_crop(
+        state,
+        engine,
+        &ctx.base_video_url,
+        s1_json,
+        target_resolution,
+        &[&up_hint, &req_hint],
+        &ctx.resolved,
+        false,
+        ch,
+        auth_type,
+        ctx.log_id,
+    )
+    .await
+}
+
+pub(crate) struct CascadeS2PollOk {
+    pub url: String,
+    pub body: String,
+    pub resp_json: serde_json::Value,
+    pub task_status: String,
+}
+
+pub(crate) enum CascadeS2PollErr {
+    Retryable { status: u16, message: String },
+    /// 插件未编译：不回落通用 GET。两家都编译时不会构造。
+    #[cfg(not(all(
+        feature = "plugin_tencent_enhance",
+        feature = "plugin_volcengine_enhance"
+    )))]
+    Settled { status: u16, message: String },
+}
+
+/// S2 单次查询：按引擎走插件；未编译则 Settled，不回落通用 GET。
+pub(crate) async fn cascade_s2_poll(
+    state: &AppState,
+    plugin_tag: &str,
+    poll: &CascadePollTarget<'_>,
+) -> Result<CascadeS2PollOk, CascadeS2PollErr> {
+    let task_id = poll.task_id.as_ref();
+    let r = if cascade_engine(plugin_tag) == "tencent" {
+        #[cfg(not(feature = "plugin_tencent_enhance"))]
+        {
+            let _ = state;
+            return Err(CascadeS2PollErr::Settled {
+                status: 400,
+                message: "腾讯云增强插件未编译".into(),
+            });
+        }
+        #[cfg(feature = "plugin_tencent_enhance")]
+        crate::api::plugins::poll_tencent_cascade_stage2(state, task_id).await
+    } else {
+        #[cfg(not(feature = "plugin_volcengine_enhance"))]
+        {
+            let _ = poll;
+            return Err(CascadeS2PollErr::Settled {
+                status: 400,
+                message: "火山增强插件未编译".into(),
+            });
+        }
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        crate::api::plugins::poll_volc_cascade_stage2(
+            state,
+            poll.channel.as_ref(),
+            poll.resolved.as_ref(),
+            task_id,
+            poll.model.as_ref(),
+        )
+        .await
+    };
+    match r {
+        Ok(resp_json) => {
+            let task_status =
+                normalize_task_status(&response_formatter::extract_raw_status(&resp_json))
+                    .to_string();
+            Ok(CascadeS2PollOk {
+                url: format!("cascade_s2:{task_id}"),
+                body: resp_json.to_string(),
+                resp_json,
+                task_status,
+            })
+        }
+        Err(message) => Err(CascadeS2PollErr::Retryable {
+            status: 502,
+            message,
+        }),
+    }
 }
 
 /// 写入 `cascade.s1_task_id`（仅内部），返回对外 cgt（由调用方写入响应体 `id` / `logs.task_id`）
@@ -491,7 +639,9 @@ pub(crate) fn cascade_seal_s1_task_id(
     if upstream_s1_id.is_empty() {
         return None;
     }
-    let cgt = cascade_new_client_task_id();
+    let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
+    let u = ulid::Ulid::new().to_string().to_lowercase();
+    let cgt = format!("cgt-{}-{}", ts, &u[21..26]);
     let mut v: serde_json::Value = plugin_tag
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
@@ -505,25 +655,6 @@ pub(crate) fn cascade_seal_s1_task_id(
         .insert("s1_task_id".into(), serde_json::json!(upstream_s1_id));
     *plugin_tag = Some(v.to_string());
     Some(cgt)
-}
-
-/// 级联目标分辨率：plugin_tag.cascade.resolution → 请求体 resolution → 720p。
-fn cascade_resolve_target_resolution(plugin_tag: &str, request_content: &str) -> String {
-    cascade_json_str(plugin_tag, "/cascade/resolution")
-        .or_else(|| cascade_json_str(request_content, "/resolution"))
-        .unwrap_or_else(|| "720p".into())
-}
-
-/// 从阶段二增强响应提取帧率（result.fps / 顶层 fps）
-fn cascade_s2_fps(s2: &serde_json::Value) -> Option<i64> {
-    s2.pointer("/result/fps")
-        .or_else(|| s2.get("fps"))
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_u64().map(|u| u as i64))
-                .or_else(|| v.as_f64().map(|f| f as i64))
-        })
-        .filter(|&f| f > 0)
 }
 
 /// 级联成功对外：S1 原文骨架叠 S2 产物 URL / 分辨率 / 帧率 / 尾帧；原位改字符串
@@ -541,31 +672,41 @@ fn cascade_s1_with_s2_url(s1_raw: &str, s2: &serde_json::Value, plugin_tag: &str
         .into_iter()
         .next()
         .unwrap_or_default();
-    let res_lit = serde_json::json!(cascade_resolve_target_resolution(plugin_tag, "")).to_string();
-    let fps_lit = cascade_s2_fps(s2).unwrap_or(24).to_string();
+    let res_lit = serde_json::json!(
+        cascade_json_str(plugin_tag, "/cascade/resolution").unwrap_or_else(|| "720p".into())
+    )
+    .to_string();
+    let fps_lit = s2
+        .pointer("/result/fps")
+        .or_else(|| s2.get("fps"))
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_u64().map(|u| u as i64))
+                .or_else(|| v.as_f64().map(|f| f as i64))
+        })
+        .filter(|&f| f > 0)
+        .unwrap_or(24)
+        .to_string();
     let url_lit = serde_json::json!(new_url).to_string();
     if !old_url.is_empty() {
         response_formatter::json_replace_str(&mut out, &old_url, &new_url);
     }
-    response_formatter::json_replace_fields(
-        &mut out,
-        &[
-            ("video_url", url_lit.as_str()),
-            ("resolution", res_lit.as_str()),
-            ("framespersecond", fps_lit.as_str()),
-            ("fps", fps_lit.as_str()),
-        ],
-    );
-    if let (Some(old_frame), Some(new_frame)) = (
-        response_formatter::find_last_frame_url(&s1),
-        response_formatter::find_last_frame_url(s2),
-    ) {
-        response_formatter::json_replace_str(&mut out, old_frame, new_frame);
+    let mut field_replacements = vec![
+        ("video_url", url_lit.as_str()),
+        ("resolution", res_lit.as_str()),
+        ("framespersecond", fps_lit.as_str()),
+        ("fps", fps_lit.as_str()),
+    ];
+    let frame_lit = response_formatter::find_last_frame_url(s2)
+        .map(|f| serde_json::json!(f).to_string());
+    if let Some(ref fl) = frame_lit {
+        field_replacements.push(("last_frame_url", fl.as_str()));
     }
+    response_formatter::json_replace_fields(&mut out, &field_replacements);
     out
 }
 
-/// 列表/仪表盘/终态落库：去掉 plugin_tag.cascade 中的密钥与上游渠道细节。
+/// 列表/仪表盘/终态落库：去掉 plugin_tag.cascade 中的密钥、上游渠道细节与内部握手 `s2_ready`。
 /// 返回是否发生了字段删除（无变更则不改写字符串）。
 pub(crate) fn cascade_scrub_plugin_tag_for_user(plugin_tag: &mut Option<String>) -> bool {
     let Some(raw) = plugin_tag.as_deref() else {
@@ -581,10 +722,13 @@ pub(crate) fn cascade_scrub_plugin_tag_for_user(plugin_tag: &mut Option<String>)
         return false;
     };
     let mut changed = false;
-    for key in ["api_key", "base_url", "ch_name", "ch_id", "mid"] {
+    for key in ["api_key", "base_url", "ch_name", "ch_id", "mid", "s2_ready"] {
         if obj.remove(key).is_some() {
             changed = true;
         }
+    }
+    if obj.remove("crop").is_some() {
+        changed = true;
     }
     if changed {
         *plugin_tag = Some(v.to_string());
@@ -636,15 +780,14 @@ pub(crate) fn cascade_sanitize_for_user(
                 .unwrap_or_default()
         });
         let tid = tid_buf.as_deref().unwrap_or(task_id);
-        *response = Some(cascade_user_processing_response(
-            s1_ack,
-            tid,
-            plugin_tag.unwrap_or(""),
-            log_model,
-        ));
+        let mut user_resp = s1_ack.to_string();
+        cascade_apply_processing_status(&mut user_resp, tid, false);
+        cascade_overlay_client_identity(&mut user_resp, plugin_tag.unwrap_or(""), log_model);
+        *response = Some(user_resp);
         take_map(post_resp, |raw| {
             let mut folded = fold_post(raw);
             response_formatter::force_json_task_id(&mut folded, tid);
+            cascade_overlay_client_identity(&mut folded, plugin_tag.unwrap_or(""), log_model);
             folded
         });
         return;
@@ -699,90 +842,10 @@ pub(crate) fn cascade_sanitize_for_user(
         let mut folded = fold_post(raw);
         if has_cascade {
             response_formatter::force_json_task_id(&mut folded, task_id);
+            cascade_overlay_client_identity(&mut folded, plugin_tag.unwrap_or(""), log_model);
         }
         folded
     });
-}
-
-/// 从 plugin_tag.cascade 还原阶段二轮询目标（渠道 + 转发配置 + 模型）
-fn cascade_stage2_poll_target(
-    channel: &Channel,
-    resolved: &forward::ResolvedForward,
-    plugin_tag: &str,
-    stage2_task_id: &str,
-) -> (Channel, forward::ResolvedForward, String) {
-    let tag_json: serde_json::Value =
-        serde_json::from_str(plugin_tag).unwrap_or(serde_json::json!({}));
-    let cascade_info = tag_json
-        .get("cascade")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-
-    let mut ch = channel.clone();
-    ch.id = cascade_info
-        .get("ch_id")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(channel.id);
-    ch.name = cascade_info
-        .get("ch_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&channel.name)
-        .to_string();
-    ch.base_url = cascade_info
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&channel.base_url)
-        .to_string();
-    ch.api_key = cascade_info
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&channel.api_key)
-        .to_string();
-    ch.rate = cascade_info
-        .get("rate")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(channel.rate);
-
-    let mut res = resolved.clone();
-    res.mid = cascade_info
-        .get("mid")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    res.auth_type = cascade_info
-        .get("auth_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&resolved.auth_type)
-        .to_string();
-    res.upstream_path = cascade_info
-        .get("upstream_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&resolved.upstream_path)
-        .to_string();
-    res.target_type = cascade_info
-        .get("target_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&resolved.target_type)
-        .to_string();
-    res.poll_path = cascade_info
-        .get("poll_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let final_model = cascade_info
-        .get("final_model")
-        .and_then(|v| v.as_str())
-        .or_else(|| cascade_info.get("mid").and_then(|v| v.as_str()))
-        .unwrap_or("vve-sd")
-        .to_string();
-
-    crate::relay_debug!(
-        "[Cascade S2] 轮询目标: 阶段2任务ID={}, 渠道={}, 模型ID={:?}, 最终模型={}",
-        stage2_task_id,
-        ch.name,
-        res.mid,
-        final_model
-    );
-    (ch, res, final_model)
 }
 
 /// 官方路径：S1 已有字段才替换（不追加）。model=logs.model，resolution=级联目标
@@ -791,21 +854,11 @@ pub(crate) fn cascade_overlay_client_identity(s: &mut String, plugin_tag: &str, 
     response_formatter::json_root_set(
         s,
         "resolution",
-        &serde_json::json!(cascade_resolve_target_resolution(plugin_tag, "")).to_string(),
+        &serde_json::json!(
+            cascade_json_str(plugin_tag, "/cascade/resolution").unwrap_or_else(|| "720p".into())
+        )
+        .to_string(),
     );
-}
-
-/// 用户端处理中：剥产物后盖请求 model / 目标分辨率
-fn cascade_user_processing_response(
-    stage1_raw: &str,
-    task_id: &str,
-    plugin_tag: &str,
-    log_model: &str,
-) -> String {
-    let mut s = stage1_raw.to_string();
-    cascade_apply_processing_status(&mut s, task_id, false);
-    cascade_overlay_client_identity(&mut s, plugin_tag, log_model);
-    s
 }
 
 /// 写入对外任务号，进行中统一为 in_progress/running；无成片则去掉 content/usage
@@ -820,10 +873,7 @@ fn cascade_apply_processing_status(s: &mut String, task_id: &str, openai_compati
     } else {
         "running"
     };
-    if st.is_empty()
-        || matches!(norm, "succeeded" | "failed")
-        || norm == "pending"
-    {
+    if st.is_empty() || matches!(norm, "succeeded" | "failed") || norm == "pending" {
         response_formatter::json_root_set(s, "status", &serde_json::json!(processing).to_string());
     }
     response_formatter::json_root_remove(s, "content");
@@ -843,13 +893,8 @@ pub(crate) fn cascade_s2_client_processing(
     log_model: &str,
 ) -> String {
     let openai = response_formatter::is_openai_compatible_path(raw_path);
-    let mut s = response_formatter::apply_format(
-        raw_path,
-        category,
-        stage1_raw,
-        openai,
-        Some(task_id),
-    );
+    let mut s =
+        response_formatter::apply_format(raw_path, category, stage1_raw, openai, Some(task_id));
     cascade_apply_processing_status(&mut s, task_id, openai);
     if !openai {
         cascade_overlay_client_identity(&mut s, plugin_tag, log_model);
@@ -882,29 +927,6 @@ pub(crate) fn cascade_s1_raw_from_log(content: &str) -> &str {
     }
 }
 
-/// 级联阶段二提交结果：Submitted=已提交超分；InProgress=他处正在裁剪/提交
-pub(crate) enum CascadeS2SubmitOutcome {
-    Submitted(String),
-    InProgress,
-}
-
-/// 0=非级联 / 1=阶段一 / 2=阶段二
-pub(crate) fn cascade_stage_num(is_cascade: bool, post: &serde_json::Value) -> u8 {
-    if !is_cascade {
-        0
-    } else if post.get("stage2").is_some() {
-        2
-    } else {
-        1
-    }
-}
-
-/// 有 stage1 或 stage2 → 级联落库形态
-#[inline]
-pub(crate) fn cascade_is_combined_resp(v: &serde_json::Value) -> bool {
-    v.get("stage1").is_some() || v.get("stage2").is_some()
-}
-
 /// plugin_tag 含 cascade（S1 扁平体时靠此识别）
 #[inline]
 pub(crate) fn cascade_plugin_tag_present(plugin_tag: &str) -> bool {
@@ -934,54 +956,14 @@ pub(crate) struct CascadePollTarget<'a> {
     pub model: std::borrow::Cow<'a, str>,
 }
 
-/// 上游轮询目标（含 S1/S2）。Err=(文案, status)：S2 无有效 id；status 优先从 stage2 体推断，无法识别才 500
-pub(crate) fn cascade_poll_target<'a>(
-    cascade_stage: u8,
-    post_resp: &serde_json::Value,
-    channel: &'a Channel,
-    resolved: &'a forward::ResolvedForward,
-    plugin_tag: &str,
-    user_task_id: &'a str,
-    model_name: &'a str,
-) -> Result<CascadePollTarget<'a>, (String, u16)> {
-    if cascade_stage == 2 {
-        let stage2_val = &post_resp["stage2"];
-        let s2_id = response_formatter::find_id(stage2_val);
-        if s2_id.is_empty() {
-            let msg = cascade_stage2_err_text(stage2_val, "S2 无任务 ID");
-            return Err((msg, status_from_stage2_body(stage2_val)));
+impl CascadePollTarget<'_> {
+    fn to_owned(&self) -> CascadePollTarget<'static> {
+        CascadePollTarget {
+            channel: std::borrow::Cow::Owned(self.channel.clone().into_owned()),
+            resolved: std::borrow::Cow::Owned(self.resolved.clone().into_owned()),
+            task_id: std::borrow::Cow::Owned(self.task_id.clone().into_owned()),
+            model: std::borrow::Cow::Owned(self.model.clone().into_owned()),
         }
-        let (ch, res, model) = cascade_stage2_poll_target(channel, resolved, plugin_tag, &s2_id);
-        return Ok(CascadePollTarget {
-            channel: std::borrow::Cow::Owned(ch),
-            resolved: std::borrow::Cow::Owned(res),
-            task_id: std::borrow::Cow::Owned(s2_id),
-            model: std::borrow::Cow::Owned(model),
-        });
-    }
-    // 非级联 / S1：优先 plugin_tag.cascade.s1_task_id，否则用户侧 id
-    let task_id = cascade_json_ptr(plugin_tag, "/cascade/s1_task_id", false)
-        .map(std::borrow::Cow::Owned)
-        .unwrap_or(std::borrow::Cow::Borrowed(user_task_id));
-    Ok(CascadePollTarget {
-        channel: std::borrow::Cow::Borrowed(channel),
-        resolved: std::borrow::Cow::Borrowed(resolved),
-        task_id,
-        model: std::borrow::Cow::Borrowed(model_name),
-    })
-}
-
-/// 从 stage2 落库体推断 HTTP 码；空/无法识别 → 500
-fn status_from_stage2_body(stage2: &serde_json::Value) -> u16 {
-    match stage2 {
-        serde_json::Value::Null => 500,
-        serde_json::Value::String(s) if s.trim().is_empty() => 500,
-        serde_json::Value::String(s) => proxy::infer_error_status_code_from_str(s),
-        serde_json::Value::Object(m) if m.is_empty() => 500,
-        serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
-            proxy::infer_error_status_code(stage2)
-        }
-        _ => 500,
     }
 }
 
@@ -996,13 +978,8 @@ pub(crate) fn cascade_format_s2_succeeded(
     log_model: &str,
 ) -> String {
     let new_stage1 = cascade_s1_with_s2_url(s1_raw, s2, plugin_tag);
-    let mut formatted = response_formatter::apply_format(
-        raw_path,
-        category,
-        &new_stage1,
-        true,
-        Some(task_id),
-    );
+    let mut formatted =
+        response_formatter::apply_format(raw_path, category, &new_stage1, true, Some(task_id));
     response_formatter::force_json_task_id(&mut formatted, task_id);
     if !response_formatter::is_openai_compatible_path(raw_path) {
         cascade_overlay_client_identity(&mut formatted, plugin_tag, log_model);
@@ -1010,14 +987,189 @@ pub(crate) fn cascade_format_s2_succeeded(
     formatted
 }
 
-/// 进程内互斥：占位成功则持有，Drop 时 remove（仅 stage2_submit 使用）
-struct CascadeS2InflightGuard<'a> {
+/// 级联终态对外格式化：有成片 URL 则替换原 stage1；否则返回失败 JSON
+pub(crate) fn cascade_format_completed_resp(
+    raw_path: &str,
+    category: &str,
+    combined_body: &str,
+    plugin_tag: &str,
+    task_id: &str,
+    log_model: &str,
+    fallback_err: &str,
+) -> String {
+    let s1_raw = response_formatter::json_root_raw_value(combined_body, "stage1").unwrap_or("{}");
+    let s2: serde_json::Value = response_formatter::json_root_raw_value(combined_body, "stage2")
+        .and_then(|x| serde_json::from_str(x).ok())
+        .unwrap_or(serde_json::json!({}));
+    if !response_formatter::find_urls(&s2).is_empty() {
+        cascade_format_s2_succeeded(
+            raw_path, category, plugin_tag, s1_raw, &s2, task_id, log_model,
+        )
+    } else {
+        let err = cascade_stage2_err_text(&s2, fallback_err);
+        response_formatter::format_async_task_failed(raw_path, category, task_id, &err)
+    }
+}
+
+/// 级联轮询决策与目标（供 GET 状态查询与后台 Poller 一体化调用）
+pub(crate) struct CascadePollPlan<'a> {
+    pub stage: u8,
+    pub post_resp_json: serde_json::Value,
+    pub poll: CascadePollTarget<'a>,
+}
+
+/// 统一解析 post_response、计算级联阶段并组装轮询目标
+pub(crate) fn cascade_prepare_poll<'a>(
+    is_cascade: bool,
+    post_response: &str,
+    channel: &'a Channel,
+    resolved: &'a forward::ResolvedForward,
+    plugin_tag: &str,
+    task_id: &'a str,
+    poll_model: &'a str,
+) -> Result<CascadePollPlan<'a>, (String, u16)> {
+    // 级联基因守卫：任务历史中必须持有级联上下文（plugin_tag 含 cascade），否则物理拦截降为单阶段，坚决杜绝误判
+    let is_cascade = is_cascade && cascade_plugin_tag_present(plugin_tag);
+    let post_resp_json: serde_json::Value = if is_cascade {
+        serde_json::from_str(post_response).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let stage = if !is_cascade {
+        0
+    } else if post_resp_json.get("stage2").is_some() {
+        2
+    } else {
+        1
+    };
+
+    let poll = if stage == 2 {
+        let stage2_val = &post_resp_json["stage2"];
+        let s2_id = response_formatter::find_id(stage2_val);
+        if s2_id.is_empty() {
+            let msg = cascade_stage2_err_text(stage2_val, "S2 无任务 ID");
+            let status = match stage2_val {
+                serde_json::Value::String(s) if !s.trim().is_empty() => {
+                    proxy::infer_error_status_code_from_str(s)
+                }
+                serde_json::Value::Object(m) if !m.is_empty() => {
+                    proxy::infer_error_status_code(stage2_val)
+                }
+                serde_json::Value::Array(a) if !a.is_empty() => {
+                    proxy::infer_error_status_code(stage2_val)
+                }
+                _ => 500,
+            };
+            return Err((msg, status));
+        }
+        if cascade_engine(plugin_tag) == "tencent" {
+            CascadePollTarget {
+                channel: std::borrow::Cow::Borrowed(channel),
+                resolved: std::borrow::Cow::Borrowed(resolved),
+                task_id: std::borrow::Cow::Owned(s2_id),
+                model: std::borrow::Cow::Borrowed(poll_model),
+            }
+        } else {
+            #[cfg(not(feature = "plugin_volcengine_enhance"))]
+            {
+                let _ = (channel, resolved, poll_model);
+                return Err(("火山增强插件未编译".into(), 400));
+            }
+            #[cfg(feature = "plugin_volcengine_enhance")]
+            {
+                let cascade_info = serde_json::from_str::<serde_json::Value>(plugin_tag)
+                    .ok()
+                    .and_then(|v| v.get("cascade").cloned())
+                    .unwrap_or(serde_json::json!({}));
+                let (ch, mut res, model) =
+                    crate::api::plugins::volc_s2_from_tag(channel, &cascade_info);
+                res.res_mul.clone_from(&resolved.res_mul);
+                CascadePollTarget {
+                    channel: std::borrow::Cow::Owned(ch),
+                    resolved: std::borrow::Cow::Owned(res),
+                    task_id: std::borrow::Cow::Owned(s2_id),
+                    model: std::borrow::Cow::Owned(model),
+                }
+            }
+        }
+    } else {
+        let poll_task_id = cascade_json_ptr(plugin_tag, "/cascade/s1_task_id", false)
+            .map(std::borrow::Cow::Owned)
+            .unwrap_or(std::borrow::Cow::Borrowed(task_id));
+        CascadePollTarget {
+            channel: std::borrow::Cow::Borrowed(channel),
+            resolved: std::borrow::Cow::Borrowed(resolved),
+            task_id: poll_task_id,
+            model: std::borrow::Cow::Borrowed(poll_model),
+        }
+    };
+
+    Ok(CascadePollPlan {
+        stage,
+        post_resp_json,
+        poll,
+    })
+}
+
+/// S2 失败落库（GET/后台共用）；仅未结案可写。
+pub(crate) async fn cascade_persist_s2_fail(
+    state: &AppState,
+    log_id: i64,
+    post_resp_json: &serde_json::Value,
+    s1_raw: &str,
+    store_body: &str,
+    err_text: &str,
+    log_prefix: &str,
+) {
+    crate::relay_debug!("[{}] S2失败 log_id={} err={}", log_prefix, log_id, err_text);
+    let updated = serde_json::json!({
+        "stage1": post_resp_json["stage1"],
+        "stage2": err_text
+    })
+    .to_string();
+    let resp_content = cascade_combine_stages(s1_raw, store_body);
+    let _ = sqlx::query(&state.db.format_query(
+        "UPDATE logs SET response_content = ?, error_message = ?, post_response = ? \
+         WHERE id = ? AND is_completed = 0",
+    ))
+    .bind(&resp_content)
+    .bind(err_text)
+    .bind(&updated)
+    .bind(log_id)
+    .execute(&state.db.pool)
+    .await;
+}
+
+/// 终态清理 plugin_tag 中的密钥等敏感字段并落库（若无变更则不执行 update）
+pub(crate) async fn cascade_scrub_and_update_log_tag(
+    state: &AppState,
+    log_id: i64,
+    plugin_tag: &str,
+) {
+    let mut tag = Some(plugin_tag.to_string());
+    if cascade_scrub_plugin_tag_for_user(&mut tag) {
+        if let Some(t) = tag {
+            let _ = sqlx::query(
+                &state
+                    .db
+                    .format_query("UPDATE logs SET plugin_tag = ? WHERE id = ?"),
+            )
+            .bind(&t)
+            .bind(log_id)
+            .execute(&state.db.pool)
+            .await;
+        }
+    }
+}
+
+/// 进程内互斥：占位成功则持有，Drop 时自动 remove（S2 提交 / 终态收敛结算共用）
+pub(crate) struct CascadeS2InflightGuard<'a> {
     map: &'a dashmap::DashMap<i64, ()>,
     id: i64,
 }
 
 impl<'a> CascadeS2InflightGuard<'a> {
-    fn try_acquire(map: &'a dashmap::DashMap<i64, ()>, id: i64) -> Option<Self> {
+    pub(crate) fn try_acquire(map: &'a dashmap::DashMap<i64, ()>, id: i64) -> Option<Self> {
         if map.insert(id, ()).is_some() {
             return None;
         }
@@ -1032,47 +1184,62 @@ impl Drop for CascadeS2InflightGuard<'_> {
 }
 
 /// S2 提交入参（手动 GET / 后台共用，避免 10+ 散参）
-pub(crate) struct CascadeS2SubmitCtx<'a> {
-    pub task_id: &'a str,
+pub(crate) struct CascadeS2SubmitCtx {
+    pub task_id: String,
     pub log_id: i64,
-    pub post_response: &'a str,
-    pub request_content: &'a str,
-    pub upstream_req: &'a str,
-    pub channel: &'a Channel,
-    pub base_video_url: &'a str,
-    pub plugin_tag: &'a str,
-    pub stage1_response: &'a str,
-    /// 仅目标 720p 且底座 480 时是否 MediaKit 裁剪（转发规则同名字段，缺省 true）
-    pub crop_480p: bool,
+    pub post_response: String,
+    pub request_content: String,
+    pub upstream_req: String,
+    pub channel: Channel,
+    pub base_video_url: String,
+    pub plugin_tag: String,
+    pub stage1_response: String,
+    /// 转发规则配置（含 crop_480p, crop_timing 等）
+    pub resolved: forward::ResolvedForward,
 }
 
-/// S2 提交超分（GET/后台共用）。失败只落库；退费由调用方 settle_failure(stage=2)
-pub(crate) async fn cascade_stage2_submit(
-    state: &Arc<AppState>,
-    ctx: &CascadeS2SubmitCtx<'_>,
-) -> Result<CascadeS2SubmitOutcome, (String, u16)> {
+/// S2 提交：立刻返回，前裁+提交在后台做。失败只落库，退费由下次 prepare_poll / settle。
+pub(crate) async fn cascade_stage2_submit(state: &Arc<AppState>, ctx: CascadeS2SubmitCtx) {
+    if state.cascade_s2_inflight.contains_key(&ctx.log_id) {
+        crate::relay_debug!("[Cascade S2] 跳过 log_id={}（忙）", ctx.log_id);
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        cascade_stage2_submit_run(&state, &ctx).await;
+    });
+}
+
+async fn cascade_stage2_submit_run(state: &Arc<AppState>, ctx: &CascadeS2SubmitCtx) {
     let Some(_guard) = CascadeS2InflightGuard::try_acquire(&state.cascade_s2_inflight, ctx.log_id)
     else {
         crate::relay_debug!("[Cascade S2] 跳过 log_id={}（忙）", ctx.log_id);
-        return Ok(CascadeS2SubmitOutcome::InProgress);
+        return;
     };
 
     let post_resp: serde_json::Value =
-        serde_json::from_str(ctx.post_response).unwrap_or(serde_json::json!({}));
+        serde_json::from_str(&ctx.post_response).unwrap_or(serde_json::json!({}));
 
     let mut updated_tag_opt: Option<String> = None;
-    if !ctx.plugin_tag.is_empty() {
-        if let Ok(mut pt) = serde_json::from_str::<serde_json::Value>(ctx.plugin_tag) {
-            if let Some(cascade) = pt.get_mut("cascade").and_then(|v| v.as_object_mut()) {
-                if cascade.remove("api_key").is_some() {
-                    updated_tag_opt = Some(pt.to_string());
+    let cascade_snap = if ctx.plugin_tag.is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_str::<serde_json::Value>(&ctx.plugin_tag) {
+            Ok(mut pt) => {
+                let snap = pt.get("cascade").cloned().unwrap_or(serde_json::json!({}));
+                if let Some(cascade) = pt.get_mut("cascade").and_then(|v| v.as_object_mut()) {
+                    if cascade.remove("api_key").is_some() {
+                        updated_tag_opt = Some(pt.to_string());
+                    }
                 }
+                snap
             }
+            Err(_) => serde_json::json!({}),
         }
-    }
+    };
     // S1 轮询成功体：根 id 换成用户侧 cgt 再落库（后续 combine/展示同源）
-    let mut s1_body = ctx.stage1_response.to_string();
-    response_formatter::force_json_task_id(&mut s1_body, ctx.task_id);
+    let mut s1_body = ctx.stage1_response.clone();
+    response_formatter::force_json_task_id(&mut s1_body, &ctx.task_id);
     let s1_json: serde_json::Value =
         serde_json::from_str(&s1_body).unwrap_or(serde_json::json!({}));
 
@@ -1109,209 +1276,175 @@ pub(crate) async fn cascade_stage2_submit(
             None,
         )
         .await;
-        return Err((err_msg.to_string(), 500));
+        return;
     }
 
-    let seed_resolved = forward::ResolvedForward {
-        target_type: "volcengine_media_enhance".to_string(),
-        upstream_path: "/api/v1/tools/enhance-video".to_string(),
-        auth_type: "volcengine_sign".to_string(),
-        ..Default::default()
-    };
-    let (enhance_ch, mut volc_resolved, final_model) =
-        cascade_stage2_poll_target(ctx.channel, &seed_resolved, ctx.plugin_tag, ctx.task_id);
-    let volc_model_mid = volc_resolved
-        .mid
-        .get_or_insert_with(|| "vve-sd".to_string())
-        .clone();
-
-    let target_resolution = cascade_resolve_target_resolution(ctx.plugin_tag, ctx.request_content);
-    let base_video_url = if ctx.crop_480p {
-        let req_hint: serde_json::Value =
-            serde_json::from_str(ctx.request_content).unwrap_or(serde_json::json!({}));
-        let up_hint: serde_json::Value =
-            serde_json::from_str(ctx.upstream_req).unwrap_or(serde_json::json!({}));
-        let mk = CascadeMk {
-            state,
-            ch: &enhance_ch,
-            auth_type: &volc_resolved.auth_type,
-        };
-        cascade_ensure_standard_480p_video(
-            &mk,
-            ctx.base_video_url,
-            &s1_json,
-            &target_resolution,
-            &[&up_hint, &req_hint],
-        )
-        .await
-    } else {
-        ctx.base_video_url.to_string()
-    };
-
-    let volc_url = forward::build_upstream_url(
-        &enhance_ch.base_url,
-        &volc_resolved,
-        &final_model,
-        &enhance_ch.api_key,
-    );
-
-    let mut volc_payload = serde_json::json!({
-        "video_url": base_video_url,
-        "fps": 24,
-        "bitrate_level": "high"
-    });
-    cascade_s2_apply_resolution_param(&mut volc_payload, &target_resolution, &volc_model_mid);
-    if let Some(tv) = forward::volc_enhance_tool_version(&volc_model_mid) {
-        volc_payload["tool_version"] = serde_json::json!(tv);
-        if tv == "standard" {
-            let scene = cascade_json_str(ctx.plugin_tag, "/cascade/scene")
-                .and_then(|s| cascade_scene_pair(&s))
-                .unwrap_or("common");
-            volc_payload["scene"] = serde_json::json!(scene);
-        }
-    }
-
-    // 临时错最多 5 次；退避 10→20→40→60s（总睡眠约 130s，原固定 120s×4≈480s）
-    let max_attempts = 5u32;
-    let mut attempt = 0u32;
-
-    let (stage2_id, post_json) = loop {
-        attempt += 1;
-        let mut volc_body = volc_payload.clone();
-        let builder = state
-            .http_client
-            .post(&volc_url)
-            .header("Content-Type", "application/json");
-        let builder =
-            crate::services::http_client::with_upstream_timeout(forward::apply_request_auth(
-                builder,
-                &volc_resolved,
-                &enhance_ch.api_key,
-                &mut volc_body,
-                &enhance_ch.base_url,
-            ));
-
-        let (should_retry, err_msg, err_status, raw_text) = match builder.send().await {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                let text = resp.text().await.unwrap_or_default();
-                if status == 200 {
-                    match cascade_s2_parse_post_200(&text) {
-                        Ok(ok) => break ok,
-                        Err(CascadeS2Post200Fail::Upstream(post)) => {
-                            let err =
-                                match response_formatter::extract_error_message_from_value(&post) {
-                                    Some(m) if !m.is_empty() => format!(
-                                        "增强失败: {}",
-                                        proxy::sanitize_error_message(&m)
-                                    ),
-                                    _ => "增强失败（无任务 ID）".to_string(),
-                                };
-                            (false, err, proxy::infer_error_status_code(&post), text)
-                        }
-                        Err(CascadeS2Post200Fail::MissingTaskId) => {
-                            let snippet: String = text.chars().take(240).collect();
-                            crate::relay_debug!(
-                                "[Cascade S2 POST] HTTP200 无任务ID log_id={} url={} body={}",
-                                ctx.log_id,
-                                volc_url,
-                                snippet
-                            );
-                            // 有响应体则推断；空体无法识别 → 500
-                            let st = if text.trim().is_empty() {
-                                500
-                            } else {
-                                proxy::infer_error_status_code_from_str(&text)
-                            };
-                            (
-                                false,
-                                "火山增强提交成功但未能解析到超分任务 ID".to_string(),
-                                st,
-                                text,
-                            )
-                        }
-                    }
-                } else {
-                    let err_text_raw = proxy::extract_error_message(&text);
-                    let err_text = proxy::sanitize_error_message(&if err_text_raw.is_empty() {
-                        format!("增强失败 HTTP {}", status)
-                    } else {
-                        err_text_raw
-                    });
-                    const RETRY_CODES: &[&str] = &[
-                        "requestlimitexceeded",
-                        "internalserviceerror",
-                        "downloadfileerror",
-                        "abilityprocessingerror",
-                        "serviceinitializingerror",
-                        "internalservicetimeout",
-                    ];
-                    let retry = proxy::is_poll_transport_retryable(status)
-                        || serde_json::from_str::<serde_json::Value>(&text)
-                            .ok()
-                            .and_then(|v| response_formatter::extract_error_code_from_value(&v))
-                            .is_some_and(|code| {
-                                let c = code.to_lowercase();
-                                RETRY_CODES.iter().any(|&k| c.contains(k))
-                            });
-                    (retry, err_text, status, text)
-                }
-            }
-            Err(e) => (
-                true,
-                proxy::sanitize_error_message(&format!("增强连接失败: {:?}", e)),
-                502,
-                String::new(),
-            ),
-        };
-
-        if should_retry && attempt < max_attempts {
-            let delay_secs = (10u64 << (attempt - 1).min(3)).min(60);
-            crate::relay_debug!(
-                "[Cascade S2 POST] 临时错误 {}/{}，{}s 后重试: {}",
-                attempt,
-                max_attempts,
-                delay_secs,
-                err_msg
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-        } else {
-            let err_status = proxy::normalize_error_http_status(err_status);
-            crate::relay_debug!(
-                "[Cascade S2 POST] 失败 ({}/{}) log_id={} status={} err={}",
-                attempt,
-                max_attempts,
-                ctx.log_id,
-                err_status,
-                err_msg
-            );
+    let engine = cascade_engine(&ctx.plugin_tag);
+    let target_resolution = cascade_snap
+        .get("resolution")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .or_else(|| cascade_json_str(&ctx.request_content, "/resolution"))
+        .unwrap_or_else(|| "720p".into());
+    if engine == "tencent" {
+        #[cfg(not(feature = "plugin_tencent_enhance"))]
+        {
+            let err_msg = "腾讯云增强插件未编译";
             write_error(
                 state,
-                &err_msg,
+                err_msg,
                 &post_resp,
                 &s1_body,
-                &raw_text,
+                err_msg,
                 &updated_tag_opt,
-                cascade_upstream_req_combined(ctx.upstream_req, &volc_payload),
+                None,
             )
             .await;
-            return Err((err_msg, err_status));
+            return;
         }
-    };
+        #[cfg(feature = "plugin_tencent_enhance")]
+        {
+            let video_url = cascade_s2_maybe_pre_crop(
+                state,
+                ctx,
+                &s1_json,
+                &target_resolution,
+                &engine,
+                &ctx.channel,
+                "",
+            )
+            .await;
+            match crate::api::plugins::submit_tencent_cascade_stage2(
+                state,
+                ctx.log_id,
+                &video_url,
+                &target_resolution,
+            )
+            .await
+            {
+                Ok((stage2_id, post_json, tencent_payload)) => {
+                    let updated =
+                        serde_json::json!({"stage1": post_resp, "stage2": post_json}).to_string();
+                    let upstream_combined =
+                        cascade_upstream_req_combined(&ctx.upstream_req, &tencent_payload);
+                    let _ = sqlx::query(&state.db.format_query(
+                        "UPDATE logs SET post_response = ?, response_content = ?, plugin_tag = COALESCE(?, plugin_tag), upstream_req_content = COALESCE(?, upstream_req_content) WHERE id = ?",
+                    ))
+                    .bind(&updated)
+                    .bind(&s1_body)
+                    .bind(&updated_tag_opt)
+                    .bind(&upstream_combined)
+                    .bind(ctx.log_id)
+                    .execute(&state.db.pool)
+                    .await;
+                    crate::relay_debug!(
+                        "[Cascade S2] tencent 提交成功 日志ID={} 阶段1={} 阶段2={} 分辨率={}",
+                        ctx.log_id,
+                        ctx.task_id,
+                        stage2_id,
+                        target_resolution
+                    );
+                    return;
+                }
+                Err((err_msg, _)) => {
+                    write_error(
+                        state,
+                        &err_msg,
+                        &post_resp,
+                        &s1_body,
+                        &err_msg,
+                        &updated_tag_opt,
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    }
 
-    let updated = serde_json::json!({"stage1": post_resp, "stage2": post_json}).to_string();
-    let upstream_combined = cascade_upstream_req_combined(ctx.upstream_req, &volc_payload);
-    let _ = sqlx::query(&state.db.format_query("UPDATE logs SET post_response = ?, response_content = ?, upstream_req_content = COALESCE(?, upstream_req_content) WHERE id = ?"))
-        .bind(&updated).bind(&s1_body).bind(&upstream_combined).bind(ctx.log_id).execute(&state.db.pool).await;
+    #[cfg(not(feature = "plugin_volcengine_enhance"))]
+    {
+        let err_msg = "火山增强插件未编译";
+        write_error(
+            state,
+            err_msg,
+            &post_resp,
+            &s1_body,
+            err_msg,
+            &updated_tag_opt,
+            None,
+        )
+        .await;
+        return;
+    }
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    {
+        let (enhance_ch, volc_resolved, final_model) =
+            crate::api::plugins::volc_s2_from_tag(&ctx.channel, &cascade_snap);
+        let volc_model_mid = volc_resolved.mid.clone().unwrap_or_default();
 
-    crate::relay_debug!(
-        "[Cascade S2] 级联提交成功 日志ID={} 阶段1={} 阶段2={} MID={} 分辨率={} 渠道={}",
-        ctx.log_id,
-        ctx.task_id,
-        stage2_id,
-        volc_model_mid,
-        target_resolution,
-        enhance_ch.name
-    );
-    Ok(CascadeS2SubmitOutcome::Submitted(stage2_id))
+        let base_video_url = cascade_s2_maybe_pre_crop(
+            state,
+            ctx,
+            &s1_json,
+            &target_resolution,
+            &engine,
+            &enhance_ch,
+            volc_resolved.auth_type.as_str(),
+        )
+        .await;
+
+        let scene = cascade_snap
+            .get("scene")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+        match crate::api::plugins::submit_volc_cascade_stage2(
+            state,
+            &enhance_ch,
+            &volc_resolved,
+            &final_model,
+            &base_video_url,
+            &target_resolution,
+            &volc_model_mid,
+            scene.as_deref(),
+            ctx.log_id,
+        )
+        .await
+        {
+            Ok((stage2_id, post_json, volc_payload)) => {
+                let updated =
+                    serde_json::json!({"stage1": post_resp, "stage2": post_json}).to_string();
+                let upstream_combined =
+                    cascade_upstream_req_combined(&ctx.upstream_req, &volc_payload);
+                let _ = sqlx::query(&state.db.format_query("UPDATE logs SET post_response = ?, response_content = ?, upstream_req_content = COALESCE(?, upstream_req_content) WHERE id = ?"))
+                    .bind(&updated).bind(&s1_body).bind(&upstream_combined).bind(ctx.log_id).execute(&state.db.pool).await;
+
+                crate::relay_debug!(
+                    "[Cascade S2] 级联提交成功 日志ID={} 阶段1={} 阶段2={} MID={} 分辨率={} 渠道={}",
+                    ctx.log_id,
+                    ctx.task_id,
+                    stage2_id,
+                    volc_model_mid,
+                    target_resolution,
+                    enhance_ch.name
+                );
+            }
+            Err((err_msg, _, raw_text, volc_payload)) => {
+                write_error(
+                    state,
+                    &err_msg,
+                    &post_resp,
+                    &s1_body,
+                    &raw_text,
+                    &updated_tag_opt,
+                    cascade_upstream_req_combined(&ctx.upstream_req, &volc_payload),
+                )
+                .await;
+            }
+        }
+    }
 }
+

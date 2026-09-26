@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -29,6 +29,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import { invalidateActivePluginsCache } from '../../utils/activePlugins';
+import { invalidateAdminPluginsCache } from '../../utils/adminPlugins';
 import type { Plugin } from '../../types';
 import { pluginLocales } from '../../i18n';
 import useSettingsStore from '../../store/settings';
@@ -126,6 +127,7 @@ const PluginsList: React.FC = () => {
     try {
       await request.post(`/plugins/${plugin.name}/toggle`, { is_enabled: checked ? 1 : 0 });
       invalidateActivePluginsCache();
+      invalidateAdminPluginsCache();
       message.success(checked ? t('plugins_page.enabled') : t('plugins_page.disabled'));
       fetchPlugins();
     } catch (error) {

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 pub mod migrations;
@@ -31,11 +31,23 @@ impl Database {
             actual_url = format!("{}{sep}sslmode=disable", actual_url);
         }
 
+        let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+
+        let acquire_timeout_secs = std::env::var("DATABASE_ACQUIRE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12);
+
         let pool = loop {
             attempts += 1;
             match PgPoolOptions::new()
-                .max_connections(20)
-                .acquire_timeout(std::time::Duration::from_secs(5))
+                .max_connections(max_connections)
+                .acquire_timeout(std::time::Duration::from_secs(acquire_timeout_secs))
+                .idle_timeout(std::time::Duration::from_secs(600))
+                .max_lifetime(std::time::Duration::from_secs(1800))
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
                         // timesystem：每个连接强制 UTC，与进程 TZ=UTC 对齐
@@ -134,6 +146,39 @@ impl Database {
             // If we're here, we had 10 collisions (highly unlikely) or the space is crowded
             prefix += 1;
         }
+    }
+
+    pub async fn generate_unique_forward_eid(&self) -> anyhow::Result<String> {
+        use rand::Rng;
+        for _ in 0..32 {
+            let candidate = format!("1{:04}", rand::thread_rng().gen_range(0..10_000));
+            if !self.forward_eid_taken(&candidate, None).await? {
+                return Ok(candidate);
+            }
+        }
+        Err(anyhow::anyhow!("生成转发规则 EID 失败，请重试"))
+    }
+
+    pub async fn forward_eid_taken(
+        &self,
+        eid: &str,
+        exclude_id: Option<i64>,
+    ) -> anyhow::Result<bool> {
+        let taken: Option<i64> = if let Some(id) = exclude_id {
+            sqlx::query_scalar(
+                &self.format_query("SELECT id FROM forward_rules WHERE eid = ? AND id != ?"),
+            )
+            .bind(eid)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(&self.format_query("SELECT id FROM forward_rules WHERE eid = ?"))
+                .bind(eid)
+                .fetch_optional(&self.pool)
+                .await?
+        };
+        Ok(taken.is_some())
     }
 
     pub async fn get_user_display_name(&self, id_or_val: &str) -> String {

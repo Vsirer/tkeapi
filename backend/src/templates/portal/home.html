@@ -1,8 +1,8 @@
 <!--
-  tokensbyte opensource
-  (c) 2026 tokensbyte.ai
+  tkeapi (tokensbyte) opensource
+  © 2026 tkeapi.com
   @copyright      Copyright netbcloud/wstianxia 
-  @license        MIT (https://www.tokensbyte.ai/)
+  @license        MIT (https://www.tkeapi.com/)
 -->
 
 {% extends "base.html" %}
@@ -57,7 +57,7 @@
 
 .stats { padding: 40px 0; background: var(--bg-secondary); border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
 .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; text-align: center; }
-.si b { display: block; font-size: 36px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; letter-spacing: -1px; }
+.si b { display: block; font-size: 36px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
 .si span { color: var(--text-secondary); font-size: 15px; font-weight: 500; }
 @media(max-width: 768px) { .stats-row { grid-template-columns: repeat(2, 1fr); gap: 32px; } }
 
@@ -680,9 +680,9 @@
   <div class="tech-left">
     <div class="hero-badge" style="border-radius: 0px;"><span data-i18n="hero_badge">✨ Explore Next-Gen AI</span> <span class="arrow">→</span></div>
     <h1 class="tech-title">
-      <span data-i18n-dynamic="{{ home.hero_title | default(value="") }}" {% if not home.hero_title %}data-i18n-key="hero_title"{% endif %}>{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</span>
+      <span data-i18n-dynamic="{{ home.hero_title | default(value="") }}" data-i18n-key="hero_title">{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</span>
     </h1>
-    <p class="tech-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" {% if not home.hero_subtitle %}data-i18n-key="hero_subtitle"{% endif %}>{{ home.hero_subtitle | default(value="OpenAI 兼容格式，极速接入 GPT-4o、Claude、DeepSeek、Gemini 等主流模型。按量付费，零门槛开始。") }}</p>
+    <p class="tech-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" data-i18n-key="hero_subtitle">{{ home.hero_subtitle | default(value="OpenAI兼容和原生格式，极速接入主流模型，零门槛开始") }}</p>
     
     <!-- API Display -->
     <div class="api-display-container" style="margin: 0; max-width: 100%;">
@@ -754,6 +754,9 @@ resp = client.chat.completions.create(
   </div>
 </header>
 
+{% elif style and style.current_style == "fai_art" %}
+{% include "styles/fai_art/_home.html" %}
+
 {% elif style and style.current_style == "dark_gradient" %}
 <!-- Model Extraction logic for SaaS 3D stack cards -->
 {% set openai_model = "" %}
@@ -777,9 +780,9 @@ resp = client.chat.completions.create(
   <div class="hero-content" style="max-width: 900px; margin-bottom: 24px;">
     <div class="hero-badge" style="border-radius: 9999px; background: rgba(236,72,153,0.05); border-color: rgba(236,72,153,0.2);"><span data-i18n="hero_badge" style="color: #ec4899;">✨ Explore Next-Gen AI</span> <span class="arrow" style="color: #ec4899;">→</span></div>
     <h1 class="cosmic-title">
-      <span data-i18n-dynamic="{{ home.hero_title | default(value="") }}" {% if not home.hero_title %}data-i18n-key="hero_title"{% endif %}>{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</span>
+      <span data-i18n-dynamic="{{ home.hero_title | default(value="") }}" data-i18n-key="hero_title">{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</span>
     </h1>
-    <p class="cosmic-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" {% if not home.hero_subtitle %}data-i18n-key="hero_subtitle"{% endif %}>{{ home.hero_subtitle | default(value="OpenAI 兼容格式，极速接入 GPT-4o、Claude、DeepSeek、Gemini 等主流模型。按量付费，零门槛开始。") }}</p>
+    <p class="cosmic-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" data-i18n-key="hero_subtitle">{{ home.hero_subtitle | default(value="OpenAI兼容和原生格式，极速接入主流模型，零门槛开始") }}</p>
 
     <!-- API Base URL display card -->
     <div class="api-display-container">
@@ -944,8 +947,8 @@ resp = client.chat.completions.create(
 
   <div class="hero-content">
     <div class="hero-badge"><span data-i18n="hero_badge">✨ Explore Next-Gen AI</span> <span class="arrow">→</span></div>
-    <h1 class="hero-title" data-i18n-dynamic="{{ home.hero_title | default(value="") }}" {% if not home.hero_title %}data-i18n-key="hero_title"{% endif %}>{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</h1>
-    <p class="hero-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" {% if not home.hero_subtitle %}data-i18n-key="hero_subtitle"{% endif %}>{{ home.hero_subtitle | default(value="OpenAI 兼容格式，极速接入 GPT-4o、Claude、DeepSeek、Gemini 等主流模型。按量付费，零门槛开始。") }}</p>
+    <h1 class="hero-title" data-i18n-dynamic="{{ home.hero_title | default(value="") }}" data-i18n-key="hero_title">{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</h1>
+    <p class="hero-subtitle" data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" data-i18n-key="hero_subtitle">{{ home.hero_subtitle | default(value="OpenAI兼容和原生格式，极速接入主流模型，零门槛开始") }}</p>
 
     <!-- API Base URL display card -->
     <div class="api-display-container">
@@ -1023,14 +1026,23 @@ resp = client.chat.completions.create(
 </header>
 {% endif %}
 
+{% if style.current_style != "fai_art" %}
+{% set_global marketplace_href = nav.marketplace_path | default(value="/home/models") %}
+{% if nav.items %}
+  {% for item in nav.items %}
+    {% if item.key == "marketplace" and item.path %}
+      {% set_global marketplace_href = item.path %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
 <!-- Stats Section -->
 <section class="stats">
   <div class="wrap">
-    <div class="stats-row">
-      <div class="si"><b>{{ models | length }}+</b><span data-i18n="stats_models">AI 模型</span></div>
-      <div class="si"><b>99.99%</b><span data-i18n="stats_uptime">服务可用率</span></div>
-      <div class="si"><b>&lt;80ms</b><span data-i18n="stats_latency">首字平均延迟</span></div>
-      <div class="si"><b>&infin;</b><span data-i18n="stats_concurrency">并发无上限</span></div>
+    <div class="stats-row" id="portal-stats-row">
+      <div class="si"><b class="portal-stat-num" data-target="200" data-suffix="+">200+</b><span data-i18n="stats_models">AI 模型</span></div>
+      <div class="si"><b class="portal-stat-num" data-target="99.99" data-decimals="2" data-suffix="%">99.99%</b><span data-i18n="stats_uptime">服务可用率</span></div>
+      <div class="si"><b class="portal-stat-num" data-target="80" data-prefix="&lt;" data-suffix="ms">&lt;80ms</b><span data-i18n="stats_latency">首字平均延迟</span></div>
+      <div class="si"><b class="portal-stat-num portal-stat-infinity" data-special="infinity" data-final="&infin;">&infin;</b><span data-i18n="stats_concurrency">并发无上限</span></div>
     </div>
   </div>
 </section>
@@ -1089,9 +1101,9 @@ resp = client.chat.completions.create(
   <div class="wrap">
     <div class="qnav-grid">
       {% if columns.models.enabled | default(value=true) %}
-      <a href="/home/models" class="qnav-card">
+      <a href="{{ marketplace_href | default(value="/home/models") | safe }}" class="qnav-card">
         <div class="qic"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
-        <h3 data-i18n-dynamic="{{ columns.models.title | default(value="") }}" {% if not columns.models.title %}data-i18n-key="qnav1_title"{% endif %}>{{ columns.models.title | default(value="模型数据") }}</h3>
+        <h3 data-i18n-dynamic="{{ columns.models.title | default(value="") }}" data-i18n-key="qnav1_title">{{ columns.models.title | default(value="模型数据") }}</h3>
         <p data-i18n="qnav1_desc">查看平台全部 AI 模型，覆盖文本、图像、视频、语音等能力</p>
         <span class="arr">&rarr;</span>
       </a>
@@ -1099,7 +1111,7 @@ resp = client.chat.completions.create(
       {% if columns.contact.enabled | default(value=true) %}
       <a href="/home/contact" class="qnav-card">
         <div class="qic"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="3" x2="21" y1="22" y2="22"/><line x1="6" x2="6" y1="18" y2="11"/><line x1="10" x2="10" y1="18" y2="11"/><line x1="14" x2="14" y1="18" y2="11"/><line x1="18" x2="18" y1="18" y2="11"/><polygon points="12 2 20 7 4 7"/></svg></div>
-        <h3 data-i18n-dynamic="{{ columns.contact.title | default(value="") }}" {% if not columns.contact.title %}data-i18n-key="qnav2_title"{% endif %}>{{ columns.contact.title | default(value="联系我们") }}</h3>
+        <h3 data-i18n-dynamic="{{ columns.contact.title | default(value="") }}" data-i18n-key="qnav2_title">{{ columns.contact.title | default(value="联系我们") }}</h3>
         <p data-i18n="qnav2_desc">技术支持、商务合作、定制化需求</p>
         <span class="arr">&rarr;</span>
       </a>
@@ -1107,7 +1119,7 @@ resp = client.chat.completions.create(
       {% if columns.about.enabled | default(value=true) %}
       <a href="/home/about" class="qnav-card">
         <div class="qic"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a2 2 0 0 0 1.78 2.95h11a2 2 0 0 0 1.78-2.95l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/><path d="M7 16h10"/></svg></div>
-        <h3 data-i18n-dynamic="{{ columns.about.title | default(value="") }}" {% if not columns.about.title %}data-i18n-key="qnav3_title"{% endif %}>{{ columns.about.title | default(value="关于我们") }}</h3>
+        <h3 data-i18n-dynamic="{{ columns.about.title | default(value="") }}" data-i18n-key="qnav3_title">{{ columns.about.title | default(value="关于我们") }}</h3>
         <p data-i18n="qnav3_desc">了解团队愿景与技术实力</p>
         <span class="arr">&rarr;</span>
       </a>
@@ -1120,54 +1132,65 @@ resp = client.chat.completions.create(
 <section class="cta-banner">
   <div class="wrap">
     <div class="cta-content">
-      <h2 data-i18n-dynamic="{{ home.cta_title | default(value="") }}" {% if not home.cta_title %}data-i18n-key="cta_title"{% endif %}>{{ home.cta_title | default(value="准备好开始构建了吗？") }}</h2>
-      <p class="cta-desc" data-i18n-dynamic="{{ home.cta_description | default(value="") }}" {% if not home.cta_description %}data-i18n-key="cta_description"{% endif %}>{{ home.cta_description | default(value="只需 3 分钟即可获取您的 API 密钥并开始创新。基础 URL：https://api.artsapi.com/api，零成本平滑迁移。") | safe }}</p>
+      <h2 data-i18n-dynamic="{{ home.cta_title | default(value="") }}" data-i18n-key="cta_title">{{ home.cta_title | default(value="准备好开始构建了吗？") }}</h2>
+      <p class="cta-desc" data-i18n-dynamic="{{ home.cta_description | default(value="") }}" data-i18n-key="cta_description">{{ home.cta_description | default(value="只需 3 分钟即可获取您的 API 密钥并开始创新。基础 URL：https://api.artsapi.com/api，零成本平滑迁移。") | safe }}</p>
       <div class="cta-actions">
         {% set primary_text = home.cta_primary_btn_text | default(value="开始对话") %}
         {% set primary_link = home.cta_primary_btn_link | default(value="https://api.artsapi.com") %}
         {% if primary_text %}
-        <a href="{{ primary_link }}" class="cta-primary" data-i18n-dynamic="{{ primary_text }}" {% if not home.cta_primary_btn_text %}data-i18n-key="cta_primary_btn_text"{% endif %}>{{ primary_text }}</a>
+        <a href="{{ primary_link }}" class="cta-primary" data-i18n-dynamic="{{ primary_text }}" data-i18n-key="cta_primary_btn_text">{{ primary_text }}</a>
         {% endif %}
         
         {% set secondary_text = home.cta_secondary_btn_text | default(value="阅读文档") %}
         {% set secondary_link = home.cta_secondary_btn_link | default(value="https://docs.artsapi.com") %}
         {% if secondary_text %}
         <div class="cta-secondary-wrapper">
-          <a href="{{ secondary_link }}" class="cta-secondary" data-i18n-dynamic="{{ secondary_text }}" {% if not home.cta_secondary_btn_text %}data-i18n-key="cta_secondary_btn_text"{% endif %}>{{ secondary_text }}</a>
+          <a href="{{ secondary_link }}" class="cta-secondary" data-i18n-dynamic="{{ secondary_text }}" data-i18n-key="cta_secondary_btn_text">{{ secondary_text }}</a>
         </div>
         {% endif %}
       </div>
     </div>
   </div>
 </section>
+{% endif %}
 
 <!-- Connected Particles Animation & Dynamic Address Script -->
 <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    // Resolve correct local or production API URL
-    let resolvedApiUrl = window.location.origin + '/v1';
-    const configuredUrl = "{{ home.api_base_url | default(value="") | safe }}";
-    if (configuredUrl) {
-      resolvedApiUrl = configuredUrl;
-    }
+  function resolvePortalApiBaseUrl() {
+    const configuredUrl = "{{ home.api_base_url | default(value="") | safe }}".trim();
+    if (configuredUrl) return configuredUrl;
+    return window.location.origin + '/v1';
+  }
 
-    // Dynamically set correct API URL in the Hero section
+  function syncPortalApiBaseUrl() {
+    const resolvedApiUrl = resolvePortalApiBaseUrl();
     const apiUrlText = document.getElementById('api-url-text');
-    if (apiUrlText) {
-      apiUrlText.textContent = resolvedApiUrl;
-    }
-
-    // Update API Base URL placeholders in the terminal code snippets
+    if (apiUrlText) apiUrlText.textContent = resolvedApiUrl;
     document.querySelectorAll('.api-base-url-placeholder').forEach(el => {
       el.textContent = resolvedApiUrl;
     });
+    const urlRegex = /https?:\/\/[^\s<,，;；!！\(\)（）]+/g;
+    document.querySelectorAll('.cta-desc').forEach(ctaDesc => {
+      const raw = ctaDesc.textContent || '';
+      if (!urlRegex.test(raw)) return;
+      urlRegex.lastIndex = 0;
+      const parts = raw.split(urlRegex);
+      ctaDesc.replaceChildren();
+      parts.forEach((part, i) => {
+        if (part) ctaDesc.appendChild(document.createTextNode(part));
+        if (i < parts.length - 1) {
+          const code = document.createElement('code');
+          code.textContent = resolvedApiUrl;
+          ctaDesc.appendChild(code);
+        }
+      });
+    });
+  }
 
-    // Format CTA description: Replace any URL inside it with the resolved API Base URL, then wrap it in <code>
-    const ctaDesc = document.querySelector('.cta-desc');
-    if (ctaDesc) {
-      const urlRegex = /(https?:\/\/[^\s,，;；!！\(\)（）]+)/g;
-      ctaDesc.innerHTML = ctaDesc.innerHTML.replace(urlRegex, `<code>${resolvedApiUrl}</code>`);
-    }
+  window.addEventListener('languageChanged', syncPortalApiBaseUrl);
+
+  document.addEventListener('DOMContentLoaded', () => {
+    syncPortalApiBaseUrl();
 
     // Update CTA button links dynamically to use the current site's address if they are the default hardcoded artsapi links
     const ctaPrimary = document.querySelector('.cta-primary');
@@ -1445,5 +1468,113 @@ resp = client.chat.completions.create(
     
     document.getElementById('calc-total-val').textContent = curPrefix + totalCost.toFixed(3);
   }
+
+  (function initPortalStatsCounter() {
+    const statsContainer = document.getElementById('portal-stats-row');
+    if (!statsContainer) return;
+
+    const statNums = statsContainer.querySelectorAll('.portal-stat-num');
+    if (!statNums.length) return;
+
+    function easeOutQuart(t) {
+      return 1 - Math.pow(1 - t, 4);
+    }
+
+    const items = Array.from(statNums).map(el => {
+      const isSpecial = el.getAttribute('data-special') === 'infinity';
+      const target = parseFloat(el.getAttribute('data-target')) || 0;
+      const decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
+      const prefix = el.getAttribute('data-prefix') || '';
+      const suffix = el.getAttribute('data-suffix') || '';
+      const finalHtml = el.getAttribute('data-final') || el.innerHTML;
+      return { el, isSpecial, target, decimals, prefix, suffix, finalHtml };
+    });
+
+    let animated = false;
+
+    function startAnimation() {
+      if (animated) return;
+      animated = true;
+
+      const duration = 1600;
+      const startTime = performance.now();
+      const infinityMilestones = ['100', '1.2k', '18k', '99k+', '500k+', '999k+', '∞'];
+
+      function step(now) {
+        const elapsed = now - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const eased = easeOutQuart(progress);
+
+        items.forEach(item => {
+          if (item.isSpecial) {
+            if (progress < 0.88) {
+              const idx = Math.min(Math.floor(progress * infinityMilestones.length), infinityMilestones.length - 2);
+              item.el.textContent = infinityMilestones[idx];
+            } else {
+              if (item.el.innerHTML !== item.finalHtml) {
+                item.el.innerHTML = item.finalHtml;
+              }
+            }
+          } else {
+            const val = item.target * eased;
+            const formatted = item.decimals > 0 ? val.toFixed(item.decimals) : Math.round(val).toString();
+            item.el.textContent = item.prefix + formatted + item.suffix;
+          }
+        });
+
+        if (progress < 1) {
+          requestAnimationFrame(step);
+        } else {
+          items.forEach(item => {
+            if (item.isSpecial) {
+              item.el.innerHTML = item.finalHtml;
+            } else {
+              const finalNum = item.decimals > 0 ? item.target.toFixed(item.decimals) : item.target.toString();
+              item.el.textContent = item.prefix + finalNum + item.suffix;
+            }
+          });
+        }
+      }
+
+      requestAnimationFrame(step);
+    }
+
+    function prepareInitialState() {
+      items.forEach(item => {
+        if (item.isSpecial) {
+          item.el.textContent = '0';
+        } else {
+          const zero = item.decimals > 0 ? (0).toFixed(item.decimals) : '0';
+          item.el.textContent = item.prefix + zero + item.suffix;
+        }
+      });
+    }
+
+    if ('IntersectionObserver' in window) {
+      let prepared = false;
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            observer.unobserve(entry.target);
+            if (!prepared) {
+              prepareInitialState();
+              prepared = true;
+            }
+            setTimeout(startAnimation, 100);
+          }
+        });
+      }, {
+        threshold: 0.15,
+        rootMargin: '0px 0px -20px 0px'
+      });
+
+      prepareInitialState();
+      prepared = true;
+      observer.observe(statsContainer);
+    } else {
+      prepareInitialState();
+      setTimeout(startAnimation, 200);
+    }
+  })();
 </script>
 {% endblock %}

@@ -1,14 +1,18 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Relay: POST /v1/images/generations
 //! OpenAI-compatible image generation endpoint with forward-rule-driven protocol adaptation.
 
 use super::{forward, proxy, router, upstream_headers};
+#[cfg(feature = "plugin_volcengine_enhance")]
+use crate::api::plugins::{
+    apply_volc_enhance_path, link_volcengine_enhance_log, resolve_volc_image_model,
+};
 use crate::models::ApiToken;
 use crate::{
     error::{AppError, AppResult},
@@ -173,12 +177,16 @@ pub async fn image_generations(
         raw_path
     };
 
-    // 根据 Content-Type 统一解析请求体为 JSON（兼容 application/json 和 multipart/form-data）
-    let x_log_id = request
+    let log_id = request
         .headers()
         .get("x-log-id")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| upstream_headers::resolve_request_log_id(Some("图片")));
+
+    // 根据 Content-Type 统一解析请求体为 JSON（兼容 application/json 和 multipart/form-data）
     let is_multipart = content_type_is_multipart(
         request
             .headers()
@@ -188,7 +196,7 @@ pub async fn image_generations(
     // 落库 plugin_tag.client_ct，后台日志列表可直接展示（与 enable_log 无关）
     let client_ct = client_content_type(is_multipart);
     let plugin_tag_ct = plugin_tag_client_ct(client_ct);
-    let body: serde_json::Value = if is_multipart {
+    let mut body: serde_json::Value = if is_multipart {
         let (parts, body) = request.into_parts();
         parse_multipart_to_json(state.clone(), parts, body).await?
     } else {
@@ -199,13 +207,45 @@ pub async fn image_generations(
             .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {}", e)))?
     };
 
-    let request_content_str = serde_json::to_string(&body).unwrap_or_default();
-    let model = body["model"]
+    let mut model_opt = body["model"]
         .as_str()
         .or_else(|| body["model_name"].as_str())
+        .map(|s| s.to_string());
+
+    let mut category = "图片";
+    let mut db_model_from_mid = None;
+
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    if model_opt.is_none() {
+        if let Some(model_data) = resolve_volc_image_model(
+            &state,
+            &token,
+            raw_path,
+            &body,
+        )
+        .await?
+        {
+            model_opt = Some(model_data.model_id.clone());
+            db_model_from_mid = Some(model_data);
+            category = "图像增强";
+        }
+    }
+
+    let mut model_str = model_opt
         .ok_or_else(|| AppError::BadRequest("Missing required parameter: model".to_string()))?;
+
+    if db_model_from_mid.is_none() {
+        if let Some(model_data) = proxy::find_active_model_by_mid(&state, &model_str).await {
+            model_str = model_data.model_id.clone();
+            db_model_from_mid = Some(model_data);
+        }
+    }
+    body["model"] = serde_json::json!(model_str);
+
+    let request_content_str = serde_json::to_string(&body).unwrap_or_default();
+    let model = model_str.as_str();
     // 1. Token 模型权限校验（渠道选择前快速拦截）
-    proxy::check_model_permission(&state, &token, model, request_path, Some("图片")).await?;
+    proxy::check_model_permission(&state, &token, model, request_path, Some(category)).await?;
 
     let ctx = proxy::get_user_context(&state, &token.user_id).await?;
 
@@ -217,16 +257,17 @@ pub async fn image_generations(
     while ha.cont() {
         let start_time = std::time::Instant::now();
         let mut ha_pool = None;
-        let channel = match proxy::select_channel_for_model(
+        let channel = match proxy::select_channel_with_db(
             &state,
             &token,
             model,
             &ctx.user_group,
             &ctx.level_id,
             request_path,
+            db_model_from_mid.as_ref(),
             &ha.exclude_aids,
             !ha.had_upstream,
-            Some("图片"),
+            Some(category),
             &mut ha_pool,
         )
         .await
@@ -253,7 +294,7 @@ pub async fn image_generations(
             &ctx,
             Some("图片"),
             &channel,
-            None,
+            db_model_from_mid.as_ref(),
             &mut access_cache,
         )
         .await
@@ -285,10 +326,16 @@ pub async fn image_generations(
             Some(r) => r,
             None => {
                 if forward::model_has_forward_rules(&state, model).await {
-                    ha.on_access_err(AppError::BadRequest(format!(
-                        "模型 '{}' 不支持当前接口，请检查模型对应的转发规则",
-                        model
-                    )));
+                    let err = forward::record_unsupported_forward_error(
+                        &state,
+                        &token,
+                        &channel,
+                        model,
+                        raw_path,
+                        &resolved_cat,
+                    )
+                    .await;
+                    ha.on_access_err(err);
                     break;
                 }
                 forward::infer_forward_from_base_url(
@@ -300,6 +347,11 @@ pub async fn image_generations(
         };
         // 根据渠道 base_url 修正 target_type（如 APIMart 需从 "openai" 覆盖为 "apimart"）
         forward::refine_target_type(&mut resolved, &channel.base_url);
+        forward::apply_channel_provider(&mut resolved, &channel);
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        if resolved.target_type == "volcengine_media_enhance" {
+            apply_volc_enhance_path(&mut resolved, model);
+        }
 
         // 如果转发规则类型为 gpt, openai 或 apimart，上游路径直接与用户请求路径保持一致
         if resolved.target_type == "gpt"
@@ -347,10 +399,16 @@ pub async fn image_generations(
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
                     forward_eid: Some(&resolved.eid),
-                    requested_log_id: x_log_id.as_deref(),
+                    requested_log_id: Some(&log_id),
                 })
                 .await,
             );
+            #[cfg(feature = "plugin_volcengine_enhance")]
+            if resolved.target_type == "volcengine_media_enhance" {
+                if let Some(pk) = ha.pending_log_id {
+                    link_volcengine_enhance_log(&state, pk).await;
+                }
+            }
         }
 
         // 【连接保护】参数转换+上游请求+计费放独立 task，客户端断开后仍能完成
@@ -404,7 +462,8 @@ pub async fn image_generations(
                 let builder = if is_multipart
                     && forward::supports_multipart_edits(&resolved.target_type)
                 {
-                    let auth_headers = forward::build_auth_headers(&resolved, &channel.api_key, true);
+                    let auth_headers =
+                        forward::build_auth_headers(&resolved, &channel.api_key, true);
                     let mut b = state.http_client.post(&url);
                     for (k, v) in &auth_headers {
                         b = b.header(k, v);
@@ -432,10 +491,9 @@ pub async fn image_generations(
                     !is_stream,
                     timeout_ctx.resolve(),
                 );
-                let upstream_resp = match builder.send().await {
+                let upstream_resp = match timeout_ctx.send(builder, is_stream).await {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        let err_msg = e.to_string();
+                    Err(err_msg) => {
                         let latency_ms = start_time.elapsed().as_millis() as u32;
                         let bill = crate::relay::ha::FailBill::transport(
                             latency_ms,
@@ -448,12 +506,15 @@ pub async fn image_generations(
                     }
                 };
 
+                let upstream_req_id =
+                    upstream_headers::extract_upstream_request_id(upstream_resp.headers());
+
                 let status = upstream_resp.status().as_u16();
                 if !upstream_resp.status().is_success() {
                     let upstream_hdrs = upstream_resp.headers().clone();
                     let err = upstream_resp.text().await.unwrap_or_default();
                     let latency_ms = start_time.elapsed().as_millis() as u32;
-                    crate::relay_debug!("[Image] 上游失败 状态码={}",status);
+                    crate::relay_debug!("[Image] 上游失败 状态码={}", status);
                     let bill = crate::relay::ha::FailBill::http(
                         latency_ms,
                         status,
@@ -461,7 +522,8 @@ pub async fn image_generations(
                         &request_content_str,
                         upstream_body.to_string(),
                     )
-                    .stream(if is_stream { 1 } else { 0 });
+                    .stream(if is_stream { 1 } else { 0 })
+                    .upstream_request_id(upstream_req_id);
                     return Err(crate::relay::ha::HaAttempt::park(
                         &fail_buf,
                         bill,
@@ -546,7 +608,8 @@ pub async fn image_generations(
                             request_content_str,
                             upstream_body.to_string(),
                         )
-                        .detail("请求失败");
+                        .detail("请求失败")
+                        .upstream_request_id(upstream_req_id);
                         return Err(crate::relay::ha::HaAttempt::park(
                             &fail_buf,
                             bill,
@@ -578,9 +641,9 @@ pub async fn image_generations(
                     // 异步任务判定：直接提取 task_id，非空即有异步任务（省去 has_task_id 的二次遍历）
                     let task_id_str = crate::relay::response_formatter::find_id(&resp_json);
                     let has_task_id = !task_id_str.is_empty();
-                    // 同步终态已含媒体（如 MiniMax 图片返回 id + image_urls）：不可误判为待轮询任务
-                    let sync_has_media =
-                        !crate::relay::response_formatter::find_urls(&resp_json).is_empty();
+                    // 同步终态已含媒体（全面覆盖 URL 与 b64_json，如 MiniMax 或 Seedream 携 ID 的同步响应）：不可误判为待轮询任务
+                    let sync_has_media = crate::relay::usage_extractor::count_response_images(&response_content_str).unwrap_or(0) > 0
+                        || !crate::relay::response_formatter::find_urls(&resp_json).is_empty();
 
                     // 异步任务路由策略（图片）：
                     // OpenAI 兼容模式（请求体含 model 参数）：
@@ -643,14 +706,14 @@ pub async fn image_generations(
                                         fail.message
                                     );
                                     let latency_ms = start_time.elapsed().as_millis() as u32;
-                                    let billing_detail = match (fail.timed_out, pre_deduction > 0.0)
-                                    {
-                                        (true, true) => "同步轮询超时，预扣费已退回",
-                                        (true, false) => "同步轮询超时",
-                                        (false, true) => "同步轮询任务失败，预扣费已退回",
-                                        (false, false) => "同步轮询任务失败",
-                                    }
-                                    .to_string();
+                                    let billing_detail =
+                                        match (fail.timed_out, pre_deduction > 0.0) {
+                                            (true, true) => "同步轮询超时，预扣费已退回",
+                                            (true, false) => "同步轮询超时",
+                                            (false, true) => "同步轮询任务失败，预扣费已退回",
+                                            (false, false) => "同步轮询任务失败",
+                                        }
+                                        .to_string();
                                     let content =
                                         fail.body.unwrap_or_else(|| response_content_str.clone());
                                     let bill = crate::relay::ha::FailBill::http(
@@ -663,7 +726,8 @@ pub async fn image_generations(
                                     .content(Some(content))
                                     .client(fail.message)
                                     .pre(pre_deduction, pre_deduct_gift)
-                                    .detail(billing_detail);
+                                    .detail(billing_detail)
+                                    .upstream_request_id(upstream_req_id.clone());
                                     return Err(crate::relay::ha::HaAttempt::park(
                                         &fail_buf, bill, None,
                                     ));
@@ -686,7 +750,6 @@ pub async fn image_generations(
                         &state,
                         &channel,
                         &response_content_str,
-                        &request_content_str,
                         &resolved_cat,
                     )
                     .await;
@@ -719,6 +782,7 @@ pub async fn image_generations(
                             features: None,
                             time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
                             plugin_tag: None,
+                            upstream_request_id: upstream_req_id.clone(),
                         })
                         .await;
 
@@ -733,7 +797,7 @@ pub async fn image_generations(
                                 let response_format = body
                                     .get("response_format")
                                     .and_then(|v| v.as_str())
-                                    .unwrap_or("url");
+                                    .unwrap_or("");
                                 let watermark = body
                                     .get("watermark")
                                     .and_then(|v| v.as_bool())
@@ -781,7 +845,8 @@ pub async fn image_generations(
                             .content(Some(response_content_str))
                             .client(err_msg)
                             .pre(pre_deduction, pre_deduct_gift)
-                            .detail(billing_detail);
+                            .detail(billing_detail)
+                            .upstream_request_id(upstream_req_id.clone());
                             return Err(crate::relay::ha::HaAttempt::park(&fail_buf, bill, None));
                         }
 
@@ -809,7 +874,7 @@ pub async fn image_generations(
                             &channel,
                             &ctx,
                             &usage_tokens,
-                            &features,
+                            &mut features,
                             mapping_source.as_deref(),
                             &model,
                             &resolved_model,
@@ -837,6 +902,7 @@ pub async fn image_generations(
                             features: Some(features),
                             time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
                             plugin_tag: None,
+                            upstream_request_id: upstream_req_id.clone(),
                         })
                         .await;
 
@@ -871,22 +937,8 @@ pub async fn image_generations(
                 let final_response_str = if body.get("model_name").is_some() {
                     raw.body
                 } else {
-                    let mut sys_log_id: Option<String> = None;
-                    if raw.task_id.is_empty() {
-                        if let Some(id) = ha.pending_log_id {
-                            sys_log_id = sqlx::query_scalar(
-                                &state
-                                    .db
-                                    .format_query("SELECT log_id FROM logs WHERE id = ?"),
-                            )
-                            .bind(id)
-                            .fetch_optional(&state.db.pool)
-                            .await
-                            .unwrap_or(None);
-                        }
-                    }
                     let fallback_id = if raw.task_id.is_empty() {
-                        sys_log_id.as_deref()
+                        Some(log_id.as_str())
                     } else {
                         Some(raw.task_id.as_str())
                     };
@@ -902,15 +954,18 @@ pub async fn image_generations(
                 let final_response_str =
                     super::tos_persist::align_response_format(&state, &final_response_str, rf)
                         .await;
-                return Ok(upstream_headers::json_with_upstream_headers(
-                    &raw.headers,
-                    final_response_str,
+                return Ok(upstream_headers::with_request_id(
+                    upstream_headers::json_with_upstream_headers(
+                        &raw.headers,
+                        final_response_str,
+                    ),
+                    &log_id,
                 ));
             }
             super::ProtectJoin::Ok(super::ProtectOut::Live(resp)) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &initial_url, ms).await;
-                return Ok(resp);
+                return Ok(upstream_headers::with_request_id(resp, &log_id));
             }
             super::ProtectJoin::Retry => {
                 ha.bump();

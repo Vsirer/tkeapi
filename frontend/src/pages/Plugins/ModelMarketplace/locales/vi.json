@@ -6,6 +6,7 @@
   "model_online_desc2": ". Đối với nhu cầu sử dụng khối lượng lớn, vui lòng liên hệ bộ phận hỗ trợ để nhận mức giá độc quyền.",
   "category": "Danh mục",
   "provider": "Nhà cung cấp",
+  "api_provider": "Nhà cung cấp API",
   "pricing_plan": "Bảng giá",
   "updated_at": "Cập nhật",
   "kinds": "phương án",
@@ -31,10 +32,13 @@
   "back_dashboard": "Quay lại",
   "back_list": "Quay lại danh sách",
   "pricing_count": "{{count}} bảng giá",
+  "model_id_count": "{{count}} ID mô hình",
   "unavailable": "Không khả dụng",
   "default_pricing": "Giá mặc định",
   "other_category": "Khác",
   "unknown_provider": "Nhà cung cấp",
   "upstream": "Thượng nguồn",
-  "default_group": "Nhóm mặc định"
+  "default_group": "Nhóm mặc định",
+  "new_badge": "Mới",
+  "metric_type": "Loại"
 }

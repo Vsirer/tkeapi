@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,30 @@ pub struct SiteSettings {
     /// 注册 IP 黑名单列表 (支持单 IP 及 CIDR 网段)
     #[serde(default)]
     pub ip_blacklist: Vec<String>,
+    /// 是否开启注册 IP 白名单。命中后不受黑名单与当日注册次数限制
+    #[serde(default = "default_true")]
+    pub ip_whitelist_enabled: bool,
+    /// 注册 IP 白名单。默认放行 10.0.0.0/24、192.168.1.0/24、172.16.0.0/24
+    #[serde(default = "default_registration_ip_whitelist")]
+    pub ip_whitelist: Vec<String>,
+}
+
+impl SiteSettings {
+    /// 名单为空时补上内置白名单并开启。已关闭且名单非空的配置保持不动。
+    pub fn apply_builtin_ip_whitelist(&mut self) {
+        if self.ip_whitelist.is_empty() {
+            self.ip_whitelist_enabled = true;
+            self.ip_whitelist = default_registration_ip_whitelist();
+        }
+    }
+}
+
+pub fn default_registration_ip_whitelist() -> Vec<String> {
+    vec![
+        "10.0.0.0/24".to_string(),
+        "192.168.1.0/24".to_string(),
+        "172.16.0.0/24".to_string(),
+    ]
 }
 
 fn default_login_style() -> String {
@@ -109,8 +133,8 @@ fn default_language() -> String {
 }
 
 fn default_site_timezone() -> String {
-    iana_time_zone::get_timezone()
-        .unwrap_or_else(|_| crate::time_system::DEFAULT_TIMEDISPLAY.to_string())
+    // timedisplay 默认 UTC+8；不可用 iana_time_zone：进程已锁定 TZ=UTC，会把站点默认误判成 UTC。
+    crate::time_system::DEFAULT_TIMEDISPLAY.to_string()
 }
 
 fn default_show_timezone() -> bool {
@@ -369,6 +393,8 @@ pub struct CurrencySettings {
     pub quick_amounts: Vec<f64>,
     #[serde(default = "default_min_recharge_amount")]
     pub min_recharge_amount: f64,
+    #[serde(default = "default_max_recharge_amount")]
+    pub max_recharge_amount: f64,
 }
 
 fn default_quick_amounts() -> Vec<f64> {
@@ -377,6 +403,10 @@ fn default_quick_amounts() -> Vec<f64> {
 
 fn default_min_recharge_amount() -> f64 {
     5.0
+}
+
+fn default_max_recharge_amount() -> f64 {
+    10000.0
 }
 
 /// 登录方式设置 — 控制用户端可用的登录方式
@@ -432,10 +462,20 @@ pub struct RegistrationSettings {
     /// 是否开启站点用户实名认证（KYC）
     #[serde(default)]
     pub enable_user_kyc: bool,
+    /// 同一真实邮箱最多绑定的用户数，默认 5
+    #[serde(default = "default_max_accounts_per_contact")]
+    pub max_accounts_per_email: i32,
+    /// 同一手机号最多绑定的用户数，默认 5
+    #[serde(default = "default_max_accounts_per_contact")]
+    pub max_accounts_per_mobile: i32,
 }
 
 fn default_bind_enforcement() -> String {
     "all".to_string()
+}
+
+fn default_max_accounts_per_contact() -> i32 {
+    5
 }
 
 impl RegistrationSettings {
@@ -706,35 +746,8 @@ pub struct PaymentStripeSettings {
     pub webhook_secret: String,
 }
 
-/// BonusPay 加密货币支付设置
-/// 基于 https://docs.bonuspay.network 文档
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-pub struct PaymentBonuspaySettings {
-    #[serde(default)]
-    pub enabled: bool,
-    /// BonusPay 商户 Partner-Id (如 200000000888)
-    #[serde(default)]
-    pub partner_id: String,
-    /// 商户 RSA 私钥 (PKCS#8 PEM 格式，用于请求签名)
-    #[serde(default)]
-    pub merchant_private_key: String,
-    /// BonusPay RSA 公钥 (PEM 格式，用于验证回调签名)
-    #[serde(default)]
-    pub bonuspay_public_key: String,
-    /// API 接口地址
-    #[serde(default = "default_bonuspay_api_url")]
-    pub api_url: String,
-    /// USDT/USDC 兑换系统货币(如CNY)的汇率
-    #[serde(default = "default_crypto_exchange_rate")]
-    pub crypto_exchange_rate: f64,
-}
-
 fn default_crypto_exchange_rate() -> f64 {
     1.0
-}
-
-fn default_bonuspay_api_url() -> String {
-    "https://api.bonuspay.network".to_string()
 }
 
 /// HyperBC 加密货币支付设置
@@ -875,7 +888,6 @@ pub fn payment_channel_catalog() -> &'static [(&'static str, i32)] {
         ("wechat", 60),
         ("allinpay", 50),
         ("stripe", 30),
-        ("bonuspay", 20),
         ("hyperbc", 10),
     ]
 }
@@ -1019,7 +1031,6 @@ pub struct PaymentGatewayEnableFlags {
     pub wechat: bool,
     pub alipay: bool,
     pub stripe: bool,
-    pub bonuspay: bool,
     pub hyperbc: bool,
     pub allinpay: bool,
 }
@@ -1030,7 +1041,6 @@ impl PaymentGatewayEnableFlags {
             "wechat" => self.wechat,
             "alipay" => self.alipay,
             "stripe" => self.stripe,
-            "bonuspay" => self.bonuspay,
             "hyperbc" => self.hyperbc,
             "allinpay" => self.allinpay,
             _ => false,
@@ -1096,7 +1106,6 @@ pub fn public_payment_status_from_channels(
         wechat_enabled: on("wechat"),
         alipay_enabled: on("alipay"),
         stripe_enabled: on("stripe"),
-        bonuspay_enabled: on("bonuspay"),
         hyperbc_enabled: on("hyperbc"),
         allinpay_enabled: on("allinpay"),
     }
@@ -1235,8 +1244,8 @@ impl InflightCat {
     #[inline]
     pub fn of(action_type: &str) -> Self {
         match action_type {
-            "视频" | "视频增强" => Self::Video,
-            "图片" => Self::Image,
+            "视频" | "视频增强" | "画质增强" => Self::Video,
+            "图片" | "图像增强" => Self::Image,
             "聊天" => Self::Chat,
             _ => Self::Other,
         }
@@ -1245,11 +1254,11 @@ impl InflightCat {
     #[inline]
     pub fn count_sql(self) -> &'static str {
         match self {
-            Self::Video => "AND action_type = ANY(ARRAY['视频','视频增强'])",
-            Self::Image => "AND action_type = '图片'",
+            Self::Video => "AND action_type = ANY(ARRAY['视频','视频增强','画质增强'])",
+            Self::Image => "AND action_type = ANY(ARRAY['图片','图像增强'])",
             Self::Chat => "AND action_type = '聊天'",
             Self::Other => {
-                "AND COALESCE(action_type, '') NOT IN ('视频','视频增强','图片','聊天')"
+                "AND COALESCE(action_type, '') NOT IN ('视频','视频增强','画质增强','图片','图像增强','聊天')"
             }
         }
     }
@@ -1420,7 +1429,7 @@ fn default_storage_provider() -> String {
     "tos".to_string()
 }
 
-/// 日志清理（与对象存储解耦；旧数据曾写在 storage_settings）
+/// 日志清理与运维调度设置（与对象存储解耦；旧数据曾写在 storage_settings）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LogCleanupSettings {
     /// 使用日志详情保留天数，超期自动清理请求/响应内容，0=永不清理
@@ -1429,6 +1438,53 @@ pub struct LogCleanupSettings {
     /// 使用日志行保留天数：超期行迁入 logs_archive 并从热表删除；0=永不归档（默认）
     #[serde(default = "default_log_row_retention_days")]
     pub log_row_retention_days: i32,
+    /// 错误日志保留天数：非 200 状态码错误记录；0=永不清理（默认）
+    #[serde(default = "default_error_log_retention_days")]
+    pub error_log_retention_days: i32,
+
+    // ===== 5 项重型/核心定时任务错峰执行时间配置（时:分）=====
+    /// 1. 每日用量增量统计触发时间（时 0~23，默认 1）
+    #[serde(default = "default_daily_stats_hour")]
+    pub daily_stats_hour: u32,
+    /// 1. 每日用量增量统计触发时间（分 0~59，默认 0）
+    #[serde(default)]
+    pub daily_stats_minute: u32,
+
+    /// 2. 日志详情大字段清理触发时间（时 0~23，默认 2）
+    #[serde(default = "default_clean_hour")]
+    pub clean_hour: u32,
+    /// 2. 日志详情大字段清理触发时间（分 0~59，默认 30）
+    #[serde(default = "default_clean_minute")]
+    pub clean_minute: u32,
+
+    /// 3. 日志行冷归档触发时间（时 0~23，默认 3）
+    #[serde(default = "default_archive_hour")]
+    pub archive_hour: u32,
+    /// 3. 日志行冷归档触发时间（分 0~59，默认 30）
+    #[serde(default = "default_archive_minute")]
+    pub archive_minute: u32,
+
+    /// 4. 错误日志清理触发时间（时 0~23，默认 4）
+    #[serde(default = "default_error_clean_hour")]
+    pub error_clean_hour: u32,
+    /// 4. 错误日志清理触发时间（分 0~59，默认 0）
+    #[serde(default)]
+    pub error_clean_minute: u32,
+
+    /// 5. 临时存储与插件日志清理触发时间（时 0~23，默认 4）
+    #[serde(default = "default_storage_clean_hour")]
+    pub storage_clean_hour: u32,
+    /// 5. 临时存储与插件日志清理触发时间（分 0~59，默认 30）
+    #[serde(default = "default_storage_clean_minute")]
+    pub storage_clean_minute: u32,
+
+    // --- 向下兼容旧字段 ---
+    /// 每日系统维护总触发时间（时 0~23，默认 3）
+    #[serde(default = "default_maintenance_hour")]
+    pub maintenance_hour: u32,
+    /// 每日系统维护总触发时间（分 0~59，默认 0）
+    #[serde(default)]
+    pub maintenance_minute: u32,
 }
 
 impl Default for LogCleanupSettings {
@@ -1436,24 +1492,61 @@ impl Default for LogCleanupSettings {
         Self {
             log_retention_days: default_log_retention_days(),
             log_row_retention_days: default_log_row_retention_days(),
+            error_log_retention_days: default_error_log_retention_days(),
+            daily_stats_hour: default_daily_stats_hour(),
+            daily_stats_minute: 0,
+            clean_hour: default_clean_hour(),
+            clean_minute: default_clean_minute(),
+            archive_hour: default_archive_hour(),
+            archive_minute: default_archive_minute(),
+            error_clean_hour: default_error_clean_hour(),
+            error_clean_minute: 0,
+            storage_clean_hour: default_storage_clean_hour(),
+            storage_clean_minute: default_storage_clean_minute(),
+            maintenance_hour: default_maintenance_hour(),
+            maintenance_minute: 0,
         }
     }
 }
 
 impl LogCleanupSettings {
     pub fn from_legacy_storage_json(v: &serde_json::Value) -> Self {
-        Self {
-            log_retention_days: v
-                .get("log_retention_days")
-                .and_then(|x| x.as_i64())
-                .map(|n| n as i32)
-                .unwrap_or_else(default_log_retention_days),
-            log_row_retention_days: v
-                .get("log_row_retention_days")
-                .and_then(|x| x.as_i64())
-                .map(|n| n as i32)
-                .unwrap_or_else(default_log_row_retention_days),
+        let mut s = Self::default();
+        if let Some(n) = v.get("log_retention_days").and_then(|x| x.as_i64()) {
+            s.log_retention_days = n as i32;
         }
+        if let Some(n) = v.get("log_row_retention_days").and_then(|x| x.as_i64()) {
+            s.log_row_retention_days = n as i32;
+        }
+        if let Some(n) = v.get("error_log_retention_days").and_then(|x| x.as_i64()) {
+            s.error_log_retention_days = n as i32;
+        }
+        s
+    }
+
+    /// 严格防越界兜底的每日用量统计执行时间 (时 0..=23, 分 0..=59)
+    pub fn safe_daily_stats_hm(&self) -> (u32, u32) {
+        (self.daily_stats_hour % 24, self.daily_stats_minute % 60)
+    }
+
+    /// 严格防越界兜底的日志详情大字段清理执行时间 (时 0..=23, 分 0..=59)
+    pub fn safe_clean_hm(&self) -> (u32, u32) {
+        (self.clean_hour % 24, self.clean_minute % 60)
+    }
+
+    /// 严格防越界兜底的日志行冷归档执行时间 (时 0..=23, 分 0..=59)
+    pub fn safe_archive_hm(&self) -> (u32, u32) {
+        (self.archive_hour % 24, self.archive_minute % 60)
+    }
+
+    /// 严格防越界兜底的超期错误日志清理执行时间 (时 0..=23, 分 0..=59)
+    pub fn safe_error_clean_hm(&self) -> (u32, u32) {
+        (self.error_clean_hour % 24, self.error_clean_minute % 60)
+    }
+
+    /// 严格防越界兜底的临时存储与插件日志清理执行时间 (时 0..=23, 分 0..=59)
+    pub fn safe_storage_clean_hm(&self) -> (u32, u32) {
+        (self.storage_clean_hour % 24, self.storage_clean_minute % 60)
     }
 }
 
@@ -1463,6 +1556,46 @@ fn default_log_retention_days() -> i32 {
 
 fn default_log_row_retention_days() -> i32 {
     0
+}
+
+fn default_error_log_retention_days() -> i32 {
+    0
+}
+
+fn default_daily_stats_hour() -> u32 {
+    1
+}
+
+fn default_clean_hour() -> u32 {
+    2
+}
+
+fn default_clean_minute() -> u32 {
+    30
+}
+
+fn default_archive_hour() -> u32 {
+    3
+}
+
+fn default_archive_minute() -> u32 {
+    30
+}
+
+fn default_error_clean_hour() -> u32 {
+    4
+}
+
+fn default_storage_clean_hour() -> u32 {
+    4
+}
+
+fn default_storage_clean_minute() -> u32 {
+    30
+}
+
+fn default_maintenance_hour() -> u32 {
+    3
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1665,16 +1798,16 @@ pub fn default_invoice_mode() -> String {
     "international".to_string()
 }
 pub fn default_invoice_company_name() -> String {
-    "TokensByte Inc.".to_string()
+    String::new()
 }
 pub fn default_invoice_tax_id() -> String {
-    "US-987654321".to_string()
+    String::new()
 }
 pub fn default_invoice_contact_email() -> String {
-    "billing@tokensbyte.com".to_string()
+    String::new()
 }
 pub fn default_invoice_company_address() -> String {
-    "100 Innovation Way, Suite 300, San Francisco, CA 94107".to_string()
+    String::new()
 }
 pub fn default_invoice_currency_symbol() -> String {
     "$".to_string()
@@ -1702,6 +1835,36 @@ pub fn default_china_invoice_notice() -> String {
 }
 
 impl InvoiceSettings {
+    /// 历史代码曾把旧金山样例销方写入默认配置；商用环境不得印到正式发票上。
+    pub fn clear_placeholder_issuer(&mut self) {
+        const DEMO_NAME: &str = "TokensByte Inc.";
+        const DEMO_TAX: &str = "US-987654321";
+        const DEMO_EMAIL: &str = "billing@tokensbyte.com";
+        const DEMO_ADDR: &str = "100 Innovation Way, Suite 300, San Francisco, CA 94107";
+        let is_demo = self.invoice_tax_id == DEMO_TAX
+            || self.invoice_company_address == DEMO_ADDR
+            || self.invoice_contact_email == DEMO_EMAIL;
+        if is_demo {
+            if self.invoice_company_name == DEMO_NAME {
+                self.invoice_company_name.clear();
+            }
+            if self.invoice_tax_id == DEMO_TAX {
+                self.invoice_tax_id.clear();
+            }
+            if self.invoice_company_address == DEMO_ADDR {
+                self.invoice_company_address.clear();
+            }
+            if self.invoice_contact_email == DEMO_EMAIL {
+                self.invoice_contact_email.clear();
+            }
+        }
+        self.invoice_sellers.retain(|seller| {
+            seller.tax_id != DEMO_TAX
+                && seller.company_address.as_deref() != Some(DEMO_ADDR)
+                && seller.contact_email.as_deref() != Some(DEMO_EMAIL)
+        });
+    }
+
     /// 获取当前有效的开票主体列表，如果未配置 invoice_sellers 则根据旧配置自动生成默认主体
     pub fn get_effective_sellers(&self) -> Vec<SellerInvoiceSubject> {
         if !self.invoice_sellers.is_empty() {
@@ -1781,8 +1944,6 @@ pub struct AllSettings {
     #[serde(default)]
     pub payment_stripe: Option<PaymentStripeSettings>,
     #[serde(default)]
-    pub payment_bonuspay: Option<PaymentBonuspaySettings>,
-    #[serde(default)]
     pub payment_hyperbc: Option<PaymentHyperbcSettings>,
     #[serde(default)]
     pub payment_allinpay: Option<PaymentAllinpaySettings>,
@@ -1838,8 +1999,6 @@ pub struct UpdateSettingsRequest {
     pub payment_alipay: Option<serde_json::Value>,
     #[serde(default)]
     pub payment_stripe: Option<serde_json::Value>,
-    #[serde(default)]
-    pub payment_bonuspay: Option<serde_json::Value>,
     #[serde(default)]
     pub payment_hyperbc: Option<serde_json::Value>,
     #[serde(default)]
@@ -1943,8 +2102,6 @@ pub struct PublicPaymentStatus {
     #[serde(default)]
     pub stripe_enabled: bool,
     #[serde(default)]
-    pub bonuspay_enabled: bool,
-    #[serde(default)]
     pub hyperbc_enabled: bool,
     #[serde(default)]
     pub allinpay_enabled: bool,
@@ -2030,3 +2187,5 @@ pub struct PublicSettings {
     #[serde(default)]
     pub invoices: Option<InvoiceSettings>,
 }
+
+

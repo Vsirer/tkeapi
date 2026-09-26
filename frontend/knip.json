@@ -1,16 +1,22 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "entry": [
-    "src/pages/Plugins/**/*.tsx"
+    "src/pages/Plugins/**/*.tsx",
+    "src/pages/**/*.tsx",
+    "src/main.tsx"
   ],
   "project": [
     "src/**/*.{ts,tsx}"
   ],
   "ignoreDependencies": [
+    "camera-controls",
+    "three-mesh-bvh",
     "tailwindcss"
   ],
   "ignoreExportsUsedInFile": true,
   "rules": {
-    "types": "off"
+    "types": "off",
+    "exports": "off",
+    "duplicates": "off"
   }
 }

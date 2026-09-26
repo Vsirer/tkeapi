@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::time_system::DbTs;
@@ -35,6 +35,9 @@ pub struct TaskLog {
     pub status_code: i32,
     #[sqlx(default)]
     pub error_message: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_request_id: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_content: Option<String>,
@@ -88,6 +91,9 @@ pub struct TaskLog {
     pub yid: Option<String>, // JOIN channel_configs.yid，非 logs 列
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mid: Option<String>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub billing_pid: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,6 +106,9 @@ pub struct TaskLog {
     #[sqlx(default)]
     #[serde(skip_serializing)]
     pub is_completed: i16,
+    /// 视频模型输入是否包含视频(1=含视频, 0=无视频)
+    #[sqlx(default)]
+    pub has_video: i16,
     pub created_at: DbTs,
 }
 
@@ -117,6 +126,7 @@ pub struct TaskLogQuery {
     pub task_id: Option<String>,
     pub token_kid: Option<String>,
     pub search_keyword: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

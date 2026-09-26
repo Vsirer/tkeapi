@@ -1,12 +1,11 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useMemo } from 'react';
-import * as PopoverPrimitive from '@radix-ui/react-popover';
 import {
   Calendar as CalendarIcon,
   Clock,
@@ -24,7 +23,7 @@ import {
 } from 'lucide-react';
 import type { Dayjs } from 'dayjs';
 import { useTranslation } from 'react-i18next';
-import { theme } from 'antd';
+import { Popover, theme } from 'antd';
 import {
   LOG_DATETIME_FORMAT,
   clampUserLogRange,
@@ -781,47 +780,10 @@ const LogDateTimeRangePicker: React.FC<Props> = ({
     ...style,
   };
 
-  return (
-    <PopoverPrimitive.Root open={open} onOpenChange={handleOpenChange}>
-      <PopoverPrimitive.Trigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          style={triggerStyle}
-          className={`inline-flex items-center justify-between gap-2 px-[11px] h-[32px] min-h-[32px] max-h-[32px] text-[12px] leading-none border box-border cursor-pointer select-none group min-w-[360px] ${
-            disabled ? 'opacity-50 cursor-not-allowed' : ''
-          } ${className || ''}`}
-        >
-          <div className="flex items-center gap-2 overflow-hidden">
-            <CalendarIcon size={14} className="text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] group-hover:text-[rgba(0,0,0,0.45)] dark:group-hover:text-[rgba(255,255,255,0.45)] transition-colors shrink-0" />
-            <div className="truncate">{displayText}</div>
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0 ml-auto">
-            {/* 清空按钮 */}
-            {value?.[0] && value?.[1] && isAdmin && (
-              <span
-                onClick={handleClear}
-                className="p-0.5 rounded hover:bg-zinc-200/70 dark:hover:bg-zinc-700 text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
-                title={t('common.clear', '清空')}
-              >
-                <X size={12} />
-              </span>
-            )}
-
-            <ChevronDown size={12} className="text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] group-hover:text-[rgba(0,0,0,0.45)] dark:group-hover:text-[rgba(255,255,255,0.45)] transition-colors" />
-          </div>
-        </button>
-      </PopoverPrimitive.Trigger>
-
-      <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Content
-          align="start"
-          sideOffset={6}
-          className="z-[5100] bg-white dark:bg-[#141414] text-zinc-900 dark:text-zinc-100 rounded-xl border border-zinc-200/90 dark:border-[#27272a] shadow-2xl shadow-zinc-900/15 dark:shadow-black/70 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150 flex flex-col md:flex-row w-full md:w-[670px] max-w-[calc(100vw-20px)]"
-        >
+  const popoverContent = (
+    <div
+      className="z-[5100] bg-white dark:bg-[#141414] text-zinc-900 dark:text-zinc-100 rounded-xl border border-zinc-200/90 dark:border-[#27272a] shadow-2xl shadow-zinc-900/15 dark:shadow-black/70 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150 flex flex-col md:flex-row w-full md:w-[670px] max-w-[calc(100vw-20px)]"
+    >
           {/* 左侧快捷时间段预设面板 (与站点左侧菜单同色 #fafafa / #141414) */}
           <div className="w-full md:w-[140px] p-2.5 bg-[#fafafa] dark:bg-[#141414] border-b md:border-b-0 md:border-r border-[#e4e4e7] dark:border-[#1f1f23] flex flex-col gap-2 shrink-0">
             {/* 相对时间段 */}
@@ -1023,11 +985,53 @@ const LogDateTimeRangePicker: React.FC<Props> = ({
                   {t('common.confirm', '确认')}
                 </button>
               </div>
-            </div>
-          </div>
-        </PopoverPrimitive.Content>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={handleOpenChange}
+      trigger="click"
+      placement="bottomLeft"
+      arrow={false}
+      styles={{ container: { padding: 0, background: 'transparent', boxShadow: 'none' } }}
+      overlayClassName="custom-datetime-popover"
+      content={popoverContent}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        style={triggerStyle}
+        className={`inline-flex items-center justify-between gap-2 px-[11px] h-[32px] min-h-[32px] max-h-[32px] text-[12px] leading-none border box-border cursor-pointer select-none group min-w-[360px] ${
+          disabled ? 'opacity-50 cursor-not-allowed' : ''
+        } ${className || ''}`}
+      >
+        <div className="flex items-center gap-2 overflow-hidden">
+          <CalendarIcon size={14} className="text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] group-hover:text-[rgba(0,0,0,0.45)] dark:group-hover:text-[rgba(255,255,255,0.45)] transition-colors shrink-0" />
+          <div className="truncate">{displayText}</div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+          {/* 清空按钮 */}
+          {value?.[0] && value?.[1] && isAdmin && (
+            <span
+              onClick={handleClear}
+              className="p-0.5 rounded hover:bg-zinc-200/70 dark:hover:bg-zinc-700 text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+              title={t('common.clear', '清空')}
+            >
+              <X size={12} />
+            </span>
+          )}
+
+          <ChevronDown size={12} className="text-[rgba(0,0,0,0.25)] dark:text-[rgba(255,255,255,0.25)] group-hover:text-[rgba(0,0,0,0.45)] dark:group-hover:text-[rgba(255,255,255,0.45)] transition-colors" />
+        </div>
+      </button>
+    </Popover>
   );
 };
 

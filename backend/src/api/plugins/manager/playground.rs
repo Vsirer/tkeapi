@@ -1,30 +1,30 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 创作中心：schemes 种子/IO、配置与公开 API。插件中心 UI 相关改动放此文件，见 `mod.rs` 模块注释。
 
-use axum::{
-    extract::{Extension, Path, State},
-    Json,
-};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use crate::{
     auth,
     error::{AppError, AppResult},
     AppState,
 };
+use axum::{
+    extract::{Extension, Path, State},
+    Json,
+};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::{
-    dashscope_video_seed, duration_slider_seed, gpt_image_2_seed, is_plugin_enabled,
-    load_plugin_configs, minimax_h3_seed, quick_bar_seed, seedance2_seed, seedream_5_0_pro_seed,
-    upsert_config,
+    dashscope_video_seed, doubao_seed_evolving_seed, doubao_tts_2_seed, duration_slider_seed,
+    glm_deepseek_chat_seed, gpt_image_2_seed, is_plugin_enabled, load_plugin_configs,
+    minimax_h3_seed, quick_bar_seed, seedance2_seed, seedream_5_0_pro_seed, upsert_config,
 };
 // ========== 体验中心配置 (Playground) ==========
 
@@ -327,7 +327,9 @@ fn sanitize_pg2026_video_scheme_io(s: &mut serde_json::Value) {
     inputs.retain(|p| {
         let key = p.get("key").and_then(|v| v.as_str());
         let bind_key = p.get("bind_key").and_then(|v| v.as_str());
-        if is_no_negative_prompt && (key == Some("negative_prompt") || bind_key == Some("negative_prompt")) {
+        if is_no_negative_prompt
+            && (key == Some("negative_prompt") || bind_key == Some("negative_prompt"))
+        {
             return false;
         }
         !matches!(
@@ -347,6 +349,12 @@ fn sanitize_pg2026_video_scheme_io(s: &mut serde_json::Value) {
 fn get_default_schemes_for(plugin_name: &str) -> Vec<serde_json::Value> {
     let mut schemes = get_default_schemes();
     if plugin_name == "playground_2026" {
+        schemes.retain(|s| {
+            !matches!(
+                s.get("id").and_then(|v| v.as_str()),
+                Some("seedance1.5pro" | "chat_standard" | "chat_creative" | "chat_precise")
+            )
+        });
         minimax_h3_seed::seed_minimax_h3_scheme(&mut schemes);
         dashscope_video_seed::seed_dashscope_video_wan3(&mut schemes);
         dashscope_video_seed::seed_wan3_scheme(&mut schemes);
@@ -357,16 +365,26 @@ fn get_default_schemes_for(plugin_name: &str) -> Vec<serde_json::Value> {
         seedream_5_0_pro_seed::strip_seedream_scheme_size_params(&mut schemes);
         seedream_5_0_pro_seed::seed_seedream_output_format_radio(&mut schemes);
         gpt_image_2_seed::seed_gpt_image_2_scheme(&mut schemes);
+        doubao_tts_2_seed::seed_doubao_tts_2_scheme(&mut schemes);
+        doubao_seed_evolving_seed::seed_doubao_seed_evolving_scheme(&mut schemes);
+        glm_deepseek_chat_seed::seed_glm_deepseek_chat_schemes(&mut schemes);
         duration_slider_seed::seed_video_duration_sliders(&mut schemes);
         for s in &mut schemes {
             sanitize_pg2026_video_scheme_io(s);
+            #[cfg(feature = "commercial_plugins")]
+            crate::api::plugins::playground_2026::prompt_optimize::seed_scheme_prompt_optimize(s);
+            #[cfg(feature = "commercial_plugins")]
+            crate::api::plugins::playground_2026::voice_library::seed_scheme_voice_library(s);
         }
     }
     schemes
 }
 
 /// 创作中心2026：保持管理员已保存的参数顺序与自定义配置，种子新增 key 追加至末尾。
-fn merge_saved_scheme_params(seed: &serde_json::Value, saved: &serde_json::Value) -> serde_json::Value {
+fn merge_saved_scheme_params(
+    seed: &serde_json::Value,
+    saved: &serde_json::Value,
+) -> serde_json::Value {
     let Some(seed_arr) = seed.as_array() else {
         return saved.clone();
     };
@@ -383,7 +401,10 @@ fn merge_saved_scheme_params(seed: &serde_json::Value, saved: &serde_json::Value
         }
         let mut item = p.clone();
         if item.get("option_labels").is_none() {
-            if let Some(seed_p) = seed_arr.iter().find(|sp| sp.get("key").and_then(|v| v.as_str()) == Some(key)) {
+            if let Some(seed_p) = seed_arr
+                .iter()
+                .find(|sp| sp.get("key").and_then(|v| v.as_str()) == Some(key))
+            {
                 if let Some(labels) = seed_p.get("option_labels") {
                     item["option_labels"] = labels.clone();
                 }
@@ -418,7 +439,7 @@ fn ensure_scheme_max_reference_images(s: &mut serde_json::Value) {
         || id == seedream_5_0_pro_seed::SEEDREAM_5_0_PRO_SCHEME_ID
     {
         10
-    } else if ty == "chat" {
+    } else if ty == "chat" || ty == "audio" {
         0
     } else {
         7
@@ -710,9 +731,11 @@ fn ensure_scheme_io(s: &mut serde_json::Value, plugin_name: &str) {
                 start_end_video_scheme_io()
             } else if id == minimax_h3_seed::MINIMAX_H3_SCHEME_ID {
                 minimax_h3_seed::minimax_h3_video_scheme_io()
-            } else if plugin_name == "playground_2026" && id == seedance2_seed::SEEDANCE2_SCHEME_ID {
+            } else if plugin_name == "playground_2026" && id == seedance2_seed::SEEDANCE2_SCHEME_ID
+            {
                 seedance2_seed::seedance2_video_scheme_io()
-            } else if plugin_name == "playground_2026" && id == dashscope_video_seed::WAN3_SCHEME_ID {
+            } else if plugin_name == "playground_2026" && id == dashscope_video_seed::WAN3_SCHEME_ID
+            {
                 dashscope_video_seed::dashscope_video_wan3_scheme_io()
             } else if id == "wan3.0" || id == "seedance2.0" || id.contains("seedance") {
                 multimodal_video_scheme_io()
@@ -720,6 +743,14 @@ fn ensure_scheme_io(s: &mut serde_json::Value, plugin_name: &str) {
                 openai_video_scheme_io()
             } else {
                 default_video_scheme_io()
+            }
+        }
+        "audio" => doubao_tts_2_seed::doubao_tts_2_scheme_io(),
+        "chat" if plugin_name == "playground_2026" => {
+            if glm_deepseek_chat_seed::is_thinking_on_chat_scheme_id(id) {
+                doubao_seed_evolving_seed::doubao_chat_scheme_io()
+            } else {
+                doubao_seed_evolving_seed::default_chat_scheme_io()
             }
         }
         _ => return,
@@ -813,8 +844,11 @@ async fn load_schemes_from_db(state: &AppState, plugin_name: &str) -> Vec<serde_
                                         && seedance2_seed::saved_io_is_legacy_multimodal_only(
                                             &saved,
                                         );
-                                    let migrate_io =
-                                        migrate_dashscope_io || migrate_wan3_io || migrate_seedance2_io;
+                                    let migrate_io = migrate_dashscope_io
+                                        || migrate_wan3_io
+                                        || migrate_seedance2_io;
+                                    let strip_doubao_thinking =
+                                        glm_deepseek_chat_seed::is_thinking_on_chat_scheme_id(id);
                                     let mut merged = d;
                                     if plugin_name == "playground_2026" {
                                         // 库内字段（含 IO、image_special_params）为准；params 按 key 合并，种子只补新项
@@ -854,22 +888,23 @@ async fn load_schemes_from_db(state: &AppState, plugin_name: &str) -> Vec<serde_
                                                 );
                                             }
                                         }
+                                        if strip_doubao_thinking {
+                                            doubao_seed_evolving_seed::strip_legacy_thinking_param(
+                                                &mut merged,
+                                            );
+                                        }
                                     } else if let Some(obj) = merged.as_object_mut() {
                                         if let Some(v) = saved_max {
                                             obj.insert("max_reference_images".into(), v);
                                         }
                                         if let Some(v) = saved_inputs {
-                                            if v.as_array()
-                                                .map(|a| !a.is_empty())
-                                                .unwrap_or(false)
+                                            if v.as_array().map(|a| !a.is_empty()).unwrap_or(false)
                                             {
                                                 obj.insert("inputs".into(), v);
                                             }
                                         }
                                         if let Some(v) = saved_outputs {
-                                            if v.as_array()
-                                                .map(|a| !a.is_empty())
-                                                .unwrap_or(false)
+                                            if v.as_array().map(|a| !a.is_empty()).unwrap_or(false)
                                             {
                                                 obj.insert("outputs".into(), v);
                                             }
@@ -893,11 +928,15 @@ async fn load_schemes_from_db(state: &AppState, plugin_name: &str) -> Vec<serde_
                         {
                             dashscope_video_seed::sanitize_wan3_saved_io(s);
                         }
-                        if s.get("id")
-                            .and_then(|v| v.as_str())
+                        if s.get("id").and_then(|v| v.as_str())
                             == Some(seedance2_seed::SEEDANCE2_SCHEME_ID)
                         {
                             seedance2_seed::sanitize_seedance2_saved_io(s);
+                        }
+                        if s.get("id").and_then(|v| v.as_str())
+                            == Some(minimax_h3_seed::MINIMAX_H3_SCHEME_ID)
+                        {
+                            minimax_h3_seed::sanitize_minimax_h3_saved_io(s);
                         }
                     }
                 }
@@ -909,6 +948,10 @@ async fn load_schemes_from_db(state: &AppState, plugin_name: &str) -> Vec<serde_
                     gpt_image_2_seed::seed_gpt_image_2_scheme(&mut schemes);
                     for s in &mut schemes {
                         sanitize_pg2026_video_scheme_io(s);
+                        #[cfg(feature = "commercial_plugins")]
+                        crate::api::plugins::playground_2026::prompt_optimize::seed_scheme_prompt_optimize(s);
+                        #[cfg(feature = "commercial_plugins")]
+                        crate::api::plugins::playground_2026::voice_library::seed_scheme_voice_library(s);
                     }
                 }
                 return schemes;
@@ -937,6 +980,18 @@ pub(crate) struct PlaygroundModelConfig {
     /// 仅 playground_2026：图片专用参数（模型级，覆盖方案）
     #[serde(default)]
     pub image_special_params: Option<serde_json::Value>,
+    /// 仅 playground_2026：优化指令覆写（null=继承方案）
+    #[serde(default)]
+    pub prompt_optimize: Option<serde_json::Value>,
+    /// 仅 playground_2026：音频音色库覆写（null=继承方案）
+    #[serde(default)]
+    pub voice_library: Option<serde_json::Value>,
+    /// 仅 playground_2026 聊天：输入协议预设 ID
+    #[serde(default)]
+    pub input_protocol: Option<String>,
+    /// 仅 playground_2026 聊天：思考预设 ID
+    #[serde(default)]
+    pub thinking_profile: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
@@ -1073,12 +1128,54 @@ fn pg2026_attrs_from_keys(keys: &[String]) -> Vec<String> {
 fn pg2026_type_has_feature_attrs(type_name: &str) -> bool {
     #[cfg(feature = "commercial_plugins")]
     {
-        crate::api::plugins::playground_2026::model_features::kind_from_type_name(type_name).is_some()
+        crate::api::plugins::playground_2026::model_features::kind_from_type_name(type_name)
+            .is_some()
     }
     #[cfg(not(feature = "commercial_plugins"))]
     {
         let _ = type_name;
         false
+    }
+}
+
+fn pg2026_is_chat_type(type_name: &str) -> bool {
+    type_name.contains("聊天") || type_name.contains("对话")
+}
+
+fn pg2026_sanitize_input_protocol(raw: Option<&str>) -> Option<String> {
+    #[cfg(feature = "commercial_plugins")]
+    {
+        crate::api::plugins::playground_2026::chat_protocol::sanitize_input_protocol(raw)
+            .map(|s| s.to_string())
+    }
+    #[cfg(not(feature = "commercial_plugins"))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
+fn pg2026_sanitize_thinking_profile(raw: Option<&str>) -> Option<String> {
+    #[cfg(feature = "commercial_plugins")]
+    {
+        crate::api::plugins::playground_2026::chat_protocol::sanitize_thinking_profile(raw)
+            .map(|s| s.to_string())
+    }
+    #[cfg(not(feature = "commercial_plugins"))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
+fn pg2026_chat_protocol_catalog() -> serde_json::Value {
+    #[cfg(feature = "commercial_plugins")]
+    {
+        crate::api::plugins::playground_2026::chat_protocol::catalog_json()
+    }
+    #[cfg(not(feature = "commercial_plugins"))]
+    {
+        serde_json::json!({})
     }
 }
 
@@ -1100,11 +1197,9 @@ pub(crate) async fn get_playground_config(
     let configs = load_plugin_configs(&state, &name).await?;
 
     // 查出全部模型及其 type 信息
-    let models: Vec<crate::models::Model> = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT * FROM models ORDER BY id DESC"),
-    )
+    let models: Vec<crate::models::Model> = sqlx::query_as(&state.db.format_query(
+        "SELECT * FROM models WHERE is_listed = 1 ORDER BY sort_order DESC, id DESC",
+    ))
     .fetch_all(&state.db.pool)
     .await?;
 
@@ -1127,9 +1222,7 @@ pub(crate) async fn get_playground_config(
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(json!({"enabled": false, "scheme_id": null}));
 
-        let type_row = m
-            .type_id
-            .and_then(|tid| types.iter().find(|t| t.id == tid));
+        let type_row = m.type_id.and_then(|tid| types.iter().find(|t| t.id == tid));
         let type_name = type_row.map(|t| t.name.clone()).unwrap_or_default();
         let type_default_features = if name == "playground_2026" {
             json!(pg2026_parse_attr_list(
@@ -1176,11 +1269,23 @@ pub(crate) async fn get_playground_config(
             "pg_scheme_id": model_conf.get("scheme_id").and_then(|v| v.as_str()).unwrap_or(""),
             "pg_param_overrides": model_conf.get("param_overrides").cloned().unwrap_or(serde_json::Value::Null),
             "pg_io_overrides": model_conf.get("io_overrides").cloned().unwrap_or(serde_json::Value::Null),
-            "pg_sort_order": model_conf.get("sort_order").and_then(|v| v.as_i64()).unwrap_or(0),
+            "pg_sort_order": m.sort_order as i64,
             "pg_feature_keys": pg_feature_keys,
             "feature_attributes": feature_attributes,
             "type_default_features": type_default_features,
             "pg_image_special_params": model_conf.get("image_special_params").cloned().unwrap_or(serde_json::Value::Null),
+            "pg_prompt_optimize": model_conf.get("prompt_optimize").cloned().unwrap_or(serde_json::Value::Null),
+            "pg_voice_library": model_conf.get("voice_library").cloned().unwrap_or(serde_json::Value::Null),
+            "pg_input_protocol": if name == "playground_2026" && pg2026_is_chat_type(&type_name) {
+                json!(model_conf.get("input_protocol").and_then(|v| v.as_str()).unwrap_or(""))
+            } else {
+                serde_json::Value::Null
+            },
+            "pg_thinking_profile": if name == "playground_2026" && pg2026_is_chat_type(&type_name) {
+                json!(model_conf.get("thinking_profile").and_then(|v| v.as_str()).unwrap_or(""))
+            } else {
+                serde_json::Value::Null
+            },
         }));
     }
 
@@ -1281,12 +1386,10 @@ pub(crate) async fn get_playground_config(
         "agent_enabled": adv_node_agent,
     });
     if is_pg2026 {
-        advanced_nodes["director_enabled"] = json!(
-            configs
-                .get("pg_advanced_node_director_enabled")
-                .map(|s| s == "true")
-                .unwrap_or(false)
-        );
+        advanced_nodes["director_enabled"] = json!(configs
+            .get("pg_advanced_node_director_enabled")
+            .map(|s| s == "true")
+            .unwrap_or(false));
     }
     if !is_pg2026 {
         advanced_nodes["agent_mode_enabled"] = json!(agent_mode_enabled);
@@ -1306,6 +1409,7 @@ pub(crate) async fn get_playground_config(
     });
     if name == "playground_2026" {
         body["feature_catalog"] = pg2026_feature_catalog(&types);
+        body["chat_protocol"] = pg2026_chat_protocol_catalog();
         body["model_types"] = json!(types
             .iter()
             .map(|t| json!({
@@ -1314,6 +1418,11 @@ pub(crate) async fn get_playground_config(
                 "default_features": pg2026_parse_attr_list(t.default_features.as_deref()),
             }))
             .collect::<Vec<_>>());
+        #[cfg(feature = "commercial_plugins")]
+        {
+            body["voice_catalogs"] =
+                crate::api::plugins::playground_2026::voice_library::catalogs_json();
+        }
     }
     Ok(Json(body))
 }
@@ -1437,11 +1546,15 @@ pub(crate) async fn save_playground_config(
     let mut type_name_by_model_id: HashMap<i64, String> = HashMap::new();
     let mut existing_feature_keys: HashMap<i64, Vec<String>> = HashMap::new();
     let mut existing_image_special: HashMap<i64, serde_json::Value> = HashMap::new();
+    let mut existing_prompt_optimize: HashMap<i64, serde_json::Value> = HashMap::new();
+    let mut existing_voice_library: HashMap<i64, serde_json::Value> = HashMap::new();
+    let mut existing_input_protocol: HashMap<i64, String> = HashMap::new();
+    let mut existing_thinking_profile: HashMap<i64, String> = HashMap::new();
     if name == "playground_2026" {
         let models: Vec<crate::models::Model> = sqlx::query_as(
             &state
                 .db
-                .format_query("SELECT * FROM models ORDER BY id DESC"),
+                .format_query("SELECT * FROM models WHERE is_listed = 1 ORDER BY id DESC"),
         )
         .fetch_all(&state.db.pool)
         .await?;
@@ -1475,6 +1588,22 @@ pub(crate) async fn save_playground_config(
                 if let Some(isp) = parsed.get("image_special_params") {
                     existing_image_special.insert(id, isp.clone());
                 }
+                if let Some(po) = parsed.get("prompt_optimize") {
+                    existing_prompt_optimize.insert(id, po.clone());
+                }
+                if let Some(vl) = parsed.get("voice_library") {
+                    existing_voice_library.insert(id, vl.clone());
+                }
+                if let Some(p) = parsed.get("input_protocol").and_then(|v| v.as_str()) {
+                    if let Some(id_ok) = pg2026_sanitize_input_protocol(Some(p)) {
+                        existing_input_protocol.insert(id, id_ok);
+                    }
+                }
+                if let Some(p) = parsed.get("thinking_profile").and_then(|v| v.as_str()) {
+                    if let Some(id_ok) = pg2026_sanitize_thinking_profile(Some(p)) {
+                        existing_thinking_profile.insert(id, id_ok);
+                    }
+                }
             }
         }
     }
@@ -1507,11 +1636,15 @@ pub(crate) async fn save_playground_config(
             val["io_overrides"] = o;
         }
         if name == "playground_2026" {
-            let type_name = type_name_by_model_id.get(&mc.id).map(|s| s.as_str()).unwrap_or("");
+            let type_name = type_name_by_model_id
+                .get(&mc.id)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let keys = if let Some(attrs) = mc.feature_attributes.as_deref() {
                 if pg2026_type_has_feature_attrs(type_name) {
                     let sanitized = pg2026_sanitize_attr_list(attrs);
-                    let attrs_json = serde_json::to_string(&sanitized).unwrap_or_else(|_| "[]".to_string());
+                    let attrs_json =
+                        serde_json::to_string(&sanitized).unwrap_or_else(|_| "[]".to_string());
                     sqlx::query(
                         &state
                             .db
@@ -1554,6 +1687,46 @@ pub(crate) async fn save_playground_config(
                     }
                 }
             }
+            match mc.prompt_optimize.as_ref() {
+                Some(v) if v.is_null() => {}
+                Some(v) if v.is_object() => {
+                    val["prompt_optimize"] = v.clone();
+                }
+                _ => {
+                    if let Some(old) = existing_prompt_optimize.get(&mc.id) {
+                        val["prompt_optimize"] = old.clone();
+                    }
+                }
+            }
+            match mc.voice_library.as_ref() {
+                Some(v) if v.is_null() => {}
+                Some(v) if v.is_object() => {
+                    val["voice_library"] = v.clone();
+                }
+                _ => {
+                    if let Some(old) = existing_voice_library.get(&mc.id) {
+                        val["voice_library"] = old.clone();
+                    }
+                }
+            }
+            if pg2026_is_chat_type(type_name) {
+                match pg2026_sanitize_input_protocol(mc.input_protocol.as_deref()) {
+                    Some(id) => val["input_protocol"] = json!(id),
+                    None => {
+                        if let Some(old) = existing_input_protocol.get(&mc.id) {
+                            val["input_protocol"] = json!(old);
+                        }
+                    }
+                }
+                match pg2026_sanitize_thinking_profile(mc.thinking_profile.as_deref()) {
+                    Some(id) => val["thinking_profile"] = json!(id),
+                    None => {
+                        if let Some(old) = existing_thinking_profile.get(&mc.id) {
+                            val["thinking_profile"] = json!(old);
+                        }
+                    }
+                }
+            }
         }
         upsert_config(&state, &name, &config_key, &val.to_string()).await?;
     }
@@ -1577,9 +1750,15 @@ pub(crate) async fn get_playground_schemes(
         return Err(AppError::Forbidden("需要管理员权限".to_string()));
     }
     let schemes = load_schemes_from_db(&state, &name).await;
-    Ok(Json(
-        json!({ "schemes": schemes, "defaults": get_default_schemes_for(&name) }),
-    ))
+    let mut body = json!({ "schemes": schemes, "defaults": get_default_schemes_for(&name) });
+    if name == "playground_2026" {
+        #[cfg(feature = "commercial_plugins")]
+        {
+            body["voice_catalogs"] =
+                crate::api::plugins::playground_2026::voice_library::catalogs_json();
+        }
+    }
+    Ok(Json(body))
 }
 
 /// 管理员：保存体验方案列表（全量覆盖）
@@ -1605,8 +1784,15 @@ pub(crate) async fn save_playground_schemes(
 
     if name == "playground_2026" {
         if let Some(arr) = schemes.as_array_mut() {
+            arr.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some("seedance1.5pro"));
             for s in arr {
                 sanitize_pg2026_video_scheme_io(s);
+                #[cfg(feature = "commercial_plugins")]
+                crate::api::plugins::playground_2026::prompt_optimize::seed_scheme_prompt_optimize(
+                    s,
+                );
+                #[cfg(feature = "commercial_plugins")]
+                crate::api::plugins::playground_2026::voice_library::seed_scheme_voice_library(s);
             }
         }
     }
@@ -1814,6 +2000,20 @@ fn full_io_catalog(scheme_type: &str) -> Option<(serde_json::Value, serde_json::
                 }
             ]),
         )),
+        "audio" => {
+            let io = doubao_tts_2_seed::doubao_tts_2_scheme_io();
+            Some((
+                io.get("inputs").cloned().unwrap_or(json!([])),
+                io.get("outputs").cloned().unwrap_or(json!([])),
+            ))
+        }
+        "chat" => {
+            let io = doubao_seed_evolving_seed::default_chat_scheme_io();
+            Some((
+                io.get("inputs").cloned().unwrap_or(json!([])),
+                io.get("outputs").cloned().unwrap_or(json!([])),
+            ))
+        }
         _ => None,
     }
 }
@@ -2040,7 +2240,7 @@ pub(crate) async fn get_playground_public_config(
     let models: Vec<crate::models::Model> = sqlx::query_as(
         &state
             .db
-            .format_query("SELECT * FROM models WHERE is_active = 1 ORDER BY id DESC"),
+            .format_query("SELECT * FROM models WHERE is_active = 1 AND is_listed = 1 ORDER BY sort_order DESC, id DESC"),
     )
     .fetch_all(&state.db.pool)
     .await?;
@@ -2104,14 +2304,22 @@ pub(crate) async fn get_playground_public_config(
         let is_agent_chat = agent_chat_models
             .as_ref()
             .map_or(false, |list| list.contains(&m.mid));
-        if !is_enabled && !is_agent_chat {
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        if !volc_enhance_plugin_active && crate::api::plugins::is_volc_preset_mid(&m.mid) {
+            continue;
+        }
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        let include_pg2026_image_tool = is_pg2026
+            && volc_enhance_plugin_active
+            && (crate::api::plugins::is_image_tool_mid(&m.mid)
+                || crate::api::plugins::is_image_tool_mid(&m.model_id));
+        #[cfg(not(feature = "plugin_volcengine_enhance"))]
+        let include_pg2026_image_tool = false;
+        if !is_enabled && !is_agent_chat && !include_pg2026_image_tool {
             continue;
         }
 
-        let sort_order = model_conf
-            .get("sort_order")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let sort_order = m.sort_order as i64;
 
         let scheme_id = model_conf
             .get("scheme_id")
@@ -2135,12 +2343,18 @@ pub(crate) async fn get_playground_public_config(
 
         // 如果未绑定方案或方案不存在，按模型类型自动匹配第一个同类方案
         if scheme.is_none() && !type_name.is_empty() {
-            let type_key = if type_name.contains("视频") {
+            let type_key = if include_pg2026_image_tool {
+                "image"
+            } else if type_name.contains("视频") || type_name.contains("画质增强") {
                 "video"
-            } else if type_name.contains("图片") {
+            } else if type_name.contains("图片")
+                || (is_pg2026 && type_name.contains("图像增强"))
+            {
                 "image"
             } else if type_name.contains("聊天") {
                 "chat"
+            } else if is_pg2026 && (type_name.contains("音频") || type_name.contains("语音")) {
+                "audio"
             } else {
                 ""
             };
@@ -2190,7 +2404,10 @@ pub(crate) async fn get_playground_public_config(
             scheme_type,
         );
 
-        let scheme_id_str = scheme.and_then(|s| s.get("id")).and_then(|v| v.as_str()).unwrap_or("");
+        let scheme_id_str = scheme
+            .and_then(|s| s.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if scheme_id_str == "openai_video"
             || scheme_id_str == seedance2_seed::SEEDANCE2_SCHEME_ID
             || scheme_id_str == "seedance2"
@@ -2229,9 +2446,18 @@ pub(crate) async fn get_playground_public_config(
             })
             .unwrap_or(7);
         let mut final_params = merge_param_overrides(
-            scheme.and_then(|s| s.get("params")).cloned().unwrap_or(json!([])),
+            scheme
+                .and_then(|s| s.get("params"))
+                .cloned()
+                .unwrap_or(json!([])),
             model_conf.get("param_overrides").cloned(),
         );
+        if is_pg2026 && scheme_type == "audio" {
+            #[cfg(feature = "commercial_plugins")]
+            crate::api::plugins::playground_2026::voice_library::strip_voice_from_params(
+                &mut final_params,
+            );
+        }
         if is_pg2026
             && seedream_5_0_pro_seed::is_seedream_5_0_pro_model(
                 &format!("{} {}", m.model_id, m.model_id_alias),
@@ -2239,6 +2465,7 @@ pub(crate) async fn get_playground_public_config(
             )
         {
             final_params = seedream_5_0_pro_seed::lock_image_count_to_one(final_params);
+            final_params = seedream_5_0_pro_seed::ensure_layer_decomposition_param(final_params);
         }
 
         let is_default = default_mids_set.contains(&m.mid);
@@ -2280,6 +2507,18 @@ pub(crate) async fn get_playground_public_config(
                 mapped
             };
             row["feature_keys"] = json!(keys);
+            if pg2026_is_chat_type(&type_name) {
+                if let Some(p) = model_conf.get("input_protocol").and_then(|v| v.as_str()) {
+                    if let Some(id) = pg2026_sanitize_input_protocol(Some(p)) {
+                        row["input_protocol"] = json!(id);
+                    }
+                }
+                if let Some(p) = model_conf.get("thinking_profile").and_then(|v| v.as_str()) {
+                    if let Some(id) = pg2026_sanitize_thinking_profile(Some(p)) {
+                        row["thinking_profile"] = json!(id);
+                    }
+                }
+            }
             if scheme_type == "image" {
                 let from_model = model_conf.get("image_special_params").cloned();
                 let from_scheme = scheme.and_then(|s| s.get("image_special_params")).cloned();
@@ -2299,6 +2538,28 @@ pub(crate) async fn get_playground_public_config(
                     if let Some(isp) = from_scheme {
                         row["image_special_params"] = isp;
                     }
+                }
+            }
+            if scheme_type == "image" || scheme_type == "video" {
+                #[cfg(feature = "commercial_plugins")]
+                {
+                    row["prompt_optimize"] = crate::api::plugins::playground_2026::prompt_optimize::public_body_json(
+                        crate::api::plugins::playground_2026::prompt_optimize::resolve_model_body(
+                            Some(&model_conf),
+                            scheme,
+                        ),
+                    );
+                }
+            }
+            if scheme_type == "audio" {
+                #[cfg(feature = "commercial_plugins")]
+                {
+                    row["voice_library"] = crate::api::plugins::playground_2026::voice_library::public_library_json(
+                        crate::api::plugins::playground_2026::voice_library::resolve_model_library(
+                            Some(&model_conf),
+                            scheme,
+                        ),
+                    );
                 }
             }
         }
@@ -2323,12 +2584,10 @@ pub(crate) async fn get_playground_public_config(
         "agent_enabled": adv_node_agent,
     });
     if is_pg2026 {
-        advanced_nodes["director_enabled"] = json!(
-            configs
-                .get("pg_advanced_node_director_enabled")
-                .map(|s| s == "true")
-                .unwrap_or(false)
-        );
+        advanced_nodes["director_enabled"] = json!(configs
+            .get("pg_advanced_node_director_enabled")
+            .map(|s| s == "true")
+            .unwrap_or(false));
     }
     if !is_pg2026 {
         advanced_nodes["agent_mode_enabled"] = json!(agent_mode_enabled);
@@ -2347,7 +2606,213 @@ pub(crate) async fn get_playground_public_config(
     });
     if is_pg2026 {
         body["feature_catalog"] = pg2026_feature_catalog(&types);
+        #[cfg(feature = "commercial_plugins")]
+        {
+            let preferred = configs
+                .get(crate::api::plugins::playground_2026::prompt_optimize::CONFIG_KEY)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            body["prompt_optimize_llm"] =
+                crate::api::plugins::playground_2026::prompt_optimize::public_llm_json(
+                    &state, preferred,
+                )
+                .await;
+            body["voice_catalogs"] =
+                crate::api::plugins::playground_2026::voice_library::catalogs_json();
+        }
     }
     Ok(Json(body))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playground_2026_drops_seedance_1_5_pro_scheme() {
+        let pg2026 = get_default_schemes_for("playground_2026");
+        assert!(pg2026
+            .iter()
+            .all(|s| s.get("id").and_then(|v| v.as_str()) != Some("seedance1.5pro")));
+        let legacy = get_default_schemes_for("playground");
+        assert!(legacy
+            .iter()
+            .any(|s| s.get("id").and_then(|v| v.as_str()) == Some("seedance1.5pro")));
+    }
+
+    #[test]
+    fn playground_2026_has_doubao_seed_evolving_chat_scheme() {
+        let pg2026 = get_default_schemes_for("playground_2026");
+        let scheme = pg2026
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("doubao_seed_evolving"));
+        assert!(scheme.is_some());
+        let params = scheme.unwrap().get("params").and_then(|v| v.as_array());
+        let keys: Vec<&str> = params
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.get("key").and_then(|v| v.as_str()))
+            .collect();
+        assert!(!keys.contains(&"thinking"));
+        assert!(keys.contains(&"temperature"));
+        assert!(keys.contains(&"max_tokens"));
+        let io_keys: Vec<&str> = scheme
+            .unwrap()
+            .get("inputs")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.get("key").and_then(|v| v.as_str()))
+            .collect();
+        assert!(io_keys.contains(&"thinking"));
+        let thinking_on = scheme
+            .unwrap()
+            .get("inputs")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("thinking"))
+            .and_then(|p| p.get("enabled"))
+            .and_then(|v| v.as_bool());
+        assert_eq!(thinking_on, Some(true));
+        let temp = scheme
+            .unwrap()
+            .get("params")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("temperature"))
+            .unwrap();
+        assert_eq!(temp.get("default").and_then(|v| v.as_f64()), Some(1.0));
+        let max_tokens = scheme
+            .unwrap()
+            .get("params")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("max_tokens"))
+            .unwrap();
+        let opts = max_tokens
+            .get("options")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert!(opts.iter().any(|v| v.as_i64() == Some(131072)));
+        let legacy = get_default_schemes_for("playground");
+        assert!(legacy
+            .iter()
+            .all(|s| s.get("id").and_then(|v| v.as_str()) != Some("doubao_seed_evolving")));
+    }
+
+    #[test]
+    fn playground_2026_has_doubao_tts_voice_library() {
+        let pg2026 = get_default_schemes_for("playground_2026");
+        let scheme = pg2026
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("doubao_tts_2_0"))
+            .expect("doubao_tts_2_0");
+        assert_eq!(scheme.get("type").and_then(|v| v.as_str()), Some("audio"));
+        let keys: Vec<&str> = scheme
+            .get("params")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.get("key").and_then(|v| v.as_str()))
+            .collect();
+        assert!(!keys.contains(&"voice"));
+        assert!(keys.contains(&"speed"));
+        assert_eq!(
+            scheme
+                .get("voice_library")
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            scheme
+                .get("voice_library")
+                .and_then(|v| v.get("catalog"))
+                .and_then(|v| v.as_str()),
+            Some("doubao_tts_2_0")
+        );
+        assert_eq!(
+            scheme
+                .get("voice_library")
+                .and_then(|v| v.get("default"))
+                .and_then(|v| v.as_str()),
+            Some("zh_female_vv_uranus_bigtts")
+        );
+    }
+
+    #[test]
+    fn playground_2026_drops_generic_chat_schemes() {
+        let pg2026 = get_default_schemes_for("playground_2026");
+        for id in ["chat_standard", "chat_creative", "chat_precise"] {
+            assert!(
+                pg2026
+                    .iter()
+                    .all(|s| s.get("id").and_then(|v| v.as_str()) != Some(id)),
+                "{id} should be removed from playground_2026"
+            );
+        }
+        let legacy = get_default_schemes_for("playground");
+        for id in ["chat_standard", "chat_creative", "chat_precise"] {
+            assert!(
+                legacy
+                    .iter()
+                    .any(|s| s.get("id").and_then(|v| v.as_str()) == Some(id)),
+                "{id} should remain on legacy playground"
+            );
+        }
+    }
+
+    #[test]
+    fn playground_2026_has_glm_and_deepseek_chat_schemes() {
+        let pg2026 = get_default_schemes_for("playground_2026");
+        let glm = pg2026
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("glm_5_2"))
+            .expect("glm_5_2");
+        let ds = pg2026
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("deepseek_v4_pro"))
+            .expect("deepseek_v4_pro");
+        let qwen = pg2026
+            .iter()
+            .find(|s| s.get("id").and_then(|v| v.as_str()) == Some("qwen_3_7_max"))
+            .expect("qwen_3_7_max");
+        for scheme in [glm, ds, qwen] {
+            let keys: Vec<&str> = scheme
+                .get("params")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.get("key").and_then(|v| v.as_str()))
+                .collect();
+            assert!(!keys.contains(&"thinking"));
+            let thinking_on = scheme
+                .get("inputs")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .iter()
+                .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("thinking"))
+                .and_then(|p| p.get("enabled"))
+                .and_then(|v| v.as_bool());
+            assert_eq!(thinking_on, Some(true));
+        }
+        let temp = glm
+            .get("params")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("temperature"))
+            .unwrap();
+        assert_eq!(temp.get("max").and_then(|v| v.as_f64()), Some(1.0));
+        let legacy = get_default_schemes_for("playground");
+        assert!(legacy.iter().all(|s| {
+            !matches!(
+                s.get("id").and_then(|v| v.as_str()),
+                Some("glm_5_2" | "deepseek_v4_pro" | "qwen_3_7_max")
+            )
+        }));
+    }
+}

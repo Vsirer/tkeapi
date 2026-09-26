@@ -1,6 +1,6 @@
 # 可灵 Kling-v3 图像生成接入指南
 
-`kling-v3-omni` 是快手可灵 AI 推出的新一代旗舰级生图与视频统一大模型。通过 OpenAI 兼容接口 `POST /v1/images/generations` 调用即可。
+OpenAI 兼容：`POST /v1/images/generations`。原生路径：`/v1/images/generations`、`/v1/images/omni-image`。
 
 ---
 

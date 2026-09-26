@@ -1,19 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Card, Button, Modal, Spin, message, Typography, Tag, Form, Input, InputNumber, Radio, Space, Table, Empty, Dropdown, Tooltip, Popconfirm, type MenuProps } from 'antd';
+import { Card, Button, Spin, message, Typography, Tag, Form, Input, InputNumber, Radio, Space, Table, Empty, Dropdown, Tooltip, Popconfirm, type MenuProps } from 'antd';
 import { 
-  PrinterOutlined,
-  CheckCircleOutlined, 
-  FileTextOutlined, 
   WalletOutlined,
-  GiftOutlined,
   PieChartOutlined,
   InfoCircleOutlined,
   DollarCircleOutlined,
@@ -30,6 +26,8 @@ import request from '../../utils/request';
 import useAuthStore from '../../store/auth';
 import { useThemeStore } from '../../store/theme';
 import { formatApiDateTime } from '../../utils/timedisplay';
+import { listPagination } from '../../components/ListPagination';
+import InvoiceDocumentPreview from '../../components/InvoiceDocumentPreview';
 import type { InvoiceConfig, InvoiceItem, ReceiptItem, InvoiceRequestRecord, FundTypeStats } from '../../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -277,27 +275,6 @@ const Invoices: React.FC = () => {
       }
     } catch (e: any) {
       console.error(e);
-      // Fallback mock data if initial empty
-      setData({
-        enabled: true,
-        mode: 'international',
-        config: {
-          company_name: 'TokensByte Inc.',
-          company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
-          tax_id: 'US-987654321',
-          contact_email: 'billing@tokensbyte.com',
-          currency_symbol: '$',
-          invoice_prefix: 'INV-',
-          receipt_prefix: 'REC-',
-          notes: 'Thank you for your business! Payment has been processed in full.',
-          show_invoices: true,
-          show_receipts: true,
-        },
-        invoices: [],
-        receipts: [],
-        china_requests: [],
-        total_paid_amount: 0,
-      });
     } finally {
       setLoading(false);
     }
@@ -392,34 +369,13 @@ const Invoices: React.FC = () => {
   const isEnterpriseCustomer = currentSubjectType === 'enterprise';
   const isApprovedEnterprise = currentSubject?.subject_type === 'enterprise' && currentSubject?.status === 'approved';
 
-  const billedName = currentSubject?.display_name || customer?.display_name || user?.nickname || user?.username || 'Valued Customer';
+  const billedName = currentSubject?.display_name || customer?.display_name || user?.nickname || user?.username || '';
   const billedTaxId = currentSubject?.doc_number || (isEnterpriseCustomer ? customer?.company_doc_number : customer?.id_doc_number) || customer?.company_doc_number || customer?.id_doc_number;
   const billedEmail = currentSubject?.email || customer?.email || user?.email;
   const billedPhone = currentSubject?.phone || customer?.phone || user?.mobile;
   const billedAddress = currentSubject?.address || customer?.address;
-  const accountId = customer?.account_id || user?.uid || user?.id || 'Standard User';
+  const accountId = customer?.account_id || user?.uid || user?.id || '';
   const hasCompletedProfile = availableSubjects.length > 0;
-
-  // Mask sensitive personal ID / tax reference number
-  const maskDocNumber = (val?: string, isEnterprise = false): string => {
-    if (!val) return '';
-    const str = String(val).trim();
-    if (str.includes('****')) return str;
-    // 18-digit resident ID: mask middle 8 birthday digits with ****
-    if (/^\d{17}[\dXx]$/i.test(str)) {
-      return `${str.slice(0, 6)}****${str.slice(-4)}`;
-    }
-    // Enterprise Tax ID (Unified Social Credit Code): keep full for formal tax invoices
-    if (isEnterprise) {
-      return str;
-    }
-    // General personal ID document numbers
-    if (str.length <= 6) return str;
-    if (str.length <= 10) {
-      return `${str.slice(0, 2)}****${str.slice(-2)}`;
-    }
-    return `${str.slice(0, 4)}****${str.slice(-4)}`;
-  };
 
   // Auto-sync China Mode form when active subject changes
   useEffect(() => {
@@ -561,87 +517,9 @@ const Invoices: React.FC = () => {
     return items;
   }, [availableSubjects, currentSubject, selectedSubjectKey, isLight, t, navigate]);
 
-  // Invoices list with fallback demo rows if empty, matching image 1
-  const invoicesList = useMemo(() => {
-    if (data?.invoices && data.invoices.length > 0) {
-      return data.invoices;
-    }
-    // If user has zero payments, supply standard default template rows matching image 1
-    return [
-      {
-        id: 'INV-20260901-0001',
-        date: 'September 1st, 2026',
-        raw_date: '2026-09-01T05:11:18Z',
-        payment: 'paid',
-        amount: 25.00,
-        currency: '$',
-        payment_method: 'Stripe',
-        description: 'Purchase of Prepaid API Service Credits',
-        fund_type: 'real_payment',
-        fund_type_label: '实付充值',
-        is_invoiceable: true,
-      },
-      {
-        id: 'INV-20260901-0002',
-        date: 'September 1st, 2026',
-        raw_date: '2026-09-01T00:00:00Z',
-        payment: 'paid',
-        amount: 0.00,
-        currency: '$',
-        payment_method: 'System',
-        description: 'Monthly Free Plan Renewal',
-        fund_type: 'real_payment',
-        fund_type_label: '实付充值',
-        is_invoiceable: true,
-      },
-      {
-        id: 'INV-20260801-0001',
-        date: 'August 1st, 2026',
-        raw_date: '2026-08-01T00:00:00Z',
-        payment: 'paid',
-        amount: 0.00,
-        currency: '$',
-        payment_method: 'System',
-        description: 'Monthly Free Plan Renewal',
-        fund_type: 'real_payment',
-        fund_type_label: '实付充值',
-        is_invoiceable: true,
-      },
-      {
-        id: 'INV-20260701-0001',
-        date: 'July 1st, 2026',
-        raw_date: '2026-07-01T00:00:00Z',
-        payment: 'paid',
-        amount: 0.00,
-        currency: '$',
-        payment_method: 'System',
-        description: 'Monthly Free Plan Renewal',
-        fund_type: 'real_payment',
-        fund_type_label: '实付充值',
-        is_invoiceable: true,
-      },
-    ];
-  }, [data?.invoices]);
+  const invoicesList = useMemo(() => data?.invoices || [], [data?.invoices]);
 
-  // Receipts list
-  const receiptsList = useMemo(() => {
-    if (data?.receipts && data.receipts.length > 0) {
-      return data.receipts;
-    }
-    return [
-      {
-        id: 'REC-20260901-0001',
-        date: 'September 1st, 2026 at 1:11:18 PM UTC+8',
-        raw_date: '2026-09-01T05:11:18Z',
-        amount: 25.00,
-        currency: '$',
-        payment_method: 'Stripe',
-        transaction_id: 'ch_3PzK928172635489',
-        fund_type: 'real_payment',
-        fund_type_label: '实付资金',
-      },
-    ];
-  }, [data?.receipts]);
+  const receiptsList = useMemo(() => data?.receipts || [], [data?.receipts]);
 
   // 格式化日期与交易时间：中文菜单模式下展示中文对应日期与站点统一时间系统（时区使用 UTC 与站点统一保持一致），英文模式下保持标准英文格式
   const formatInvoiceDate = (inv: InvoiceItem) => {
@@ -673,300 +551,6 @@ const Invoices: React.FC = () => {
     const start = (receiptPage - 1) * pageSize;
     return receiptsList.slice(start, start + pageSize);
   }, [receiptsList, receiptPage, pageSize]);
-
-  const isUsingDemoInvoices = !data?.invoices || data.invoices.length === 0;
-
-  const invoiceSheetRef = useRef<HTMLDivElement>(null);
-  const receiptSheetRef = useRef<HTMLDivElement>(null);
-
-  // Print invoice or receipt strictly on 1 single A4 sheet using an isolated print iframe
-  const handlePrint = (sheetOrTitle?: HTMLElement | string | null, docTitle?: string) => {
-    let sheetElement: HTMLElement | null = null;
-    let title = docTitle;
-    if (typeof sheetOrTitle === 'string') {
-      title = sheetOrTitle;
-    } else if (sheetOrTitle) {
-      sheetElement = sheetOrTitle;
-    }
-    const targetElement = sheetElement || (document.querySelector('.printable-a4-sheet') as HTMLElement | null);
-    const originalTitle = document.title;
-    if (title) {
-      document.title = title;
-    }
-
-    if (!targetElement) {
-      window.print();
-      setTimeout(() => {
-        document.title = originalTitle;
-      }, 1500);
-      return;
-    }
-
-    // Remove any previous print iframe to prevent duplicates
-    const oldIframe = document.getElementById('tokensbyte-invoice-print-frame');
-    if (oldIframe) {
-      oldIframe.remove();
-    }
-
-    const iframe = document.createElement('iframe');
-    iframe.id = 'tokensbyte-invoice-print-frame';
-    iframe.style.position = 'fixed';
-    iframe.style.left = '-9999px';
-    iframe.style.top = '-9999px';
-    iframe.style.width = '794px';
-    iframe.style.height = '1123px';
-    iframe.style.border = '0';
-    iframe.style.opacity = '0';
-    iframe.style.pointerEvents = 'none';
-    document.body.appendChild(iframe);
-
-    const doc = iframe.contentWindow?.document;
-    if (!doc) {
-      window.print();
-      setTimeout(() => {
-        document.title = originalTitle;
-      }, 1500);
-      return;
-    }
-
-    // Collect all stylesheets and font links from parent page
-    let stylesHtml = '';
-    document.querySelectorAll('link[rel="stylesheet"], style').forEach((node) => {
-      stylesHtml += node.outerHTML;
-    });
-
-    const sheetHtml = targetElement.outerHTML;
-
-    doc.open();
-    doc.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>${title || 'Invoice'}</title>
-          ${stylesHtml}
-          <style>
-            @page {
-              size: A4 portrait;
-              margin: 0;
-            }
-            *, *::before, *::after {
-              box-sizing: border-box !important;
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }
-            html, body {
-              margin: 0 !important;
-              padding: 0 !important;
-              width: 210mm !important;
-              height: 297mm !important;
-              max-width: 210mm !important;
-              max-height: 297mm !important;
-              background: #ffffff !important;
-              color: #0f172a !important;
-              overflow: hidden !important;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif !important;
-            }
-            .printable-a4-sheet {
-              position: relative !important;
-              left: 0 !important;
-              top: 0 !important;
-              width: 210mm !important;
-              height: 297mm !important;
-              max-width: 210mm !important;
-              max-height: 297mm !important;
-              min-height: 297mm !important;
-              padding: 2.54cm 2.0cm 2.54cm 2.0cm !important;
-              margin: 0 auto !important;
-              box-shadow: none !important;
-              border: none !important;
-              border-radius: 0 !important;
-              background: #ffffff !important;
-              color: #0f172a !important;
-              display: flex !important;
-              flex-direction: column !important;
-              justify-content: space-between !important;
-              overflow: hidden !important;
-              page-break-inside: avoid !important;
-              break-inside: avoid !important;
-            }
-            .no-print {
-              display: none !important;
-            }
-            .anticon {
-              display: inline-block;
-              color: inherit;
-              font-style: normal;
-              line-height: 0;
-              text-align: center;
-              text-transform: none;
-              vertical-align: -0.125em;
-              text-rendering: optimizeLegibility;
-              -webkit-font-smoothing: antialiased;
-            }
-            .anticon > * {
-              line-height: 1;
-            }
-            .anticon svg {
-              display: inline-block;
-            }
-          </style>
-        </head>
-        <body>
-          ${sheetHtml}
-        </body>
-      </html>
-    `);
-    doc.close();
-
-    const cleanup = () => {
-      document.title = originalTitle;
-      setTimeout(() => {
-        if (iframe.parentNode) {
-          iframe.remove();
-        }
-      }, 1000);
-    };
-
-    if (iframe.contentWindow) {
-      iframe.contentWindow.onafterprint = cleanup;
-    }
-    // Fallback cleanup after 2 minutes
-    setTimeout(() => {
-      if (iframe.parentNode) {
-        iframe.remove();
-      }
-    }, 120000);
-
-    let printed = false;
-    const doPrint = () => {
-      if (printed) return;
-      printed = true;
-      setTimeout(() => {
-        try {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-        } catch (e) {
-          console.error('Print error:', e);
-          window.print();
-        } finally {
-          document.title = originalTitle;
-        }
-      }, 300);
-    };
-
-    if (iframe.contentWindow?.document.readyState === 'complete') {
-      doPrint();
-    } else {
-      iframe.onload = doPrint;
-      setTimeout(doPrint, 600);
-    }
-  };
-
-  // Download invoice or receipt as a standalone single-page A4 PDF file
-  const handleDownloadPdf = async (sheetElement: HTMLElement | null, docTitle: string) => {
-    if (!sheetElement) {
-      handlePrint(sheetElement, docTitle);
-      return;
-    }
-    const hide = message.loading(t('invoices_page.generating_pdf', '正在生成标准高清 A4 单页 PDF 文件，请稍候...'), 0);
-    try {
-      const [html2canvasModule, jsPdfModule] = await Promise.all([
-        import('html2canvas'),
-        import('jspdf'),
-      ]);
-      const html2canvas = (html2canvasModule.default || html2canvasModule) as any;
-      const jsPDF = (jsPdfModule.jsPDF || jsPdfModule.default || jsPdfModule) as any;
-      const canvas = await html2canvas(sheetElement, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        windowWidth: 1200,
-      });
-      const imgData = canvas.toDataURL('image/jpeg', 0.96);
-      const pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4',
-        compress: true,
-      });
-      // Standalone single-page A4 document: exactly 210mm x 297mm
-      pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297, undefined, 'FAST');
-
-      pdf.save(`${docTitle}.pdf`);
-      hide();
-      message.success(t('invoices_page.download_pdf_success', 'A4 单页 PDF 凭证已生成并开始下载'));
-    } catch (err) {
-      hide();
-      console.error('PDF export error:', err);
-      message.info(t('invoices_page.print_save_hint', '正在为您调起系统打印窗口（严格 A4 单页），可选择打印机或另存为 PDF'));
-      handlePrint(sheetElement, docTitle);
-    }
-  };
-
-  const getInvoiceMenuItems = (invoice: InvoiceItem): MenuProps['items'] => {
-    const isGift = invoice.fund_type === 'gift_bonus';
-    const docTitle = `${isGift ? 'Promotional-Gift' : 'Commercial-Invoice'}-${invoice.id}`;
-    return [
-      {
-        key: 'download_pdf',
-        icon: <DownloadOutlined style={{ fontSize: 16, color: isLight ? '#18181b' : '#fafafa' }} />,
-        label: (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{t('invoices_page.menu_download_pdf', '下载 A4 单页 PDF')}</div>
-            <div style={{ fontSize: 11, color: isLight ? '#71717a' : '#a1a1aa' }}>{t('invoices_page.menu_download_pdf_desc', '生成并保存独立标准 A4 单页 PDF 电子凭证')}</div>
-          </div>
-        ),
-        onClick: () => handleDownloadPdf(invoiceSheetRef.current, docTitle),
-      },
-      {
-        type: 'divider',
-      },
-      {
-        key: 'print_pdf',
-        icon: <PrinterOutlined style={{ fontSize: 16, color: isLight ? '#18181b' : '#fafafa' }} />,
-        label: (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{t('invoices_page.menu_print_pdf', '直接打印 A4 单页')}</div>
-            <div style={{ fontSize: 11, color: isLight ? '#71717a' : '#a1a1aa' }}>{t('invoices_page.menu_print_pdf_desc', '调起系统打印窗口，严格限制 1 张 A4 纸')}</div>
-          </div>
-        ),
-        onClick: () => handlePrint(invoiceSheetRef.current, docTitle),
-      },
-    ];
-  };
-
-  const getReceiptMenuItems = (receipt: ReceiptItem): MenuProps['items'] => {
-    const docTitle = `Payment-Receipt-${receipt.id}`;
-    return [
-      {
-        key: 'download_pdf',
-        icon: <DownloadOutlined style={{ fontSize: 16, color: isLight ? '#18181b' : '#fafafa' }} />,
-        label: (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{t('invoices_page.menu_download_pdf', '下载 A4 单页 PDF')}</div>
-            <div style={{ fontSize: 11, color: isLight ? '#71717a' : '#a1a1aa' }}>{t('invoices_page.menu_download_pdf_desc', '生成并保存独立标准 A4 单页 PDF 电子凭证')}</div>
-          </div>
-        ),
-        onClick: () => handleDownloadPdf(receiptSheetRef.current, docTitle),
-      },
-      {
-        type: 'divider',
-      },
-      {
-        key: 'print_pdf',
-        icon: <PrinterOutlined style={{ fontSize: 16, color: isLight ? '#18181b' : '#fafafa' }} />,
-        label: (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{t('invoices_page.menu_print_pdf', '直接打印 A4 单页')}</div>
-            <div style={{ fontSize: 11, color: isLight ? '#71717a' : '#a1a1aa' }}>{t('invoices_page.menu_print_pdf_desc', '调起系统打印窗口，严格限制 1 张 A4 纸')}</div>
-          </div>
-        ),
-        onClick: () => handlePrint(receiptSheetRef.current, docTitle),
-      },
-    ];
-  };
 
   // Submit China invoice application
   const handleSubmitChinaRequest = async (values: any) => {
@@ -1169,25 +753,6 @@ const Invoices: React.FC = () => {
       {effectiveMode === 'international' ? (
         /* ================= 海外模式 (International Mode - Exactly matches Image 1) ================= */
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          {isUsingDemoInvoices && (
-            <div 
-              className="no-print"
-              style={{ 
-                padding: '10px 16px', 
-                background: isLight ? '#f4f4f5' : '#18181b', 
-                border: isLight ? '1px solid #e4e4e7' : '1px solid #27272a', 
-                borderRadius: 8, 
-                fontSize: 13, 
-                color: isLight ? '#52525b' : '#a1a1aa',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
-            >
-              <span>{t('invoices_page.demo_hint', '💡 提示：当前账号暂无真实在线充值订单，以下为基于图一标准版式的预览数据，支持直接点击「Invoice」与「Receipt」查看并打印商业凭证。')}</span>
-            </div>
-          )}
-
           {/* Card 1: Invoices */}
           {config.show_invoices !== false && (
             <div 
@@ -1226,6 +791,13 @@ const Invoices: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
+                    {paginatedInvoices.length === 0 && (
+                      <tr>
+                        <td colSpan={4} style={{ padding: '48px 0' }}>
+                          <Empty description={t('invoices_page.empty_no_invoices', '暂无发票记录')} />
+                        </td>
+                      </tr>
+                    )}
                     {paginatedInvoices.map((inv) => (
                       <tr 
                         key={inv.id} 
@@ -1401,6 +973,13 @@ const Invoices: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
+                    {paginatedReceipts.length === 0 && (
+                      <tr>
+                        <td colSpan={3} style={{ padding: '48px 0' }}>
+                          <Empty description={t('invoices_page.empty_no_receipts', '暂无收据记录')} />
+                        </td>
+                      </tr>
+                    )}
                     {paginatedReceipts.map((rec) => (
                       <tr 
                         key={rec.id} 
@@ -2191,10 +1770,9 @@ const Invoices: React.FC = () => {
                     rowKey="id"
                     dataSource={data.china_requests}
                     scroll={{ x: 'max-content' }}
-                    pagination={{
-                      pageSize: 10,
+                    pagination={listPagination({
                       style: { padding: '12px 16px', margin: 0 },
-                    }}
+                    })}
                     columns={[
                       {
                         title: '申请单号 / 时间',
@@ -2331,566 +1909,22 @@ const Invoices: React.FC = () => {
         </div>
       )}
 
-      {/* ================= Printable Commercial Invoice Modal (Standard A4) ================= */}
-      <Modal
-        open={!!selectedInvoice}
-        onCancel={() => setSelectedInvoice(null)}
-        footer={null}
-        width={860}
-        destroyOnClose
-        centered
-        styles={{ body: { padding: 0, overflow: 'hidden', background: isLight ? '#f1f5f9' : '#09090b', borderRadius: 8 } }}
-      >
-        {selectedInvoice && (() => {
-          const isGiftInvoice = selectedInvoice.fund_type === 'gift_bonus';
-          const menuItems = getInvoiceMenuItems(selectedInvoice);
-          const docTitle = `${isGiftInvoice ? 'Promotional-Gift' : 'Commercial-Invoice'}-${selectedInvoice.id}`;
-          return (
-          <Dropdown menu={{ items: menuItems }} trigger={['contextMenu']}>
-            <div>
-              {/* Top Preview Toolbar (Hidden in Print) */}
-              <div 
-                className="no-print" 
-                style={{ 
-                  position: 'sticky', 
-                  top: 0, 
-                  zIndex: 10, 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'space-between', 
-                  padding: '12px 20px', 
-                  background: isLight ? '#ffffff' : '#18181b', 
-                  borderBottom: isLight ? '1px solid #e2e8f0' : '1px solid #27272a',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <FileTextOutlined style={{ color: isLight ? '#18181b' : '#fafafa', fontSize: 18 }} />
-                  <span style={{ fontSize: 14, fontWeight: 700, color: isLight ? '#0f172a' : '#f8fafc' }}>
-                    {isGiftInvoice ? 'Promotional Gift Voucher' : 'Commercial Invoice'} · {selectedInvoice.id}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 28 }}>
-                  <Button 
-                    icon={<DownloadOutlined />} 
-                    onClick={() => handleDownloadPdf(invoiceSheetRef.current, docTitle)}
-                    style={{ 
-                      borderRadius: 6, 
-                      fontWeight: 500,
-                      background: isLight ? '#ffffff' : '#27272a',
-                      borderColor: isLight ? '#e4e4e7' : '#3f3f46',
-                      color: isLight ? '#18181b' : '#fafafa',
-                    }}
-                  >
-                    {t('invoices_page.btn_download_pdf', 'Download PDF')}
-                  </Button>
-                  <Button 
-                    type="primary" 
-                    icon={<PrinterOutlined />} 
-                    onClick={() => handlePrint(invoiceSheetRef.current, docTitle)}
-                    style={{ borderRadius: 6, fontWeight: 500 }}
-                  >
-                    {t('invoices_page.btn_print_direct', 'Print')}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Document Viewer Scroll Viewport */}
-              <div className="a4-preview-scroll" style={{ maxHeight: 'calc(88vh - 54px)', overflowY: 'auto', overflowX: 'auto', padding: '24px 16px 40px 16px', display: 'flex', justifyContent: 'center' }}>
-                {/* Standard A4 Paper Sheet (Exact 794x1123 Portrait) */}
-                <div 
-                  ref={invoiceSheetRef}
-                  className="printable-a4-sheet" 
-                  style={{ 
-                    width: 794, 
-                    height: 1123,
-                    minHeight: 1123, 
-                    maxHeight: 1123,
-                    background: '#ffffff', 
-                    color: '#0f172a', 
-                    padding: '2.54cm 2.0cm', 
-                    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.08)', 
-                    borderRadius: 2, 
-                    boxSizing: 'border-box', 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    justifyContent: 'space-between', 
-                    overflow: 'hidden',
-                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' 
-                  }}
-                >
-                  {/* Upper Content */}
-                  <div>
-                    {/* Header / Brand & Document Meta */}
-                    <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: 14 }}>
-                      <div>
-                        <div style={{ fontSize: 24, fontWeight: 900, color: '#0f172a', letterSpacing: '0.04em' }}>
-                          {isGiftInvoice ? 'PROMOTIONAL VOUCHER' : 'INVOICE'}
-                        </div>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', marginTop: 3 }}>
-                          {isGiftInvoice ? 'Voucher No:' : 'Invoice No:'} {selectedInvoice.id}
-                        </div>
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                          Issue Date: {selectedInvoice.date}
-                        </div>
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                          Due Date: {selectedInvoice.date}
-                        </div>
-
-                        {/* Company Info placed directly under date info */}
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>
-                            {config.company_name || 'TokensByte Inc.'}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#475569', marginTop: 3, maxWidth: 360, lineHeight: 1.35 }}>
-                            {config.company_address || '100 Innovation Way, Suite 300, San Francisco, CA 94107'}
-                          </div>
-                          {config.tax_id && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
-                              Tax ID: <strong>{config.tax_id}</strong>
-                            </div>
-                          )}
-                          {config.contact_email && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Billing Support: <strong>{config.contact_email}</strong>
-                            </div>
-                          )}
-                          {config.company_phone && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Tel: <strong>{config.company_phone}</strong>
-                            </div>
-                          )}
-                          {(config.company_website || config.website) && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Web: <strong>{config.company_website || config.website}</strong>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Parties & Payment Info (2 Columns) */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 14, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-                      <div>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700 }}>
-                          BILLED TO:
-                        </div>
-                        <div style={{ fontSize: 14.5, fontWeight: 700, color: '#0f172a', marginTop: 3 }}>
-                          {billedName}
-                        </div>
-                        {billedTaxId && (
-                          <div style={{ fontSize: 11, color: '#334155', marginTop: 2, fontWeight: 500 }}>
-                            <span style={{ color: '#64748b' }}>
-                              {isEnterpriseCustomer ? 'Tax ID: ' : 'ID / Tax Ref: '}
-                            </span>
-                            <strong style={{ fontFamily: 'monospace', color: '#0f172a' }}>
-                              {maskDocNumber(billedTaxId, isEnterpriseCustomer)}
-                            </strong>
-                          </div>
-                        )}
-                        {billedAddress && (
-                          <div style={{ fontSize: 11, color: '#475569', marginTop: 2, lineHeight: 1.35 }}>
-                            {billedAddress}
-                          </div>
-                        )}
-                        <div style={{ fontSize: 11.5, color: '#334155', marginTop: 2 }}>
-                          {billedEmail || 'N/A'}
-                        </div>
-                        {billedPhone && (
-                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                            Tel: {billedPhone}
-                          </div>
-                        )}
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                          Account ID: {accountId}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700 }}>
-                          PAYMENT INFORMATION:
-                        </div>
-                        <div style={{ fontSize: 11.5, color: '#334155', marginTop: 3 }}>
-                          Payment Method: <strong>{selectedInvoice.payment_method || 'Online Payment'}</strong>
-                        </div>
-                        <div style={{ fontSize: 11.5, color: '#334155', marginTop: 2 }}>
-                          Payment Status: <strong style={{ color: '#0f172a' }}>
-                            {isGiftInvoice ? 'Promotional Grant' : 'Paid'}
-                          </strong>
-                        </div>
-                        <div style={{ fontSize: 11.5, color: '#334155', marginTop: 2 }}>
-                          Currency: <strong>{selectedInvoice.currency === '¥' ? 'CNY' : 'USD'}</strong>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Line Items Table */}
-                    <div style={{ marginTop: 14 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr style={{ background: '#f1f5f9', borderTop: '1px solid #cbd5e1', borderBottom: '2px solid #0f172a' }}>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'left', width: 32 }}>#</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'left' }}>Item Description</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'center', width: 50 }}>Qty</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'right', width: 95 }}>Unit Price</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'right', width: 105 }}>Total Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, color: '#64748b' }}>1</td>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, fontWeight: 600, color: '#0f172a' }}>
-                              <div style={{ whiteSpace: 'nowrap' }}>
-                                {(!selectedInvoice.description || selectedInvoice.description === 'Account Credits & API Balance Top-up')
-                                  ? (isGiftInvoice ? 'Promotional Gift Credits & Activity Bonus' : 'Purchase of Prepaid API Service Credits')
-                                  : selectedInvoice.description}
-                              </div>
-                            </td>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, color: '#334155', textAlign: 'center' }}>1</td>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, color: '#334155', textAlign: 'right' }}>
-                              {selectedInvoice.currency}{selectedInvoice.amount.toFixed(2)}
-                            </td>
-                            <td style={{ padding: '8px 8px', fontSize: 12, fontWeight: 700, color: '#0f172a', textAlign: 'right' }}>
-                              {selectedInvoice.currency}{selectedInvoice.amount.toFixed(2)}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Totals Summary */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                      <div style={{ width: 250, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 14px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11.5, color: '#475569' }}>
-                          <span>Subtotal</span>
-                          <span>{selectedInvoice.currency}{selectedInvoice.amount.toFixed(2)}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11.5, color: '#475569' }}>
-                          <span>Tax / VAT (0.0%)</span>
-                          <span>{selectedInvoice.currency}0.00</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', marginTop: 3, borderTop: '2px solid #0f172a', fontSize: 13.5, fontWeight: 800, color: '#0f172a' }}>
-                          <span>Total</span>
-                          <span>{selectedInvoice.currency}{selectedInvoice.amount.toFixed(2)}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Terms & Notes */}
-                    <div style={{ marginTop: 12, padding: '8px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 10.5, color: '#475569', lineHeight: 1.4 }}>
-                      <div>
-                        <strong style={{ color: '#0f172a' }}>Terms & Notes: </strong>
-                        {config.notes || 'Thank you for your business! Payment has been processed in full.'}
-                      </div>
-                      <div style={{ marginTop: 3, color: '#64748b' }}>
-                        <strong style={{ color: '#0f172a' }}>Tax Note: </strong>
-                        Tax exempt / Reverse charge (Zero-rated VAT/GST on cross-border B2B digital cloud services).
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Bottom Footer (A4 Bottom) */}
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTop: '1px solid #e2e8f0', fontSize: 10, color: '#94a3b8' }}>
-                      <span>Document Ref: {selectedInvoice.id} · {isGiftInvoice ? 'Promotional Gift Voucher' : 'Official Commercial Invoice'}</span>
-                      <span style={{ fontWeight: 600 }}>Page 1 of 1</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </Dropdown>
-          );
-        })()}
-      </Modal>
-
-      {/* ================= Printable Payment Receipt Modal (Standard A4) ================= */}
-      <Modal
-        open={!!selectedReceipt}
-        onCancel={() => setSelectedReceipt(null)}
-        footer={null}
-        width={860}
-        destroyOnClose
-        centered
-        styles={{ body: { padding: 0, overflow: 'hidden', background: isLight ? '#f1f5f9' : '#09090b', borderRadius: 8 } }}
-      >
-        {selectedReceipt && (() => {
-          const menuItems = getReceiptMenuItems(selectedReceipt);
-          const docTitle = `Payment-Receipt-${selectedReceipt.id}`;
-          return (
-          <Dropdown menu={{ items: menuItems }} trigger={['contextMenu']}>
-            <div>
-              {/* Top Preview Toolbar (Hidden in Print) */}
-              <div 
-                className="no-print" 
-                style={{ 
-                  position: 'sticky', 
-                  top: 0, 
-                  zIndex: 10, 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  justifyContent: 'space-between', 
-                  padding: '12px 20px', 
-                  background: isLight ? '#ffffff' : '#18181b', 
-                  borderBottom: isLight ? '1px solid #e2e8f0' : '1px solid #27272a',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <FileTextOutlined style={{ color: isLight ? '#18181b' : '#fafafa', fontSize: 18 }} />
-                  <span style={{ fontSize: 14, fontWeight: 700, color: isLight ? '#0f172a' : '#f8fafc' }}>
-                    Payment Receipt · {selectedReceipt.id}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginRight: 28 }}>
-                  <Button 
-                    icon={<DownloadOutlined />} 
-                    onClick={() => handleDownloadPdf(receiptSheetRef.current, docTitle)}
-                    style={{ 
-                      borderRadius: 6, 
-                      fontWeight: 500,
-                      background: isLight ? '#ffffff' : '#27272a',
-                      borderColor: isLight ? '#e4e4e7' : '#3f3f46',
-                      color: isLight ? '#18181b' : '#fafafa',
-                    }}
-                  >
-                    {t('invoices_page.btn_download_pdf', 'Download PDF')}
-                  </Button>
-                  <Button 
-                    type="primary" 
-                    icon={<PrinterOutlined />} 
-                    onClick={() => handlePrint(receiptSheetRef.current, docTitle)}
-                    style={{ borderRadius: 6, fontWeight: 500 }}
-                  >
-                    {t('invoices_page.btn_print_direct', 'Print')}
-                  </Button>
-                </div>
-              </div>
-
-              {/* Document Viewer Scroll Viewport */}
-              <div className="a4-preview-scroll" style={{ maxHeight: 'calc(88vh - 54px)', overflowY: 'auto', overflowX: 'auto', padding: '24px 16px 40px 16px', display: 'flex', justifyContent: 'center' }}>
-                {/* Standard A4 Paper Sheet (Exact 794x1123 Portrait) */}
-                <div 
-                  ref={receiptSheetRef}
-                  className="printable-a4-sheet" 
-                  style={{ 
-                    width: 794, 
-                    height: 1123,
-                    minHeight: 1123, 
-                    maxHeight: 1123,
-                    background: '#ffffff', 
-                    color: '#0f172a', 
-                    padding: '2.54cm 2.0cm', 
-                    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.08)', 
-                    borderRadius: 2, 
-                    boxSizing: 'border-box', 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    justifyContent: 'space-between', 
-                    overflow: 'hidden', 
-                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' 
-                  }}
-                >
-                  {/* Upper Content */}
-                  <div>
-                    {/* Header / Brand & Document Meta */}
-                    <div style={{ borderBottom: '2px solid #0f172a', paddingBottom: 14 }}>
-                      <div>
-                        <div style={{ fontSize: 24, fontWeight: 900, color: '#0f172a', letterSpacing: '0.04em' }}>
-                          RECEIPT
-                        </div>
-                        <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', marginTop: 3 }}>
-                          Receipt No: {selectedReceipt.id}
-                        </div>
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                          Payment Date: {(selectedReceipt.date || '').replace(/GMT/g, 'UTC')}
-                        </div>
-
-                        {/* Company Info placed directly under date info */}
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: '-0.02em', color: '#0f172a' }}>
-                            {config.company_name || 'TokensByte Inc.'}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#475569', marginTop: 3, maxWidth: 360, lineHeight: 1.35 }}>
-                            {config.company_address || '100 Innovation Way, Suite 300, San Francisco, CA 94107'}
-                          </div>
-                          {config.tax_id && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
-                              Tax ID: <strong>{config.tax_id}</strong>
-                            </div>
-                          )}
-                          {config.contact_email && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Billing Support: <strong>{config.contact_email}</strong>
-                            </div>
-                          )}
-                          {config.company_phone && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Tel: <strong>{config.company_phone}</strong>
-                            </div>
-                          )}
-                          {(config.company_website || config.website) && (
-                            <div style={{ fontSize: 11, color: '#475569', marginTop: 1 }}>
-                              Web: <strong>{config.company_website || config.website}</strong>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Hero Receipt Card */}
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, padding: '12px 18px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                        <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <CheckCircleOutlined style={{ fontSize: 24, color: '#0f172a' }} />
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>
-                            Payment Successfully Cleared
-                          </div>
-                          <div style={{ fontSize: 12, color: '#52525b', marginTop: 2 }}>
-                            Processed via {selectedReceipt.payment_method || 'Online Payment Gateway'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#52525b', fontWeight: 700 }}>
-                          AMOUNT RECEIVED
-                        </div>
-                        <div style={{ fontSize: 24, fontWeight: 900, color: '#0f172a', marginTop: 2 }}>
-                          {selectedReceipt.currency}{selectedReceipt.amount.toFixed(2)}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Key Details Grid (2 Columns) */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 14, padding: '12px 18px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
-                      <div>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700 }}>
-                          RECEIVED FROM (PAYER):
-                        </div>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginTop: 4 }}>
-                          {billedName}
-                        </div>
-                        {billedTaxId && (
-                          <div style={{ fontSize: 11, color: '#334155', marginTop: 2, fontWeight: 500 }}>
-                            <span style={{ color: '#64748b' }}>
-                              {isEnterpriseCustomer ? 'Tax ID: ' : 'ID / Tax Ref: '}
-                            </span>
-                            <strong style={{ fontFamily: 'monospace', color: '#0f172a' }}>
-                              {maskDocNumber(billedTaxId, isEnterpriseCustomer)}
-                            </strong>
-                          </div>
-                        )}
-                        {billedAddress && (
-                          <div style={{ fontSize: 11, color: '#475569', marginTop: 2, lineHeight: 1.35 }}>
-                            {billedAddress}
-                          </div>
-                        )}
-                        <div style={{ fontSize: 12, color: '#334155', marginTop: 2 }}>
-                          {billedEmail || 'N/A'}
-                        </div>
-                        {billedPhone && (
-                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                            Tel: {billedPhone}
-                          </div>
-                        )}
-                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
-                          Account ID: {accountId}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700 }}>
-                          TRANSACTION SUMMARY:
-                        </div>
-                        <div style={{ fontSize: 12, color: '#334155', marginTop: 4 }}>
-                          Receipt #: <strong>{selectedReceipt.id}</strong>
-                        </div>
-                        {selectedReceipt.transaction_id && (
-                          <div style={{ fontSize: 11, color: '#334155', marginTop: 2 }}>
-                            Transaction Ref: <strong style={{ fontFamily: 'monospace' }}>{selectedReceipt.transaction_id}</strong>
-                          </div>
-                        )}
-                        <div style={{ fontSize: 12, color: '#334155', marginTop: 2 }}>
-                          Payment Gateway: <strong>{selectedReceipt.payment_method || 'Online'}</strong>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Itemized Allocation Table */}
-                    <div style={{ marginTop: 14 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr style={{ background: '#f1f5f9', borderTop: '1px solid #cbd5e1', borderBottom: '2px solid #0f172a' }}>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'left', width: 32 }}>#</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'left' }}>Description</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'center', width: 115 }}>Payment Method</th>
-                            <th style={{ padding: '7px 8px', fontSize: 11, fontWeight: 700, color: '#334155', textAlign: 'right', width: 105 }}>Paid Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, color: '#64748b' }}>1</td>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, fontWeight: 600, color: '#0f172a' }}>
-                              <div style={{ whiteSpace: 'nowrap' }}>Purchase of Prepaid API Service Credits</div>
-                              <div style={{ fontSize: 10.5, fontWeight: 400, color: '#64748b', marginTop: 2 }}>Instant Settlement Confirmation</div>
-                            </td>
-                            <td style={{ padding: '8px 8px', fontSize: 11.5, color: '#334155', textAlign: 'center' }}>
-                              {selectedReceipt.payment_method || 'Online Payment'}
-                            </td>
-                            <td style={{ padding: '8px 8px', fontSize: 12, fontWeight: 700, color: '#0f172a', textAlign: 'right' }}>
-                              {selectedReceipt.currency}{selectedReceipt.amount.toFixed(2)}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Totals Summary */}
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                      <div style={{ width: 250, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 14px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11.5, color: '#475569' }}>
-                          <span>Subtotal</span>
-                          <span style={{ fontWeight: 600, color: '#0f172a' }}>{selectedReceipt.currency}{selectedReceipt.amount.toFixed(2)}</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 11.5, color: '#475569' }}>
-                          <span>Tax / VAT (0.0%)</span>
-                          <span>{selectedReceipt.currency}0.00</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', marginTop: 3, borderTop: '2px solid #0f172a', fontSize: 13.5, fontWeight: 800, color: '#0f172a' }}>
-                          <span>Total Paid</span>
-                          <span>{selectedReceipt.currency}{selectedReceipt.amount.toFixed(2)}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Verification Note */}
-                    <div style={{ marginTop: 12, padding: '8px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 10.5, color: '#475569', lineHeight: 1.4 }}>
-                      <div>
-                        <strong style={{ color: '#0f172a' }}>Official Receipt Note: </strong>
-                        This document serves as an official confirmation of electronic fund transfer and payment receipt. Payment has been verified and settled to the designated account.
-                      </div>
-                      <div style={{ marginTop: 3, color: '#64748b' }}>
-                        <strong style={{ color: '#0f172a' }}>Tax Note: </strong>
-                        Tax exempt / Reverse charge (Zero-rated VAT/GST on cross-border B2B digital cloud services).
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Bottom Footer (A4 Bottom) */}
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTop: '1px solid #e2e8f0', fontSize: 10, color: '#94a3b8' }}>
-                      <span>Receipt Ref: {selectedReceipt.id} · Payment Voucher</span>
-                      <span style={{ fontWeight: 600 }}>Page 1 of 1</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </Dropdown>
-          );
-        })()}
-      </Modal>
+      <InvoiceDocumentPreview
+        invoice={selectedInvoice}
+        receipt={selectedReceipt}
+        onClose={() => {
+          setSelectedInvoice(null);
+          setSelectedReceipt(null);
+        }}
+        config={config}
+        billedName={billedName}
+        billedTaxId={billedTaxId}
+        billedEmail={billedEmail}
+        billedPhone={billedPhone}
+        billedAddress={billedAddress}
+        accountId={accountId}
+        isEnterpriseCustomer={isEnterpriseCustomer}
+      />
     </div>
   );
 };

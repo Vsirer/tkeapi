@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Seeded DocsApi article translations — markdown lives beside this module
@@ -63,13 +63,6 @@ static KLING_VID_EN: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{}\n\n{}",
         include_str!("en/kling-video.md"),
-        include_str!("en/common-errors.md")
-    )
-});
-static MINIMAX_IMG_EN: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "{}\n\n{}",
-        include_str!("en/minimax-image.md"),
         include_str!("en/common-errors.md")
     )
 });
@@ -427,6 +420,13 @@ pub fn get_article_translations(slug: &str) -> Vec<ArticleTranslation> {
                 content: include_str!("vi/kling-ai.md"),
             },
         ],
+        "minimax-native" => vec![
+            ArticleTranslation {
+                lang: "en",
+                title: "MiniMax Native Video API",
+                content: include_str!("en/minimax-native.md"),
+            },
+        ],
         "google-gemini" => vec![
             ArticleTranslation {
                 lang: "en",
@@ -598,11 +598,6 @@ pub fn get_article_translations(slug: &str) -> Vec<ArticleTranslation> {
             lang: "en",
             title: "Kling-v3 Video Generation",
             content: &*KLING_VID_EN,
-        }],
-        "minimax-image" => vec![ArticleTranslation {
-            lang: "en",
-            title: "MiniMax Image Generation",
-            content: &*MINIMAX_IMG_EN,
         }],
         "minimax-video" => vec![ArticleTranslation {
             lang: "en",

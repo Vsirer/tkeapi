@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import { useRef, useEffect } from 'react';
@@ -50,9 +50,9 @@ export function useDragScroll<T extends HTMLElement = HTMLDivElement>(options: U
       // 忽略鼠标右键/中键
       if (e.button !== 0) return;
 
-      const target = e.target as HTMLElement;
-      // 忽略在输入框、文本域、选择器、分页器、下拉菜单、Modal 内的操作
-      if (target.closest('input, textarea, select, .ant-pagination, .ant-dropdown, .ant-modal, .ant-select')) {
+      const target = e.target as HTMLElement | null;
+      // 忽略在输入框、按钮、代码展示区、展开行详情、下拉菜单、Modal 等内部的操作，保证原生文本划选与交互
+      if (target?.closest('input, textarea, select, pre, code, button, a, .ant-table-expanded-row, .ant-pagination, .ant-dropdown, .ant-modal, .ant-select')) {
         return;
       }
 
@@ -65,8 +65,6 @@ export function useDragScroll<T extends HTMLElement = HTMLDivElement>(options: U
       hasMoved = false;
       startX = e.pageX - scrollEl.getBoundingClientRect().left;
       scrollLeft = scrollEl.scrollLeft;
-
-      document.body.style.userSelect = 'none';
     };
 
     const onMouseMove = (e: MouseEvent) => {
@@ -77,11 +75,16 @@ export function useDragScroll<T extends HTMLElement = HTMLDivElement>(options: U
       const currentX = e.pageX - scrollEl.getBoundingClientRect().left;
       const walk = (currentX - startX) * speed;
 
-      if (Math.abs(currentX - startX) > 4) {
+      // 移动超过 4px 判定为真实横向拖拽滑动行为
+      if (!hasMoved && Math.abs(currentX - startX) > 4) {
         hasMoved = true;
+        // 仅在真实拖拽位移时临时禁用文字选中，避免拉动表格时误选全屏文本
+        document.body.style.userSelect = 'none';
       }
 
-      scrollEl.scrollLeft = scrollLeft - walk;
+      if (hasMoved) {
+        scrollEl.scrollLeft = scrollLeft - walk;
+      }
     };
 
     const onMouseUp = () => {
@@ -90,6 +93,7 @@ export function useDragScroll<T extends HTMLElement = HTMLDivElement>(options: U
       document.body.style.removeProperty('user-select');
 
       if (hasMoved) {
+        hasMoved = false;
         // 如果产生了明显的拖拽移动，拦截当次触发的 click 事件以防误点按钮/链接
         const preventClick = (e: MouseEvent) => {
           e.stopPropagation();

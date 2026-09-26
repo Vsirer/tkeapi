@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -20,7 +20,9 @@ import {
   KeyRound
 } from 'lucide-react';
 import request from '../../utils/request';
+import { apiErrMsg } from '../../utils/apiErr';
 import { resolveInviteParams, trackMarketingLinkClick } from '../../utils/inviteTracking';
+import { browserTimezone } from '../../utils/timedisplay';
 import { useTranslation } from 'react-i18next';
 import useAuthStore from '../../store/auth';
 import useSettingsStore from '../../store/settings';
@@ -58,7 +60,13 @@ const Register: React.FC = () => {
 
   // 校验错误状态
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState('');
   const [shakeKey, setShakeKey] = useState(0);
+  const [contactConflict, setContactConflict] = useState<{
+    code: 'CONTACT_IN_USE' | 'CONTACT_AT_LIMIT';
+    boundCount?: number;
+    limit?: number;
+  } | null>(null);
   const [agreed, setAgreed] = useState(false);
   const [wechatState, setWechatState] = useState('');
 
@@ -132,8 +140,6 @@ const Register: React.FC = () => {
             message.success('成功加入团队！');
           } else if (res.status === 'already_member') {
             message.info('您已是该团队成员');
-          } else if (res.status === 'already_leader') {
-            message.info('您已是该团队负责人');
           }
           navigate('/dashboard');
         } catch (e: any) {
@@ -184,12 +190,14 @@ const Register: React.FC = () => {
 
     sendingCodeRef.current = true;
     setSendingCode(true);
+    setFormError('');
     try {
       await request.post('/auth/send-code', { email: emailVal.trim(), purpose: 'register' }, { skipErrorHandler: true } as any);
       message.success(t('auth.code_sent'));
       startCooldown(CODE_COOLDOWN_SUCCESS);
     } catch (e: any) {
-      message.error(e?.response?.data?.error?.message || t('common.error'));
+      setFormError(apiErrMsg(e, t('common.error')));
+      setShakeKey(k => k + 1);
       startCooldown(CODE_COOLDOWN_ERROR);
     } finally {
       sendingCodeRef.current = false;
@@ -208,12 +216,14 @@ const Register: React.FC = () => {
 
     sendingCodeRef.current = true;
     setSendingCode(true);
+    setFormError('');
     try {
       await request.post('/auth/send-sms-code', { mobile: mobileVal.trim(), purpose: 'register' }, { skipErrorHandler: true } as any);
       message.success(t('auth.sms_code_sent'));
       startCooldown(CODE_COOLDOWN_SUCCESS);
     } catch (e: any) {
-      message.error(e?.response?.data?.error?.message || t('common.error'));
+      setFormError(apiErrMsg(e, t('common.error')));
+      setShakeKey(k => k + 1);
       startCooldown(CODE_COOLDOWN_ERROR);
     } finally {
       sendingCodeRef.current = false;
@@ -224,9 +234,87 @@ const Register: React.FC = () => {
   const handleTabChange = (key: string) => {
     setActiveTab(key);
     setErrors({});
+    setFormError('');
+    setContactConflict(null);
     setShowPassword(false);
     setShowConfirmPassword(false);
     setAgreed(false);
+  };
+
+  const toFormError = (error: unknown) => {
+    const msg = apiErrMsg(error, t('common.error'));
+    if (msg === 'User already exists' || msg === '请更换用户名尝试') {
+      return t('auth.user_already_exists');
+    }
+    return msg;
+  };
+
+  const goLoginWithCurrentContact = () => {
+    const params = new URLSearchParams();
+    if (activeTab === 'email' && emailVal.trim()) {
+      params.set('type', 'email');
+      params.set('identifier', emailVal.trim());
+    } else if (activeTab === 'mobile' && mobileVal.trim()) {
+      params.set('type', 'mobile');
+      params.set('identifier', mobileVal.trim());
+    }
+    const qs = params.toString();
+    navigate(qs ? `/login?${qs}` : '/login');
+  };
+
+  const submitRegister = async (confirmNewAccount = false) => {
+    let res: any;
+    const commonPayload = {
+      password: passwordVal,
+      timezone: browserTimezone(),
+      ...(aff ? { aff } : {}),
+      ...(team ? { team } : {}),
+      ...(confirmNewAccount ? { confirm_new_account: true } : {}),
+    };
+    
+    if (activeTab === 'username') {
+      res = await request.post('/auth/register', { username: usernameVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
+    } else if (activeTab === 'email') {
+      res = await request.post('/auth/register-email', { email: emailVal.trim(), code: codeVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
+    } else if (activeTab === 'mobile') {
+      res = await request.post('/auth/register-mobile', { mobile: mobileVal.trim(), code: codeVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
+    }
+
+    setToken(res.token); 
+    setUser(res.user);
+    message.success(t('auth.register_success')); 
+    navigate('/dashboard');
+  };
+
+  const handleContactConflict = (err: any) => {
+    const code = err?.error_code;
+    if (code === 'CONTACT_IN_USE' || code === 'CONTACT_AT_LIMIT') {
+      setContactConflict({
+        code,
+        boundCount: err?.bound_count,
+        limit: err?.limit,
+      });
+      setFormError('');
+      return true;
+    }
+    return false;
+  };
+
+  const continueNewAccount = async () => {
+    if (loading) return;
+    setLoading(true);
+    setFormError('');
+    try {
+      await submitRegister(true);
+    } catch (e: any) {
+      const err = e?.response?.data?.error;
+      if (!handleContactConflict(err)) {
+        setFormError(toFormError(e));
+        setShakeKey(k => k + 1);
+      }
+    } finally {
+      setTimeout(() => setLoading(false), 800);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -264,34 +352,22 @@ const Register: React.FC = () => {
 
     if (Object.keys(tempErrors).length > 0) {
       setErrors(tempErrors);
+      setFormError('');
       setShakeKey(k => k + 1); // 触发抖动
       return;
     }
     setErrors({});
+    setFormError('');
     setLoading(true);
 
     try {
-      let res: any;
-      const commonPayload = {
-        password: passwordVal,
-        ...(aff ? { aff } : {}),
-        ...(team ? { team } : {}),
-      };
-      
-      if (activeTab === 'username') {
-        res = await request.post('/auth/register', { username: usernameVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
-      } else if (activeTab === 'email') {
-        res = await request.post('/auth/register-email', { email: emailVal.trim(), code: codeVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
-      } else if (activeTab === 'mobile') {
-        res = await request.post('/auth/register-mobile', { mobile: mobileVal.trim(), code: codeVal.trim(), ...commonPayload }, { skipErrorHandler: true } as any);
-      }
-
-      setToken(res.token); 
-      setUser(res.user);
-      message.success(t('auth.register_success')); 
-      navigate('/dashboard');
+      await submitRegister(false);
     } catch (e: any) {
-      message.error(e?.response?.data?.error?.message || t('common.error'));
+      const err = e?.response?.data?.error;
+      if (!handleContactConflict(err)) {
+        setFormError(toFormError(e));
+        setShakeKey(k => k + 1);
+      }
     } finally { 
       setTimeout(() => setLoading(false), 800); 
     }
@@ -310,6 +386,8 @@ const Register: React.FC = () => {
     const params: Record<string, string> = { provider: 'wechat' };
     if (aff) params.aff = aff;
     if (team) params.team = team;
+    const tz = browserTimezone();
+    if (tz) params.timezone = tz;
     request
       .get('/auth/oauth/state', { params, skipErrorHandler: true } as any)
       .then((res: any) => {
@@ -324,6 +402,8 @@ const Register: React.FC = () => {
     const params = new URLSearchParams();
     if (aff) params.set('aff', aff);
     if (team) params.set('team', team);
+    const tz = browserTimezone();
+    if (tz) params.set('timezone', tz);
     const qs = params.toString();
     window.location.href = `/api/v1/auth/oauth/google${qs ? `?${qs}` : ''}`;
   };
@@ -388,7 +468,65 @@ const Register: React.FC = () => {
       onMethodChange={handleTabChange}
       bottomLinks={bottomLinks}
     >
-      {activeTab === 'wechat' ? (
+      {contactConflict ? (
+        <div className="space-y-4 mt-2">
+          <div className="w-full rounded-md bg-amber-500/10 border border-amber-500/20 dark:bg-amber-500/15 dark:border-amber-500/30 px-3.5 py-2.5 text-xs font-medium text-amber-800 dark:text-amber-300 leading-relaxed text-center shadow-xs">
+            {contactConflict.code === 'CONTACT_AT_LIMIT'
+              ? t('auth.contact_at_limit_body', { count: contactConflict.boundCount, limit: contactConflict.limit })
+              : activeTab === 'mobile'
+                ? t('auth.contact_in_use_mobile')
+                : t('auth.contact_in_use_email')}
+          </div>
+          {formError && (
+            <p key={`form-${shakeKey}`} className="text-[12px] font-medium text-destructive text-center animate-shake">{formError}</p>
+          )}
+          {contactConflict.code === 'CONTACT_IN_USE' ? (
+            <>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={continueNewAccount}
+                className="inline-flex items-center justify-center rounded-md text-sm font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-50/90 shadow-sm h-9 px-4 py-2 w-full cursor-pointer"
+              >
+                {loading && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                {t('auth.continue_register')}
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={goLoginWithCurrentContact}
+                className="inline-flex items-center justify-center rounded-md text-sm font-semibold transition-all duration-200 border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-900 h-9 px-4 py-2 w-full cursor-pointer disabled:opacity-50"
+              >
+                {t('auth.go_login')}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={goLoginWithCurrentContact}
+                className="inline-flex items-center justify-center rounded-md text-sm font-semibold transition-all duration-200 focus-visible:outline-none focus-visible:ring-1 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-50/90 shadow-sm h-9 px-4 py-2 w-full cursor-pointer"
+              >
+                {t('auth.go_login')}
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setContactConflict(null);
+                  setFormError('');
+                }}
+                className="text-xs text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 w-full text-center transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {t('common.back')}
+              </button>
+            </>
+          )}
+        </div>
+      ) : activeTab === 'wechat' ? (
         <div className="flex flex-col items-center justify-center p-2 bg-background border border-zinc-200 dark:border-zinc-800 rounded-lg shadow-xs mt-2">
           {wechatState ? (
             <WechatQR appId={wechatAppId} redirectUri={wechatRedirectUri} state={wechatState} />
@@ -659,6 +797,10 @@ const Register: React.FC = () => {
                 <p key={`reg-ag-${shakeKey}`} className="text-[11px] font-medium text-destructive animate-shake pl-5.5">{errors.agree}</p>
               )}
             </div>
+          )}
+
+          {formError && (
+            <p key={`form-${shakeKey}`} className="text-[12px] font-medium text-destructive text-center animate-shake">{formError}</p>
           )}
 
           {/* 极致黑白灰反转注册按钮 */}

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /** 与 PluginConfig Tabs items 的 key / 文案对齐，供侧栏默认跳转与基本配置下拉使用 */
@@ -62,7 +62,10 @@ export function getPluginAdminTabs(
         { key: 'pg_storage', label: '存储配置' },
         { key: 'playground_models', label: '创作模型管理' },
         { key: 'playground_schemes', label: '创作方案配置' },
+        { key: 'playground_chat_config', label: '聊天功能配置' },
         { key: 'playground_workflow_config', label: '工作流配置' },
+        { key: 'playground_skill_config', label: 'Skill 配置' },
+        { key: 'playground_prompt_optimize', label: 'AI 优化提示词' },
       ];
     case 'model_marketplace':
       return [
@@ -103,6 +106,7 @@ export function getPluginAdminTabs(
         { key: 'preset', label: '预设素材' },
         { key: 'relay_convert', label: '转换素材' },
         { key: 'api_proxy', label: 'API 素材' },
+        { key: 'cloud_assets', label: '云端素材' },
         { key: 'api_log', label: '接口日志' },
       ];
     default:

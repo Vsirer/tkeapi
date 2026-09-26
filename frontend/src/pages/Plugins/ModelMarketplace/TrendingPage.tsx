@@ -26,9 +26,9 @@ interface TrendingPageProps {
   onSelectModel: (model: any) => void;
   isLight: boolean;
   c: any;
-  lobeIconSrc: (logo?: string | null, providerLogo?: string | null) => string;
+  lobeIconSrc: (logo?: string | null, providerLogo?: string | null, fallbackName?: string | null) => string;
   handleLobeIconError: (e: React.SyntheticEvent<HTMLImageElement>) => void;
-  getLogoFilter: (logoName: string | undefined, isLight: boolean) => string;
+  getLogoFilter: (logoName: string | undefined, isLight: boolean, resolvedSrc?: string) => string;
   formatPrice: (price: number | string | undefined | null, model?: any) => React.ReactNode;
   onViewAllModels?: (searchQuery?: string) => void;
   onSelectProvider?: (provider: any) => void;
@@ -427,8 +427,8 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
   const renderLabIcon = (lab: any) => {
     const logo = lab.logo;
 
-    // 1. 如果服务商配置的 logo 是完整 URL、Data URI 或绝对路径，则直接加载
-    if (typeof logo === 'string' && (logo.startsWith('http://') || logo.startsWith('https://') || logo.startsWith('data:') || logo.startsWith('/'))) {
+    // 1. 如果服务商配置的 logo 是完整 URL 或 Data URI，则直接加载
+    if (typeof logo === 'string' && (logo.startsWith('http://') || logo.startsWith('https://') || logo.startsWith('data:'))) {
       return (
         <img
           src={logo}
@@ -439,26 +439,15 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
       );
     }
 
-    // 2. 读取后台官方服务商选择配置的特定图标文件 (如 'openai', 'kling', 'alibaba', 'zhipu' 等)
-    if (logo) {
-      const src = (logo.endsWith('.svg') || logo.includes('/')) ? logo : `/assets/icons/lobe/${logo}.svg`;
-      return (
-        <img
-          src={src}
-          onError={handleLobeIconError}
-          alt={lab.name || ''}
-          style={{ width: 34, height: 34, objectFit: 'contain' }}
-        />
-      );
-    }
-
-    // 3. 降级：根据服务商名称使用 lobeIconSrc 拼装图标路径
+    // 2. 统一通过 lobeIconSrc 解析图标，支持 kimi 双模高保真图标及自适应滤镜
+    const src = lobeIconSrc(logo, lab.name, lab.name);
+    const filter = getLogoFilter(logo || lab.name, isLight, src);
     return (
       <img
-        src={lobeIconSrc(undefined, lab.name)}
+        src={src}
         onError={handleLobeIconError}
         alt={lab.name || ''}
-        style={{ width: 34, height: 34, objectFit: 'contain' }}
+        style={{ width: 34, height: 34, objectFit: 'contain', filter }}
       />
     );
   };
@@ -469,7 +458,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
         id: p.id,
         key: p.name,
         name: p.name,
-        logo: p.logo || p.name
+        logo: p.logo || (p as any).name_en || p.name
       }));
     }
     return DEFAULT_MODEL_LABS;
@@ -669,7 +658,8 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
     const isFav = !!favorites[cardKey];
     const tagsList = model.tags || ['高清画质', '艺术表现', '声音同步'];
     const categoryName = getCategoryLabel(model.type_name || model.category);
-    const logoFilter = getLogoFilter(model.logo || model.provider_logo, isLight);
+    const cardIconSrc = lobeIconSrc(model.logo, model.provider_logo, model.name || model.original_id);
+    const logoFilter = getLogoFilter(model.logo || model.provider_logo || model.name, isLight, cardIconSrc);
     const filterStyle = logoFilter && logoFilter !== 'none' 
       ? `${logoFilter} drop-shadow(0 8px 16px rgba(0,0,0,0.4))` 
       : 'drop-shadow(0 8px 16px rgba(0,0,0,0.4))';
@@ -700,7 +690,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
           borderRadius: '5px 5px 0 0'
         }}>
           <img 
-            src={lobeIconSrc(model.logo, model.provider_logo)}
+            src={cardIconSrc}
             onError={handleLobeIconError}
             alt={model.name}
             style={{ 
@@ -720,7 +710,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
           <div>
             {/* Model Name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <Text strong style={{ fontSize: 15, fontWeight: 700, color: isLight ? '#0f172a' : '#fafafa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <Text style={{ fontSize: 16, fontWeight: 400, color: isLight ? '#0f172a' : '#fafafa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {model.name || model.original_id}
               </Text>
             </div>
@@ -729,11 +719,11 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
             <Paragraph 
               ellipsis={{ rows: 2 }} 
               style={{ 
-                fontSize: 13, 
+                fontSize: 14, 
                 color: isLight ? '#475569' : '#a1a1aa', 
                 marginBottom: 16, 
-                height: 40, 
-                lineHeight: '20px',
+                height: 42, 
+                lineHeight: '21px',
                 margin: '0 0 16px 0',
                 fontWeight: 400
               }}
@@ -925,27 +915,36 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
                   flexShrink: 0
                 }}
               >
-                <div style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 5,
-                  background: isLight ? '#f3f4f6' : '#222226',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  overflow: 'hidden'
-                }}>
-                  <img 
-                    src={lobeIconSrc(undefined, provider.logo || provider.name)}
-                    onError={handleLobeIconError}
-                    alt={provider.name}
-                    style={{ 
-                      width: 26, 
-                      height: 26, 
-                      objectFit: 'contain',
-                      filter: getLogoFilter(provider.logo || provider.name, isLight) 
-                    }}
-                  />
+                <div
+                  style={{
+                    width: 40,
+                    height: 40,
+                    background: 'transparent',
+                    border: 'none',
+                    boxShadow: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    overflow: 'hidden'
+                  }}
+                >
+                {(() => {
+                  const pLogo = provider.logo || (provider.name?.toLowerCase().includes('kimi') ? 'kimi' : undefined);
+                  const pSrc = lobeIconSrc(pLogo, provider.name, provider.name);
+                  return (
+                    <img 
+                      src={pSrc}
+                      onError={handleLobeIconError}
+                      alt={provider.name}
+                      style={{ 
+                        width: 26, 
+                        height: 26, 
+                        objectFit: 'contain', 
+                        filter: getLogoFilter(pLogo || provider.name, isLight, pSrc) 
+                      }}
+                    />
+                  );
+                })()}
                 </div>
                 <Text style={{ fontSize: 11, color: c.text2, fontWeight: 500, textAlign: 'center', maxWidth: 76, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {provider.name}
@@ -1015,7 +1014,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
           transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
           cursor: pointer;
           border: 1px solid ${isLight ? '#e5e7eb' : 'rgba(255,255,255,0.08)'} !important;
-          border-radius: 8px !important;
+          border-radius: 5px !important;
           background: ${isLight ? '#ffffff' : '#141417'} !important;
         }
         .mp-lab-tile-card:hover {
@@ -1575,7 +1574,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
                   minWidth: 80,
                   width: 80,
                   height: 102,
-                  borderRadius: 8,
+                  borderRadius: 5,
                   background: isLight ? '#ffffff' : '#141417',
                   border: `1px solid ${isLight ? '#e5e7eb' : 'rgba(255,255,255,0.08)'}`,
                   display: 'flex',
@@ -1589,18 +1588,21 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
                 }}
                 title={`查看 ${lab.name} 旗下的所有模型`}
               >
-                {/* White Square Icon Container (Large & Prominent) */}
-                <div style={{
-                  width: 58,
-                  height: 58,
-                  borderRadius: 0,
-                  background: '#ffffff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  overflow: 'hidden',
-                  flexShrink: 0
-                }}>
+                {/* Logo Icon Container */}
+                <div
+                  style={{
+                    width: 52,
+                    height: 52,
+                    background: 'transparent',
+                    border: 'none',
+                    boxShadow: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    overflow: 'hidden',
+                    flexShrink: 0
+                  }}
+                >
                   {renderLabIcon(lab)}
                 </div>
 

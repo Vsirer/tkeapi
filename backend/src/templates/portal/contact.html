@@ -1,14 +1,17 @@
 <!--
-  tokensbyte opensource
-  (c) 2026 tokensbyte.ai
+  tkeapi (tokensbyte) opensource
+  © 2026 tkeapi.com
   @copyright      Copyright netbcloud/wstianxia 
-  @license        MIT (https://www.tokensbyte.ai/)
+  @license        MIT (https://www.tkeapi.com/)
 -->
 
 {% extends "base.html" %}
 {% set current_page = "contact" %}
 {% block title %}{{ columns.contact.title | default(value="联系我们") }} - {{ nav.logo_text | default(value="Tkeapi") }}{% endblock %}
 {% block content %}
+{% if style and style.current_style == "fai_art" %}
+{% include "styles/fai_art/_contact.html" %}
+{% else %}
 <style>
 /* Scoped Shadcn styles for the contact page */
 .pg-hero {
@@ -32,8 +35,11 @@
   width: 100%;
 }
 @media (min-width: 992px) {
-  .ct-grid {
-    grid-template-columns: {% if columns.contact.content.social_links and columns.contact.content.social_links | length > 0 %}1.3fr 0.7fr{% else %}1fr{% endif %};
+  .ct-grid.is-both {
+    grid-template-columns: 1.3fr 0.7fr;
+  }
+  .ct-grid.is-both:has(.ct-info > .ct-item:only-child) {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
@@ -42,10 +48,13 @@
   flex-direction: row;
   flex-wrap: wrap;
   justify-content: center;
-  align-items: center;
+  align-items: stretch;
   gap: 24px;
   width: 100%;
   margin: 0 auto;
+}
+.ct-info > .ct-item {
+  flex: 1 1 260px;
 }
 @media (max-width: 768px) {
   .ct-info {
@@ -219,38 +228,47 @@
 </section>
 <section class="ct-sec">
   <div class="wrap">
-    <div class="ct-grid">
+    {% set_global show_contact_channels = false %}
+    {% if columns.contact.content.email and columns.contact.content.email_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if columns.contact.content.phone and columns.contact.content.phone_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if columns.contact.content.address and columns.contact.content.address_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if show_contact_channels == false %}
+      {% if columns.contact.content.email or columns.contact.content.phone or columns.contact.content.address %}
+      {% elif columns.contact.content.items %}
+        {% for item in columns.contact.content.items %}
+          {% if item.enabled != false %}
+            {% set_global show_contact_channels = true %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+    {% endif %}
+    {% set_global show_contact_social = false %}
+    {% if columns.contact.content.social_links %}
+      {% for link in columns.contact.content.social_links %}
+        {% if link.enabled != false %}
+          {% if link.platform or link.value %}
+            {% set_global show_contact_social = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    <div class="ct-grid{% if show_contact_channels and show_contact_social %} is-both{% endif %}">
+      {% if show_contact_channels %}
       <div class="ct-info">
-        {% if columns.contact.content.items and columns.contact.content.items | length > 0 %}
-          {% for item in columns.contact.content.items %}
-            {% if "邮箱" in item.title or "@" in item.value %}
-              <a href="mailto:{{ item.value }}" class="ct-item">
-                <span class="ci">{{ item.icon | safe }}</span>
-                <div><strong>{{ item.title }}</strong><p>{{ item.value }}</p></div>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
-              </a>
-            {% elif "电话" in item.title or "tel" in item.value %}
-              <a href="tel:{{ item.value }}" class="ct-item">
-                <span class="ci">{{ item.icon | safe }}</span>
-                <div><strong>{{ item.title }}</strong><p>{{ item.value }}</p></div>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
-              </a>
-            {% elif "http" in item.value %}
-              <a href="{{ item.value }}" target="_blank" rel="noopener" class="ct-item">
-                <span class="ci">{{ item.icon | safe }}</span>
-                <div><strong>{{ item.title }}</strong><p>{{ item.value }}</p></div>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
-              </a>
-            {% else %}
-              <div class="ct-item" onclick="copyText('{{ item.value }}', this)" title="点击复制">
-                <span class="ci">{{ item.icon | safe }}</span>
-                <div><strong>{{ item.title }}</strong><p>{{ item.value }}</p></div>
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-              </div>
-            {% endif %}
-          {% endfor %}
-        {% else %}
-          {% if columns.contact.content.email %}
+        {% if columns.contact.content.email or columns.contact.content.phone or columns.contact.content.address %}
+          {% if columns.contact.content.channel_order %}
+            {% set_global channel_keys = columns.contact.content.channel_order %}
+          {% else %}
+            {% set_global channel_keys = ["email", "phone", "address"] %}
+          {% endif %}
+          {% for key in channel_keys %}
+          {% if key == "email" and columns.contact.content.email and columns.contact.content.email_enabled != false %}
           <a href="mailto:{{ columns.contact.content.email }}" class="ct-item">
             <span class="ci">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
@@ -258,8 +276,7 @@
             <div><strong data-i18n="contact_email">邮箱</strong><p>{{ columns.contact.content.email }}</p></div>
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
           </a>
-          {% endif %}
-          {% if columns.contact.content.phone %}
+          {% elif key == "phone" and columns.contact.content.phone and columns.contact.content.phone_enabled != false %}
           <a href="tel:{{ columns.contact.content.phone }}" class="ct-item">
             <span class="ci">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67a2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
@@ -267,8 +284,7 @@
             <div><strong data-i18n="contact_phone">电话</strong><p>{{ columns.contact.content.phone }}</p></div>
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
           </a>
-          {% endif %}
-          {% if columns.contact.content.address %}
+          {% elif key == "address" and columns.contact.content.address and columns.contact.content.address_enabled != false %}
           <div class="ct-item" onclick="copyText('{{ columns.contact.content.address }}', this)" title="点击复制地址">
             <span class="ci">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -277,14 +293,50 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
           </div>
           {% endif %}
+          {% endfor %}
+        {% elif columns.contact.content.items and columns.contact.content.items | length > 0 %}
+          {% for item in columns.contact.content.items %}
+            {% if item.enabled != false %}
+            {% if "邮箱" in item.title or "@" in item.value %}
+              <a href="mailto:{{ item.value }}" class="ct-item">
+                <span class="ci">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}" {% if "邮箱" in item.title or "mail" in item.title %}data-i18n-key="contact_email"{% elif "电话" in item.title or "tel" in item.title %}data-i18n-key="contact_phone"{% elif "地址" in item.title or "addr" in item.title %}data-i18n-key="contact_address"{% endif %}>{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+              </a>
+            {% elif "电话" in item.title or "tel" in item.value %}
+              <a href="tel:{{ item.value }}" class="ct-item">
+                <span class="ci">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}" {% if "邮箱" in item.title or "mail" in item.title %}data-i18n-key="contact_email"{% elif "电话" in item.title or "tel" in item.title %}data-i18n-key="contact_phone"{% elif "地址" in item.title or "addr" in item.title %}data-i18n-key="contact_address"{% endif %}>{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+              </a>
+            {% elif "http" in item.value %}
+              <a href="{{ item.value }}" target="_blank" rel="noopener" class="ct-item">
+                <span class="ci">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}">{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>
+              </a>
+            {% else %}
+              <div class="ct-item" onclick="copyText('{{ item.value }}', this)" data-i18n-title="btn_copy" title="点击复制">
+                <span class="ci">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}" {% if "邮箱" in item.title or "mail" in item.title %}data-i18n-key="contact_email"{% elif "电话" in item.title or "tel" in item.title %}data-i18n-key="contact_phone"{% elif "地址" in item.title or "addr" in item.title %}data-i18n-key="contact_address"{% endif %}>{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="ct-arrow"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              </div>
+            {% endif %}
+            {% endif %}
+          {% endfor %}
         {% endif %}
       </div>
-      {% if columns.contact.content.social_links and columns.contact.content.social_links | length > 0 %}
+      {% endif %}
+      {% if show_contact_social %}
       <div class="soc">
         <h3 data-i18n="contact_social">社交媒体</h3>
         <div class="soc-grid">
           {% for link in columns.contact.content.social_links %}
+          {% if link.enabled != false %}
+          {% if link.platform or link.value %}
           <a href="{{ link.value }}" target="_blank" rel="noopener" class="soc-a" data-i18n-dynamic="{{ link.platform }}">{{ link.platform }}</a>
+          {% endif %}
+          {% endif %}
           {% endfor %}
         </div>
       </div>
@@ -301,14 +353,16 @@
 <!-- Toast Notification Container -->
 <div id="toast" class="toast-container">
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-  <span class="toast-text" id="toast-msg">已成功复制</span>
+  <span class="toast-text" id="toast-msg" data-i18n="copy_success">已成功复制</span>
 </div>
 
 <script>
   function copyText(text, el) {
     if (!text) return;
+    var curLang = localStorage.getItem('lang') || 'zh';
+    var msg = typeof translateText === 'function' ? translateText('copy_success', curLang) : '已成功复制';
     navigator.clipboard.writeText(text).then(function() {
-      showToast("地址已复制到剪切板");
+      showToast(msg);
     }).catch(function() {
       // Fallback
       var input = document.createElement('input');
@@ -318,7 +372,7 @@
       var result = document.execCommand('copy');
       document.body.removeChild(input);
       if (result) {
-        showToast("地址已复制到剪切板");
+        showToast(msg);
       }
     });
   }
@@ -341,5 +395,6 @@
     }, 2000);
   }
 </script>
+{% endif %}
 {% endblock %}
 

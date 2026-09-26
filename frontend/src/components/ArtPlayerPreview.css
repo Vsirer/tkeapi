@@ -1,0 +1,23 @@
+/*
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
+ * @copyright      Copyright netbcloud/wstianxia
+ * @license        MIT (https://www.tkeapi.com/)
+ */
+
+.tb-artplayer-shell {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.tb-artplayer {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.tb-artplayer .art-video-player {
+  width: 100%;
+  height: 100%;
+}

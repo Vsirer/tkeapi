@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 // ── 聊天 & Responses API 处理 ──────────────────────────────────
@@ -43,7 +43,7 @@ pub async fn responses_create(
     relay_chat(state, token, uri, headers, body, true).await
 }
 
-/// 统一 Chat Completions / Responses 中继：共用 Completions 尝试路径；`is_responses` 仅区分解析回退、透传与日志前缀。
+/// 统一 Chat Completions / Responses 中继：共用渠道选择与重试逻辑；`is_responses` 区分格式转换、流式处理与日志前缀。
 async fn relay_chat(
     state: Arc<AppState>,
     token: ApiToken,
@@ -58,15 +58,10 @@ async fn relay_chat(
         .as_str()
         .ok_or_else(|| AppError::BadRequest("Missing required parameter: model".to_string()))?;
     let is_stream = body["stream"].as_bool().unwrap_or(false);
-    let log_id = upstream_headers::resolve_request_log_id(&client_headers, Some("聊天"));
+    let log_id = upstream_headers::resolve_request_log_id(Some("聊天"));
 
-    let permission_ep = if is_responses {
-        "/v1/responses"
-    } else {
-        "/v1/chat/completions"
-    };
     let ctx = proxy::get_user_context(&state, &token.user_id).await?;
-    proxy::check_model_permission(&state, &token, model, permission_ep, Some("聊天")).await?;
+    proxy::check_model_permission(&state, &token, model, raw_path, Some("聊天")).await?;
 
     // 【一条日志原则】HA 重试复用同一条 pending，避免产生多条
     let mut ha = crate::relay::ha::HaAttempt::begin(&state, token.high_availability).await;
@@ -141,23 +136,19 @@ async fn relay_chat(
         {
             Some(r) => r,
             None => {
-                if is_responses {
-                    let url_lower = channel.base_url.to_lowercase();
-                    if url_lower.contains("volces.com") || url_lower.contains("volcengine") {
-                        forward::make_forward("volcengine_chat", "/api/v3/responses", "bearer")
-                    } else {
-                        forward::default_openai_forward(raw_path)
-                    }
-                } else if raw_path == "/api/v1/services/aigc/multimodal-generation/generation" {
+                if raw_path == "/api/v1/services/aigc/multimodal-generation/generation" {
                     // 本路径即官方上游，原样透传（勿套用 /v1/chat/completions 兼容规则）
                     forward::default_openai_forward(raw_path)
                 } else if forward::model_has_forward_rules(&state, model).await {
-                    // 业务侧错误，不可 HA 续试（continue 不 bump 会空转）
-                    ha.on_access_err(AppError::BadRequest(format!(
-                        "模型 '{}' 不支持当前接口，请检查模型对应的转发规则",
-                        model
-                    )));
+                    let err = forward::record_unsupported_forward_error(
+                        &state, &token, &channel, model, raw_path, "聊天",
+                    )
+                    .await;
+                    ha.on_access_err(err);
                     break;
+                } else if is_responses {
+                    // 未配置规则的模型，默认按 OpenAI Responses 规范原样透传
+                    forward::default_openai_forward(raw_path)
                 } else {
                     forward::infer_forward_from_base_url(
                         &channel.base_url,
@@ -291,10 +282,9 @@ async fn relay_chat(
                     !is_stream,
                     timeout_ctx.resolve(),
                 );
-                let resp = match builder.json(&upstream_body).send().await {
+                let resp = match timeout_ctx.send(builder.json(&upstream_body), is_stream).await {
                     Ok(r) => r,
-                    Err(e) => {
-                        let err_msg = e.to_string();
+                    Err(err_msg) => {
                         crate::relay_debug!("{} 连接错误: {}", log_tag, err_msg);
                         let bill = crate::relay::ha::FailBill::transport(
                             start_time.elapsed().as_millis() as u32,
@@ -408,7 +398,7 @@ async fn relay_chat(
                 }
 
                 let usage_tokens = usage_extractor::parse_usage(&body_str);
-                let features = usage_extractor::features_from_values(
+                let mut features = usage_extractor::features_from_values(
                     Some(&body),
                     None,
                     Some(&body_str),
@@ -437,7 +427,7 @@ async fn relay_chat(
                     &channel,
                     &ctx,
                     &usage_tokens,
-                    &features,
+                    &mut features,
                     mapping_source.as_deref(),
                     &model,
                     &resolved_model,
@@ -464,6 +454,7 @@ async fn relay_chat(
                     features: Some(features),
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
                     plugin_tag: None,
+                    upstream_request_id: crate::relay::upstream_headers::extract_upstream_request_id(&headers),
                 })
                 .await;
                 Ok(super::ProtectOut::Raw(super::UpstreamRaw::new(
@@ -482,20 +473,12 @@ async fn relay_chat(
                     transform_chat_response(&raw.body, &target_type, model)
                 };
                 let resp = upstream_headers::json_with_upstream_headers(&raw.headers, final_body);
-                return Ok(upstream_headers::with_request_id(
-                    resp,
-                    &client_headers,
-                    &log_id,
-                ));
+                return Ok(upstream_headers::with_request_id(resp, &log_id));
             }
             super::ProtectJoin::Ok(super::ProtectOut::Live(resp)) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &url, ms).await;
-                return Ok(upstream_headers::with_request_id(
-                    resp,
-                    &client_headers,
-                    &log_id,
-                ));
+                return Ok(upstream_headers::with_request_id(resp, &log_id));
             }
             super::ProtectJoin::Retry => {
                 ha.bump();

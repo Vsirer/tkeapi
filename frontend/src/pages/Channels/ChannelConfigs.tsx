@@ -1,15 +1,16 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, Switch, Segmented, message, Popconfirm, Card, Typography, AutoComplete, Grid, Tooltip, Progress, Select, Divider, TimePicker, Popover } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, Switch, Segmented, message, Popconfirm, Card, Typography, AutoComplete, Grid, Tooltip, Progress, Select, Divider, TimePicker, Popover, Checkbox } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, ClearOutlined, StopOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
+import { listPagination } from '../../components/ListPagination';
+import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, ClearOutlined, StopOutlined, PlayCircleOutlined, SettingOutlined, CheckSquareOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import dayjs from 'dayjs';
 import request from '../../utils/request';
@@ -18,6 +19,7 @@ import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
 import type { ChannelConfig, ChannelCategory, Upstream } from '../../types';
 import ChannelCategoryManager from '../../components/Channels/ChannelCategoryManager';
+import { channelEditPath } from './channelPaths';
 import {
   formatQuotaLimitDisplay,
   parseQuotaLimitInput,
@@ -403,6 +405,75 @@ const ChannelConfigs: React.FC = () => {
     }
   };
 
+  const [isBatchEditMode, setIsBatchEditMode] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchCategoryKey, setBatchCategoryKey] = useState(0);
+
+  const batchChecked = (id: number) => selectedRowKeys.some(k => Number(k) === id);
+
+  const toggleBatchKey = (id: number, checked: boolean) => {
+    setSelectedRowKeys(prev => {
+      const has = prev.some(k => Number(k) === id);
+      if (checked) return has ? prev : [...prev, id];
+      return prev.filter(k => Number(k) !== id);
+    });
+  };
+
+  const handleBatchChangeStatus = async (status: number) => {
+    const idSet = new Set(selectedRowKeys.map(k => Number(k)));
+    const targets = configs.filter(c => idSet.has(c.id));
+    if (targets.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(targets.map(c => request.put(`/channel-configs/${c.id}`, { status })));
+      const done = new Set(targets.map(c => c.id));
+      setConfigs(prev => prev.map(c => done.has(c.id) ? { ...c, status } : c));
+      message.success(status === 1 ? `已激活 ${targets.length} 个上游渠道` : `已禁用 ${targets.length} 个上游渠道`);
+    } catch (e) {
+      console.error(e);
+      fetchConfigs();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchChangeCategory = async (categoryId: number | null) => {
+    const idSet = new Set(selectedRowKeys.map(k => Number(k)));
+    const targets = configs.filter(c => idSet.has(c.id));
+    if (targets.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(targets.map(c => request.put(`/channel-configs/${c.id}`, { category_id: categoryId })));
+      const done = new Set(targets.map(c => c.id));
+      setConfigs(prev => prev.map(c => done.has(c.id) ? { ...c, category_id: categoryId } : c));
+      const name = categoryId == null ? '未分类' : (categories.find(c => c.id === categoryId)?.name || '所选分类');
+      message.success(`已将 ${targets.length} 个上游渠道改为「${name}」`);
+    } catch (e) {
+      console.error(e);
+      fetchConfigs();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    const ids = configs.filter(c => batchChecked(c.id)).map(c => c.id);
+    if (ids.length === 0) return;
+    setBatchLoading(true);
+    try {
+      await Promise.all(ids.map(id => request.delete(`/channel-configs/${id}`)));
+      message.success(`已删除 ${ids.length} 个上游渠道`);
+      setSelectedRowKeys([]);
+      setConfigs(prev => prev.filter(c => !ids.includes(c.id)));
+    } catch (e) {
+      console.error(e);
+      fetchConfigs();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
   const handleResetQuota = async (id: number) => {
     try {
       await request.post(`/channel-configs/${id}/quota/reset`);
@@ -768,7 +839,7 @@ const ChannelConfigs: React.FC = () => {
                       )}
                     </div>
                     <Link
-                      to={`/${adminPath}/channels?edit=${ch.id}`}
+                      to={channelEditPath(adminPath, ch.id)}
                       style={{ fontSize: 11, color: '#1677ff', flexShrink: 0, textDecoration: 'none' }}
                     >
                       编辑
@@ -1047,7 +1118,17 @@ const ChannelConfigs: React.FC = () => {
             onChange={(e) => !e.target.value && setSearchText('')}
             style={{ width: screens.xs ? '100%' : 220 }}
           />
-          <Button icon={<SyncOutlined />} onClick={fetchConfigs}>刷新</Button>
+          <Button
+            icon={<CheckSquareOutlined />}
+            type={isBatchEditMode ? 'primary' : 'default'}
+            danger={isBatchEditMode}
+            onClick={() => {
+              setIsBatchEditMode(!isBatchEditMode);
+              if (isBatchEditMode) setSelectedRowKeys([]);
+            }}
+          >
+            {isBatchEditMode ? '退出选择' : '选择编辑'}
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>添加配置</Button>
         </Space>
       </div>
@@ -1115,16 +1196,97 @@ const ChannelConfigs: React.FC = () => {
         </div>
       </div>
 
+      {isBatchEditMode && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '8px 14px',
+          marginBottom: 12,
+          borderRadius: 8,
+          backgroundColor: isLight ? '#e6f4ff' : '#111b26',
+          border: isLight ? '1px solid #91caff' : '1px solid #154173',
+        }}>
+          <Space wrap size={10} style={{ alignItems: 'center' }}>
+            <Button
+              size="small"
+              onClick={() => {
+                const ids = displayedConfigs.map(c => c.id);
+                setSelectedRowKeys(prev => Array.from(new Set([...prev.map(k => Number(k)), ...ids])));
+              }}
+            >
+              全选
+            </Button>
+            <Button size="small" disabled={selectedRowKeys.length === 0} onClick={() => setSelectedRowKeys([])}>
+              取消选择
+            </Button>
+            <Text strong style={{ fontSize: 13, color: isLight ? '#0958d9' : '#1677ff', marginLeft: 4 }}>
+              已选择 <span style={{ fontSize: 15, fontWeight: 700 }}>{selectedRowKeys.length}</span> 项
+            </Text>
+          </Space>
+          <Space wrap size={8}>
+            <Select
+              key={batchCategoryKey}
+              size="small"
+              placeholder="修改分类"
+              style={{ width: 140 }}
+              disabled={selectedRowKeys.length === 0 || batchLoading}
+              options={[
+                { label: '未分类', value: 0 },
+                ...activeCategories.map(c => ({ label: c.name, value: c.id })),
+              ]}
+              onChange={(value) => {
+                handleBatchChangeCategory(value === 0 ? null : value);
+                setBatchCategoryKey(k => k + 1);
+              }}
+            />
+            <Button size="small" type="primary" icon={<CheckCircleOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading} onClick={() => handleBatchChangeStatus(1)}>
+              激活
+            </Button>
+            <Button size="small" icon={<StopOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading} onClick={() => handleBatchChangeStatus(0)}>
+              禁用
+            </Button>
+            <Popconfirm
+              title="确定要批量删除选中的上游渠道吗？"
+              description={`将一次性删除选中的 ${selectedRowKeys.length} 个上游渠道，此操作不可撤销。`}
+              onConfirm={handleBatchDelete}
+              okText="确认删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true, loading: batchLoading }}
+              disabled={selectedRowKeys.length === 0}
+            >
+              <Button size="small" danger type="primary" icon={<DeleteOutlined />} disabled={selectedRowKeys.length === 0} loading={batchLoading}>
+                批量删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
+
       {screens.xs ? (
         <MobileCardList
           dataSource={displayedConfigs}
           loading={loading}
           rowKey="id"
+          pagination={listPagination()}
           renderCard={(record: ChannelConfig) => {
             const sync = renderUpstreamSyncInline(record);
             return (
             <MobileCard
-              title={record.name}
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {isBatchEditMode && (
+                    <Checkbox
+                      checked={batchChecked(record.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => toggleBatchKey(record.id, e.target.checked)}
+                    />
+                  )}
+                  <span>{record.name}</span>
+                </div>
+              }
               extra={<Typography.Text keyboard style={{ color: '#1677ff' }}>{record.yid || '-'}</Typography.Text>}
             >
               {sync ? <CardRow label="上游同步">{sync}</CardRow> : null}
@@ -1181,8 +1343,13 @@ const ChannelConfigs: React.FC = () => {
           columns={columns}
           rowKey="id"
           loading={loading}
-          pagination={{ pageSize: 15, showTotal: (total) => `共 ${total} 条` }}
+          pagination={listPagination()}
           scroll={{ x: 1480 }}
+          rowSelection={isBatchEditMode ? {
+            selectedRowKeys,
+            preserveSelectedRowKeys: true,
+            onChange: (keys) => setSelectedRowKeys(keys),
+          } : undefined}
           onChange={(_p, _f, sorter) => {
             const s = Array.isArray(sorter) ? sorter[0] : sorter;
             if (s?.order && s.columnKey) setQuotaSortOrder(null);

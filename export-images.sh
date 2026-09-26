@@ -1,8 +1,8 @@
 #!/bin/bash
-# tokensbyte opensource
-# (c) 2026 tokensbyte.ai
+# tkeapi (tokensbyte) opensource
+# © 2026 tkeapi.com
 # @copyright      Copyright netbcloud/wstianxia 
-# @license        MIT (https://www.tokensbyte.ai/)
+# @license        MIT (https://www.tkeapi.com/)
 
 
 # TokensByte Docker 镜像导出脚本
@@ -65,9 +65,20 @@ _prebuilt_ok() {
     echo "$_info" | grep -q ELF || return 1
     case "${_target_arch}" in amd64) echo "$_info" | grep -Eq 'x86-64|x86_64' ;; arm64) echo "$_info" | grep -Eq 'aarch64|ARM aarch64' ;; *) return 1 ;; esac
 }
+# 架构 + HEAD + backend 工作区（含已刷新的 git_log）；编译后写入 stamp
+_prebuilt_src_id() {
+    { printf '%s\n' "${_target_arch}"; git rev-parse HEAD; git --no-pager diff HEAD -- backend; } | shasum -a 256 | awk '{print $1}'
+}
+_refresh_git_log() {
+    _out=$(git log -10 --format='%H%x1F%h%x1F%an%x1F%cd%x1F%s' --date=format:'%Y-%m-%d %H:%M:%S %z' 2>/dev/null) || true
+    [ -n "${_out}" ] && printf '%s\n' "${_out}" > backend/git_log.txt && echo "✅ 已刷新 backend/git_log.txt"
+}
 _do_zigbuild() {
     [ -z "${_zig_target}" ] && return 1
-    if [ "${FORCE_ZIGBUILD:-0}" != "1" ] && _prebuilt_ok; then export USE_PREBUILT=1; echo "✅ 复用 tokensbyte-server-bin"; return 0; fi
+    if [ "${FORCE_ZIGBUILD:-0}" != "1" ] && _prebuilt_ok && [ -f tokensbyte-server-bin.stamp ] \
+        && [ "$(_prebuilt_src_id)" = "$(cat tokensbyte-server-bin.stamp)" ]; then
+        export USE_PREBUILT=1; echo "✅ 复用 tokensbyte-server-bin"; return 0
+    fi
     [ "${SKIP_ZIGBUILD:-0}" = "1" ] && return 1
     [ "$(uname -s)" = "Darwin" ] || return 1
     command -v zig >/dev/null || { echo "❌ 缺 zig：brew install zig"; return 1; }
@@ -80,17 +91,21 @@ _do_zigbuild() {
             mkdir -p "${CARGO_TARGET_DIR}"; echo "ℹ️  外置盘 → CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
         fi ;;
     esac
-    echo "🚀 cargo zigbuild --target ${_zig_target} --all-features"
+    echo "🚀 cargo zigbuild --target ${_zig_target} --features cross_compile"
     rustup target add "${_zig_target}" >/dev/null 2>&1 || true
     _n=$(sysctl -n hw.ncpu 2>/dev/null || echo 4); _zj=${_n}; [ "${_zj}" -gt 4 ] && _zj=4
-    (cd backend && cargo zigbuild --release --target "${_zig_target}" --all-features -j "${_zj}") || return 1
+    (cd backend && cargo zigbuild --release --target "${_zig_target}" --features cross_compile -j "${_zj}") || return 1
     _out="backend/target/${_zig_target}/release/tokensbyte-server"
     [ -n "${CARGO_TARGET_DIR:-}" ] && _out="${CARGO_TARGET_DIR}/${_zig_target}/release/tokensbyte-server"
     [ -f "${_out}" ] || { echo "❌ 未找到 ${_out}"; return 1; }
     cp -f "${_out}" tokensbyte-server-bin && chmod +x tokensbyte-server-bin
     _prebuilt_ok || return 1
+    _prebuilt_src_id > tokensbyte-server-bin.stamp
     export USE_PREBUILT=1; echo "✅ tokensbyte-server-bin → USE_PREBUILT=1"
 }
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    _refresh_git_log
+fi
 if [ "$(uname -s)" = "Darwin" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
     if ! _do_zigbuild; then
         if [ "${ALLOW_DOCKER_CARGO:-0}" = "1" ]; then
@@ -121,7 +136,7 @@ else
     _ba=(--build-arg "USE_PREBUILT=${USE_PREBUILT}" --build-arg "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}" --build-arg "ENABLE_CARGO_CACHE=${ENABLE_CARGO_CACHE}")
     if [ -d "frontend" ] && [ "${SKIP_FRONTEND_BUILD:-0}" != "1" ]; then
         echo "⚡ 正在在宿主机编译前端 (frontend/dist)..."
-        (cd frontend && npm run build) || { echo "❌ 前端构建失败"; exit 1; }
+        (cd frontend && npm install --no-fund --no-audit && npm run build) || { echo "❌ 前端构建失败"; exit 1; }
     fi
     if [ "${USE_PREBUILT}" = "1" ]; then
         echo "📦 docker compose build frontend+backend..."
@@ -188,18 +203,6 @@ docker save -o "$FRONTEND_FILE" "$FRONTEND_IMAGE"
 FRONTEND_SIZE=$(du -h "$FRONTEND_FILE" | cut -f1)
 echo "    大小: $FRONTEND_SIZE"
 
-# 导出联合离线压缩包（保持与前后端镜像相同的日期时间戳编号）
-OFFLINE_FILE="$OUTPUT_DIR/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz"
-echo "  → 导出联合离线包到: $OFFLINE_FILE"
-docker save "$BACKEND_IMAGE" "$FRONTEND_IMAGE" | gzip > "$OFFLINE_FILE"
-OFFLINE_SIZE=$(du -h "$OFFLINE_FILE" | cut -f1)
-echo "    大小: $OFFLINE_SIZE"
-(cd "$OUTPUT_DIR" && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
-(cd "$OUTPUT_DIR" && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "tokensbyte-offline.tar.gz" 2>/dev/null || true)
-cp -f "$OFFLINE_FILE" "/tmp/${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" 2>/dev/null || true
-(cd /tmp && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "${PROJECT_NAME}-offline.tar.gz" 2>/dev/null || true)
-(cd /tmp && ln -sf "${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz" "tokensbyte-offline.tar.gz" 2>/dev/null || true)
-
 echo "📋 正在同步 docker-compose.yml 与 .env 配置文件..."
 if [ -f "docker-compose.yml" ]; then
     cp -f docker-compose.yml "$OUTPUT_DIR/docker-compose.yml"
@@ -231,7 +234,7 @@ echo "  导出完成！"
 echo "========================================="
 echo ""
 echo "📁 导出文件列表:"
-ls -lh "$OUTPUT_DIR"/*${TIMESTAMP}.tar "$OUTPUT_DIR"/*${TIMESTAMP}.tar.gz 2>/dev/null || true
+ls -lh "$OUTPUT_DIR"/*${TIMESTAMP}.tar
 echo ""
 
 # 计算总大小
@@ -265,36 +268,26 @@ fi
 echo "✅ Docker 版本: $(docker --version)"
 echo ""
 
-# 优先导入项目专属联合离线包（优先匹配最新时间戳或固定名称）
-_latest_pkg=$(ls -t "${PROJECT_NAME}"-offline*.tar.gz 2>/dev/null | head -n 1)
-if [ -n "$_latest_pkg" ] && [ -f "$_latest_pkg" ]; then
-    echo "  → 导入联合镜像: $_latest_pkg"
-    docker load -i "$_latest_pkg"
-elif [ -f "tokensbyte-offline.tar.gz" ]; then
-    echo "  → 导入联合镜像: tokensbyte-offline.tar.gz"
-    docker load -i "tokensbyte-offline.tar.gz"
-else
-    # 查找所有 tar 文件
-    tar_files=$(ls *.tar 2>/dev/null || true)
+# 查找所有 tar 文件
+tar_files=$(ls *.tar 2>/dev/null || true)
 
-    if [ -z "$tar_files" ]; then
-        echo "❌ 错误: 当前目录未找到镜像文件 (.tar / .tar.gz)"
-        echo "   请将导出的镜像文件上传到此目录"
-        exit 1
-    fi
-
-    echo "📥 开始导入镜像..."
-    echo ""
-
-    # 导入每个镜像文件
-    for tar_file in *.tar; do
-        if [ -f "$tar_file" ]; then
-            echo "  → 导入: $tar_file"
-            docker load -i "$tar_file"
-            echo ""
-        fi
-    done
+if [ -z "$tar_files" ]; then
+    echo "❌ 错误: 当前目录未找到 .tar 镜像文件"
+    echo "   请将导出的镜像文件上传到此目录"
+    exit 1
 fi
+
+echo "📥 开始导入镜像..."
+echo ""
+
+# 导入每个镜像文件
+for tar_file in *.tar; do
+    if [ -f "$tar_file" ]; then
+        echo "  → 导入: $tar_file"
+        docker load -i "$tar_file"
+        echo ""
+    fi
+done
 
 echo "✅ 所有镜像导入完成！"
 echo ""
@@ -329,9 +322,7 @@ cat > "$OUTPUT_DIR/UPLOAD-GUIDE.txt" << EOF
 📦 导出时间: $(date '+%Y-%m-%d %H:%M:%S')
 
 📁 需要上传的文件:
-- ${PROJECT_NAME}-offline-${TIMESTAMP}.tar.gz (推荐：一键包含前端与后端的联合离线镜像包)
-- 或分卷镜像文件:
-$(ls -1 "$OUTPUT_DIR"/*${TIMESTAMP}.tar 2>/dev/null | xargs -n 1 basename)
+$(ls -1 "$OUTPUT_DIR"/*${TIMESTAMP}.tar | xargs -n 1 basename)
 - import-images.sh (导入脚本)
 - docker-compose.yml (部署配置)
 - .env.example (环境变量模板)

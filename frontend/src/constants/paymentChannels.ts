@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /** 列表级支付渠道 ID（通联聚合为 allinpay） */
@@ -11,7 +11,6 @@ type PaymentChannelId =
   | 'wechat'
   | 'allinpay'
   | 'stripe'
-  | 'bonuspay'
   | 'hyperbc';
 
 /** 实际下单用的 payment_method（通联子渠道拆分） */
@@ -21,7 +20,6 @@ export type PaymentMethodId =
   | 'allinpay_alipay'
   | 'allinpay_wechat'
   | 'stripe'
-  | 'bonuspay'
   | 'hyperbc';
 
 export interface PaymentChannelUiItem {
@@ -56,7 +54,6 @@ export interface PaymentChannelDefaultMeta {
     | 'payment_wechat'
     | 'payment_alipay'
     | 'payment_stripe'
-    | 'payment_bonuspay'
     | 'payment_hyperbc'
     | 'payment_allinpay';
   /** 默认排序，越大越靠前 */
@@ -70,7 +67,6 @@ const PAYMENT_CHANNEL_CATALOG: PaymentChannelDefaultMeta[] = [
   { id: 'wechat', defaultName: '微信支付', defaultNameEn: 'WeChat Pay', defaultSubtitle: '快捷', defaultSubtitleEn: 'code pay', gatewayKey: 'payment_wechat', defaultSort: 60, accent: '#07c160' },
   { id: 'allinpay', defaultName: '通联支付', defaultNameEn: 'Allinpay', defaultSubtitle: '微信/支付宝/信用卡', defaultSubtitleEn: 'wechat/alipay', gatewayKey: 'payment_allinpay', defaultSort: 50, accent: '#1677ff' },
   { id: 'stripe', defaultName: 'Stripe 信用卡', defaultNameEn: 'Stripe Card', defaultSubtitle: '银行卡/支付宝', defaultSubtitleEn: 'Cards/Alipay', gatewayKey: 'payment_stripe', defaultSort: 30, accent: '#635bff' },
-  { id: 'bonuspay', defaultName: 'BonusPay', defaultNameEn: 'BonusPay', defaultSubtitle: 'Web3', defaultSubtitleEn: 'Web3', gatewayKey: 'payment_bonuspay', defaultSort: 20, accent: '#ff6a00' },
   { id: 'hyperbc', defaultName: 'HyperBC', defaultNameEn: 'HyperBC', defaultSubtitle: 'Web3', defaultSubtitleEn: 'Web3', gatewayKey: 'payment_hyperbc', defaultSort: 10, accent: '#8b5cf6' },
 ];
 

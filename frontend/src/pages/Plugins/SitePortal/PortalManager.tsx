@@ -1,14 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
-import { Typography, Input, Switch, Button, Divider, Spin, App, Space, Tag, Alert, Tooltip } from 'antd';
+import { Typography, Input, InputNumber, Switch, Button, Divider, Spin, App, Space, Tag, Alert, Tooltip } from 'antd';
 import { SaveOutlined, EyeOutlined, ThunderboltOutlined, PlusOutlined, DeleteOutlined, LinkOutlined, CopyOutlined } from '@ant-design/icons';
-import { LayoutDashboard, Code, ShieldCheck, PanelBottom, FileCode } from 'lucide-react';
+import { LayoutDashboard, Code, ShieldCheck, PanelBottom, FileCode, Home, Mail, Info, Share2 } from 'lucide-react';
 import request from '../../../utils/request';
 import { useThemeStore } from '../../../store/theme';
 import { copyWithFeedback } from '../../../utils/clipboard';
@@ -64,13 +64,66 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 
 const DEMO_HTML = whatsTokenHomepageHtml;
 
+const FIXED_NAV_KEYS = ['home', 'marketplace', 'integration', 'contact', 'about'] as const;
+
 const DEFAULT_NAV_ITEMS = [
-  { label: '平台优势|Platform Advantages', path: '#features', enabled: true, target_blank: false, key: 'features' },
-  { label: '核心功能|Core Features', path: '#carousel', enabled: true, target_blank: false, key: 'carousel' },
-  { label: '模型矩阵|Model Matrix', path: '#models', enabled: true, target_blank: false, key: 'models' },
-  { label: '接入指南|Integration Guide', path: '#integration', enabled: true, target_blank: false, key: 'integration' },
-  { label: '模型广场|Model Marketplace', path: '/home/models', enabled: true, target_blank: false, key: 'marketplace' },
+  { label: '站点首页|Home', path: '/home', enabled: true, target_blank: false, key: 'home', is_fixed: true, sort: 50 },
+  { label: '模型广场|Model Marketplace', path: '/home/models', enabled: true, target_blank: false, key: 'marketplace', is_fixed: true, sort: 40 },
+  { label: '接入指南|Integration Guide', path: '#integration', enabled: true, target_blank: false, key: 'integration', is_fixed: true, sort: 30 },
+  { label: '联系我们|Contact Us', path: '/home/contact', enabled: true, target_blank: false, key: 'contact', is_fixed: true, sort: 20 },
+  { label: '关于我们|About Us', path: '/home/about', enabled: true, target_blank: false, key: 'about', is_fixed: true, sort: 10 },
 ];
+
+function isFixedNavItem(item: any): boolean {
+  if (!item) return false;
+  if (item.is_fixed === true) return true;
+  return (FIXED_NAV_KEYS as readonly string[]).includes(item.key);
+}
+
+function defaultNavItemByKey(key: (typeof FIXED_NAV_KEYS)[number]) {
+  return DEFAULT_NAV_ITEMS.find(item => item.key === key)!;
+}
+
+function parseSortValue(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function withDefaultSort<T extends { sort?: unknown }>(items: T[]): (T & { sort: number })[] {
+  const total = items.length;
+  return items.map((item, idx) => ({
+    ...item,
+    sort: parseSortValue(item.sort, (total - idx) * 10),
+  }));
+}
+
+function sortByWeightDesc<T extends { sort?: unknown }>(items: T[]): T[] {
+  return items
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => {
+      const wa = parseSortValue(a.item.sort, 0);
+      const wb = parseSortValue(b.item.sort, 0);
+      if (wb !== wa) return wb - wa;
+      return a.idx - b.idx;
+    })
+    .map(({ item }) => item);
+}
+
+function rankedList<T extends { sort?: unknown }>(items: T[]): (T & { sort: number })[] {
+  return sortByWeightDesc(withDefaultSort(items));
+}
+
+/** 保证系统五项存在且不可删除；按 sort 数值越大越靠前。 */
+function normalizeNavItems(rawItems: any[] = []): any[] {
+  const items = Array.isArray(rawItems) ? [...rawItems] : [];
+  const marked = items.map(it => (isFixedNavItem(it) ? { ...it, is_fixed: true } : it));
+  for (const key of FIXED_NAV_KEYS) {
+    if (!marked.some(it => it.key === key)) {
+      marked.push({ ...defaultNavItemByKey(key), sort: 0 });
+    }
+  }
+  return rankedList(marked);
+}
 
 /** 导航预览：相对路径补 origin，锚点拼到首页 logo_link。 */
 function resolveNavPreviewUrl(path: string | undefined, logoLink?: string): string {
@@ -89,7 +142,192 @@ function resolveNavPreviewUrl(path: string | undefined, logoLink?: string): stri
   return `${window.location.origin}/${raw}`;
 }
 
-type MenuKey = 'custom_homepage' | 'nav' | 'static_gen' | 'other' | 'footer';
+const DEFAULT_ABOUT = {
+  title: '关于我们',
+  path: 'about',
+  enabled: true,
+  hero_subtitle: '作为业内领先的 AI 模型聚合服务平台，我们消除服务商锁定风险，通过更优的价格、高可用性和企业级的稳定性，为您打通全球最先进大语言模型的访问桥梁。',
+  stat_tokens: '10B+',
+  stat_developers: '10K+',
+  stat_providers: '40+',
+  stat_models: '200+',
+  press_title: '统一大模型接口体验，让接入 AI 零负担',
+  press_desc: '旨在成为开发者接入、对比、调用不同 AI 模型的首选聚合网关。只需一次接入，即可全量访问数百个前沿模型。',
+  press_link_text: '联系我们洽谈合作 →',
+  content: '',
+};
+
+const DEFAULT_CONTACT_SOCIAL_LINKS = [
+  { platform: 'Twitter / X', value: 'https://x.com/tkeapi', enabled: true, sort: 30, key: 'social_twitter' },
+  { platform: 'GitHub', value: 'https://github.com/aiqachat/tkeapi', enabled: true, sort: 20, key: 'social_github' },
+  { platform: 'Telegram', value: 'https://t.me/tokensbyte', enabled: true, sort: 10, key: 'social_telegram' },
+];
+
+const DEFAULT_CHANNEL_ORDER = ['email', 'phone', 'address'] as const;
+
+const CONTACT_CHANNEL_FIELDS: { key: (typeof DEFAULT_CHANNEL_ORDER)[number]; label: string; placeholder: string }[] = [
+  { key: 'email', label: '官方邮箱 (Email)', placeholder: '例如：contact@tokensbyte.ai' },
+  { key: 'phone', label: '联系电话 (Phone)', placeholder: '例如：+1 (800) 123-4567' },
+  { key: 'address', label: '办公地址 (Address)', placeholder: '例如：30 N Gould St Ste R, Sheridan, WY 82801' },
+];
+
+const DEFAULT_CONTACT = {
+  title: '联系我们',
+  path: 'contact',
+  enabled: true,
+  content: {
+    email: '',
+    phone: '',
+    address: '',
+    email_enabled: true,
+    phone_enabled: true,
+    address_enabled: true,
+    channel_order: [...DEFAULT_CHANNEL_ORDER],
+    channel_sort: { email: 30, phone: 20, address: 10 },
+    social_links: DEFAULT_CONTACT_SOCIAL_LINKS.map((item) => ({ ...item })),
+    custom_content: '',
+    items: [] as { icon?: string; title?: string; value?: string; enabled?: boolean }[],
+  },
+};
+
+function normalizeChannelOrder(order: any): string[] {
+  const allowed = new Set<string>(DEFAULT_CHANNEL_ORDER);
+  const fromCfg = Array.isArray(order) ? order.filter((key) => allowed.has(String(key))) : [];
+  const seen = new Set(fromCfg.map(String));
+  return [...fromCfg.map(String), ...DEFAULT_CHANNEL_ORDER.filter((key) => !seen.has(key))];
+}
+
+function normalizeChannelSort(content: any): Record<string, number> {
+  const order = normalizeChannelOrder(content?.channel_order);
+  const raw = content?.channel_sort && typeof content.channel_sort === 'object' && !Array.isArray(content.channel_sort)
+    ? content.channel_sort
+    : {};
+  const out: Record<string, number> = {};
+  order.forEach((key, idx) => {
+    out[key] = parseSortValue(raw[key], (order.length - idx) * 10);
+  });
+  return out;
+}
+
+function channelOrderFromSort(sort: Record<string, number>): string[] {
+  return [...DEFAULT_CHANNEL_ORDER].sort((a, b) => {
+    const diff = (sort[b] ?? 0) - (sort[a] ?? 0);
+    if (diff !== 0) return diff;
+    return DEFAULT_CHANNEL_ORDER.indexOf(a) - DEFAULT_CHANNEL_ORDER.indexOf(b);
+  });
+}
+
+function normalizeAbout(ab: any) {
+  return { ...DEFAULT_ABOUT, ...(ab || {}), enabled: ab?.enabled ?? true };
+}
+
+function hasUsableSocialLinks(links: any): boolean {
+  return Array.isArray(links) && links.some((item) => {
+    const platform = String(item?.platform || '').trim();
+    const value = String(item?.value || '').trim();
+    return !!(platform || value);
+  });
+}
+
+function defaultSocialLinks() {
+  return DEFAULT_CONTACT_SOCIAL_LINKS.map((item) => ({ ...item }));
+}
+
+function normalizeSocialLinks(links: any[]) {
+  return rankedList(links.map((item, idx) => ({
+    ...item,
+    key: item.key || `social_${idx}`,
+    value: String(item?.value || '').trim() === 'https://x.com/tokensbyte'
+      ? 'https://x.com/tkeapi'
+      : item?.value,
+    enabled: item.enabled !== false,
+  })));
+}
+
+function itemValueByTitle(items: any[], needles: string[]): string {
+  const hit = items.find((item) => needles.some((n) => String(item?.title || '').includes(n)));
+  return (hit?.value || '').trim();
+}
+
+function normalizeContact(ct: any) {
+  const cnt = ct?.content || {};
+  const items = Array.isArray(cnt.items) ? cnt.items : [];
+  const channel_sort = normalizeChannelSort(cnt);
+  return {
+    ...DEFAULT_CONTACT,
+    ...(ct || {}),
+    enabled: ct?.enabled ?? true,
+    content: {
+      email: cnt.email || itemValueByTitle(items, ['邮箱', 'mail', 'Mail']) || '',
+      phone: cnt.phone || itemValueByTitle(items, ['电话', 'tel', 'Tel']) || '',
+      address: cnt.address || itemValueByTitle(items, ['地址', 'addr']) || '',
+      email_enabled: cnt.email_enabled !== false,
+      phone_enabled: cnt.phone_enabled !== false,
+      address_enabled: cnt.address_enabled !== false,
+      channel_sort,
+      channel_order: channelOrderFromSort(channel_sort),
+      social_links: normalizeSocialLinks(
+        hasUsableSocialLinks(cnt.social_links) ? cnt.social_links : defaultSocialLinks(),
+      ),
+      custom_content: cnt.custom_content || '',
+      items,
+    },
+  };
+}
+
+function contactSavePayload(cfg: any) {
+  const content = { ...(cfg.content || {}) };
+  const channel_sort = normalizeChannelSort(content);
+  const channel_order = channelOrderFromSort(channel_sort);
+  const social_links = rankedList(Array.isArray(content.social_links) ? content.social_links : []);
+  const items = Array.isArray(content.items) ? content.items.map((item: any) => ({ ...item })) : [];
+  const sync = (needles: string[], value: string, enabled: boolean) => {
+    const idx = items.findIndex((item: any) => needles.some((n) => String(item?.title || '').includes(n)));
+    if (idx >= 0) items[idx] = { ...items[idx], value, enabled };
+  };
+  sync(['邮箱', 'mail', 'Mail'], content.email || '', content.email_enabled !== false);
+  sync(['电话', 'tel', 'Tel'], content.phone || '', content.phone_enabled !== false);
+  sync(['地址', 'addr'], content.address || '', content.address_enabled !== false);
+  const needlesByKey: Record<string, string[]> = {
+    email: ['邮箱', 'mail', 'Mail'],
+    phone: ['电话', 'tel', 'Tel'],
+    address: ['地址', 'addr'],
+  };
+  const used = new Set<number>();
+  const orderedItems: any[] = [];
+  for (const key of channel_order) {
+    const needles = needlesByKey[key] || [];
+    const idx = items.findIndex((item: any, i: number) => !used.has(i) && needles.some((n) => String(item?.title || '').includes(n)));
+    if (idx >= 0) {
+      used.add(idx);
+      orderedItems.push(items[idx]);
+    }
+  }
+  items.forEach((item: any, idx: number) => {
+    if (!used.has(idx)) orderedItems.push(item);
+  });
+  return { ...cfg, content: { ...content, channel_sort, channel_order, social_links, items: orderedItems } };
+}
+
+function SortInput({ value, onChange, onCommit }: { value: number; onChange: (n: number) => void; onCommit?: () => void }) {
+  return (
+    <InputNumber
+      size="small"
+      value={value}
+      onChange={(v) => onChange(parseSortValue(v, 0))}
+      onBlur={onCommit}
+      style={{ width: 72 }}
+      title="数值越大越靠前"
+    />
+  );
+}
+
+function portalPagePreviewPath(slug: string | undefined, fallback: string): string {
+  const raw = (slug || fallback).trim().replace(/^\/+|\/+$/g, '') || fallback;
+  return `/home/${raw}`;
+}
+
+type MenuKey = 'custom_homepage' | 'home' | 'contact' | 'about' | 'nav' | 'static_gen' | 'other' | 'footer';
 
 const PortalManager: React.FC = () => {
   const { themeMode } = useThemeStore();
@@ -109,8 +347,24 @@ const PortalManager: React.FC = () => {
   const [generating, setGenerating] = useState(false);
   const [generatedLinks, setGeneratedLinks] = useState<{ label: string; path: string }[]>([]);
   const [customHomepage, setCustomHomepage] = useState<any>({ enabled: false, html: '' });
+  const [homeConfig, setHomeConfig] = useState<any>({ api_base_url: '' });
+  const [aboutConfig, setAboutConfig] = useState<any>(DEFAULT_ABOUT);
+  const [contactConfig, setContactConfig] = useState<any>(DEFAULT_CONTACT);
 
   useEffect(() => { fetchConfig(); }, []);
+
+  useEffect(() => {
+    setContactConfig((prev: any) => {
+      if (hasUsableSocialLinks(prev?.content?.social_links)) return prev;
+      return {
+        ...prev,
+        content: {
+          ...(prev.content || {}),
+          social_links: defaultSocialLinks(),
+        },
+      };
+    });
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -136,7 +390,12 @@ const PortalManager: React.FC = () => {
     try {
       setLoading(true);
       const res = await (request.get('/plugins/site-portal/portal-config') as Promise<any>);
-      if (res.nav_config) setNavConfig(res.nav_config);
+      if (res.nav_config) {
+        setNavConfig({
+          ...res.nav_config,
+          items: normalizeNavItems(res.nav_config.items || DEFAULT_NAV_ITEMS),
+        });
+      }
       if (res.footer_config) setFooterConfig(res.footer_config);
       if (res.custom_scripts) setCustomScripts(res.custom_scripts);
       if (res.seo_config) setSeoConfig(res.seo_config);
@@ -148,6 +407,9 @@ const PortalManager: React.FC = () => {
           setActiveMenu('custom_homepage');
         }
       }
+      if (res.home_config) setHomeConfig(res.home_config);
+      if (res.columns?.about) setAboutConfig(normalizeAbout(res.columns.about));
+      setContactConfig(normalizeContact(res.columns?.contact));
     } catch (e) {
       console.error(e);
     } finally {
@@ -168,11 +430,29 @@ const PortalManager: React.FC = () => {
     }
   };
 
+  const handleSaveOther = async () => {
+    if (saveCooldowns['scripts']) return;
+    try {
+      setSaving(true);
+      await request.post('/plugins/site-portal/portal-config', { section: 'home', data: { api_base_url: (homeConfig.api_base_url || '').trim() } });
+      await request.post('/plugins/site-portal/portal-config', { section: 'scripts', data: customScripts });
+      setSaveCooldowns(prev => ({ ...prev, scripts: 3 }));
+      message.success('配置已保存');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSaveAllNav = async () => {
     if (saveCooldowns['nav']) return;
     try {
       setSaving(true);
-      await request.post('/plugins/site-portal/portal-config', { section: 'nav', data: navConfig });
+      await request.post('/plugins/site-portal/portal-config', {
+        section: 'nav',
+        data: { ...navConfig, items: normalizeNavItems(navConfig.items || DEFAULT_NAV_ITEMS) },
+      });
       await request.post('/plugins/site-portal/portal-config', { section: 'seo', data: seoConfig });
       setSaveCooldowns(prev => ({ ...prev, 'nav': 3 }));
       message.success('导航配置已保存');
@@ -213,10 +493,13 @@ const PortalManager: React.FC = () => {
   // ─── Left Menu ───
   const menuItems: { key: MenuKey; icon?: React.ReactNode; label: string; isTitle?: boolean; isSub?: boolean }[] = [
     { key: 'custom_homepage', icon: <FileCode size={16} strokeWidth={1.5} />, label: '自定义主页' },
+    { key: 'home', icon: <Home size={16} strokeWidth={1.5} />, label: '首页配置', isSub: true },
+    { key: 'contact', icon: <Mail size={16} strokeWidth={1.5} />, label: '联系我们', isSub: true },
+    { key: 'about', icon: <Info size={16} strokeWidth={1.5} />, label: '关于我们', isSub: true },
     { key: 'nav', icon: <LayoutDashboard size={16} strokeWidth={1.5} />, label: '导航管理' },
     { key: 'footer', icon: <PanelBottom size={16} strokeWidth={1.5} />, label: '底部管理' },
-    { key: 'static_gen', icon: <Code size={16} strokeWidth={1.5} />, label: '静态生成' },
     { key: 'other', icon: <ShieldCheck size={16} strokeWidth={1.5} />, label: '其他配置' },
+    { key: 'static_gen', icon: <Code size={16} strokeWidth={1.5} />, label: '静态生成' },
   ];
 
   // ─── Right Panel Content ───
@@ -256,18 +539,29 @@ const PortalManager: React.FC = () => {
           <Space size={8}>
             <Button size="small" onClick={() => {
               setNavConfig({ ...navConfig, items: DEFAULT_NAV_ITEMS.map(item => ({ ...item })) });
-            }}>恢复默认五项</Button>
+            }}>恢复系统默认</Button>
             <Button size="small" icon={<PlusOutlined />} onClick={() => {
-              const items = [...(navConfig.items || []), { label: '新菜单|New Menu', path: '#features', enabled: true, target_blank: false, key: `item_${Date.now()}` }];
+              const items = [...(navConfig.items || []), { label: '新菜单|New Menu', path: '#features', enabled: true, target_blank: false, key: `item_${Date.now()}`, sort: 0 }];
               setNavConfig({ ...navConfig, items });
             }}>添加栏目</Button>
           </Space>
         </div>
-        <div style={{ marginBottom: 16 }}>
-          <Text type="secondary" style={{ fontSize: 13 }}>💡 提示：站内锚点（如 #features）会在当前首页平滑滚动；也支持 /home/models 等页面链接。名称填写格式为 <Text code>中文|English</Text>（如 <Text code>帮助中心|Help Center</Text>）。</Text>
+        <div style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 13 }}>💡 提示：系统内置「站点首页、模型广场、接入指南、联系我们、关于我们」不可删除，可调整排序、开启关闭、修改名称和链接路径。排序数值越大越靠前。自定义栏目可增删。站内锚点会在当前首页平滑滚动；名称格式为 <Text code>中文|English</Text>。</Text>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 16, padding: '10px 12px', borderRadius: 8, background: _isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)' }}>
+          <div>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13, display: 'block' }}>顶部模型搜索框</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>开启后在顶部导航显示搜索框，可按模型名称、ID、MID 搜索并跳转模型广场</Text>
+          </div>
+          <Switch
+            checked={navConfig.show_model_search !== false}
+            onChange={v => setNavConfig({ ...navConfig, show_model_search: v })}
+          />
         </div>
         {(navConfig.items || []).length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: '36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, padding: '0 2px', alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '72px 36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, padding: '0 2px', alignItems: 'center' }}>
+            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>排序</Text>
             <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>启用</Text>
             <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>菜单名称</Text>
             <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>链接 / 路径</Text>
@@ -277,7 +571,16 @@ const PortalManager: React.FC = () => {
           </div>
         )}
         {(navConfig.items || []).map((item: any, idx: number) => (
-          <div key={idx} style={{ display: 'grid', gridTemplateColumns: '36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+          <div key={item.key || idx} style={{ display: 'grid', gridTemplateColumns: '72px 36px 1.2fr 1.5fr 1fr 88px 64px', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+            <SortInput
+              value={parseSortValue(item.sort, 0)}
+              onChange={(sort) => {
+                const items = [...navConfig.items];
+                items[idx] = { ...item, sort };
+                setNavConfig({ ...navConfig, items });
+              }}
+              onCommit={() => setNavConfig((prev: any) => ({ ...prev, items: rankedList(prev.items || []) }))}
+            />
             <Tooltip title={item.enabled !== false ? '已启用（点击禁用）' : '已禁用（点击启用）'}>
               <Switch
                 size="small"
@@ -296,7 +599,7 @@ const PortalManager: React.FC = () => {
                 items[idx] = { ...item, label: e.target.value };
                 setNavConfig({ ...navConfig, items });
               }}
-              placeholder="菜单名称（如：平台优势|Platform Advantages）"
+              placeholder="菜单名称（如：联系我们|Contact Us）"
             />
             <Input
               value={item.path}
@@ -348,8 +651,10 @@ const PortalManager: React.FC = () => {
                 size="small"
                 danger
                 icon={<DeleteOutlined />}
-                title="删除"
+                disabled={isFixedNavItem(item)}
+                title={isFixedNavItem(item) ? '系统内置菜单不可删除' : '删除'}
                 onClick={() => {
+                  if (isFixedNavItem(item)) return;
                   const items = navConfig.items.filter((_: any, i: number) => i !== idx);
                   setNavConfig({ ...navConfig, items });
                 }}
@@ -637,9 +942,20 @@ const PortalManager: React.FC = () => {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <Title level={5} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff' }}>其他配置</Title>
-        <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={(saveCooldowns['scripts'] || 0) > 0} onClick={() => handleSave('scripts', customScripts)}>
+        <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={(saveCooldowns['scripts'] || 0) > 0} onClick={handleSaveOther}>
           {(saveCooldowns['scripts'] || 0) > 0 ? `已保存 (${saveCooldowns['scripts']}s)` : '保存'}
         </Button>
+      </div>
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 4 }}>API Base URL / 基础 URL</Text>
+        <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginBottom: 8 }}>
+          统一用于首页顶部「API Base URL」与底部文案中的「基础 URL」。留空则使用当前站点 origin + /v1。
+        </Text>
+        <Input
+          value={homeConfig.api_base_url || ''}
+          onChange={e => setHomeConfig({ ...homeConfig, api_base_url: e.target.value })}
+          placeholder="例如：https://api.example.com/v1"
+        />
       </div>
       <div style={cardStyle}>
         <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 4 }}>客服代码</Text>
@@ -656,6 +972,322 @@ const PortalManager: React.FC = () => {
         </Text>
         <TextArea rows={6} value={customScripts.analytics || ''} onChange={e => setCustomScripts({ ...customScripts, analytics: e.target.value })}
           placeholder={'<!-- Google Analytics -->\n<script async src="https://..."></script>'} style={{ fontFamily: 'monospace', fontSize: 12 }} />
+      </div>
+    </div>
+  );
+
+  const updateHomeFeature = (idx: number, patch: Record<string, string>) => {
+    const features = [...(homeConfig.features || [])];
+    features[idx] = { ...features[idx], ...patch };
+    setHomeConfig({ ...homeConfig, features });
+  };
+
+  const renderHome = () => (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Title level={5} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff' }}>首页配置</Title>
+        <Space>
+          <Button icon={<EyeOutlined />} onClick={() => window.open('/home', '_blank')}>预览首页</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={(saveCooldowns['home'] || 0) > 0} onClick={() => handleSave('home', homeConfig)}>
+            {(saveCooldowns['home'] || 0) > 0 ? `已保存 (${saveCooldowns['home']}s)` : '保存'}
+          </Button>
+        </Space>
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 12 }}>Hero 文案</Text>
+        <Text style={labelStyle}>主标题</Text>
+        <Input value={homeConfig.hero_title || ''} onChange={e => setHomeConfig({ ...homeConfig, hero_title: e.target.value })} placeholder="一个接口，调用全球数百个 AI 模型" style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>副标题</Text>
+        <TextArea rows={2} value={homeConfig.hero_subtitle || ''} onChange={e => setHomeConfig({ ...homeConfig, hero_subtitle: e.target.value })} placeholder="OpenAI兼容和原生格式，极速接入主流模型，零门槛开始" />
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 4 }}>API Base URL / 基础 URL</Text>
+        <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginBottom: 8 }}>
+          用于首页顶部展示与底部 CTA 中的基础 URL。留空则使用当前站点 origin + /v1。
+        </Text>
+        <Input
+          value={homeConfig.api_base_url || ''}
+          onChange={e => setHomeConfig({ ...homeConfig, api_base_url: e.target.value })}
+          placeholder="例如：https://api.example.com/v1"
+        />
+      </div>
+
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>功能亮点</Text>
+          <Button size="small" icon={<PlusOutlined />} onClick={() => {
+            const features = [...(homeConfig.features || []), { icon: '', title: '', description: '' }];
+            setHomeConfig({ ...homeConfig, features });
+          }}>添加</Button>
+        </div>
+        {(homeConfig.features || []).map((feat: any, idx: number) => (
+          <div key={idx} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <Input value={feat.title || ''} onChange={e => updateHomeFeature(idx, { title: e.target.value })} placeholder="标题" />
+              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => {
+                const features = (homeConfig.features || []).filter((_: any, i: number) => i !== idx);
+                setHomeConfig({ ...homeConfig, features });
+              }} />
+            </div>
+            <TextArea rows={2} value={feat.description || ''} onChange={e => updateHomeFeature(idx, { description: e.target.value })} placeholder="描述" style={{ marginBottom: 8 }} />
+            <Input value={feat.icon || ''} onChange={e => updateHomeFeature(idx, { icon: e.target.value })} placeholder="图标 SVG（可选）" />
+          </div>
+        ))}
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 12 }}>底部 CTA</Text>
+        <Text style={labelStyle}>标题</Text>
+        <Input value={homeConfig.cta_title || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_title: e.target.value })} style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>描述</Text>
+        <TextArea rows={2} value={homeConfig.cta_description || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_description: e.target.value })} style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>主按钮文字 / 链接</Text>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+          <Input value={homeConfig.cta_primary_btn_text || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_primary_btn_text: e.target.value })} placeholder="开始对话" />
+          <Input value={homeConfig.cta_primary_btn_link || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_primary_btn_link: e.target.value })} placeholder="https://..." />
+        </div>
+        <Text style={labelStyle}>次按钮文字 / 链接</Text>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <Input value={homeConfig.cta_secondary_btn_text || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_secondary_btn_text: e.target.value })} placeholder="阅读文档" />
+          <Input value={homeConfig.cta_secondary_btn_link || ''} onChange={e => setHomeConfig({ ...homeConfig, cta_secondary_btn_link: e.target.value })} placeholder="https://..." />
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderContact = () => (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Title level={5} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff' }}>联系我们</Title>
+        <Space>
+          <Button icon={<EyeOutlined />} onClick={() => window.open(portalPagePreviewPath(contactConfig.path, 'contact'), '_blank')}>预览页面</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={(saveCooldowns['contact'] || 0) > 0} onClick={() => handleSave('contact', contactSavePayload(contactConfig))}>
+            {(saveCooldowns['contact'] || 0) > 0 ? `已保存 (${saveCooldowns['contact']}s)` : '保存'}
+          </Button>
+        </Space>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, paddingBottom: 10, borderBottom: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.08)' }}>
+          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>1. 页面基本属性</Text>
+          <Switch checked={contactConfig.enabled !== false} onChange={v => setContactConfig({ ...contactConfig, enabled: v })} />
+        </div>
+        <Text style={labelStyle}>页面名称 (Title)</Text>
+        <Input value={contactConfig.title || ''} onChange={e => setContactConfig({ ...contactConfig, title: e.target.value })} placeholder="例如：联系我们" style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>路由路径 (Path Slug)</Text>
+        <Input value={contactConfig.path || ''} onChange={e => setContactConfig({ ...contactConfig, path: e.target.value })} placeholder="例如：contact" />
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 4, paddingBottom: 10, borderBottom: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.08)' }}>2. 官方联系渠道设置</Text>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>排序数值越大越靠前</Text>
+        {channelOrderFromSort(normalizeChannelSort(contactConfig.content)).map((key, idx, order) => {
+          const field = CONTACT_CHANNEL_FIELDS.find((item) => item.key === key);
+          if (!field) return null;
+          const enabledKey = `${field.key}_enabled`;
+          const channel_sort = normalizeChannelSort(contactConfig.content);
+          return (
+            <div key={field.key} style={{ marginBottom: idx === order.length - 1 ? 0 : 12 }}>
+              <Text style={labelStyle}>{field.label}</Text>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <SortInput
+                  value={channel_sort[field.key] ?? 0}
+                  onChange={(sort) => {
+                    const nextSort = { ...channel_sort, [field.key]: sort };
+                    setContactConfig({
+                      ...contactConfig,
+                      content: { ...contactConfig.content, channel_sort: nextSort },
+                    });
+                  }}
+                  onCommit={() => {
+                    setContactConfig((prev: any) => {
+                      const nextSort = normalizeChannelSort(prev.content);
+                      return {
+                        ...prev,
+                        content: {
+                          ...prev.content,
+                          channel_sort: nextSort,
+                          channel_order: channelOrderFromSort(nextSort),
+                        },
+                      };
+                    });
+                  }}
+                />
+                <Input
+                  value={contactConfig.content?.[field.key] || ''}
+                  onChange={e => setContactConfig({ ...contactConfig, content: { ...contactConfig.content, [field.key]: e.target.value } })}
+                  placeholder={field.placeholder}
+                  style={{ flex: 1, opacity: contactConfig.content?.[enabledKey] === false ? 0.45 : 1 }}
+                />
+                <Switch size="small" checked={contactConfig.content?.[enabledKey] !== false} onChange={v => setContactConfig({ ...contactConfig, content: { ...contactConfig.content, [enabledKey]: v } })} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, paddingBottom: 10, borderBottom: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.08)' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: _isLight ? '#1f2937' : '#fff', fontSize: 14, fontWeight: 600 }}>
+              <Share2 size={16} strokeWidth={1.5} /> 3. 社交媒体矩阵 (Social Links)
+            </div>
+            <Text type="secondary" style={{ fontSize: 12 }}>排序数值越大越靠前</Text>
+          </div>
+          <Button size="small" icon={<PlusOutlined />} onClick={() => {
+            const social_links = [...(contactConfig.content?.social_links || []), { platform: '', value: '', enabled: true, sort: 0, key: `social_${Date.now()}` }];
+            setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+          }}>添加社交平台</Button>
+        </div>
+        {!(contactConfig.content?.social_links || []).length ? (
+          <div style={{
+            textAlign: 'center',
+            padding: '24px 0',
+            color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
+            fontSize: 13,
+            background: _isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)',
+            borderRadius: 6,
+            border: _isLight ? '1px dashed rgba(0,0,0,0.12)' : '1px dashed rgba(255,255,255,0.12)',
+          }}>
+            暂无社交媒体链接，点击右上角添加按钮创建。
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {(contactConfig.content?.social_links || []).map((link: any, idx: number) => (
+              <div key={link.key || idx} style={{ display: 'grid', gridTemplateColumns: '72px 44px minmax(140px, 1fr) minmax(200px, 1.6fr) 32px', gap: 12, alignItems: 'center', opacity: link.enabled === false ? 0.45 : 1 }}>
+                <SortInput
+                  value={parseSortValue(link.sort, 0)}
+                  onChange={(sort) => {
+                    const social_links = [...(contactConfig.content?.social_links || [])];
+                    social_links[idx] = { ...link, sort };
+                    setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+                  }}
+                  onCommit={() => setContactConfig((prev: any) => ({
+                    ...prev,
+                    content: { ...prev.content, social_links: rankedList(prev.content?.social_links || []) },
+                  }))}
+                />
+                <Switch
+                  size="small"
+                  checked={link.enabled !== false}
+                  onChange={v => {
+                    const social_links = [...(contactConfig.content?.social_links || [])];
+                    social_links[idx] = { ...link, enabled: v };
+                    setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+                  }}
+                />
+                <Input
+                  value={link.platform || ''}
+                  placeholder="平台名称 (如: Twitter / X)"
+                  onChange={e => {
+                    const social_links = [...(contactConfig.content?.social_links || [])];
+                    social_links[idx] = { ...link, platform: e.target.value };
+                    setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+                  }}
+                />
+                <Input
+                  value={link.value || ''}
+                  placeholder="跳转 URL 链接 (如: https://x.com/...)"
+                  onChange={e => {
+                    const social_links = [...(contactConfig.content?.social_links || [])];
+                    social_links[idx] = { ...link, value: e.target.value };
+                    setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+                  }}
+                />
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => {
+                  const social_links = (contactConfig.content?.social_links || []).filter((_: any, i: number) => i !== idx);
+                  setContactConfig({ ...contactConfig, content: { ...contactConfig.content, social_links } });
+                }} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 8, paddingBottom: 10, borderBottom: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.08)' }}>4. 尾部补充说明 (HTML 富文本 / Text)</Text>
+        <TextArea
+          rows={5}
+          value={contactConfig.content?.custom_content || ''}
+          onChange={e => setContactConfig({ ...contactConfig, content: { ...contactConfig.content, custom_content: e.target.value } })}
+          placeholder="<p>补充说明...</p>"
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12 }}
+        />
+      </div>
+    </div>
+  );
+
+  const renderAbout = () => (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <Title level={5} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff' }}>关于我们</Title>
+        <Space>
+          <Button icon={<EyeOutlined />} onClick={() => window.open(portalPagePreviewPath(aboutConfig.path, 'about'), '_blank')}>预览页面</Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={(saveCooldowns['about'] || 0) > 0} onClick={() => handleSave('about', aboutConfig)}>
+            {(saveCooldowns['about'] || 0) > 0 ? `已保存 (${saveCooldowns['about']}s)` : '保存'}
+          </Button>
+        </Space>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>启用关于我们页面</Text>
+          <Switch checked={aboutConfig.enabled !== false} onChange={v => setAboutConfig({ ...aboutConfig, enabled: v })} />
+        </div>
+        <Text style={labelStyle}>页面标题</Text>
+        <Input value={aboutConfig.title || ''} onChange={e => setAboutConfig({ ...aboutConfig, title: e.target.value })} placeholder="关于我们" style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>路径 slug</Text>
+        <Input value={aboutConfig.path || ''} onChange={e => setAboutConfig({ ...aboutConfig, path: e.target.value })} placeholder="about" />
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 12 }}>Hero 副标题</Text>
+        <TextArea rows={3} value={aboutConfig.hero_subtitle || ''} onChange={e => setAboutConfig({ ...aboutConfig, hero_subtitle: e.target.value })} />
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 12 }}>核心数据</Text>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div>
+            <Text style={labelStyle}>月均请求 Token</Text>
+            <Input value={aboutConfig.stat_tokens || ''} onChange={e => setAboutConfig({ ...aboutConfig, stat_tokens: e.target.value })} placeholder="10B+" />
+          </div>
+          <div>
+            <Text style={labelStyle}>全球活跃开发者</Text>
+            <Input value={aboutConfig.stat_developers || ''} onChange={e => setAboutConfig({ ...aboutConfig, stat_developers: e.target.value })} placeholder="10K+" />
+          </div>
+          <div>
+            <Text style={labelStyle}>模型供应商</Text>
+            <Input value={aboutConfig.stat_providers || ''} onChange={e => setAboutConfig({ ...aboutConfig, stat_providers: e.target.value })} placeholder="40+" />
+          </div>
+          <div>
+            <Text style={labelStyle}>集成前沿模型</Text>
+            <Input value={aboutConfig.stat_models || ''} onChange={e => setAboutConfig({ ...aboutConfig, stat_models: e.target.value })} placeholder="200+" />
+          </div>
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 12 }}>合作卡片</Text>
+        <Text style={labelStyle}>卡片标题</Text>
+        <Input value={aboutConfig.press_title || ''} onChange={e => setAboutConfig({ ...aboutConfig, press_title: e.target.value })} style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>卡片描述</Text>
+        <TextArea rows={2} value={aboutConfig.press_desc || ''} onChange={e => setAboutConfig({ ...aboutConfig, press_desc: e.target.value })} style={{ marginBottom: 12 }} />
+        <Text style={labelStyle}>跳转文案</Text>
+        <Input value={aboutConfig.press_link_text || ''} onChange={e => setAboutConfig({ ...aboutConfig, press_link_text: e.target.value })} placeholder="联系我们洽谈合作 →" />
+      </div>
+
+      <div style={cardStyle}>
+        <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14, display: 'block', marginBottom: 8 }}>底部扩展 HTML</Text>
+        <TextArea
+          rows={8}
+          value={aboutConfig.content || ''}
+          onChange={e => setAboutConfig({ ...aboutConfig, content: e.target.value })}
+          placeholder="<p>补充关于我们的详细介绍...</p>"
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12 }}
+        />
       </div>
     </div>
   );
@@ -751,6 +1383,9 @@ const PortalManager: React.FC = () => {
 
   const panels: Record<MenuKey, () => React.ReactNode> = {
     custom_homepage: renderCustomHomepage,
+    home: renderHome,
+    contact: renderContact,
+    about: renderAbout,
     nav: renderNav,
     footer: renderFooter,
     static_gen: renderStaticGen,
@@ -761,7 +1396,7 @@ const PortalManager: React.FC = () => {
     <div style={{ display: 'flex', gap: 16, minHeight: 500 }}>
       {/* Left Sidebar */}
       <div style={{
-        width: 180, flexShrink: 0,
+        width: 196, flexShrink: 0,
         background: _isLight ? '#fff' : '#141414',
         border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
         borderRadius: 8, padding: '8px 0', alignSelf: 'flex-start', position: 'sticky', top: 80,

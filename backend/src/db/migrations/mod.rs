@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 迁移：`ledger/` 冻结历史 → [`incremental.rs`](incremental.rs) 追加新迁移。
@@ -12,9 +12,9 @@
 use std::collections::HashSet;
 
 pub(crate) mod macros;
-pub(crate) use macros::once_migration;
+pub(crate) use macros::{once_heavy_migration, once_migration};
 
-mod helpers;
+pub(crate) mod helpers;
 mod ledger;
 mod incremental;
 

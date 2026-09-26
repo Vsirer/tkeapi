@@ -1,6 +1,6 @@
 # Alibaba Wan Video Generation
 
-OpenAI-compatible video API. All examples use **`wan3.0-video`**:
+OpenAI-compatible: `POST /v1/video/generations`. Native: `/api/v1/services/aigc/video-generation/video-synthesis`. [Video API](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference?spm=a2c4g.11186623.help-menu-2400256.d_2_3_1_0.204b56c3vDOeBa&scm=20140722.H_3049634._.OR_help-T_cn~zh-V_1)
 
 - Submit: `POST /v1/video/generations`
 - Poll: `GET /v1/video/generations/{task_id}`

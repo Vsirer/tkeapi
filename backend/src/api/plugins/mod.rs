@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Backend plugins — mirrors `frontend/src/pages/Plugins/`.
@@ -21,13 +21,37 @@
 //! - `volc_ark_monitor/`     → VolcengineArkMonitor
 //! - `comfyui_bridge/`       → ComfyUiBridge
 //! - `content_security/`     → ContentSecurity
+//! - `volc_enhance/`         → 火山引擎 AI MediaKit 增强
+//! - `tencent_enhance/`      → 腾讯云增强
 //! - `site_icons/`           → SiteIcons
+//! - `mobile_app/`           → 移动端APP管理
 //! - `data_sync/`            → DataSync
 //! - `finance/` / `pay/`（含 `pay/payment/` 渠道客户端）/ `redemptions/` → 可选插件（目录存在即编译）
 
-// Plugin manager (marketplace / config / TOS / Volc)
+// Plugin manager (marketplace / config / TOS / 列表开关)
 pub(crate) mod manager;
 pub use manager::*;
+
+#[cfg(feature = "plugin_volcengine_enhance")]
+pub mod volc_enhance;
+#[cfg(feature = "plugin_volcengine_enhance")]
+pub use volc_enhance::{
+    apply_volc_enhance_path, build_volcengine_media_enhance_body, crop_volc_cascade_video,
+    extract_volc_last_frame, infer_volc_media_enhance, is_image_tool_mid, is_volc_enhance_version,
+    is_volc_preset_mid, volc_preset_blocked, link_volcengine_enhance_log,
+    lock_volc_cascade_s2_channel, poll_volc_cascade_stage2,
+    resolve_volc_image_model, resolve_volc_video_model, submit_volc_cascade_stage2,
+    volc_cascade_s1_tag, volc_inactive_filter_sql, volc_s2_from_tag,
+};
+
+#[cfg(feature = "plugin_tencent_enhance")]
+pub mod tencent_enhance;
+#[cfg(feature = "plugin_tencent_enhance")]
+pub use tencent_enhance::{
+    cleanup_tencent_enhance_logs, crop_tencent_cascade_video,
+    extract_tencent_last_frame, poll_tencent_cascade_stage2,
+    submit_tencent_cascade_stage2, tencent_cascade_s1_tag,
+};
 
 // Always-on plugins
 pub mod docs_api;
@@ -36,6 +60,8 @@ pub mod playground;
 // Feature-gated plugins
 #[cfg(feature = "commercial_plugins")]
 pub mod assets;
+#[cfg(feature = "commercial_plugins")]
+pub mod mobile_app;
 #[cfg(feature = "commercial_plugins")]
 pub mod playground_2026;
 #[cfg(feature = "commercial_plugins")]

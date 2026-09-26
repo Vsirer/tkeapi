@@ -6,6 +6,7 @@
   "model_online_desc2": "대규모 통화가 필요한 경우 고객 서비스에 문의하여 독점 할인을 받으십시오.",
   "category": "능력분류",
   "provider": "공급자",
+  "api_provider": "API 제공사",
   "pricing_plan": "가격 계획",
   "updated_at": "업데이트 시간",
   "kinds": "친절한",
@@ -31,10 +32,13 @@
   "back_dashboard": "반품",
   "back_list": "목록으로 돌아가기",
   "pricing_count": "{{count}} 가격",
+  "model_id_count": "모델 ID {{count}}개",
   "unavailable": "사용 불가",
   "default_pricing": "기본 요금",
   "other_category": "기타",
   "unknown_provider": "공급자",
   "upstream": "업스트림",
-  "default_group": "기본 그룹"
+  "default_group": "기본 그룹",
+  "new_badge": "신규",
+  "metric_type": "유형"
 }

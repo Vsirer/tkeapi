@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -15,6 +15,7 @@ import {
   Input,
   InputNumber,
   Switch,
+  DatePicker,
   message,
   Space,
   Tag,
@@ -39,9 +40,102 @@ import {
 } from '@ant-design/icons';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import request from '../../../utils/request';
+import { listPagination } from '../../../components/ListPagination';
 import { apiErrMsg, SKIP_ERR } from '../../../utils/apiErr';
 import type { Announcement } from '../../../types';
+import { formatApiDateTime } from '../../../utils/timedisplay';
+
+const DEFAULT_EXPIRE_DAYS = 5;
+const PERMANENT_EXPIRE = 'permanent';
+
+function defaultExpireDate(): Dayjs {
+  return dayjs().add(DEFAULT_EXPIRE_DAYS, 'day');
+}
+
+function expireToDayjs(raw?: string | null): Dayjs {
+  if (!raw) return defaultExpireDate();
+  const d = dayjs(raw);
+  return d.isValid() ? d : defaultExpireDate();
+}
+
+function expireModeFromRecord(raw?: string | null): 'permanent' | 'date' {
+  return raw ? 'date' : 'permanent';
+}
+
+function expireToPayload(mode: unknown, value: unknown): string {
+  if (mode === 'permanent') return PERMANENT_EXPIRE;
+  if (!value) return PERMANENT_EXPIRE;
+  const d = dayjs(value as string | Dayjs);
+  return d.isValid() ? d.endOf('day').toISOString() : PERMANENT_EXPIRE;
+}
+
+function formatExpireLabel(raw?: string | null): string {
+  if (!raw) return '长期';
+  const d = dayjs(raw);
+  return d.isValid() ? d.format('YYYY-MM-DD') : '长期';
+}
+
+type FlagExpireRowProps = {
+  switchName: string;
+  modeName: string;
+  expireName: string;
+  label: string;
+};
+
+const FlagExpireRow: React.FC<FlagExpireRowProps> = ({
+  switchName,
+  modeName,
+  expireName,
+  label,
+}) => {
+  const form = Form.useFormInstance();
+  const mode = Form.useWatch(modeName, form) as 'permanent' | 'date' | undefined;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, minHeight: 32 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: 124, flexShrink: 0 }}>
+        <span style={{ fontSize: 13, color: 'var(--ant-color-text)', userSelect: 'none' }}>{label}</span>
+        <Form.Item name={switchName} valuePropName="checked" style={{ margin: 0 }}>
+          <Switch />
+        </Form.Item>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, color: 'var(--ant-color-text-secondary)', userSelect: 'none' }}>有效期</span>
+        <Form.Item name={modeName} style={{ margin: 0 }}>
+          <Segmented
+            size="small"
+            options={[
+              { label: '长期', value: 'permanent' },
+              { label: '指定日期', value: 'date' },
+            ]}
+            onChange={(v) => {
+              if (v === 'date' && !form.getFieldValue(expireName)) {
+                form.setFieldValue(expireName, defaultExpireDate());
+              }
+            }}
+          />
+        </Form.Item>
+        {mode !== 'permanent' && (
+          <Form.Item
+            name={expireName}
+            style={{ margin: 0 }}
+            rules={[{ required: true, message: '请选择有效期' }]}
+          >
+            <DatePicker
+              size="small"
+              allowClear={false}
+              format="YYYY-MM-DD"
+              style={{ width: 140 }}
+              disabledDate={(current) => !!current && current < dayjs().startOf('day')}
+            />
+          </Form.Item>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -610,7 +704,20 @@ const Announcements: React.FC = () => {
   const handleAdd = () => {
     setEditingId(null);
     form.resetFields();
-    form.setFieldsValue({ is_pinned: false, is_popup: false, is_active: true, sort_order: 0 });
+    const expire = defaultExpireDate();
+    form.setFieldsValue({
+      is_pinned: false,
+      is_popup: false,
+      is_active: true,
+      sort_order: 0,
+      display_time_mode: 'created',
+      pin_expire_mode: 'date',
+      popup_expire_mode: 'date',
+      active_expire_mode: 'date',
+      pin_expires_at: expire,
+      popup_expires_at: expire,
+      active_expires_at: expire,
+    });
     setModalVisible(true);
   };
 
@@ -622,6 +729,13 @@ const Announcements: React.FC = () => {
       is_popup: record.is_popup === 1,
       is_active: record.is_active === 1,
       sort_order: record.sort_order ?? 0,
+      pin_expire_mode: expireModeFromRecord(record.pin_expires_at),
+      popup_expire_mode: expireModeFromRecord(record.popup_expires_at),
+      active_expire_mode: expireModeFromRecord(record.active_expires_at),
+      pin_expires_at: expireToDayjs(record.pin_expires_at),
+      popup_expires_at: expireToDayjs(record.popup_expires_at),
+      active_expires_at: expireToDayjs(record.active_expires_at),
+      display_time_mode: record.display_time_mode === 'updated' ? 'updated' : 'created',
     });
     setModalVisible(true);
   };
@@ -646,6 +760,10 @@ const Announcements: React.FC = () => {
         is_popup: values.is_popup ? 1 : 0,
         is_active: values.is_active ? 1 : 0,
         sort_order: Number(values.sort_order) || 0,
+        pin_expires_at: expireToPayload(values.pin_expire_mode, values.pin_expires_at),
+        popup_expires_at: expireToPayload(values.popup_expire_mode, values.popup_expires_at),
+        active_expires_at: expireToPayload(values.active_expire_mode, values.active_expires_at),
+        display_time_mode: values.display_time_mode === 'updated' ? 'updated' : 'created',
       };
 
       if (editingId) {
@@ -667,18 +785,20 @@ const Announcements: React.FC = () => {
       title: 'ID',
       dataIndex: 'id',
       key: 'id',
-      width: 80,
+      width: 70,
+      align: 'center' as const,
     },
     {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
+      ellipsis: true,
     },
     {
       title: '排序',
       dataIndex: 'sort_order',
       key: 'sort_order',
-      width: 110,
+      width: 100,
       align: 'center' as const,
       sorter: (a: Announcement, b: Announcement) => (a.sort_order || 0) - (b.sort_order || 0),
       render: (val: number, record: Announcement) => (
@@ -691,32 +811,81 @@ const Announcements: React.FC = () => {
     {
       title: '状态',
       key: 'status',
-      render: (_: any, record: Announcement) => (
-        <Space wrap>
-          {record.is_active === 1 ? <Tag color="success">上架</Tag> : <Tag color="default">下架</Tag>}
-          {record.is_pinned === 1 && <Tag color="blue">置顶</Tag>}
-          {record.is_popup === 1 && <Tag color="default">弹窗通知</Tag>}
+      width: 200,
+      render: (_: any, record: Announcement) => {
+        const activeUntil = formatExpireLabel(record.active_expires_at);
+        const pinUntil = formatExpireLabel(record.pin_expires_at);
+        const popupUntil = formatExpireLabel(record.popup_expires_at);
+        return (
+          <Space size={[4, 4]} wrap>
+            {record.is_active === 1 ? (
+              <Tag color="success" style={{ margin: 0 }}>{`上架 · ${activeUntil}`}</Tag>
+            ) : (
+              <Tag color="default" style={{ margin: 0 }}>下架</Tag>
+            )}
+            {record.is_pinned === 1 && (
+              <Tag color="blue" style={{ margin: 0 }}>{`置顶 · ${pinUntil}`}</Tag>
+            )}
+            {record.is_popup === 1 && (
+              <Tag color="default" style={{ margin: 0 }}>{`弹窗通知 · ${popupUntil}`}</Tag>
+            )}
+          </Space>
+        );
+      },
+    },
+    {
+      title: '新建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 215,
+      render: (text: string, record: Announcement) => (
+        <Space size={6} wrap={false} style={{ whiteSpace: 'nowrap' }}>
+          <span>{formatApiDateTime(text, 'YYYY-MM-DD HH:mm')}</span>
+          {record.display_time_mode !== 'updated' && <Tag color="blue" style={{ margin: 0 }}>发布</Tag>}
         </Space>
       ),
     },
     {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (text: string) => new Date(text).toLocaleString(),
+      title: '最后修改时间',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
+      width: 215,
+      render: (text: string, record: Announcement) => (
+        <Space size={6} wrap={false} style={{ whiteSpace: 'nowrap' }}>
+          <span>{formatApiDateTime(text, 'YYYY-MM-DD HH:mm')}</span>
+          {record.display_time_mode === 'updated' && <Tag color="blue" style={{ margin: 0 }}>发布</Tag>}
+        </Space>
+      ),
     },
     {
       title: '操作',
       key: 'action',
+      width: 88,
+      align: 'center' as const,
       render: (_: any, record: Announcement) => (
-        <Space>
-          <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
-            编辑
-          </Button>
-          <Popconfirm title="确定要删除该通知吗？" onConfirm={() => handleDelete(record.id)}>
-            <Button type="link" danger icon={<DeleteOutlined />}>
-              删除
-            </Button>
+        <Space size={2} style={{ justifyContent: 'center', width: '100%' }}>
+          <Tooltip title="编辑">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined style={{ color: 'var(--ant-color-primary, #1677ff)' }} />}
+              onClick={() => handleEdit(record)}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="确定要删除该通知吗？"
+            onConfirm={() => handleDelete(record.id)}
+            okText="确定"
+            cancelText="取消"
+          >
+            <Tooltip title="删除">
+              <Button
+                type="text"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+              />
+            </Tooltip>
           </Popconfirm>
         </Space>
       ),
@@ -737,7 +906,8 @@ const Announcements: React.FC = () => {
             dataSource={announcements}
             rowKey="id"
             loading={loading}
-            pagination={{ pageSize: 10 }}
+            pagination={listPagination()}
+            scroll={{ x: 'max-content' }}
           />
         </>
       ),
@@ -762,39 +932,91 @@ const Announcements: React.FC = () => {
         open={modalVisible}
         onOk={handleSave}
         onCancel={() => setModalVisible(false)}
-        width={800}
+        width={1080}
         destroyOnClose
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="title" label="通知标题" rules={[{ required: true, message: '请输入标题' }]}>
+          <Form.Item name="title" label="通知标题" rules={[{ required: true, message: '请输入标题' }]} style={{ marginBottom: 14 }}>
             <Input placeholder="请输入通知标题" />
           </Form.Item>
 
-          <Space size="large" wrap style={{ marginBottom: 24, alignItems: 'center' }}>
-            <Form.Item
-              name="sort_order"
-              label="排序权重"
-              tooltip="数字越大越靠前显示，默认为 0"
-              style={{ margin: 0 }}
-            >
-              <InputNumber min={-999999} max={99999999} placeholder="0" style={{ width: 120 }} />
-            </Form.Item>
-            <Form.Item name="is_pinned" label="置顶显示" valuePropName="checked" style={{ margin: 0 }}>
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              name="is_popup"
+          <Form.Item
+            name="sort_order"
+            label="排序权重"
+            style={{ marginBottom: 16 }}
+          >
+            <InputNumber min={-999999} max={99999999} placeholder="0" style={{ width: 120 }} />
+          </Form.Item>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+            <FlagExpireRow
+              switchName="is_pinned"
+              modeName="pin_expire_mode"
+              expireName="pin_expires_at"
+              label="置顶显示"
+            />
+            <FlagExpireRow
+              switchName="is_popup"
+              modeName="popup_expire_mode"
+              expireName="popup_expires_at"
               label="弹窗通知"
-              valuePropName="checked"
-              tooltip="开启后用户每次登录控制台时将弹窗提醒此通知"
-              style={{ margin: 0 }}
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item name="is_active" label="是否上架" valuePropName="checked" style={{ margin: 0 }}>
-              <Switch />
-            </Form.Item>
-          </Space>
+            />
+            <FlagExpireRow
+              switchName="is_active"
+              modeName="active_expire_mode"
+              expireName="active_expires_at"
+              label="是否上架"
+            />
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              marginBottom: 18,
+              padding: '12px 14px',
+              borderRadius: 8,
+              background: 'var(--ant-color-fill-quaternary)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, minHeight: 32, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: 'var(--ant-color-text)', width: 88, flexShrink: 0 }}>新建时间</span>
+              <span style={{ fontSize: 13, color: 'var(--ant-color-text-secondary)' }}>
+                {editingId
+                  ? formatApiDateTime(
+                      announcements.find((a) => a.id === editingId)?.created_at,
+                      'YYYY-MM-DD HH:mm:ss',
+                    )
+                  : '保存后生成'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, minHeight: 32, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: 'var(--ant-color-text)', width: 88, flexShrink: 0 }}>最后修改时间</span>
+              <span style={{ fontSize: 13, color: 'var(--ant-color-text-secondary)' }}>
+                {editingId
+                  ? formatApiDateTime(
+                      announcements.find((a) => a.id === editingId)?.updated_at,
+                      'YYYY-MM-DD HH:mm:ss',
+                    )
+                  : '保存后生成'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, minHeight: 32, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: 'var(--ant-color-text)', width: 88, flexShrink: 0 }}>发布时间</span>
+              <Form.Item name="display_time_mode" style={{ margin: 0 }}>
+                <Segmented
+                  options={[
+                    { label: '新建时间', value: 'created' },
+                    { label: '最后修改时间', value: 'updated' },
+                  ]}
+                />
+              </Form.Item>
+              <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                用户端弹窗与右上角铃铛将显示所选时间
+              </span>
+            </div>
+          </div>
 
           <Form.Item name="content" label="通知内容" rules={[{ required: true, message: '请输入通知内容' }]}>
             <ReactQuill

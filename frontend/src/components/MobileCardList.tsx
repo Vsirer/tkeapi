@@ -1,13 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React from 'react';
-import { Card, Spin, Pagination, Empty, Space, Button, Tag, Typography } from 'antd';
+import { Spin, Empty, Typography } from 'antd';
+import type { PaginationProps } from 'antd';
 import { useThemeStore } from '../store/theme';
+import ListPagination, { useListPager } from './ListPagination';
 
 const { Text } = Typography;
 
@@ -16,16 +18,7 @@ interface MobileCardListProps<T> {
   loading?: boolean;
   renderCard: (item: T, index: number) => React.ReactNode;
   rowKey: string | ((item: T) => string | number);
-  pagination?: false | {
-    pageSize?: number;
-    total?: number;
-    current?: number;
-    onChange?: (page: number, pageSize: number) => void;
-    showSizeChanger?: boolean;
-    pageSizeOptions?: string[];
-    showTotal?: (total: number) => string;
-    showQuickJumper?: boolean;
-  };
+  pagination?: false | PaginationProps;
   compact?: boolean;
   gap?: number;
 }
@@ -39,49 +32,31 @@ function MobileCardList<T extends Record<string, any>>({
   compact,
   gap
 }: MobileCardListProps<T>) {
-  const [currentPage, setCurrentPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(
-    (pagination && typeof pagination === 'object' && pagination.pageSize) || 10
-  );
+  const pager = pagination === false ? undefined : pagination;
+  const controlled = pager?.current != null;
+  const local = useListPager(pager?.pageSize);
+  const current = controlled ? pager.current! : local.page;
+  const size = controlled ? (pager.pageSize ?? local.pageSize) : local.pageSize;
 
   const getKey = (item: T, index: number): string | number => {
     if (typeof rowKey === 'function') return rowKey(item);
     return item[rowKey] ?? index;
   };
 
-  const isControlled = pagination && typeof pagination === 'object' && pagination.current !== undefined;
-  const isPageSizeControlled = pagination && typeof pagination === 'object' && pagination.pageSize !== undefined;
-
-  const activeCurrent = isControlled ? pagination.current! : currentPage;
-  const activePageSize = isPageSizeControlled ? pagination.pageSize! : pageSize;
-
   React.useEffect(() => {
-    if (!isControlled) {
-      const maxPage = Math.max(1, Math.ceil((dataSource?.length || 0) / activePageSize));
-      if (currentPage > maxPage) {
-        setCurrentPage(1);
-      }
-    }
-  }, [dataSource?.length, activePageSize, currentPage, isControlled]);
+    if (controlled) return;
+    const maxPage = Math.max(1, Math.ceil((dataSource?.length || 0) / size));
+    if (local.page > maxPage) local.setPage(1);
+  }, [controlled, dataSource?.length, size, local.page, local.setPage]);
 
-  // Client-side pagination if data is not server-paginated
-  const isServerPagination = Boolean(
-    pagination && typeof pagination === 'object' && pagination.total && pagination.total !== dataSource.length
-  );
-  const displayData = pagination !== false && !isServerPagination
-    ? dataSource.slice((activeCurrent - 1) * activePageSize, activeCurrent * activePageSize)
+  // pagination !== false 即启用；无 current 时本地切片
+  const displayData = pagination !== false && !controlled
+    ? dataSource.slice((current - 1) * size, current * size)
     : dataSource;
 
-  const handlePageChange = (page: number, size: number) => {
-    if (!isControlled) {
-      setCurrentPage(page);
-    }
-    if (!isPageSizeControlled) {
-      setPageSize(size);
-    }
-    if (pagination && typeof pagination === 'object' && pagination.onChange) {
-      pagination.onChange(page, size);
-    }
+  const handlePageChange = (page: number, pageSize: number) => {
+    if (!controlled) local.onChange(page, pageSize);
+    pager?.onChange?.(page, pageSize);
   };
 
   if (loading) {
@@ -107,16 +82,13 @@ function MobileCardList<T extends Record<string, any>>({
       </div>
       {pagination !== false && dataSource.length > 0 && (
         <div style={{ textAlign: 'center', marginTop: 16 }}>
-          <Pagination
+          <ListPagination
             size="small"
-            current={activeCurrent}
-            pageSize={activePageSize}
-            total={pagination && pagination.total ? pagination.total : dataSource.length}
+            {...pager}
+            current={current}
+            pageSize={size}
+            total={pager?.total || dataSource.length}
             onChange={handlePageChange}
-            showSizeChanger={pagination && pagination.showSizeChanger}
-            pageSizeOptions={pagination && pagination.pageSizeOptions}
-            showTotal={pagination && pagination.showTotal}
-            showQuickJumper={pagination && pagination.showQuickJumper}
           />
         </div>
       )}
@@ -162,7 +134,7 @@ export const MobileCard: React.FC<{
   return (
     <div style={{
       background: isLight ? '#fff' : '#1d1d1d',
-      border: isLight ? '1px solid #e8e8e8' : '1px solid #303030',
+      border: isLight ? '1px solid #d4d4d8' : '1px solid rgba(255, 255, 255, 0.1)',
       borderRadius: compact ? 8 : 12,
       padding: compact ? '5px 8px' : '10px 12px',
       ...style

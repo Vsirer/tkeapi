@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::middleware::{
@@ -63,6 +63,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(users::get_consumption_stats_batch),
         )
         .route(
+            "/users/contact-bind",
+            get(users::get_contact_bind)
+                .put(users::put_contact_bind)
+                .delete(users::delete_contact_bind),
+        )
+        .route(
             "/users/{id}",
             get(users::get_user)
                 .put(users::update_user)
@@ -71,6 +77,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/users/{id}/recharge", post(users::recharge_user))
         .route("/users/{id}/impersonate", post(users::impersonate_user))
         .route("/users/{id}/level-logs", get(users::get_user_level_logs))
+        .route("/users/{id}/invoices", get(invoices::admin_get_user_invoices))
         .route(
             "/users/{id}/kyc",
             get(user_kyc::admin_get_user_kyc)
@@ -93,12 +100,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/channels/{id}/test", post(channels::test_channel))
         .route(
+            "/channels/{id}/simulate-billing",
+            post(channels::simulate_channel_billing),
+        )
+        .route(
             "/channels/{id}/meltdown",
             get(channels::get_meltdown_status),
         )
         .route(
             "/channels/{id}/meltdown/reset",
             post(channels::reset_meltdown),
+        )
+        .route(
+            "/channels/{id}/meltdown/sub",
+            post(channels::set_sub_meltdown),
         )
         .route("/channels/{id}/quota/reset", post(channels::reset_quota))
         .route(
@@ -139,6 +154,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(upstreams::get_upstream_balance),
         )
         .route("/models", post(models::create_model))
+        .route(
+            "/models/library/{id}/publish",
+            post(models::publish_library_model),
+        )
+        .route(
+            "/models/library/{id}",
+            put(models::update_library_model).delete(models::delete_library_model),
+        )
+        .route("/models/{id}/unlist", post(models::unlist_model))
+        .route("/models/{id}/relist", post(models::relist_model))
         .route(
             "/models/{id}",
             put(models::update_model).delete(models::delete_model),
@@ -216,6 +241,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/settings/storage/test",
             post(settings::test_storage_connection),
+        )
+        .route(
+            "/settings/cron/trigger-maintenance",
+            post(settings::trigger_maintenance),
         )
         .route("/settings/email/test", post(settings::test_email))
         .route("/settings/sms/test", post(settings::test_sms))
@@ -418,6 +447,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     #[cfg(feature = "commercial_plugins")]
     let management_routes =
         management_routes.nest("/playground-2026", plugins::playground_2026::router());
+    #[cfg(feature = "commercial_plugins")]
+    let management_routes =
+        management_routes.nest("/plugins/mobile_app", plugins::mobile_app::router());
 
     #[cfg(feature = "plugin_site_icons")]
     let management_routes = management_routes.nest(
@@ -448,6 +480,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let management_routes = management_routes.nest(
         "/plugins/content_security",
         with_admin_write(plugins::content_security::router(), state.clone()),
+    );
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    let management_routes = management_routes.nest(
+        "/plugins/volcengine_enhance",
+        with_admin_write(plugins::volc_enhance::router(), state.clone()),
+    );
+    #[cfg(feature = "plugin_tencent_enhance")]
+    let management_routes = management_routes.nest(
+        "/plugins/tencent_enhance",
+        with_admin_write(plugins::tencent_enhance::router(), state.clone()),
     );
     #[cfg(feature = "commercial_plugins")]
     let management_routes = management_routes.nest(
@@ -484,10 +526,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             .route(
                 "/finance/pay/notify/stripe",
                 post(plugins::pay::stripe_notify),
-            )
-            .route(
-                "/finance/pay/notify/bonuspay",
-                post(plugins::pay::bonuspay_notify),
             )
             .route(
                 "/finance/pay/notify/hyperbc",
@@ -651,10 +689,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::relay::video::video_generations),
         )
         .route(
-            "/videos/multi-image2video",
-            post(crate::relay::video::video_generations),
-        )
-        .route(
             "/videos/omni-video",
             post(crate::relay::video::video_generations),
         )
@@ -664,10 +698,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/videos/image2video/{task_id}",
-            get(crate::relay::task::task_status),
-        )
-        .route(
-            "/videos/multi-image2video/{task_id}",
             get(crate::relay::task::task_status),
         )
         .route(
@@ -788,6 +818,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(crate::relay::chat::responses_create),
         )
         .route(
+            "/api/compatible/v1/messages",
+            post(crate::relay::chat::chat_completions),
+        )
+        .route(
             "/api/v3/contents/generations/tasks",
             post(crate::relay::video::video_generations)
                 .get(crate::relay::native::volcengine_task_list),
@@ -824,11 +858,36 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ))
         .with_state(state.clone());
 
+    // 6.6 Kling Native Relay（可灵 3.0 / Omni 官方原生路径，动态模型 ID）
+    let kling_native_routes: Router<Arc<AppState>> = Router::new()
+        .route(
+            "/text-to-video/{model_id}",
+            post(crate::relay::video::video_generations),
+        )
+        .route(
+            "/image-to-video/{model_id}",
+            post(crate::relay::video::video_generations),
+        )
+        .route(
+            "/omni-video/{model_id}",
+            post(crate::relay::video::video_generations),
+        )
+        .route(
+            "/tasks",
+            get(crate::relay::task::kling_tasks_query),
+        )
+        .route_layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            api_key_middleware,
+        ))
+        .with_state(state.clone());
+
     let public_router = Router::new()
         .route("/api/health", get(|| async { "OK" }))
         .route("/favicon.ico", get(|| async { "" }));
 
-    // 注册火山引擎画质增强与字幕擦除等专用接口路由，绑定通用视频生成和任务查询处理器，任务查询接口跟阿里百炼一样，并使用 api_key_middleware 鉴权
+    // 火山 MediaKit 工具入口：仅插件编译时挂上，走同一套 video_generations
+    #[cfg(feature = "plugin_volcengine_enhance")]
     let tools_routes = Router::new()
         .route(
             "/tools/enhance-video",
@@ -850,6 +909,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/tools/erase-video-subtitle",
             post(crate::relay::video::video_generations),
         )
+        .route(
+            "/tools-sync/enhance-image",
+            post(crate::relay::image::image_generations),
+        )
+        .route(
+            "/tools-sync/remove-image-background",
+            post(crate::relay::image::image_generations),
+        )
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
             api_key_middleware,
@@ -864,13 +931,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let app = app
         .nest("/api/v1/auth", auth_routes)
         .nest("/api/v1", public_v1_routes)
-        .nest("/api/v1", management_routes)
-        .nest("/api/v1", tools_routes)
+        .nest("/api/v1", management_routes);
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    let app = app.nest("/api/v1", tools_routes);
+    let app = app
         .nest("/v1", relay_routes)
         .merge(dashscope_native_routes)
         .merge(google_native_routes)
         .merge(minimax_native_routes)
         .merge(volcengine_native_routes)
+        .merge(kling_native_routes)
         .with_state(state)
         // CORS：生产环境必须设置 CORS_ORIGINS；开发环境（APP_ENV=development|dev）未设置时允许所有来源
         .layer({

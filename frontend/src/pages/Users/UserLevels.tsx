@@ -1,14 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useMemo } from 'react';
 import { Table, Button, Space, Tag, Input, message, Popconfirm, Card, Typography, Grid } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, TrophyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
@@ -92,7 +92,7 @@ const UserLevels: React.FC = () => {
           <Space align="center" size={6}>
             <TrophyOutlined style={{ color: '#faad14' }} />
             <Text strong style={{ fontSize: 13 }}>{text}</Text>
-            <Tag bordered={false} style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>
+            <Tag variant="filled" style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>
               ULID: {record.id.toString().padStart(4, '0')}
             </Tag>
             {record.is_default === 1 && <Tag color="green" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>默认注册</Tag>}
@@ -108,8 +108,18 @@ const UserLevels: React.FC = () => {
       dataIndex: 'user_count',
       key: 'user_count',
       sorter: (a: UserLevel, b: UserLevel) => (a.user_count || 0) - (b.user_count || 0),
-      render: (val: number) => (
-        <Tag color="blue">{val || 0}</Tag>
+      render: (val: number, record: UserLevel) => (
+        <Tag
+          color="blue"
+          className="cursor-pointer transition-all hover:opacity-80 active:scale-95 select-none"
+          style={{ margin: 0 }}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigate(`/${adminPath}/users?group=${encodeURIComponent(record.group_key)}`);
+          }}
+        >
+          {val || 0}
+        </Tag>
       ),
     },
     {
@@ -230,7 +240,6 @@ const UserLevels: React.FC = () => {
             onSearch={(val) => setSearchKeyword(val)}
             style={{ width: screens.xs ? '100%' : 220 }}
           />
-          <Button icon={<SyncOutlined />} onClick={fetchLevels}>{t('common.refresh')}</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>{t('user_levels.add_level')}</Button>
         </Space>
       </div>
@@ -252,7 +261,7 @@ const UserLevels: React.FC = () => {
                     <Space align="center" size={8} wrap>
                       <TrophyOutlined style={{ color: '#faad14' }} />
                       <Text strong>{record.name}</Text>
-                      <Tag bordered={false} style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4 }}>
+                      <Tag variant="filled" style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4 }}>
                         ULID: {record.id.toString().padStart(4, '0')}
                       </Tag>
                       {record.is_default === 1 && <Tag color="green">默认注册</Tag>}
@@ -265,7 +274,17 @@ const UserLevels: React.FC = () => {
                 extra={null}
               >
                 <CardRow label="用户数">
-                  <Tag color="blue">{record.user_count || 0}</Tag>
+                  <Tag
+                    color="blue"
+                    className="cursor-pointer transition-all hover:opacity-80 active:scale-95 select-none"
+                    style={{ margin: 0 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/${adminPath}/users?group=${encodeURIComponent(record.group_key)}`);
+                    }}
+                  >
+                    {record.user_count || 0}
+                  </Tag>
                 </CardRow>
                 <CardRow label="用户等级折扣倍率">
                   <Space wrap>

@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <!--
-  tokensbyte opensource
-  (c) 2026 tokensbyte.ai
+  tkeapi (tokensbyte) opensource
+  © 2026 tkeapi.com
   @copyright      Copyright netbcloud/wstianxia 
-  @license        MIT (https://www.tokensbyte.ai/)
+  @license        MIT (https://www.tkeapi.com/)
 -->
 
 <html lang="{{ default_language | default(value='zh-CN') }}">
@@ -17,6 +17,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+{% if style and style.current_style == "fai_art" %}
+<link href="https://fonts.googleapis.com/css2?family=Chivo+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@400;500;600;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,600&display=swap" rel="stylesheet">
+{% endif %}
 <style>
 :root {
   /* Colors */
@@ -145,6 +148,8 @@
     background: linear-gradient(180deg, var(--bg-primary) 0%, rgba(236, 72, 153, 0.03) 100%) !important;
     border-top: 1px solid rgba(236, 72, 153, 0.1) !important;
   }
+  {% elif style.current_style == "fai_art" %}
+  {% include "styles/fai_art/_chrome_styles.html" %}
   {% endif %}
 {% endif %}
 
@@ -340,7 +345,7 @@ body.dark .invert-dark,
 </style>
 {{ scripts.analytics | default(value="") | safe }}
 </head>
-<body>
+<body{% if style and style.current_style == "fai_art" %} class="arts-art fai-art{% if current_page == 'home' or current_page == 'contact' or current_page == 'about' %} arts-art-home fai-art-home{% endif %}"{% endif %}>
 
 <header class="hdr">
 <div class="hdr-in">
@@ -348,15 +353,19 @@ body.dark .invert-dark,
     {% if nav.logo_url %}<img src="{{ nav.logo_url | safe }}" alt="logo">{% endif %}
     <span data-i18n-dynamic="{{ nav.logo_text | default(value="Tkeapi") }}">{{ nav.logo_text | default(value="Tkeapi") }}</span>
   </a>
+  {% if nav.show_model_search | default(value=true) %}
   <div class="hdr-search">
     <svg viewBox="0 0 20 20"><path d="M12.9 14.32a8 8 0 1 1 1.41-1.41l5.35 5.33-1.42 1.42-5.33-5.34zM8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z"></path></svg>
-    <input type="text" id="global-search-input" data-i18n-placeholder="search_placeholder" placeholder="搜索模型名称、ID或MID..." onkeydown="if(event.key === 'Enter') { window.location.href = '/home/models?q=' + encodeURIComponent(this.value.trim()); }">
+    <input type="text" id="global-search-input" data-i18n-placeholder="search_placeholder" placeholder="搜索模型名称、ID或MID..." onkeydown="if(event.key === 'Enter') { var p = '{{ nav.marketplace_path | default(value="/home/models") | safe }}'; window.location.href = p + (p.indexOf('?') >= 0 ? '&' : '?') + 'q=' + encodeURIComponent(this.value.trim()); }">
   </div>
+  {% endif %}
   <div class="hdr-menu">
+    {% if nav.show_model_search | default(value=true) %}
     <div class="hdr-search-mob">
       <svg viewBox="0 0 20 20"><path d="M12.9 14.32a8 8 0 1 1 1.41-1.41l5.35 5.33-1.42 1.42-5.33-5.34zM8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12z"></path></svg>
-      <input type="text" data-i18n-placeholder="search_placeholder" placeholder="搜索模型名称、ID或MID..." onkeydown="if(event.key === 'Enter') { window.location.href = '/home/models?q=' + encodeURIComponent(this.value.trim()); }">
+      <input type="text" data-i18n-placeholder="search_placeholder" placeholder="搜索模型名称、ID或MID..." onkeydown="if(event.key === 'Enter') { var p = '{{ nav.marketplace_path | default(value="/home/models") | safe }}'; window.location.href = p + (p.indexOf('?') >= 0 ? '&' : '?') + 'q=' + encodeURIComponent(this.value.trim()); }">
     </div>
+    {% endif %}
     <nav class="hdr-nav">
       {% if nav.items %}{% for item in nav.items %}{% if item.enabled != false %}
       <a href="{{ item.path | default(value='#') | safe }}"{% if current_page is defined and item.key is defined and current_page == item.key %} class="on"{% endif %} {% if item.key %}data-i18n-title="nav_{{ item.key }}" title="{{ item.label }}"{% endif %}{% if item.target_blank is defined and item.target_blank %} target="_blank" rel="noopener noreferrer"{% endif %}>
@@ -438,7 +447,7 @@ body.dark .invert-dark,
             {% endif %}
           {% endfor %}
         {% else %}
-          <a href="/home/models" data-i18n="footer_models">模型列表</a>
+          <a href="{{ nav.marketplace_path | default(value="/home/models") | safe }}" data-i18n="footer_models">模型列表</a>
           <a href="/home/about" data-i18n="footer_about">关于我们</a>
           <a href="/home/contact" data-i18n="footer_contact">联系我们</a>
         {% endif %}
@@ -605,16 +614,34 @@ body.dark .invert-dark,
     return 'zh';
   }
 
+  let zhReverseMap = null;
+  function getZhReverseMap() {
+    if (!zhReverseMap) {
+      zhReverseMap = {};
+      const zhDict = locales['zh'] || {};
+      for (const [k, v] of Object.entries(zhDict)) {
+        if (typeof v === 'string' && v.length > 0 && !zhReverseMap[v]) {
+          zhReverseMap[v] = k;
+        }
+      }
+    }
+    return zhReverseMap;
+  }
+
   function translateText(text, rawLang) {
     if (!text) return '';
     const lang = normalizeLang(rawLang);
     if (text.includes('|')) {
       const parts = text.split('|');
       const idx = LANG_INDEXES[lang] || 0;
-      return (parts[idx] || parts[0]).trim();
+      const fallback = (lang === 'zh' || lang === 'zh-TW') ? parts[0] : (parts[1] || parts[0]);
+      return (parts[idx] || fallback).trim();
     }
     const dict = locales[lang] || locales['zh'];
-    return dict[text] || text;
+    if (dict[text]) return dict[text];
+    const rev = getZhReverseMap();
+    if (rev[text] && dict[rev[text]]) return dict[rev[text]];
+    return text;
   }
 
   function applyLanguage(rawLang) {
@@ -648,14 +675,28 @@ body.dark .invert-dark,
       if (text.includes('|')) {
         const parts = text.split('|');
         const idx = LANG_INDEXES[lang] || 0;
-        el.innerHTML = (parts[idx] || parts[0]).trim();
+        const fallback = (lang === 'zh' || lang === 'zh-TW') ? parts[0] : (parts[1] || parts[0]);
+        el.innerHTML = (parts[idx] || fallback).trim();
       } else {
-        const key = el.getAttribute('data-i18n-key') || text;
-        if (dict[key]) {
+        let key = el.getAttribute('data-i18n-key');
+        if (!key || !dict[key]) {
+          const rev = getZhReverseMap();
+          if (rev[text]) key = rev[text];
+        }
+        if (key && dict[key]) {
           el.innerHTML = dict[key];
+        } else if (dict[text]) {
+          el.innerHTML = dict[text];
         } else {
           el.innerHTML = text;
         }
+      }
+    });
+
+    document.querySelectorAll('[title]').forEach(el => {
+      const t = el.getAttribute('title');
+      if (t && t.includes('|')) {
+        el.setAttribute('title', translateText(t, lang));
       }
     });
 

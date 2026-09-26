@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 轮询后处理扩展点：厂商 status 与结果体分离时在此补齐。
@@ -16,6 +16,16 @@ use crate::models::Channel;
 pub struct PollEnrichErr {
     pub http_status: Option<u16>,
     pub message: String,
+}
+
+/// 客户端轮询出口补齐所需的上下文（解耦持久层 `TaskRelayLogRow`）
+#[derive(Clone, Copy, Default)]
+pub struct ClientPollCtx<'a> {
+    pub path: &'a str,
+    pub model: &'a str,
+    pub request_content: &'a str,
+    pub billing_features: &'a str,
+    pub task_id: &'a str,
 }
 
 /// 轮询 GET 成功后的厂商补齐。默认原样返回。
@@ -35,10 +45,34 @@ pub async fn enrich_poll_response(
     }
 }
 
-/// 轮询成功后根据 target_type 为客户端格式化响应注入各厂商专属消耗指标（仅 fal_video 等指定目标生效，避免字段污染）
-pub fn enrich_client_poll_usage(target_type: &str, json_str: &str, billing_features: &str) -> String {
-    match target_type {
-        "fal_video" => vendors::inject_fal_poll_usage(json_str, billing_features),
-        _ => json_str.to_string(),
+/// 客户端轮询出口补齐：fal 注入消耗；腾讯云与 fal 按官方路由组装信封。
+pub fn enrich_client_poll(
+    target_type: &str,
+    json_str: &str,
+    ctx: ClientPollCtx<'_>,
+) -> String {
+    let p = ctx.path.trim_end_matches('/');
+    let is_minimax_query =
+        p.starts_with("/v2/query/video_generation/") || p == "/v2/query/video_generation";
+
+    if target_type == "fal_video" {
+        if is_minimax_query {
+            let fallback_id = (!ctx.task_id.is_empty()).then_some(ctx.task_id);
+            let openai_json =
+                crate::relay::response_formatter::format_openai("视频", json_str, true, fallback_id);
+            let with_usage = vendors::inject_fal_poll_usage(&openai_json, ctx.billing_features);
+            super::wrap_official_client(
+                ctx.path,
+                &with_usage,
+                ctx.model,
+                ctx.request_content,
+            )
+        } else {
+            vendors::inject_fal_poll_usage(json_str, ctx.billing_features)
+        }
+    } else if super::is_official_route(ctx.path) && super::is_tencent_target(target_type) {
+        super::wrap_official_client(ctx.path, json_str, ctx.model, ctx.request_content)
+    } else {
+        json_str.to_string()
     }
 }

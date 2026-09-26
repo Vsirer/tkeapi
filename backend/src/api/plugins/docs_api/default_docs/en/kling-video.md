@@ -1,6 +1,6 @@
 # Kling Video Generation Guide
 
-Kling AI video models are available via the OpenAI-compatible API. Follow the examples below to integrate.
+OpenAI-compatible: `POST /v1/video/generations`. Native: `/v1/videos/text2video`, `/v1/videos/omni-video`.
 
 * **Submit**: `POST /v1/video/generations`
 * **Poll**: `GET /v1/video/generations/{task_id}`

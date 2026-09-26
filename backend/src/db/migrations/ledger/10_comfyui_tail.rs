@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use std::collections::HashSet;
@@ -890,6 +890,13 @@ pub async fn run(pool: &PgPool, done: &mut HashSet<String>) -> anyhow::Result<()
     once_migration!(pool, done, "marketing_teams_invoice_perm",
         "ALTER TABLE marketing_teams ADD COLUMN IF NOT EXISTS members_can_apply_invoice BIGINT NOT NULL DEFAULT 0",
         "COMMENT ON COLUMN marketing_teams.members_can_apply_invoice IS '团队成员是否可以代替推荐用户申请开具发票(0=否,1=是)'"
+    );
+
+    // ── 文档插件：火山方舟更名为火山引擎(方舟)，MediaKit 媒体处理默认隐藏但不删除 ──
+    once_migration!(pool, done, "docs_volcengine_ark_naming_and_mediakit_hidden_v1",
+        "UPDATE plugin_docs SET title = '4.火山引擎(方舟)原生协议' WHERE slug = 'volcengine-ark' OR title = '4.火山方舟原生协议'",
+        "UPDATE plugin_docs SET title = '火山引擎(方舟)原生API接入' WHERE slug = 'volcengine-api' OR title = '火山方舟原生API接入'",
+        "UPDATE plugin_docs SET is_active = 0 WHERE slug = 'volcengine-mediakit'"
     );
 
     Ok(())

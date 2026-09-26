@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -17,7 +17,7 @@ import {
   Check,
 } from 'lucide-react';
 import type { Announcement } from '../types';
-import { getAnnouncementLabel } from '../utils/announcement';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../utils/announcement';
 import { toDisplayLocale } from '../utils/language';
 import { softAccent } from '../theme/tokens';
 
@@ -256,7 +256,7 @@ const AnnouncementPopupModal: React.FC<AnnouncementPopupModalProps> = ({
                       >
                         {rawTitle || `通知 ${idx + 1}`}
                       </span>
-                      {item.created_at && (
+                      {getAnnouncementDisplayTime(item) && (
                         <span
                           style={{
                             flexShrink: 0,
@@ -266,7 +266,7 @@ const AnnouncementPopupModal: React.FC<AnnouncementPopupModalProps> = ({
                             transition: 'color 0.2s ease',
                           }}
                         >
-                          {formatNoticeTime(item.created_at)}
+                          {formatNoticeTime(getAnnouncementDisplayTime(item))}
                         </span>
                       )}
                     </button>
@@ -378,7 +378,7 @@ const AnnouncementPopupModal: React.FC<AnnouncementPopupModalProps> = ({
                   {currentIndex + 1}/{totalCount}
                 </span>
               )}
-              {totalCount === 1 && currentNotice.created_at && (
+              {totalCount === 1 && getAnnouncementDisplayTime(currentNotice) && (
                 <div
                   style={{
                     display: 'flex',
@@ -390,7 +390,7 @@ const AnnouncementPopupModal: React.FC<AnnouncementPopupModalProps> = ({
                   }}
                 >
                   <Calendar size={12} />
-                  <span>{formatNoticeTime(currentNotice.created_at)}</span>
+                  <span>{formatNoticeTime(getAnnouncementDisplayTime(currentNotice))}</span>
                 </div>
               )}
             </div>

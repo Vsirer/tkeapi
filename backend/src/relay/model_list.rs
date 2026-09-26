@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! GET /v1/models & GET /api/v3/models
@@ -10,10 +10,10 @@
 //! 响应格式兼容 OpenAI 标准（火山方舟 /api/v3/models 格式与 OpenAI 一致）。
 
 use crate::api::plugins::{
-    marketplace_viewer_for_user_id, mp_conf_is_candidate, mp_enabled, mp_visible_to,
-    parse_mp_level_ids,
+    marketplace_viewer_for_user_id, mp_enabled, mp_visible_to, parse_mp_level_ids,
 };
-use crate::models::ApiToken;
+use crate::models::{ApiToken, Channel};
+use crate::relay::router::get_cached_active_channels;
 use crate::{error::AppResult, AppState};
 use axum::{
     extract::{Extension, State},
@@ -27,9 +27,69 @@ pub async fn list_models(
     State(state): State<Arc<AppState>>,
     Extension(token): Extension<ApiToken>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let viewer = marketplace_viewer_for_user_id(&state, &token.user_id).await;
+    // 1. 获取当前用户所属分组与等级
+    let (user_group, level_id): (String, i64) = sqlx::query_as(
+        &state.db.format_query(
+            "SELECT u.user_group, COALESCE(ul.id, 0) FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?",
+        ),
+    )
+    .bind(&token.user_id)
+    .fetch_optional(&state.db.pool)
+    .await?
+    .unwrap_or_else(|| ("default".to_string(), 0));
 
-    // 首先读取模型广场配置，复用 whitelist/blacklist 逻辑筛选可见模型
+    // 2. 获取站点活跃渠道（带内存缓存），并筛选当前用户可用的渠道
+    let all_active_channels = get_cached_active_channels(&state.db).await?;
+    let tz_name = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+    let (now_day, now_week, now_month) = crate::models::quota_period_keys(&tz_name);
+
+    let ug_str = format!("\"{}\"", user_group);
+    let level_str = format!("\"{}\"", level_id);
+
+    let usable_channels: Vec<&Channel> = all_active_channels
+        .iter()
+        .filter(|c| {
+            c.has_available_quota(&now_day, &now_week, &now_month)
+                && c.matches_user_group(&ug_str, &level_str)
+        })
+        .collect();
+
+    // 若当前用户没有任何可用渠道，则直接返回空列表
+    if usable_channels.is_empty() {
+        return Ok(Json(json!({
+            "object": "list",
+            "data": []
+        })));
+    }
+
+    // 3. 统计可用渠道支持的模型范围
+    let has_wildcard_channel = usable_channels.iter().any(|c| {
+        let m = c.models.trim();
+        m.is_empty() || m == "[]"
+    });
+
+    let (supported_mids, supported_model_ids): (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ) = if has_wildcard_channel {
+        (std::collections::HashSet::new(), std::collections::HashSet::new())
+    } else {
+        let mut mids = std::collections::HashSet::new();
+        let mut model_ids = std::collections::HashSet::new();
+        for c in &usable_channels {
+            for m in c.get_models() {
+                mids.insert(m.clone());
+                model_ids.insert(m);
+            }
+            for key in c.get_model_mapping().keys() {
+                model_ids.insert(key.clone());
+            }
+        }
+        (mids, model_ids)
+    };
+
+    // 4. 读取模型广场配置（若开启则兼容特定用户等级的可见性限制）
+    let viewer = marketplace_viewer_for_user_id(&state, &token.user_id).await;
     let is_mp_enabled: bool = sqlx::query_scalar::<_, i64>(
         &state
             .db
@@ -53,26 +113,11 @@ pub async fn list_models(
         .unwrap_or("blacklist");
     let is_blacklist = display_mode == "blacklist";
 
-    // 优化：白名单且没有任何候选模型（展示开启，或关闭但配置了可查看等级）则跳过查询
-    let has_candidate_models = is_blacklist
-        || configs.iter().any(|(k, v)| {
-            k.starts_with("mp_model_id_")
-                && serde_json::from_str::<Value>(v)
-                    .map(|json| mp_conf_is_candidate(&json, false))
-                    .unwrap_or(false)
-        });
-    if !has_candidate_models {
-        return Ok(Json(json!({
-            "object": "list",
-            "data": []
-        })));
-    }
-
-    // 查询已启用的模型及其分类信息
+    // 5. 查询已激活且已上架的模型及其厂商信息
     let models: Vec<crate::models::Model> = sqlx::query_as(
         &state
             .db
-            .format_query("SELECT * FROM models WHERE is_active = 1 ORDER BY id ASC"),
+            .format_query("SELECT * FROM models WHERE is_active = 1 AND is_listed = 1 ORDER BY sort_order DESC, id ASC"),
     )
     .fetch_all(&state.db.pool)
     .await?;
@@ -85,21 +130,34 @@ pub async fn list_models(
     .fetch_all(&state.db.pool)
     .await?;
 
-    // 读取模型广场配置，复用 whitelist/blacklist 逻辑筛选可见模型
-
     let mut data: Vec<serde_json::Value> = Vec::new();
 
     for m in &models {
-        // 模型广场可见性判断（与 get_marketplace_public 逻辑一致）
-        let config_key = format!("mp_model_id_{}", m.id);
-        let model_conf: serde_json::Value = configs
-            .get(&config_key)
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or(json!({}));
-        let is_enabled = mp_enabled(&model_conf, is_blacklist);
-        let level_ids = parse_mp_level_ids(&model_conf);
-        if !mp_visible_to(is_enabled, &level_ids, viewer) {
+        // A. 渠道运行支撑性校验：必须有通配渠道，或渠道明确配置支持该 mid / model_id
+        let channel_supported = has_wildcard_channel
+            || supported_mids.contains(&m.mid)
+            || supported_model_ids.contains(&m.model_id);
+        if !channel_supported {
             continue;
+        }
+
+        // B. API Token 模型白名单校验
+        if !token.is_model_allowed(&m.model_id) {
+            continue;
+        }
+
+        // C. 模型广场显式等级可见性校验（若单独配置）
+        if is_mp_enabled {
+            let config_key = format!("mp_model_id_{}", m.id);
+            if let Some(conf_str) = configs.get(&config_key) {
+                if let Ok(model_conf) = serde_json::from_str::<Value>(conf_str) {
+                    let level_ids = parse_mp_level_ids(&model_conf);
+                    let is_enabled = mp_enabled(&model_conf, is_blacklist);
+                    if !mp_visible_to(is_enabled, &level_ids, viewer) {
+                        continue;
+                    }
+                }
+            }
         }
 
         // 解析 owned_by（取 provider 名称，兜底 "system"）
@@ -154,3 +212,4 @@ fn parse_timestamp(s: &str) -> i64 {
     }
     0
 }
+

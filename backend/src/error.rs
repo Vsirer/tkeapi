@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use axum::http::{HeaderMap, StatusCode};
@@ -32,6 +32,10 @@ pub enum AppError {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    /// 409 且带业务码（共享邮箱/手机选人、继续注册等）
+    #[error("{0}")]
+    ConflictDetails(String, &'static str, serde_json::Value),
 
     #[error("Rate limited: {0}")]
     TooManyRequests(String),
@@ -87,7 +91,7 @@ impl AppError {
             Self::Forbidden(_) => 403,
             Self::NotFound(_) => 404,
             Self::BadRequest(_) => 400,
-            Self::Conflict(_) => 409,
+            Self::Conflict(_) | Self::ConflictDetails(_, _, _) => 409,
             Self::TooManyRequests(_) => 429,
             Self::UpstreamError(_) | Self::Reqwest(_) => 502,
             _ => 500,
@@ -111,6 +115,24 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg, None, false),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg, None, false),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg, None, false),
+            AppError::ConflictDetails(msg, error_code, extra) => {
+                let mut body = json!({
+                    "error": {
+                        "message": msg,
+                        "type": "api_error",
+                        "code": "409",
+                        "error_code": error_code,
+                    },
+                });
+                if let Some(obj) = extra.as_object() {
+                    if let Some(error) = body.get_mut("error").and_then(|v| v.as_object_mut()) {
+                        for (k, v) in obj {
+                            error.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                return (StatusCode::CONFLICT, axum::Json(body)).into_response();
+            }
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg, None, false),
             AppError::UpstreamError(msg) => (StatusCode::BAD_GATEWAY, msg, None, true),
             AppError::UpstreamHttpError(status, msg, headers) => {

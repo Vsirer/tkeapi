@@ -1,6 +1,6 @@
 # Kling-v3 Image Generation Example
 
-kling-v3-omni is the next-generation unified flagship image and video generation model by Kuaishou's Kling AI. Featuring robust physical-world understanding and photorealistic generation, it is fully integrated here.
+OpenAI-compatible: `POST /v1/images/generations`. Native: `/v1/images/generations`, `/v1/images/omni-image`.
 
 ### 1. Base URL & Endpoint
 * **HTTP Method**: `POST`

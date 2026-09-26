@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::admin_permission::{require_edit, AdminContext};
@@ -11,7 +11,7 @@ use crate::models::{
     build_public_payment_channels, merge_payment_channels_ui, public_payment_status_from_channels,
     AgreementSettings, AllSettings, CurrencySettings, DatabaseSettings, GoogleOAuthSettings,
     InvoiceSettings, LoginSettings, LogCleanupSettings, MarketingSettings, PaymentAlipaySettings,
-    PaymentAllinpaySettings, PaymentBonuspaySettings, PaymentChannelsUiSettings,
+    PaymentAllinpaySettings, PaymentChannelsUiSettings,
     PaymentGatewayEnableFlags, PaymentHyperbcSettings, PaymentStripeSettings,
     PaymentWechatSettings, PublicMarketingSettings, PublicNotificationSettings,
     PublicRegistrationSettings, PublicSettings, RegistrationSettings, RelaySettings, SMTPSettings,
@@ -36,7 +36,10 @@ use std::sync::Arc;
 pub async fn get_public_settings(
     State(state): State<Arc<AppState>>,
 ) -> AppResult<Json<PublicSettings>> {
-    let site = get_setting(&state, "site_settings", default_site_settings()).await?;
+    let mut site = get_setting(&state, "site_settings", default_site_settings()).await?;
+    // 注册 IP 名单只给管理端，公开接口不带子公司内网段
+    site.ip_blacklist.clear();
+    site.ip_whitelist.clear();
     let currency = get_setting(&state, "currency_settings", default_currency_settings()).await?;
     let login = get_setting(&state, "login_settings", default_login_settings()).await?;
     let registration: RegistrationSettings = get_setting(
@@ -86,8 +89,6 @@ pub async fn get_public_settings(
         get_setting::<Option<PaymentAlipaySettings>>(&state, "payment_alipay", None).await?;
     let stripe_cfg =
         get_setting::<Option<PaymentStripeSettings>>(&state, "payment_stripe", None).await?;
-    let bonuspay_cfg =
-        get_setting::<Option<PaymentBonuspaySettings>>(&state, "payment_bonuspay", None).await?;
     let hyperbc_cfg =
         get_setting::<Option<PaymentHyperbcSettings>>(&state, "payment_hyperbc", None).await?;
     let allinpay_cfg =
@@ -96,7 +97,6 @@ pub async fn get_public_settings(
         wechat: wechat_cfg.as_ref().map_or(false, |p| p.enabled),
         alipay: alipay_cfg.as_ref().map_or(false, |p| p.enabled),
         stripe: stripe_cfg.as_ref().map_or(false, |p| p.enabled),
-        bonuspay: bonuspay_cfg.as_ref().map_or(false, |p| p.enabled),
         hyperbc: hyperbc_cfg.as_ref().map_or(false, |p| p.enabled),
         allinpay: allinpay_cfg.as_ref().map_or(false, |p| p.enabled),
     };
@@ -114,7 +114,11 @@ pub async fn get_public_settings(
         crate::models::InvoiceSettings::default(),
     )
     .await
-    .ok();
+    .ok()
+    .map(|mut inv| {
+        inv.clear_placeholder_issuer();
+        inv
+    });
 
     Ok(Json(PublicSettings {
         is_open_source: cfg!(not(feature = "commercial_plugins")),
@@ -157,7 +161,6 @@ fn require_settings_fields(ctx: &AdminContext, req: &UpdateSettingsRequest) -> A
         || req.payment_wechat.is_some()
         || req.payment_alipay.is_some()
         || req.payment_stripe.is_some()
-        || req.payment_bonuspay.is_some()
         || req.payment_hyperbc.is_some()
         || req.payment_allinpay.is_some()
         || req.payment_channels_ui.is_some()
@@ -201,6 +204,7 @@ pub async fn update_settings(
         let saved =
             merge_and_save_setting(&state, "site_settings", &v, default_site_settings()).await?;
         crate::relay::relay_settings::put_cached_site_timezone(saved.default_timezone);
+        notify_schedule_changed();
         currency_or_site_changed = true;
     }
     if let Some(v) = request.currency {
@@ -290,15 +294,6 @@ pub async fn update_settings(
         )
         .await?;
     }
-    if let Some(v) = request.payment_bonuspay {
-        merge_and_save_setting::<PaymentBonuspaySettings>(
-            &state,
-            "payment_bonuspay",
-            &v,
-            Default::default(),
-        )
-        .await?;
-    }
     if let Some(v) = request.payment_hyperbc {
         merge_and_save_setting::<PaymentHyperbcSettings>(
             &state,
@@ -370,6 +365,7 @@ pub async fn update_settings(
             Default::default(),
         )
         .await?;
+        notify_schedule_changed();
     }
     if let Some(v) = request.menu_config {
         merge_and_save_setting(
@@ -394,13 +390,15 @@ pub async fn update_settings(
         crate::relay::relay_settings::put_cached_relay_settings(saved);
     }
     if let Some(v) = request.invoices {
-        merge_and_save_setting::<InvoiceSettings>(
+        let mut saved = merge_and_save_setting::<InvoiceSettings>(
             &state,
             "invoice_settings",
             &v,
             Default::default(),
         )
         .await?;
+        saved.clear_placeholder_issuer();
+        save_setting(&state, "invoice_settings", &saved).await?;
     }
 
     if currency_or_site_changed {
@@ -973,8 +971,6 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         get_setting(state, "payment_alipay", None).await?;
     let payment_stripe: Option<PaymentStripeSettings> =
         get_setting(state, "payment_stripe", None).await?;
-    let payment_bonuspay: Option<PaymentBonuspaySettings> =
-        get_setting(state, "payment_bonuspay", None).await?;
     let payment_hyperbc: Option<PaymentHyperbcSettings> =
         get_setting(state, "payment_hyperbc", None).await?;
     let payment_allinpay: Option<PaymentAllinpaySettings> =
@@ -983,13 +979,15 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         wechat: payment_wechat.as_ref().map_or(false, |p| p.enabled),
         alipay: payment_alipay.as_ref().map_or(false, |p| p.enabled),
         stripe: payment_stripe.as_ref().map_or(false, |p| p.enabled),
-        bonuspay: payment_bonuspay.as_ref().map_or(false, |p| p.enabled),
         hyperbc: payment_hyperbc.as_ref().map_or(false, |p| p.enabled),
         allinpay: payment_allinpay.as_ref().map_or(false, |p| p.enabled),
     };
 
+    let mut site = get_setting(state, "site_settings", default_site_settings()).await?;
+    site.apply_builtin_ip_whitelist();
+
     Ok(AllSettings {
-        site: get_setting(state, "site_settings", default_site_settings()).await?,
+        site,
         currency: get_setting(state, "currency_settings", default_currency_settings()).await?,
         login: get_setting(state, "login_settings", default_login_settings()).await?,
         registration: get_setting(
@@ -1010,7 +1008,6 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         payment_wechat,
         payment_alipay,
         payment_stripe,
-        payment_bonuspay,
         payment_hyperbc,
         payment_allinpay,
         payment_channels_ui: Some(merge_payment_channels_ui(
@@ -1034,7 +1031,11 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         relay: get_setting(state, "relay_settings", default_relay_settings())
             .await?
             .prepared(),
-        invoices: Some(get_setting(state, "invoice_settings", InvoiceSettings::default()).await?),
+        invoices: Some({
+            let mut inv = get_setting(state, "invoice_settings", InvoiceSettings::default()).await?;
+            inv.clear_placeholder_issuer();
+            inv
+        }),
         server_timezone: None,
         server_time: None,
     })
@@ -1066,6 +1067,26 @@ pub async fn load_log_cleanup_settings(state: &AppState) -> AppResult<LogCleanup
         .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
         .map(|v| LogCleanupSettings::from_legacy_storage_json(&v))
         .unwrap_or_default())
+}
+
+static SCHEDULE_NOTIFIER: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::OnceLock::new();
+
+/// 通知定时运维任务配置已变更，唤醒当前休眠对齐新时间
+pub fn notify_schedule_changed() {
+    if let Some(tx) = SCHEDULE_NOTIFIER.get() {
+        let _ = tx.send_modify(|v| *v = v.wrapping_add(1));
+    }
+}
+
+/// 订阅定时运维调度变更通知通道
+pub fn subscribe_schedule_changed() -> tokio::sync::watch::Receiver<u64> {
+    SCHEDULE_NOTIFIER
+        .get_or_init(|| {
+            let (tx, _) = tokio::sync::watch::channel(0);
+            tx
+        })
+        .subscribe()
 }
 
 async fn get_setting<T: serde::de::DeserializeOwned + Clone>(
@@ -1195,8 +1216,7 @@ pub fn default_site_settings() -> SiteSettings {
         enable_multilingual: true,
         supported_languages: vec!["zh".to_string(), "en".to_string()],
         default_language: "zh".to_string(),
-        default_timezone: iana_time_zone::get_timezone()
-            .unwrap_or_else(|_| crate::time_system::DEFAULT_TIMEDISPLAY.to_string()),
+        default_timezone: crate::time_system::DEFAULT_TIMEDISPLAY.to_string(),
         show_timezone: true,
         enable_theme_toggle: true,
         default_theme: "dark".to_string(),
@@ -1206,6 +1226,8 @@ pub fn default_site_settings() -> SiteSettings {
         login_quote: String::new(),
         ip_blacklist_enabled: false,
         ip_blacklist: Vec::new(),
+        ip_whitelist_enabled: true,
+        ip_whitelist: crate::models::settings::default_registration_ip_whitelist(),
     }
 }
 
@@ -1252,6 +1274,7 @@ pub fn default_currency_settings() -> CurrencySettings {
         auxiliary_currencies: vec![],
         quick_amounts: vec![20.0, 50.0, 100.0, 500.0, 1000.0, 5000.0],
         min_recharge_amount: 5.0,
+        max_recharge_amount: 10000.0,
     }
 }
 
@@ -1300,6 +1323,8 @@ pub fn default_registration_settings() -> RegistrationSettings {
         require_bind_email: false,
         bind_enforcement: "all".to_string(),
         enable_user_kyc: false,
+        max_accounts_per_email: 5,
+        max_accounts_per_mobile: 5,
     }
 }
 
@@ -1603,3 +1628,22 @@ pub fn default_menu_config_settings() -> crate::models::MenuConfigSettings {
         ],
     }
 }
+
+/// 手动触发一次全量系统日常维护（用量统计/大字段清理/错误清理/冷行归档/临时存储清理）
+pub async fn trigger_maintenance(
+    State(state): State<Arc<AppState>>,
+    Extension(ctx): Extension<AdminContext>,
+) -> AppResult<Json<serde_json::Value>> {
+    require_edit(&ctx, "settings.database")?;
+
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        crate::run_daily_maintenance_job(&state_clone).await;
+    });
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "全量系统日常维护任务已在后台触发执行"
+    })))
+}
+

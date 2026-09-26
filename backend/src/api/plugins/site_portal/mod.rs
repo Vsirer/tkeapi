@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! SitePortal plugin — public portal pages + admin config.
@@ -35,6 +35,7 @@ pub fn admin_router() -> Router<Arc<AppState>> {
 pub fn portal_pages_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(page_home))
+        .route("/models", get(page_models))
         .route("/model/{mid}", get(page_model_detail))
         .route("/contact", get(page_contact))
         .route("/about", get(page_about))
@@ -165,6 +166,12 @@ async fn page_home(
     ))
 }
 
+async fn page_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Html<String>, AppError> {
+    render_public_page(&state, "models", None).await
+}
+
 async fn page_model_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(mid): axum::extract::Path<String>,
@@ -203,23 +210,188 @@ async fn load_configs(
     crate::api::plugins::load_plugin_configs_pub(state, "site_portal").await
 }
 
+const FIXED_NAV_SPECS: [(&str, &str, &str, i64); 5] = [
+    ("home", "站点首页|Home", "/home", 50),
+    (
+        "marketplace",
+        "模型广场|Model Marketplace",
+        "/home/models",
+        40,
+    ),
+    (
+        "integration",
+        "接入指南|Integration Guide",
+        "#integration",
+        30,
+    ),
+    ("contact", "联系我们|Contact Us", "/home/contact", 20),
+    ("about", "关于我们|About Us", "/home/about", 10),
+];
+
+fn default_fixed_nav_item(key: &str, label: &str, path: &str, sort: i64) -> serde_json::Value {
+    json!({
+        "label": label,
+        "path": path,
+        "enabled": true,
+        "target_blank": false,
+        "key": key,
+        "is_fixed": true,
+        "sort": sort
+    })
+}
+
+fn default_portal_nav_items() -> Vec<serde_json::Value> {
+    FIXED_NAV_SPECS
+        .iter()
+        .map(|(key, label, path, sort)| default_fixed_nav_item(key, label, path, *sort))
+        .collect()
+}
+
 fn default_portal_nav_config() -> serde_json::Value {
     json!({
         "logo_url": "",
         "logo_text": "Tkeapi",
         "logo_link": "/home",
-        "items": [
-            {"label": "平台优势|Platform Advantages", "path": "#features", "enabled": true, "target_blank": false, "key": "features"},
-            {"label": "核心功能|Core Features", "path": "#carousel", "enabled": true, "target_blank": false, "key": "carousel"},
-            {"label": "模型矩阵|Model Matrix", "path": "#models", "enabled": true, "target_blank": false, "key": "models"},
-            {"label": "接入指南|Integration Guide", "path": "#integration", "enabled": true, "target_blank": false, "key": "integration"},
-            {"label": "模型广场|Model Marketplace", "path": "/home/models", "enabled": true, "target_blank": false, "key": "marketplace"}
-        ],
+        "items": default_portal_nav_items(),
         "cta_text": "登录|Login",
         "cta_link": "/login",
         "register_text": "立即注册|Get API Key",
-        "register_link": "/register"
+        "register_link": "/register",
+        "show_model_search": true
     })
+}
+
+fn marketplace_nav_path(nav: &serde_json::Value) -> String {
+    nav.get("items")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .find(|item| item.get("key").and_then(|k| k.as_str()) == Some("marketplace"))
+        .and_then(|item| item.get("path").and_then(|p| p.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("/home/models")
+        .to_string()
+}
+
+fn is_fixed_nav_key(key: &str) -> bool {
+    FIXED_NAV_SPECS.iter().any(|(k, _, _, _)| *k == key)
+}
+
+fn rewrite_packaged_default_nav(nav: &mut serde_json::Value) {
+    let Some(items) = nav.get("items").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let keys: Vec<&str> = items
+        .iter()
+        .filter_map(|item| item.get("key").and_then(|k| k.as_str()))
+        .collect();
+    if keys.len() != items.len() || keys.is_empty() {
+        return;
+    }
+    let packaged = keys == ["contact", "about", "models", "integration", "marketplace"]
+        || keys == ["features", "carousel", "models", "integration", "marketplace"]
+        || keys == ["marketplace", "integration", "contact", "about"];
+    if packaged {
+        nav["items"] = json!(default_portal_nav_items());
+    }
+}
+
+fn ensure_fixed_nav_items(nav: &mut serde_json::Value) {
+    let Some(items) = nav.get_mut("items").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for item in items.iter_mut() {
+        if item
+            .get("key")
+            .and_then(|k| k.as_str())
+            .is_some_and(is_fixed_nav_key)
+        {
+            item["is_fixed"] = json!(true);
+        }
+    }
+    for (key, label, path, sort) in FIXED_NAV_SPECS {
+        let exists = items
+            .iter()
+            .any(|item| item.get("key").and_then(|k| k.as_str()) == Some(key));
+        if !exists {
+            items.push(default_fixed_nav_item(key, label, path, sort));
+        }
+    }
+}
+
+fn json_sort_weight(item: &serde_json::Value) -> i64 {
+    item.get("sort")
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_u64().map(|n| n as i64))
+                .or_else(|| v.as_f64().map(|n| n.round() as i64))
+        })
+        .unwrap_or(0)
+}
+
+fn sort_json_items_by_weight_desc(items: &mut Vec<serde_json::Value>) {
+    let len = items.len();
+    for (i, item) in items.iter_mut().enumerate() {
+        if item.get("sort").is_none() {
+            item["sort"] = json!(((len - i) * 10) as i64);
+        }
+    }
+    items.sort_by(|a, b| json_sort_weight(b).cmp(&json_sort_weight(a)));
+}
+
+fn apply_contact_sorts(columns: &mut serde_json::Value) {
+    let Some(content) = columns.pointer_mut("/contact/content") else {
+        return;
+    };
+    if let Some(links) = content
+        .get_mut("social_links")
+        .and_then(|v| v.as_array_mut())
+    {
+        sort_json_items_by_weight_desc(links);
+    }
+    const CHANNEL_KEYS: [&str; 3] = ["email", "phone", "address"];
+    let mut keys: Vec<String> = content
+        .get("channel_order")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter(|k| CHANNEL_KEYS.contains(&k.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    for key in CHANNEL_KEYS {
+        if !keys.iter().any(|k| k == key) {
+            keys.push(key.to_string());
+        }
+    }
+    let sort_map = content.get("channel_sort").and_then(|v| v.as_object());
+    let mut ranked: Vec<(String, i64, usize)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let weight = sort_map
+                .and_then(|m| m.get(key))
+                .and_then(|v| {
+                    v.as_i64()
+                        .or_else(|| v.as_u64().map(|n| n as i64))
+                        .or_else(|| v.as_f64().map(|n| n.round() as i64))
+                })
+                .unwrap_or(((keys.len() - i) * 10) as i64);
+            (key.clone(), weight, i)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+    if let Some(obj) = content.as_object_mut() {
+        obj.insert(
+            "channel_order".to_string(),
+            json!(ranked
+                .into_iter()
+                .map(|(k, _, _)| k)
+                .collect::<Vec<String>>()),
+        );
+    }
 }
 
 fn default_portal_footer_config() -> serde_json::Value {
@@ -248,6 +420,76 @@ fn default_portal_footer_config() -> serde_json::Value {
     })
 }
 
+fn default_portal_home_config() -> serde_json::Value {
+    json!({"hero_title":"一个接口，调用全球数百个 AI 模型","hero_subtitle":"OpenAI兼容和原生格式，极速接入主流模型，零门槛开始","features":[
+            {
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 22v-5\"/><path d=\"M9 8V2\"/><path d=\"M15 8V2\"/><path d=\"M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z\"/></svg>",
+                "title": "一键极速接入",
+                "description": "OpenAI 兼容 API 格式，只需修改 Base URL 和 Key，即可无缝替换至数百个主流模型，零代码成本迁移。"
+            },
+            {
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/></svg>",
+                "title": "全球模型全面覆盖",
+                "description": "聚合 OpenAI、Anthropic、Google Gemini、DeepSeek、字节跳动火山引擎等数十家顶级服务商的模型矩阵。"
+            },
+            {
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14H4z\"/></svg>",
+                "title": "智能分流与高可用",
+                "description": "全球边缘节点路由，支持在主渠道高负载或故障时自动无感容灾重试，首字耗时降至毫秒级。"
+            },
+            {
+                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/><path d=\"m9 12 2 2 4-4\"/></svg>",
+                "title": "极致安全数据脱敏",
+                "description": "支持 IP 白名单防刷保护，端到端高强度加密传输，异步任务与计费明细日志支持 Base64 数据隐私脱敏。"
+            }
+        ],"api_base_url":"","cta_title":"准备好开始构建了吗？","cta_description":"只需 3 分钟即可获取您的 API 密钥并开始创新。基础 URL：https://api.artsapi.com/api，零成本平滑迁移。","cta_primary_btn_text":"开始对话","cta_primary_btn_link":"https://api.artsapi.com","cta_secondary_btn_text":"阅读文档","cta_secondary_btn_link":"https://docs.artsapi.com"})
+}
+
+fn default_portal_columns_config() -> serde_json::Value {
+    json!({
+        "models": {"title": "模型数据", "path": "models", "enabled": true},
+        "contact": {
+            "title": "联系我们",
+            "path": "contact",
+            "enabled": true,
+            "content": {
+                "email": "",
+                "phone": "",
+                "address": "",
+                "email_enabled": true,
+                "phone_enabled": true,
+                "address_enabled": true,
+                "channel_sort": {"email": 30, "phone": 20, "address": 10},
+                "custom_content": "",
+                "social_links": [
+                    {"platform": "Twitter / X", "value": "https://x.com/tkeapi", "enabled": true, "sort": 30},
+                    {"platform": "GitHub", "value": "https://github.com/aiqachat/tkeapi", "enabled": true, "sort": 20},
+                    {"platform": "Telegram", "value": "https://t.me/tokensbyte", "enabled": true, "sort": 10}
+                ],
+                "items": [
+                    {"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M3 3H21C21.5523 3 22 3.44772 22 4V20C22 20.5523 21.5523 21 21 21H3C2.44772 21 2 20.5523 2 20V4C2 3.44772 2.44772 3 3 3ZM12.0606 11.6829L5.64722 6.2377L4.35278 7.7623L12.0731 14.3171L19.6544 7.75616L18.3456 6.24384L12.0606 11.6829Z'/></svg>","title":"邮箱","value":""},
+                    {"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M21 16.42V19.9561C21 20.4811 20.5941 20.9167 20.0705 20.9537C19.6331 20.9846 19.2763 21 19 21C10.1634 21 3 13.8366 3 5C3 4.72371 3.01545 4.36687 3.04635 3.9295C3.08337 3.40588 3.51894 3 4.04386 3H7.5801C7.83678 3 8.05176 3.19442 8.07753 3.4498C8.10067 3.67907 8.12218 3.86314 8.14207 4.00202C8.34435 5.41472 8.75753 6.75936 9.3487 8.00303C9.44359 8.20265 9.38171 8.44159 9.20185 8.57006L7.04355 10.1118C8.35752 13.1811 10.8189 15.6425 13.8882 16.9565L15.4271 14.8019C15.5572 14.6199 15.799 14.5573 16.001 14.6532C17.2446 15.2439 18.5891 15.6566 20.0016 15.8584C20.1396 15.8782 20.3225 15.8995 20.5502 15.9225C20.8056 15.9483 21 16.1633 21 16.42Z'/></svg>","title":"电话","value":""},
+                    {"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M18.364 17.364L12 23.7279L5.63604 17.364C2.12132 13.8492 2.12132 8.15076 5.63604 4.63604C9.15076 1.12132 14.8492 1.12132 18.364 4.63604C21.8787 8.15076 21.8787 13.8492 18.364 17.364ZM12 15C14.2091 15 16 13.2091 16 11C16 8.79086 14.2091 7 12 7C9.79086 7 8 8.79086 8 11C8 13.2091 9.79086 15 12 15ZM12 13C10.8954 13 10 12.1046 10 11C10 9.89543 10.8954 9 12 9C13.1046 9 14 9.89543 14 11C14 12.1046 13.1046 13 12 13Z'/></svg>","title":"地址","value":""}
+                ]
+            }
+        },
+        "about": {
+            "title": "关于我们",
+            "path": "about",
+            "enabled": true,
+            "hero_subtitle": "作为业内领先的 AI 模型聚合服务平台，我们消除服务商锁定风险，通过更优的价格、高可用性和企业级的稳定性，为您打通全球最先进大语言模型的访问桥梁。",
+            "stat_tokens": "10B+",
+            "stat_developers": "10K+",
+            "stat_providers": "40+",
+            "stat_models": "200+",
+            "press_title": "统一大模型接口体验，让接入 AI 零负担",
+            "press_desc": "旨在成为开发者接入、对比、调用不同 AI 模型的首选聚合网关。只需一次接入，即可全量访问数百个前沿模型。",
+            "press_link_text": "联系我们洽谈合作 →",
+            "content": ""
+        }
+    })
+}
+
 fn merge_portal_defaults(value: &mut serde_json::Value, defaults: &serde_json::Value) {
     if let (Some(current), Some(default_map)) = (value.as_object_mut(), defaults.as_object()) {
         for (key, default_value) in default_map {
@@ -256,6 +498,98 @@ fn merge_portal_defaults(value: &mut serde_json::Value, defaults: &serde_json::V
                 .or_insert_with(|| default_value.clone());
         }
     }
+}
+
+fn merge_home_config_patch(home: &mut serde_json::Value, patch: &serde_json::Value) {
+    let Some(base) = home.as_object_mut() else {
+        return;
+    };
+    let Some(patch_obj) = patch.as_object() else {
+        return;
+    };
+    for (k, v) in patch_obj {
+        if k == "api_base_url" {
+            let trimmed = v.as_str().map(str::trim).unwrap_or("");
+            base.insert(k.clone(), json!(trimmed));
+        } else {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+fn stored_portal_home_config(configs: &std::collections::HashMap<String, String>) -> serde_json::Value {
+    let defaults = default_portal_home_config();
+    let mut home = configs
+        .get("home_config")
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| defaults.clone());
+    merge_portal_defaults(&mut home, &defaults);
+    rewrite_whatstoken_brand(&mut home);
+    home
+}
+
+fn portal_columns_config(configs: &std::collections::HashMap<String, String>) -> serde_json::Value {
+    let defaults = default_portal_columns_config();
+    let mut columns = configs
+        .get("columns_config")
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| defaults.clone());
+    merge_portal_defaults(&mut columns, &defaults);
+    for key in ["models", "contact", "about"] {
+        if let (Some(current), Some(default_value)) = (columns.get_mut(key), defaults.get(key)) {
+            merge_portal_defaults(current, default_value);
+        }
+    }
+    if let (Some(content), Some(default_content)) = (
+        columns.pointer_mut("/contact/content"),
+        defaults.pointer("/contact/content"),
+    ) {
+        merge_portal_defaults(content, default_content);
+    }
+    let social_empty = columns
+        .pointer("/contact/content/social_links")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.is_empty()
+                || arr.iter().all(|item| {
+                    let platform = item
+                        .get("platform")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    let value = item
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim();
+                    platform.is_empty() && value.is_empty()
+                })
+        })
+        .unwrap_or(true);
+    if social_empty {
+        if let Some(links) = columns.pointer_mut("/contact/content/social_links") {
+            *links = defaults
+                .pointer("/contact/content/social_links")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+        }
+    }
+    if let Some(links) = columns
+        .pointer_mut("/contact/content/social_links")
+        .and_then(|v| v.as_array_mut())
+    {
+        for item in links {
+            if let Some(obj) = item.as_object_mut() {
+                obj.entry("enabled".to_string()).or_insert(json!(true));
+                if obj.get("value").and_then(|v| v.as_str()) == Some("https://x.com/tokensbyte") {
+                    obj.insert("value".to_string(), json!("https://x.com/tkeapi"));
+                }
+            }
+        }
+    }
+    apply_contact_sorts(&mut columns);
+    rewrite_whatstoken_brand(&mut columns);
+    columns
 }
 
 /// 将已保存配置中的旧品牌文案 WhatsToken AI 替换为 Tkeapi。
@@ -311,7 +645,56 @@ fn portal_nav_config(configs: &std::collections::HashMap<String, String>) -> ser
     }
     merge_portal_defaults(&mut nav, &defaults);
     rewrite_whatstoken_brand(&mut nav);
+    migrate_features_carousel_nav_to_contact_about(&mut nav);
+    rewrite_packaged_default_nav(&mut nav);
+    ensure_fixed_nav_items(&mut nav);
+    if let Some(items) = nav.get_mut("items").and_then(|v| v.as_array_mut()) {
+        sort_json_items_by_weight_desc(items);
+    }
     nav
+}
+
+fn migrate_features_carousel_nav_to_contact_about(nav: &mut serde_json::Value) {
+    let Some(items) = nav.get_mut("items").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut has_contact = items.iter().any(|item| {
+        item.get("key").and_then(|k| k.as_str()) == Some("contact")
+            || item.get("path").and_then(|p| p.as_str()) == Some("/home/contact")
+    });
+    let mut has_about = items.iter().any(|item| {
+        item.get("key").and_then(|k| k.as_str()) == Some("about")
+            || item.get("path").and_then(|p| p.as_str()) == Some("/home/about")
+    });
+    let is_features = |item: &serde_json::Value| {
+        item.get("key").and_then(|k| k.as_str()) == Some("features")
+            || item.get("path").and_then(|p| p.as_str()) == Some("#features")
+    };
+    let is_carousel = |item: &serde_json::Value| {
+        item.get("key").and_then(|k| k.as_str()) == Some("carousel")
+            || item.get("path").and_then(|p| p.as_str()) == Some("#carousel")
+    };
+    let contact_item = default_fixed_nav_item("contact", "联系我们|Contact Us", "/home/contact", 20);
+    let about_item = default_fixed_nav_item("about", "关于我们|About Us", "/home/about", 10);
+    let mut i = 0;
+    while i < items.len() {
+        if is_features(&items[i]) {
+            if has_contact {
+                items.remove(i);
+                continue;
+            }
+            items[i] = contact_item.clone();
+            has_contact = true;
+        } else if is_carousel(&items[i]) {
+            if has_about {
+                items.remove(i);
+                continue;
+            }
+            items[i] = about_item.clone();
+            has_about = true;
+        }
+        i += 1;
+    }
 }
 
 fn portal_footer_config(configs: &std::collections::HashMap<String, String>) -> serde_json::Value {
@@ -335,6 +718,80 @@ fn portal_footer_config(configs: &std::collections::HashMap<String, String>) -> 
     merge_portal_defaults(&mut footer, &defaults);
     rewrite_whatstoken_brand(&mut footer);
     footer
+}
+
+const HERO_SLOGANS: [&str; 3] = [
+    "一个接口，调用全球数百个 AI 模型",
+    "聚合顶尖视频与视觉大模型，让艺术灵感即刻成片",
+    "汇聚全球顶尖大语言模型，为智能应用注入澎湃算力",
+];
+
+fn portal_home_config(configs: &std::collections::HashMap<String, String>) -> serde_json::Value {
+    let mut home = stored_portal_home_config(configs);
+
+    let is_default_title = home
+        .get("hero_title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.is_empty() || HERO_SLOGANS.contains(&s))
+        .unwrap_or(true);
+    if is_default_title {
+        let idx = rand::random::<usize>() % HERO_SLOGANS.len();
+        home["hero_title"] = serde_json::json!(HERO_SLOGANS[idx]);
+    }
+
+    rewrite_cta_description_base_url(&mut home);
+    home
+}
+
+/// 后台填写了 API Base URL 时，把 CTA 文案里的 http(s) 链接同步成该配置。
+fn rewrite_cta_description_base_url(home: &mut serde_json::Value) {
+    let Some(api) = home
+        .get("api_base_url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(desc) = home.get("cta_description").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let rewritten = replace_http_urls(desc, &api);
+    if rewritten != desc {
+        home["cta_description"] = json!(rewritten);
+    }
+}
+
+fn replace_http_urls(text: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let http = rest.find("http://");
+        let https = rest.find("https://");
+        let start = match (http, https) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
+        };
+        out.push_str(&rest[..start]);
+        let url = &rest[start..];
+        let end = url
+            .char_indices()
+            .find(|(_, c)| {
+                c.is_whitespace()
+                    || matches!(*c, ',' | '，' | ';' | '；' | '!' | '！' | '(' | ')' | '（' | '）')
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(url.len());
+        out.push_str(replacement);
+        rest = &url[end..];
+    }
+    out
 }
 
 fn html_escape(value: &str) -> String {
@@ -613,6 +1070,14 @@ fn managed_homepage_html(configs: &std::collections::HashMap<String, String>) ->
     {
         html = html.replacen("</body>", &format!("{}\n</body>", customer_service), 1);
     }
+    let api_base_url = portal_home_config(configs)
+        .get("api_base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let api_base_js = serde_json::to_string(&api_base_url).unwrap_or_else(|_| "\"\"".to_string());
+    html = html.replace("'__PORTAL_API_BASE_URL__'", &api_base_js);
     html
 }
 
@@ -731,7 +1196,7 @@ async fn get_portal_config(
     require_admin(&state, &claims).await?;
     let configs = load_configs(&state).await?;
 
-    // 仅返回管理端实际编辑的配置；home/columns 仍由后端渲染默认值或库内配置驱动，无后台入口故不回包
+    // 仅返回管理端实际编辑的配置
     Ok(Json(json!({
         "nav_config": portal_nav_config(&configs),
         "footer_config": portal_footer_config(&configs),
@@ -752,6 +1217,8 @@ async fn get_portal_config(
             "manual_mode": false
         })),
         "generate_log": configs.get("generate_log").and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).unwrap_or(json!([])),
+        "home_config": stored_portal_home_config(&configs),
+        "columns": portal_columns_config(&configs),
         "custom_homepage": configs.get("custom_homepage").and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).unwrap_or(json!({
             "enabled": false,
             "html": ""
@@ -811,6 +1278,18 @@ async fn save_portal_config(
             "static_gen_config",
             serde_json::to_string(&payload.data).unwrap_or_default(),
         ),
+        "home" => {
+            let existing_configs = load_configs(&state).await?;
+            let mut home = existing_configs
+                .get("home_config")
+                .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+                .unwrap_or_else(|| json!({}));
+            merge_home_config_patch(&mut home, &payload.data);
+            (
+                "home_config",
+                serde_json::to_string(&home).unwrap_or_default(),
+            )
+        }
         "custom_homepage" => (
             "custom_homepage",
             serde_json::to_string(&payload.data).unwrap_or_default(),
@@ -824,11 +1303,7 @@ async fn save_portal_config(
             let mut columns: serde_json::Value = existing_configs
                 .get("columns_config")
                 .and_then(|v| serde_json::from_str(v).ok())
-                .unwrap_or(json!({
-                    "models": {"title": "模型数据", "path": "models", "enabled": true},
-                    "contact": {"title": "联系我们", "path": "contact", "enabled": true},
-                    "about": {"title": "关于我们", "path": "about", "enabled": true}
-                }));
+                .unwrap_or_else(default_portal_columns_config);
             columns["about"] = payload.data.clone();
             (
                 "columns_config",
@@ -840,11 +1315,7 @@ async fn save_portal_config(
             let mut columns: serde_json::Value = existing_configs
                 .get("columns_config")
                 .and_then(|v| serde_json::from_str(v).ok())
-                .unwrap_or(json!({
-                    "models": {"title": "模型数据", "path": "models", "enabled": true},
-                    "contact": {"title": "联系我们", "path": "contact", "enabled": true},
-                    "about": {"title": "关于我们", "path": "about", "enabled": true}
-                }));
+                .unwrap_or_else(default_portal_columns_config);
             columns["contact"] = payload.data.clone();
             (
                 "columns_config",
@@ -909,6 +1380,49 @@ fn column_paths(configs: &std::collections::HashMap<String, String>) -> (String,
     )
 }
 
+const FAI_CARD_CAT: &[u8] =
+    include_bytes!("../../../templates/portal/styles/fai_art/assets/card_cat.jpg");
+const FAI_CARD_PORTRAIT: &[u8] =
+    include_bytes!("../../../templates/portal/styles/fai_art/assets/card_portrait.jpg");
+const FAI_CARD_DANCERS: &[u8] =
+    include_bytes!("../../../templates/portal/styles/fai_art/assets/card_dancers.jpg");
+const FAI_CARD_KING: &[u8] =
+    include_bytes!("../../../templates/portal/styles/fai_art/assets/card_king.jpg");
+
+pub async fn ensure_portal_assets(portal_dir: &str, assets_dir: &str) {
+    let images = [
+        ("card_cat.jpg", FAI_CARD_CAT),
+        ("card_portrait.jpg", FAI_CARD_PORTRAIT),
+        ("card_dancers.jpg", FAI_CARD_DANCERS),
+        ("card_king.jpg", FAI_CARD_KING),
+    ];
+    for (name, bytes) in images {
+        let p_portal = format!("{}/assets/images/portal/fai/{}", portal_dir, name);
+        if let Some(parent) = std::path::Path::new(&p_portal).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&p_portal, bytes).await.ok();
+
+        let p_portal_arts = format!("{}/assets/images/portal/arts/{}", portal_dir, name);
+        if let Some(parent) = std::path::Path::new(&p_portal_arts).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&p_portal_arts, bytes).await.ok();
+
+        let p_assets = format!("{}/images/portal/fai/{}", assets_dir, name);
+        if let Some(parent) = std::path::Path::new(&p_assets).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&p_assets, bytes).await.ok();
+
+        let p_assets_arts = format!("{}/images/portal/arts/{}", assets_dir, name);
+        if let Some(parent) = std::path::Path::new(&p_assets_arts).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&p_assets_arts, bytes).await.ok();
+    }
+}
+
 async fn write_static_html(path: String, html: &str) -> Result<(), AppError> {
     if let Some(parent) = std::path::Path::new(&path).parent() {
         tokio::fs::create_dir_all(parent)
@@ -931,6 +1445,7 @@ async fn generate_static(
     let mut portal_data = build_portal_data(&state, &configs).await?;
     let portal_dir = state.config.portal_dir.clone();
     let (models_path, contact_path, about_path) = column_paths(&configs);
+    ensure_portal_assets(&portal_dir, &state.config.assets_dir).await;
 
     let mut tera = tera::Tera::default();
     register_templates(&mut tera)?;
@@ -1037,6 +1552,7 @@ async fn build_portal_data(
     let nav_config_val = portal_nav_config(configs);
 
     let mut nav = nav_config_val;
+    let marketplace_path = marketplace_nav_path(&nav);
     if let Some(nav_map) = nav.as_object_mut() {
         let logo_empty = nav_map
             .get("logo_url")
@@ -1046,34 +1562,10 @@ async fn build_portal_data(
         if logo_empty && !site_settings.logo.is_empty() {
             nav_map.insert("logo_url".to_string(), json!(site_settings.logo));
         }
+        nav_map.insert("marketplace_path".to_string(), json!(marketplace_path));
     }
-    let home: serde_json::Value = configs.get("home_config")
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or(json!({"hero_title":"一个接口，调用全球数百个 AI 模型","hero_subtitle":"OpenAI 兼容格式，极速接入主流模型。按量付费，零门槛开始。","features":[
-            {
-                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 22v-5\"/><path d=\"M9 8V2\"/><path d=\"M15 8V2\"/><path d=\"M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z\"/></svg>",
-                "title": "一键极速接入",
-                "description": "OpenAI 兼容 API 格式，只需修改 Base URL 和 Key，即可无缝替换至数百个主流模型，零代码成本迁移。"
-            },
-            {
-                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/></svg>",
-                "title": "全球模型全面覆盖",
-                "description": "聚合 OpenAI、Anthropic、Google Gemini、DeepSeek、字节跳动火山引擎等数十家顶级服务商的模型矩阵。"
-            },
-            {
-                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14H4z\"/></svg>",
-                "title": "智能分流与高可用",
-                "description": "全球边缘节点路由，支持在主渠道高负载或故障时自动无感容灾重试，首字耗时降至毫秒级。"
-            },
-            {
-                "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\"/><path d=\"m9 12 2 2 4-4\"/></svg>",
-                "title": "极致安全数据脱敏",
-                "description": "支持 IP 白名单防刷保护，端到端高强度加密传输，异步任务与计费明细日志支持 Base64 数据隐私脱敏。"
-            }
-        ],"api_base_url":"","cta_title":"准备好开始构建了吗？","cta_description":"只需 3 分钟即可获取您的 API 密钥并开始创新。基础 URL：https://api.artsapi.com/api，零成本平滑迁移。","cta_primary_btn_text":"开始对话","cta_primary_btn_link":"https://api.artsapi.com","cta_secondary_btn_text":"阅读文档","cta_secondary_btn_link":"https://docs.artsapi.com"}));
-    let columns: serde_json::Value = configs.get("columns_config")
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or(json!({"models":{"title":"模型数据","path":"models","enabled":true},"contact":{"title":"联系我们","path":"contact","enabled":true,"content":{"items":[{"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M3 3H21C21.5523 3 22 3.44772 22 4V20C22 20.5523 21.5523 21 21 21H3C2.44772 21 2 20.5523 2 20V4C2 3.44772 2.44772 3 3 3ZM12.0606 11.6829L5.64722 6.2377L4.35278 7.7623L12.0731 14.3171L19.6544 7.75616L18.3456 6.24384L12.0606 11.6829Z'/></svg>","title":"邮箱","value":""},{"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M21 16.42V19.9561C21 20.4811 20.5941 20.9167 20.0705 20.9537C19.6331 20.9846 19.2763 21 19 21C10.1634 21 3 13.8366 3 5C3 4.72371 3.01545 4.36687 3.04635 3.9295C3.08337 3.40588 3.51894 3 4.04386 3H7.5801C7.83678 3 8.05176 3.19442 8.07753 3.4498C8.10067 3.67907 8.12218 3.86314 8.14207 4.00202C8.34435 5.41472 8.75753 6.75936 9.3487 8.00303C9.44359 8.20265 9.38171 8.44159 9.20185 8.57006L7.04355 10.1118C8.35752 13.1811 10.8189 15.6425 13.8882 16.9565L15.4271 14.8019C15.5572 14.6199 15.799 14.5573 16.001 14.6532C17.2446 15.2439 18.5891 15.6566 20.0016 15.8584C20.1396 15.8782 20.3225 15.8995 20.5502 15.9225C20.8056 15.9483 21 16.1633 21 16.42Z'/></svg>","title":"电话","value":""},{"icon":"<svg viewBox='0 0 24 24' fill='currentColor' xmlns='http://www.w3.org/2000/svg'><path d='M18.364 17.364L12 23.7279L5.63604 17.364C2.12132 13.8492 2.12132 8.15076 5.63604 4.63604C9.15076 1.12132 14.8492 1.12132 18.364 4.63604C21.8787 8.15076 21.8787 13.8492 18.364 17.364ZM12 15C14.2091 15 16 13.2091 16 11C16 8.79086 14.2091 7 12 7C9.79086 7 8 8.79086 8 11C8 13.2091 9.79086 15 12 15ZM12 13C10.8954 13 10 12.1046 10 11C10 9.89543 10.8954 9 12 9C13.1046 9 14 9.89543 14 11C14 12.1046 13.1046 13 12 13Z'/></svg>","title":"地址","value":""}],"social_links":[]}},"about":{"title":"关于我们","path":"about","enabled":true,"content":""}}));
+    let home = portal_home_config(configs);
+    let columns = portal_columns_config(configs);
     let footer = portal_footer_config(configs);
     let scripts: serde_json::Value = configs
         .get("custom_scripts")
@@ -1168,7 +1660,7 @@ async fn build_portal_data(
              LEFT JOIN site_icons ti ON ti.name = t.logo \
              LEFT JOIN site_icons pi ON pi.name = p.logo \
              LEFT JOIN billing_rules br ON m.billing_rule_id = br.id \
-             WHERE m.is_active = 1 ORDER BY m.sort_order DESC, m.id DESC"
+             WHERE m.is_active = 1 AND m.is_listed = 1 ORDER BY m.sort_order DESC, m.id DESC"
         )
     ).fetch_all(&state.db.pool).await.unwrap_or_default();
 
@@ -1189,20 +1681,11 @@ async fn build_portal_data(
                 continue;
             }
 
-            let sort_order = if m.sort_order != 0 {
-                m.sort_order
-            } else {
-                model_conf
-                    .get("sort_order")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-            };
             let customized_desc = model_conf
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            m.sort_order = sort_order;
             if !customized_desc.is_empty() {
                 m.description = Some(customized_desc.to_string());
             }
@@ -1334,6 +1817,18 @@ fn tera_child_source(raw: &'static str) -> &'static str {
 fn register_templates(tera: &mut tera::Tera) -> Result<(), AppError> {
     tera.add_raw_templates([
         (
+            "styles/fai_art/_chrome_styles.html",
+            include_str!("../../../templates/portal/styles/fai_art/_chrome_styles.html"),
+        ),
+        (
+            "styles/fai_art/_home.html",
+            include_str!("../../../templates/portal/styles/fai_art/_home.html"),
+        ),
+        (
+            "styles/fai_art/_contact.html",
+            include_str!("../../../templates/portal/styles/fai_art/_contact.html"),
+        ),
+        (
             "base.html",
             include_str!("../../../templates/portal/base.html"),
         ),
@@ -1368,6 +1863,7 @@ pub async fn auto_generate_portal_models_static(state: &AppState) -> Result<(), 
     }
 
     let configs = load_configs(state).await?;
+    ensure_portal_assets(&state.config.portal_dir, &state.config.assets_dir).await;
     let mut portal_data = build_portal_data(state, &configs).await?;
     let (models_path, _, _) = column_paths(&configs);
 
@@ -1389,6 +1885,7 @@ async fn run_all_static_generation(state: &AppState) -> Result<(), AppError> {
     let mut portal_data = build_portal_data(state, &configs).await?;
     let portal_dir = state.config.portal_dir.clone();
     let (models_path, contact_path, about_path) = column_paths(&configs);
+    ensure_portal_assets(&portal_dir, &state.config.assets_dir).await;
 
     let mut tera = tera::Tera::default();
     register_templates(&mut tera)?;

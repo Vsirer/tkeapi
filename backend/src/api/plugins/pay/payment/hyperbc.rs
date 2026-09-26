@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::models::PaymentHyperbcSettings;
@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use md5::{Digest, Md5};
 use reqwest::Client;
+use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
@@ -49,17 +50,107 @@ pub struct CreateH5OrderData {
     pub currency: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+fn deserialize_flexible_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_i64().unwrap_or(0) as i32),
+        Some(serde_json::Value::String(s)) => Ok(s.parse::<i32>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+fn deserialize_flexible_i32_opt<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_i64().map(|x| x as i32)),
+        Some(serde_json::Value::String(s)) => Ok(s.parse::<i32>().ok()),
+        _ => Ok(None),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HyperbcPaymentItem {
+    pub coin: Option<String>,
+    pub address: Option<String>,
+    pub txid: Option<String>,
+    pub amount: Option<String>,
+    pub confirm_time: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_flexible_i32_opt")]
+    pub status: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_flexible_i32_opt")]
+    pub check_status: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_flexible_i32_opt")]
+    pub check_code: Option<i32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[allow(dead_code)]
 pub struct QueryOrderData {
+    #[serde(default)]
     pub order_no: String,
+    #[serde(default)]
     pub merchant_order_id: String,
-    pub amount: String,
-    pub currency: String,
+    #[serde(default)]
+    pub amount: Option<String>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_i32")]
     pub status: i32,
+    #[serde(default, deserialize_with = "deserialize_flexible_i32_opt")]
     pub check_status: Option<i32>,
     pub pay_amount: Option<String>,
     pub pay_currency: Option<String>,
+    #[serde(default)]
+    pub payments: Option<Vec<HyperbcPaymentItem>>,
+}
+
+impl QueryOrderData {
+    /// 统计 payments 中有效到账的代币总金额（过滤合法大于 0 的数值）
+    pub fn get_actual_crypto_amount(&self) -> f64 {
+        if let Some(ref list) = self.payments {
+            list.iter()
+                .filter_map(|p| p.amount.as_deref().and_then(|a| a.parse::<f64>().ok()))
+                .filter(|&a| a > 0.0)
+                .sum()
+        } else {
+            0.0
+        }
+    }
+
+    /// 提取异常状态码（优先从 check_status，若无则从 payments[i].check_status 或 check_code 提取）
+    pub fn get_check_code(&self) -> i32 {
+        if let Some(c) = self.check_status {
+            if c != 0 {
+                return c;
+            }
+        }
+        if let Some(ref list) = self.payments {
+            for p in list {
+                if let Some(c) = p.check_status.or(p.check_code) {
+                    if c != 0 {
+                        return c;
+                    }
+                }
+            }
+        }
+        0
+    }
+}
+
+fn normalize_pem(pem: &str) -> String {
+    let replaced = pem.replace(['\u{2014}', '\u{2013}'], "-");
+    let lines: Vec<&str> = replaced
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    lines.join("\n")
 }
 
 impl HyperbcClient {
@@ -68,6 +159,14 @@ impl HyperbcClient {
             settings,
             http: Client::new(),
         }
+    }
+
+    /// 从回调原始 JSON 字符串中自适应提取待签名内容：
+    /// 基于全局公共 OrderedJson 机制，若包含 data 节点且为 Object 则提取 data 内部字段，否则提取根节点
+    pub fn get_sign_content_from_raw(raw_json: &str) -> Result<String> {
+        let root: crate::utils::OrderedJson = serde_json::from_str(raw_json)
+            .map_err(|e| anyhow!("解析原始 JSON 失败: {}", e))?;
+        Ok(root.data_or_self().to_sign_query(true, true, &["sign"]))
     }
 
     pub fn get_sign_content(val: &Value) -> String {
@@ -87,7 +186,6 @@ impl HyperbcClient {
                 }
                 Value::Object(map) => {
                     let mut s = String::new();
-                    // 开启 preserve_order 后，此处 map 迭代器将遵循 JSON 原始输入顺序
                     for (_, val) in map {
                         s.push_str(&value_as_string(val));
                     }
@@ -128,8 +226,6 @@ impl HyperbcClient {
         let hash_result = hasher.finalize();
 
         // 2. 构造 PKCS#1 v1.5 MD5 DigestInfo 前缀
-        // ASN.1 OID for MD5: 1.2.840.113549.2.5
-        // 前缀长度 18 字节
         let prefix: [u8; 18] = [
             0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05,
             0x05, 0x00, 0x04, 0x10,
@@ -139,8 +235,10 @@ impl HyperbcClient {
         digest_info.extend_from_slice(&prefix);
         digest_info.extend_from_slice(&hash_result);
 
-        // 3. 使用商户私钥做 Raw RSA 签名 (PKCS#1 v1.5)
-        let private_key = RsaPrivateKey::from_pkcs8_pem(&self.settings.merchant_private_key)
+        // 3. 使用商户私钥做 Raw RSA 签名 (PKCS#1 v1.5，清洗后兼容 PKCS#8 与 PKCS#1)
+        let clean_pem = normalize_pem(&self.settings.merchant_private_key);
+        let private_key = RsaPrivateKey::from_pkcs8_pem(clean_pem.trim())
+            .or_else(|_| RsaPrivateKey::from_pkcs1_pem(clean_pem.trim()))
             .map_err(|e| anyhow!("解析商户私钥失败: {}", e))?;
 
         let signature_bytes = private_key
@@ -150,10 +248,8 @@ impl HyperbcClient {
         Ok(BASE64.encode(signature_bytes))
     }
 
-    /// 使用 HyperBC 平台公钥验证回调签名
-    pub fn verify_signature(&self, val: &Value, sign_base64: &str) -> Result<bool> {
-        let sign_str = Self::get_sign_content(val);
-
+    /// 核心验签方法：传入待签名串与签名 Base64 字符串
+    pub fn verify_signature_str(&self, sign_str: &str, sign_base64: &str) -> Result<bool> {
         // 1. 计算 MD5
         let mut hasher = Md5::new();
         hasher.update(sign_str.as_bytes());
@@ -169,8 +265,9 @@ impl HyperbcClient {
         digest_info.extend_from_slice(&prefix);
         digest_info.extend_from_slice(&hash_result);
 
-        // 3. 公钥验签
-        let public_key = RsaPublicKey::from_public_key_pem(&self.settings.hyperbc_public_key)
+        // 3. 公钥验签（使用清洗后的公钥，容错中文字符与换行）
+        let clean_pem = normalize_pem(&self.settings.hyperbc_public_key);
+        let public_key = RsaPublicKey::from_public_key_pem(clean_pem.trim())
             .map_err(|e| anyhow!("解析 HyperBC 平台公钥失败: {}", e))?;
 
         let signature_bytes = BASE64
@@ -183,9 +280,22 @@ impl HyperbcClient {
             &signature_bytes,
         ) {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(e) => {
+                tracing::warn!("[HyperBC验签] RSA 校验不通过详情: {:?}", e);
+                Ok(false)
+            }
         }
     }
+
+    /// 构造 HyperBC 回调成功标准响应 JSON（官方规范：包含 status 200、商户私钥 RSA-MD5 签名与 success_data）
+    pub fn success_response(&self) -> String {
+        let sign = self
+            .rsa_sign(&serde_json::json!({ "success_data": "success" }))
+            .unwrap_or_default();
+        format!(r#"{{"status":200,"sign":"{}","data":{{"success_data":"success"}}}}"#, sign)
+    }
+
+
 
     /// 创建 H5 Hosted Cashier 订单
     /// merchant_order_id: 商户订单号
@@ -259,7 +369,6 @@ impl HyperbcClient {
         let resp_body = resp.text().await.unwrap_or_default();
 
         tracing::info!("[HyperBC] create_h5_order 响应: HTTP {}", status);
-        tracing::debug!("[HyperBC] 响应内容: {}", resp_body);
 
         if !status.is_success() {
             return Err(anyhow!("HyperBC HTTP {}: {}", status, resp_body));
@@ -321,6 +430,12 @@ impl HyperbcClient {
 
         let status = resp.status();
         let resp_body = resp.text().await.unwrap_or_default();
+        tracing::warn!(
+            "[HyperBC查单] 订单 {} 响应报文: HTTP {}, body: {}",
+            order_no,
+            status,
+            resp_body
+        );
 
         if !status.is_success() {
             return Err(anyhow!("HyperBC HTTP {}: {}", status, resp_body));

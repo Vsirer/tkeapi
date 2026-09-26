@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use axum::{
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::api::plugins::{is_plugin_compiled, is_plugin_enabled};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::models::{CreateRuleRequest, ForwardRule, UpdateRuleRequest};
 use crate::AppState;
 
@@ -26,12 +26,48 @@ const PLUGIN_GATED_SYSTEM_RULES: &[(&str, &str)] = &[
     ("ComfyUI", "comfyui_bridge"),
 ];
 
-const PLUGIN_GATED_PLUGIN_NAMES: &[&str] =
-    &["volcengine_enhance", "asset_manager", "asset_manager_intl", "comfyui_bridge"];
+const PLUGIN_GATED_PLUGIN_NAMES: &[&str] = &[
+    "volcengine_enhance",
+    "tencent_enhance",
+    "asset_manager",
+    "asset_manager_intl",
+    "comfyui_bridge",
+];
+
+fn config_flag_on(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_i64() == Some(1),
+        serde_json::Value::String(s) => s == "1" || s.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// 级联规则依赖阶段二插件：`cascade_engine=tencent` 走腾讯云增强，其余走火山 MediaKit。
+fn cascade_required_plugin(cfg: &serde_json::Value) -> Option<&'static str> {
+    let on = cfg.get("is_cascade").is_some_and(config_flag_on);
+    if !on {
+        return None;
+    }
+    let engine = cfg
+        .get("cascade_engine")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if engine.eq_ignore_ascii_case("tencent") {
+        Some("tencent_enhance")
+    } else {
+        Some("volcengine_enhance")
+    }
+}
+
+fn is_enhance_category(category: &str) -> bool {
+    matches!(category, "画质增强" | "视频增强" | "图像增强")
+}
 
 /// 解析规则依赖的插件名；无依赖返回 `None`。
 pub(crate) fn required_plugin_for_forward_rule(
     name: &str,
+    category: &str,
     config_json: &str,
 ) -> Option<&'static str> {
     for (rule_name, plugin) in PLUGIN_GATED_SYSTEM_RULES {
@@ -40,9 +76,18 @@ pub(crate) fn required_plugin_for_forward_rule(
         }
     }
     if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(config_json) {
+        if let Some(plugin) = cascade_required_plugin(&cfg) {
+            return Some(plugin);
+        }
         if cfg.get("asset_convert_ns").and_then(|v| v.as_str()) == Some("asset_manager_intl") {
             return Some("asset_manager_intl");
         }
+        if cfg.get("target_type").and_then(|v| v.as_str()) == Some("volcengine_media_enhance") {
+            return Some("volcengine_enhance");
+        }
+    }
+    if is_enhance_category(category) || name.contains("MediaKit") {
+        return Some("volcengine_enhance");
     }
     None
 }
@@ -50,10 +95,11 @@ pub(crate) fn required_plugin_for_forward_rule(
 /// `plugin_available(name)`：插件已编译且已启用时返回 true。
 pub(crate) fn should_hide_plugin_gated_rule(
     name: &str,
+    category: &str,
     config_json: &str,
     plugin_available: &HashMap<&str, bool>,
 ) -> bool {
-    match required_plugin_for_forward_rule(name, config_json) {
+    match required_plugin_for_forward_rule(name, category, config_json) {
         Some(plugin) => !plugin_available.get(plugin).copied().unwrap_or(false),
         None => false,
     }
@@ -77,7 +123,9 @@ pub async fn list_rules(State(state): State<Arc<AppState>>) -> AppResult<Json<Ve
     .fetch_all(&state.db.pool)
     .await?;
     let availability = load_plugin_availability(&state).await;
-    rules.retain(|r| !should_hide_plugin_gated_rule(&r.name, &r.config_json, &availability));
+    rules.retain(|r| {
+        !should_hide_plugin_gated_rule(&r.name, &r.category, &r.config_json, &availability)
+    });
     Ok(Json(rules))
 }
 
@@ -113,10 +161,11 @@ pub async fn create_rule(
 
     let category_val = req.category.unwrap_or_else(|| "聊天".to_string());
 
-    let mut eid_val = req.eid.clone().unwrap_or_default();
+    let mut eid_val = req.eid.as_deref().unwrap_or("").trim().to_string();
     if eid_val.is_empty() {
-        use rand::Rng;
-        eid_val = format!("1{:04}", rand::thread_rng().gen_range(0..10000));
+        eid_val = state.db.generate_unique_forward_eid().await?;
+    } else if state.db.forward_eid_taken(&eid_val, None).await? {
+        return Err(AppError::Conflict("转发规则 EID 已存在".to_string()));
     }
 
     let sort_order_val = req.sort_order.unwrap_or(0);
@@ -259,6 +308,10 @@ pub async fn update_rule(
         .await?;
     }
     if let Some(eid) = &req.eid {
+        let eid = eid.trim();
+        if !eid.is_empty() && state.db.forward_eid_taken(eid, Some(id)).await? {
+            return Err(AppError::Conflict("转发规则 EID 已存在".to_string()));
+        }
         sqlx::query(
             &state
                 .db
@@ -326,4 +379,53 @@ pub async fn delete_rule(
     .await?;
 
     Ok(Json(serde_json::json!({ "success": true })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn avail(volc: bool, tencent: bool) -> HashMap<&'static str, bool> {
+        let mut map = HashMap::new();
+        map.insert("volcengine_enhance", volc);
+        map.insert("tencent_enhance", tencent);
+        map.insert("asset_manager", true);
+        map.insert("asset_manager_intl", true);
+        map.insert("comfyui_bridge", true);
+        map
+    }
+
+    #[test]
+    fn hides_volc_cascade_when_mediakit_off() {
+        let cfg = r#"{"is_cascade":true,"target_type":"volcengine"}"#;
+        assert!(should_hide_plugin_gated_rule("自定义级联", "视频", cfg, &avail(false, true)));
+        assert!(!should_hide_plugin_gated_rule("自定义级联", "视频", cfg, &avail(true, false)));
+    }
+
+    #[test]
+    fn hides_tencent_cascade_when_plugin_off() {
+        let cfg = r#"{"is_cascade":true,"cascade_engine":"tencent"}"#;
+        assert!(should_hide_plugin_gated_rule("腾讯级联", "视频", cfg, &avail(true, false)));
+        assert!(!should_hide_plugin_gated_rule("腾讯级联", "视频", cfg, &avail(false, true)));
+    }
+
+    #[test]
+    fn keeps_plain_rule_when_enhance_plugins_off() {
+        let cfg = r#"{"target_type":"openai"}"#;
+        assert!(!should_hide_plugin_gated_rule("普通转发", "聊天", cfg, &avail(false, false)));
+    }
+
+    #[test]
+    fn hides_enhance_category_and_mediakit_rules_when_plugin_off() {
+        let cfg = r#"{"target_type":"volcengine_media_enhance"}"#;
+        assert!(should_hide_plugin_gated_rule(
+            "火山 MediaKit 视频画质增强 (标准/专业版)",
+            "视频",
+            cfg,
+            &avail(false, true),
+        ));
+        assert!(should_hide_plugin_gated_rule("自定义", "画质增强", "{}", &avail(false, true)));
+        assert!(!should_hide_plugin_gated_rule("自定义", "画质增强", "{}", &avail(true, false)));
+    }
 }

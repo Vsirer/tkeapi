@@ -1,17 +1,18 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Typography, Switch, Button, Checkbox, Divider, Spin, Tag, Tabs, Input, InputNumber, Form, Space, Alert, Select, Table, Drawer, Radio, App, Segmented, Modal, Tooltip, Row, Col, Popconfirm } from 'antd';
 import { AppMessageBridge } from '../../components/AppMessageBridge';
-import { EyeOutlined, ArrowLeftOutlined, SaveOutlined, PictureOutlined, AppstoreOutlined, CloudServerOutlined, ApiOutlined, CheckCircleOutlined, LoadingOutlined, CloseCircleOutlined, SendOutlined, TeamOutlined, ExperimentOutlined, SettingOutlined, VideoCameraOutlined, PlusOutlined, DeleteOutlined, EditOutlined, ShopOutlined, MessageOutlined, ReloadOutlined, HomeOutlined, ThunderboltOutlined, InfoCircleOutlined, BookOutlined, QuestionCircleOutlined, SafetyCertificateOutlined, TagsOutlined, SearchOutlined, CheckOutlined, CloseOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { EyeOutlined, ArrowLeftOutlined, SaveOutlined, PictureOutlined, AppstoreOutlined, CloudServerOutlined, ApiOutlined, CheckCircleOutlined, LoadingOutlined, CloseCircleOutlined, SendOutlined, TeamOutlined, ExperimentOutlined, SettingOutlined, VideoCameraOutlined, PlusOutlined, DeleteOutlined, EditOutlined, CopyOutlined, ShopOutlined, MessageOutlined, ReloadOutlined, HomeOutlined, ThunderboltOutlined, InfoCircleOutlined, BookOutlined, QuestionCircleOutlined, SafetyCertificateOutlined, TagsOutlined, SearchOutlined, CheckOutlined, CloseOutlined, ArrowUpOutlined, ArrowDownOutlined, AudioOutlined, MobileOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom';
 import request from '../../utils/request';
 import { invalidateAdminPluginsCache } from '../../utils/adminPlugins';
+import { invalidateActivePluginsCache } from '../../utils/activePlugins';
 import { getPluginAdminTabs, resolvePluginAdminDefaultTab } from '../../utils/pluginAdminTabs';
 import { modelMatchesKeyword } from '../../utils/modelKeywordMatch';
 import { buildClassificationParams } from '../../utils/classificationParams';
@@ -20,6 +21,7 @@ import {
   AdminPresetAssets,
   RelayConvertAssets,
   ApiProxyAssets,
+  CloudAssetsTab,
   TeamConfig,
   ThemePromo,
   SiteIconsManager,
@@ -33,26 +35,53 @@ import {
   DocsManager,
   ApiAccessConfig,
   HaLogs,
+  PlaygroundSkillConfigTab,
+  PlaygroundChatConfigTab,
+  PlaygroundPromptOptimizeConfigTab,
+  PlaygroundDemoImageConfig,
+  PlaygroundUserNavConfig,
 } from '../../plugins-registry';
 import ModerationQuery from '../ModerationQuery/ModerationQuery';
 import { useThemeStore } from '../../store/theme';
 import ApiLogPayloadExpand from './components/ApiLogPayloadExpand';
+import PluginLogRetentionCard from './components/PluginLogRetentionCard';
 import SchemeIoEditor, { ensureSchemeIoDefaults } from './components/SchemeIoEditor';
 import ModelIoOverridesEditor from './components/ModelIoOverridesEditor';
-import { validateSchemeIoForSave } from './Playground_2026/utils/schemeIo';
-import { SCHEME_QUICK_BAR_HELP, SCHEME_QUICK_BAR_MAX, countQuickBarEnabled, isQuickBarEligible } from './Playground_2026/utils/schemeQuickBar';
-import { isCountParam, isSingleCountParam } from './Playground_2026/components/SchemeParamFields';
-import { featureKindFromTypeName, parseFeatureAttrList, videoGenerationModesFromScheme } from './Playground_2026/config/modelFeatures';
-import FeatureAttributesEditor from './Playground_2026/components/FeatureAttributesEditor';
-import ImageSpecialParamsEditor from './Playground_2026/components/ImageSpecialParamsEditor';
+import { validateSchemeIoForSave } from './components/scheme/schemeIo';
+import { SCHEME_QUICK_BAR_HELP, SCHEME_QUICK_BAR_MAX, countQuickBarEnabled, isQuickBarEligible } from './components/scheme/schemeQuickBar';
+import { isCountParam, isSingleCountParam } from './components/scheme/schemeParamUtils';
+import { CHAT_UNDERSTAND_ATTRS, featureKindFromTypeName, parseFeatureAttrList, videoGenerationModesFromScheme } from './components/scheme/modelFeatures';
+import { CHAT_INPUT_PROTOCOLS, CHAT_THINKING_PROFILES } from './components/scheme/chatProtocol';
+import { chatProtocolSelectLabel } from './components/scheme/ChatProtocolHelpMark';
+import FeatureAttributesEditor from './components/scheme/FeatureAttributesEditor';
+import ImageSpecialParamsEditor from './components/scheme/ImageSpecialParamsEditor';
+import SchemePromptOptimizeField from './components/scheme/SchemePromptOptimizeField';
+import SchemeVoiceLibraryField from './components/scheme/SchemeVoiceLibraryField';
+import {
+  parsePromptOptimizeBinding,
+  seedPromptOptimize,
+} from './components/scheme/promptOptimize';
+import {
+  parseVoiceLibraryBinding,
+  seedVoiceLibrary,
+  type VoiceCatalogs,
+} from './components/scheme/voiceLibrary';
+import {
+  defaultUserNavModules,
+  normalizeUserNavModules,
+  patchUserNavModule,
+  type UserNavModule,
+} from './components/scheme/userNavModules';
 import {
   normalizeImageSpecialParams,
   officialImageSpecialParams,
   seedImageSpecialParams,
-} from './Playground_2026/utils/imageSpecialParams';
+  isImageSpecialForcedOn,
+} from './components/scheme/imageSpecialParams';
 import useSettingsStore from '../../store/settings';
 import { StorageConfigPanel, getStorageProvider } from '../../components/Storage';
 import ClassificationFilter from '../../components/Models/ClassificationFilter';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import MarketplaceTrendingTab from './ModelMarketplace/MarketplaceTrendingTab';
 import { useTranslation } from 'react-i18next';
 import { formatApiDateTime } from '../../utils/timedisplay';
@@ -120,6 +149,41 @@ const SCHEME_CONTROL_TYPE_OPTIONS = [
   { label: 'Switch 开关', value: 'switch' },
   { label: 'Slider 滑块', value: 'slider' },
 ];
+
+function sameJsonValue(a: any, b: any) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** 把当前方案参数改写成逼近目标方案（系统默认）的模型级覆写 */
+function buildParamOverridesToward(baseParams: any[] | undefined, targetParams: any[] | undefined) {
+  const base = Array.isArray(baseParams) ? baseParams : [];
+  const target = Array.isArray(targetParams) ? targetParams : [];
+  const baseByKey = new Map(base.filter((p) => p?.key).map((p) => [p.key, p]));
+  const targetKeys = new Set(target.map((p) => p?.key).filter(Boolean));
+  const remove = base.map((p) => p.key).filter((k) => k && !targetKeys.has(k));
+  const add: any[] = [];
+  const modify: Record<string, any> = {};
+  for (const tp of target) {
+    if (!tp?.key) continue;
+    const bp = baseByKey.get(tp.key);
+    if (!bp) {
+      add.push(JSON.parse(JSON.stringify(tp)));
+      continue;
+    }
+    const patch: Record<string, any> = {};
+    const fields = new Set([...Object.keys(bp), ...Object.keys(tp)]);
+    for (const field of fields) {
+      if (field === 'key') continue;
+      if (!sameJsonValue(bp[field], tp[field])) patch[field] = tp[field];
+    }
+    if (Object.keys(patch).length) modify[tp.key] = patch;
+  }
+  const out: { modify?: Record<string, any>; remove?: string[]; add?: any[] } = {};
+  if (Object.keys(modify).length) out.modify = modify;
+  if (remove.length) out.remove = remove;
+  if (add.length) out.add = add;
+  return Object.keys(out).length ? out : null;
+}
 
 function isSeedream50ProModel(model?: { model_id?: string; name?: string; mid?: string } | null) {
   const hay = `${model?.model_id || ''} ${model?.name || ''} ${model?.mid || ''}`
@@ -247,6 +311,7 @@ type HaRuleDto = {
   name: string;
   retries: number;
   budget: number;
+  ttfb?: number;
   err: 'first' | 'last';
   melt: Record<string, number>;
   allow?: string[];
@@ -254,13 +319,19 @@ type HaRuleDto = {
 };
 
 const HA_MAX_RETRIES = 100;
+const HA_MAX_RULES = 32;
+
+function newHaRuleId(): string {
+  return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
 
 function newHaRule(): HaRuleDto {
   return {
-    id: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    id: newHaRuleId(),
     name: '新规则',
     retries: 3,
-    budget: 0,
+    budget: 900,
+    ttfb: 0,
     err: 'first',
     melt: { ...HA_DEFAULT_MELT },
     allow: [],
@@ -284,7 +355,84 @@ const pluginIcons: Record<string, React.ReactNode> = {
   docs_api: <BookOutlined style={{ fontSize: 20 }} />,
   comfyui_bridge: <VideoCameraOutlined style={{ fontSize: 20 }} />,
   content_security: <SafetyCertificateOutlined style={{ fontSize: 20 }} />,
+  mobile_app: <MobileOutlined style={{ fontSize: 20 }} />,
 };
+
+const MpLevelSelectCell: React.FC<{
+  record: any;
+  levels: UserLevel[];
+  _isLight: boolean;
+  onChange: (id: number, vals: number[]) => void;
+}> = React.memo(({ record, levels, _isLight, onChange }) => {
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+
+  const selectedLevels = useMemo(() => {
+    const ids: number[] = record.mp_level_ids || [];
+    return ids.map(id => {
+      const found = levels.find(l => l.id === id);
+      return { id, name: found ? found.name : `ID: ${id}` };
+    });
+  }, [record.mp_level_ids, levels]);
+
+  const tooltipTitle = selectedLevels.length > 0 ? (
+    <div style={{ maxWidth: 300, padding: '2px 0' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: 'rgba(255,255,255,0.95)' }}>
+        {record.mp_enabled ? '不可查看' : '可查看'}的用户等级 (共 {selectedLevels.length} 项)：
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
+        {selectedLevels.map(lv => (
+          <Tag
+            key={lv.id}
+            color="processing"
+            style={{
+              margin: 0,
+              fontSize: 11,
+              lineHeight: '20px',
+              padding: '0 6px',
+              borderRadius: 4,
+            }}
+          >
+            {lv.name}
+          </Tag>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <Tooltip
+      title={tooltipTitle}
+      placement="topLeft"
+      {...(isDropdownOpen ? { open: false } : {})}
+    >
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', marginBottom: 4 }}>
+          <span>{record.mp_enabled ? '不可查看' : '可查看'}</span>
+          {selectedLevels.length > 0 && (
+            <span style={{ color: _isLight ? '#1677ff' : '#4096ff', fontSize: 11, fontWeight: 500 }}>
+              已选 {selectedLevels.length} 项
+            </span>
+          )}
+        </div>
+        <Select
+          mode="multiple"
+          size="small"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          maxTagCount="responsive"
+          maxTagPlaceholder={(omittedValues) => `+${omittedValues.length}...`}
+          placeholder={record.mp_enabled ? '默认全部可查看' : '默认全部不可查看'}
+          value={record.mp_level_ids || []}
+          onOpenChange={setIsDropdownOpen}
+          onChange={(vals: number[]) => onChange(record.id, vals)}
+          options={levels.map(lv => ({ label: lv.name, value: lv.id }))}
+          style={{ width: '100%' }}
+        />
+      </div>
+    </Tooltip>
+  );
+});
 
 const PluginConfigInner: React.FC = () => {
   const { t } = useTranslation();
@@ -314,10 +462,13 @@ const PluginConfigInner: React.FC = () => {
   const [defaultMaxAssets, setDefaultMaxAssets] = useState<number>(10);
   /** 创作中心2026：单个工作流节点上限 */
   const [workflowNodeLimit, setWorkflowNodeLimit] = useState<number>(200);
-  /** 创作中心2026：工作流功能总开关（默认关闭） */
-  const [workflowEnabled, setWorkflowEnabled] = useState<boolean>(false);
-  /** 创作中心2026：用户端工作流菜单名称（默认「工作流」） */
-  const [workflowMenuTitle, setWorkflowMenuTitle] = useState<string>('工作流');
+  /** 创作中心2026：用户端左侧功能菜单（顺序即展示顺序） */
+  const [userNavModules, setUserNavModules] = useState<UserNavModule[]>(() => defaultUserNavModules());
+  const workflowNav = userNavModules.find((m) => m.id === 'workflow');
+  const workflowEnabled = !!workflowNav?.enabled;
+  const workflowMenuTitle = workflowNav?.title || '';
+  const [imageEditEnabled, setImageEditEnabled] = useState(false);
+  const [videoEditWorkbenchEnabled, setVideoEditWorkbenchEnabled] = useState(false);
   const [showInPlaygroundPrompt, setShowInPlaygroundPrompt] = useState<boolean>(false);
   const [docsApiAllowGuest, setDocsApiAllowGuest] = useState<boolean>(false);
   const [showInAdminMenu, setShowInAdminMenu] = useState(false);
@@ -337,6 +488,8 @@ const PluginConfigInner: React.FC = () => {
   const [haRules, setHaRules] = useState<HaRuleDto[]>([]);
   const [haDraft, setHaDraft] = useState<HaRuleDto | null>(null);
   const [haDraftIsNew, setHaDraftIsNew] = useState(false);
+  const [haCopySource, setHaCopySource] = useState<HaRuleDto | null>(null);
+  const [haCopyName, setHaCopyName] = useState('');
   const [savingStorage, setSavingStorage] = useState(false);
   const [activeTabKey, setActiveTabKey] = useState(() => {
     const hash = window.location.hash.replace('#', '');
@@ -374,16 +527,15 @@ const PluginConfigInner: React.FC = () => {
   // 接口日志
   const [apiLogs, setApiLogs] = useState<any[]>([]);
   const [apiLogsTotal, setApiLogsTotal] = useState(0);
-  const [apiLogsPage, setApiLogsPage] = useState(1);
-  const [apiLogsPageSize, setApiLogsPageSize] = useState(15);
+  const { page: apiLogsPage, pageSize: apiLogsPageSize, setPage: setApiLogsPage, setPageSize: setApiLogsPageSize } = useListPager();
   const [apiLogsLoading, setApiLogsLoading] = useState(false);
   const [logSourceFilter, setLogSourceFilter] = useState<string>('');
   const [logKeyword, setLogKeyword] = useState<string>('');
+  const [logStatusFilter, setLogStatusFilter] = useState<string>('');
 
   // ====== 模型创作中心 (Playground) 配置 Tab ======
   const [pgModels, setPgModels] = useState<any[]>([]);
-  const [pgPage, setPgPage] = useState(1);
-  const [pgPageSize, setPgPageSize] = useState(20);
+  const { page: pgPage, pageSize: pgPageSize, onChange: onPgPageChange } = useListPager();
   const [pgAdvancedNodesEnabled, setPgAdvancedNodesEnabled] = useState<boolean>(false);
   const [pgAdvancedNodePreviewEnabled, setPgAdvancedNodePreviewEnabled] = useState<boolean>(true);
   const [pgAdvancedNodeVolcEnhanceEnabled, setPgAdvancedNodeVolcEnhanceEnabled] = useState<boolean>(false);
@@ -432,6 +584,8 @@ const PluginConfigInner: React.FC = () => {
   const [pgFeatureModalVisible, setPgFeatureModalVisible] = useState(false);
   const [pgFeatureModelId, setPgFeatureModelId] = useState<number | null>(null);
   const [pgFeatureDraft, setPgFeatureDraft] = useState<string[]>([]);
+  const [pgInputProtocolDraft, setPgInputProtocolDraft] = useState<string>('');
+  const [pgThinkingProfileDraft, setPgThinkingProfileDraft] = useState<string>('');
   const [pgFeatureSaving, setPgFeatureSaving] = useState(false);
   // 参数覆写 Modal
   const [pgOverrideModalVisible, setPgOverrideModalVisible] = useState(false);
@@ -444,11 +598,13 @@ const PluginConfigInner: React.FC = () => {
   const [pgIspModalVisible, setPgIspModalVisible] = useState(false);
   const [pgIspDraft, setPgIspDraft] = useState<any>(null);
   const [pgIspBaseline, setPgIspBaseline] = useState<any>(null);
+  const [pgPoDraft, setPgPoDraft] = useState<any>(null);
+  const [pgVlDraft, setPgVlDraft] = useState<any>(null);
+  const [pgVoiceCatalogs, setPgVoiceCatalogs] = useState<VoiceCatalogs>({});
 
   // ====== 模型广场管理 (Model Marketplace) 配置 ======
   const [mpModels, setMpModels] = useState<any[]>([]);
-  const [mpPage, setMpPage] = useState(1);
-  const [mpPageSize, setMpPageSize] = useState(20);
+  const { page: mpPage, pageSize: mpPageSize, onChange: onMpPageChange } = useListPager();
   const [savingMarketplace, setSavingMarketplace] = useState(false);
   const [mpSearchKeyword, setMpSearchKeyword] = useState('');
   const [mpProviderFilter, setMpProviderFilter] = useState<string>('all');
@@ -485,9 +641,40 @@ const PluginConfigInner: React.FC = () => {
     }
   }, [name]);
 
+  const modelSortTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
+  const persistModelPageSort = async (id: number, sort: number) => {
+    await request.put(`/models/${id}`, { sort_order: sort });
+  };
+
+  const persistModelPageSortDebounced = (id: number, sort: number) => {
+    const prev = modelSortTimers.current[id];
+    if (prev) clearTimeout(prev);
+    modelSortTimers.current[id] = setTimeout(() => {
+      persistModelPageSort(id, sort).catch((e) => {
+        console.error(e);
+        message.error('排序保存失败');
+      });
+    }, 300);
+  };
+
+  const flushPendingModelPageSorts = async () => {
+    const pendingIds = Object.keys(modelSortTimers.current).map(Number);
+    for (const timer of Object.values(modelSortTimers.current)) {
+      clearTimeout(timer);
+    }
+    modelSortTimers.current = {};
+    await Promise.all(pendingIds.map((id) => {
+      const row = mpModels.find((x) => x.id === id);
+      if (!row) return Promise.resolve();
+      return persistModelPageSort(id, row.mp_sort_order || 0);
+    }));
+  };
+
   const handleSaveMarketplaceConfig = async () => {
     try {
       setSavingMarketplace(true);
+      await flushPendingModelPageSorts();
       const payload = {
         display_mode: mpDisplayMode,
         allow_guest: mpAllowGuest,
@@ -536,6 +723,7 @@ const PluginConfigInner: React.FC = () => {
 
   const handleMpSortChange = (id: number, sort: number) => {
     setMpModels(prev => prev.map(m => m.id === id ? { ...m, mp_sort_order: sort } : m));
+    persistModelPageSortDebounced(id, sort);
   };
 
   const handleMpDescChange = (id: number, desc: string, language: 'zh' | 'en' = 'zh') => {
@@ -551,6 +739,9 @@ const PluginConfigInner: React.FC = () => {
         setPgModels(sorted);
       }
       if (res.schemes) setPgSchemes(res.schemes);
+      if (res.voice_catalogs && typeof res.voice_catalogs === 'object') {
+        setPgVoiceCatalogs(res.voice_catalogs);
+      }
       if (Array.isArray(res.model_types)) {
         setPgModelTypes(res.model_types.map((t: any) => ({
           id: t.id,
@@ -631,8 +822,8 @@ const PluginConfigInner: React.FC = () => {
   };
 
   const openHaCreate = () => {
-    if (haRules.length >= 32) {
-      message.warning('最多 32 条规则');
+    if (haRules.length >= HA_MAX_RULES) {
+      message.warning(`最多 ${HA_MAX_RULES} 条规则`);
       return;
     }
     setHaDraftIsNew(true);
@@ -647,6 +838,15 @@ const PluginConfigInner: React.FC = () => {
       allow: [...(r.allow || [])],
       deny: [...(r.deny || [])],
     });
+  };
+
+  const openHaCopy = (r: HaRuleDto) => {
+    if (haRules.length >= HA_MAX_RULES) {
+      message.warning(`最多 ${HA_MAX_RULES} 条规则`);
+      return;
+    }
+    setHaCopySource(r);
+    setHaCopyName(`${r.name} 副本`);
   };
 
   const patchHaDraft = (fn: (r: HaRuleDto) => HaRuleDto) => {
@@ -683,7 +883,12 @@ const PluginConfigInner: React.FC = () => {
       message.error('请填写规则名称');
       return;
     }
-    const next = { ...haDraft, name: nameTrim };
+    const next: HaRuleDto = {
+      ...haDraft,
+      name: nameTrim,
+      budget: haDraft.budget > 0 ? haDraft.budget : 900,
+      ttfb: typeof haDraft.ttfb === 'number' && haDraft.ttfb >= 0 ? haDraft.ttfb : 0,
+    };
     let nextRules: HaRuleDto[];
     if (haDraftIsNew) {
       if (haRules.some(r => r.id === next.id)) {
@@ -701,6 +906,44 @@ const PluginConfigInner: React.FC = () => {
       message.success(haDraftIsNew ? '新建高可用规则成功' : '编辑高可用规则成功');
       setHaRules(nextRules);
       setHaDraft(null);
+      await fetchHaConfigBase();
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setSavingHa(false);
+    }
+  };
+
+  const commitHaCopy = async () => {
+    if (!haCopySource || savingHa) return;
+    if (haRules.length >= HA_MAX_RULES) {
+      message.warning(`最多 ${HA_MAX_RULES} 条规则`);
+      return;
+    }
+    const nameTrim = (haCopyName || '').trim();
+    if (!nameTrim) {
+      message.error('请填写规则名称');
+      return;
+    }
+    const next: HaRuleDto = {
+      ...haCopySource,
+      id: newHaRuleId(),
+      name: nameTrim,
+      melt: { ...(haCopySource.melt || {}) },
+      allow: [...(haCopySource.allow || [])],
+      deny: [...(haCopySource.deny || [])],
+    };
+    if (haRules.some(r => r.id === next.id)) {
+      message.error('规则 id 冲突，请重试');
+      return;
+    }
+    const nextRules = [...haRules, next];
+    try {
+      setSavingHa(true);
+      await request.post(`/plugins/${name}/ha-config`, { def: haDef, rules: nextRules });
+      message.success('复制规则成功');
+      setHaRules(nextRules);
+      setHaCopySource(null);
       await fetchHaConfigBase();
     } catch (e: any) {
       console.error(e);
@@ -809,6 +1052,20 @@ const PluginConfigInner: React.FC = () => {
     ...(name === 'playground_2026' && featureKindFromTypeName(m.type_name) === 'image' && m.pg_image_special_params && typeof m.pg_image_special_params === 'object' ? {
       image_special_params: m.pg_image_special_params,
     } : {}),
+    ...(name === 'playground_2026' && featureKindFromTypeName(m.type_name) === 'chat' ? {
+      ...(typeof m.pg_input_protocol === 'string' && m.pg_input_protocol
+        ? { input_protocol: m.pg_input_protocol }
+        : {}),
+      ...(typeof m.pg_thinking_profile === 'string' && m.pg_thinking_profile
+        ? { thinking_profile: m.pg_thinking_profile }
+        : {}),
+    } : {}),
+    ...(name === 'playground_2026' && (featureKindFromTypeName(m.type_name) === 'image' || featureKindFromTypeName(m.type_name) === 'video') ? {
+      prompt_optimize: m.pg_prompt_optimize && typeof m.pg_prompt_optimize === 'object' ? m.pg_prompt_optimize : null,
+    } : {}),
+    ...(name === 'playground_2026' && pgSchemes.find((s: any) => s.id === m.pg_scheme_id)?.type === 'audio' ? {
+      voice_library: m.pg_voice_library && typeof m.pg_voice_library === 'object' ? m.pg_voice_library : null,
+    } : {}),
   }));
 
   /** 创作中心 2026：方案/调参/IO/特性确认后立刻落库，不再依赖「保存全部配置」 */
@@ -896,11 +1153,16 @@ const PluginConfigInner: React.FC = () => {
   };
 
   const handlePgSortChange = async (id: number, sort: number) => {
+    const prev = pgModels;
     const next = pgModels.map(m => m.id === id ? { ...m, pg_sort_order: sort } : m);
     setPgModels(next);
-    if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '排序已保存' });
-      if (!ok) setPgModels(pgModels);
+    try {
+      await persistModelPageSort(id, sort);
+      message.success('排序已保存');
+    } catch (e) {
+      console.error(e);
+      message.error('保存失败');
+      setPgModels(prev);
     }
   };
 
@@ -917,7 +1179,13 @@ const PluginConfigInner: React.FC = () => {
 
   const handleConfirmScheme = async (schemeId?: string) => {
     const nextSchemeId = schemeId !== undefined ? schemeId : pgSelectedSchemeId;
-    const next = pgModels.map(m => m.id === pgCurrentId ? { ...m, pg_scheme_id: nextSchemeId } : m);
+    const next = pgModels.map(m => m.id === pgCurrentId
+      ? {
+          ...m,
+          pg_scheme_id: nextSchemeId,
+          ...(name === 'playground_2026' ? { pg_prompt_optimize: null, pg_voice_library: null } : {}),
+        }
+      : m);
     if (name === 'playground_2026') {
       const ok = await persistPlaygroundModels(next, {
         successMessage: nextSchemeId ? '方案已绑定' : '已取消绑定',
@@ -928,20 +1196,39 @@ const PluginConfigInner: React.FC = () => {
     setPgSchemeDrawerVisible(false);
   };
 
+  const handleUnbindScheme = async (modelId: number) => {
+    const next = pgModels.map(m => m.id === modelId
+      ? {
+          ...m,
+          pg_scheme_id: '',
+          pg_param_overrides: null,
+          pg_io_overrides: null,
+          pg_image_special_params: {},
+          ...(name === 'playground_2026' ? { pg_prompt_optimize: null, pg_voice_library: null } : {}),
+        }
+      : m);
+    if (name === 'playground_2026') {
+      const ok = await persistPlaygroundModels(next, { successMessage: '已取消绑定方案' });
+      if (!ok) return;
+    }
+    setPgModels(next);
+  };
+
   const inheritPgIspDraft = (record: any) => {
     const scheme = pgSchemes.find((s: any) => s.id === record?.pg_scheme_id);
-    if (scheme?.image_special_params?.enabled) {
+    if (isImageSpecialForcedOn(scheme?.id) || scheme?.image_special_params?.enabled) {
       return seedImageSpecialParams(scheme.image_special_params);
     }
     return { enabled: false };
   };
 
   const initPgIspDraft = (record: any) => {
+    const scheme = pgSchemes.find((s: any) => s.id === record?.pg_scheme_id);
+    const forced = isImageSpecialForcedOn(scheme?.id);
     const own = record?.pg_image_special_params;
     if (own && typeof own === 'object' && !Array.isArray(own) && Object.keys(own).length) {
-      return own.enabled
-        ? seedImageSpecialParams(own)
-        : { ...normalizeImageSpecialParams(own), enabled: false };
+      if (forced || own.enabled) return seedImageSpecialParams(own);
+      return { ...normalizeImageSpecialParams(own), enabled: false };
     }
     return inheritPgIspDraft(record);
   };
@@ -952,19 +1239,53 @@ const PluginConfigInner: React.FC = () => {
   const handleResetParamOverrides = async () => {
     const ovModel = pgModels.find(m => m.id === pgOverrideModelId);
     const resetIsp = isPg2026ImageModel(ovModel);
+    const boundScheme = pgSchemes.find((s: any) => s.id === ovModel?.pg_scheme_id);
+    const systemScheme = name === 'playground_2026'
+      ? defaultSchemeList.find((s: any) => s.id === ovModel?.pg_scheme_id)
+      : undefined;
+    const towardDefault = name === 'playground_2026' && systemScheme?.params
+      ? buildParamOverridesToward(boundScheme?.params, systemScheme.params)
+      : null;
+    let ispPatch: Record<string, any> = {};
+    if (resetIsp) {
+      const defIsp = systemScheme?.image_special_params;
+      ispPatch = {
+        pg_image_special_params: defIsp && typeof defIsp === 'object' && !Array.isArray(defIsp)
+          ? seedImageSpecialParams(defIsp)
+          : {},
+      };
+    }
     const next = pgModels.map(m => m.id === pgOverrideModelId
-      ? { ...m, pg_param_overrides: null, ...(resetIsp ? { pg_image_special_params: {} } : {}) }
+      ? { ...m, pg_param_overrides: towardDefault, ...ispPatch, ...(name === 'playground_2026' && (boundScheme?.type === 'image' || boundScheme?.type === 'video') ? { pg_prompt_optimize: null } : {}), ...(name === 'playground_2026' && boundScheme?.type === 'audio' ? { pg_voice_library: null } : {}) }
       : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为方案预设' });
+      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为系统默认方案' });
       if (!ok) return;
     }
-    setPgOverrideData({ modify: {}, remove: [], add: [] });
-    setPgIspDraft(resetIsp ? inheritPgIspDraft(ovModel) : null);
+    setPgOverrideData(towardDefault || { modify: {}, remove: [], add: [] });
+    if (resetIsp) {
+      const ispVal = ispPatch.pg_image_special_params;
+      if (ispVal && typeof ispVal === 'object' && !Array.isArray(ispVal) && Object.keys(ispVal).length) {
+        setPgIspDraft(seedImageSpecialParams(ispVal));
+      } else if (systemScheme) {
+        setPgIspDraft(
+          isImageSpecialForcedOn(systemScheme.id) || systemScheme.image_special_params?.enabled
+            ? seedImageSpecialParams(systemScheme.image_special_params)
+            : { enabled: false },
+        );
+      } else {
+        setPgIspDraft(inheritPgIspDraft(ovModel));
+      }
+    } else {
+      setPgIspDraft(null);
+    }
+    setPgPoDraft(null);
     setPgIspModalVisible(false);
     setPgModels(next);
-    setPgOverrideModalVisible(false);
-    if (name !== 'playground_2026') message.info('已清空覆写，保存后生效');
+    if (name !== 'playground_2026') {
+      setPgOverrideModalVisible(false);
+      message.info('已清空覆写，保存后生效');
+    }
   };
 
   const handleConfirmParamOverrides = async () => {
@@ -974,7 +1295,7 @@ const PluginConfigInner: React.FC = () => {
     if ((cleaned.add || []).length === 0) delete cleaned.add;
     const ovModel = pgModels.find(m => m.id === pgOverrideModelId);
     const ovScheme = pgSchemes.find(s => s.id === ovModel?.pg_scheme_id);
-    if (name === 'playground_2026' && (ovScheme?.type === 'image' || ovScheme?.type === 'video')) {
+    if (name === 'playground_2026' && (ovScheme?.type === 'image' || ovScheme?.type === 'video' || ovScheme?.type === 'audio')) {
       const quickCount = countQuickBarEnabled(ovScheme?.params || [], cleaned);
       if (quickCount > SCHEME_QUICK_BAR_MAX) {
         message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
@@ -986,14 +1307,24 @@ const PluginConfigInner: React.FC = () => {
     if (isPg2026ImageModel(ovModel)) {
       const own = ovModel.pg_image_special_params;
       const hadOwn = own && typeof own === 'object' && !Array.isArray(own) && Object.keys(own).length > 0;
-      const draft = pgIspDraft || { enabled: false };
+      const draft = (isImageSpecialForcedOn(ovScheme?.id)
+        ? seedImageSpecialParams(pgIspDraft)
+        : (pgIspDraft || { enabled: false }));
       const sameAsInherit = JSON.stringify(draft) === JSON.stringify(inheritPgIspDraft(ovModel));
       if (hadOwn || !sameAsInherit) {
         ispPatch = { pg_image_special_params: draft };
       }
     }
+    let poPatch: Record<string, any> = {};
+    if (name === 'playground_2026' && (ovScheme?.type === 'image' || ovScheme?.type === 'video')) {
+      poPatch = { pg_prompt_optimize: pgPoDraft && typeof pgPoDraft === 'object' ? pgPoDraft : null };
+    }
+    let vlPatch: Record<string, any> = {};
+    if (name === 'playground_2026' && ovScheme?.type === 'audio') {
+      vlPatch = { pg_voice_library: pgVlDraft && typeof pgVlDraft === 'object' ? pgVlDraft : null };
+    }
     const next = pgModels.map(m => m.id === pgOverrideModelId
-      ? { ...m, pg_param_overrides: hasOverrides ? cleaned : null, ...ispPatch }
+      ? { ...m, pg_param_overrides: hasOverrides ? cleaned : null, ...ispPatch, ...poPatch, ...vlPatch }
       : m);
     if (name === 'playground_2026') {
       const ok = await persistPlaygroundModels(next, { successMessage: '参数已保存' });
@@ -1046,6 +1377,9 @@ const PluginConfigInner: React.FC = () => {
       const res = await (request.get(`/plugins/${name}/playground-schemes`) as Promise<any>);
       if (res.schemes) setSchemeList(res.schemes);
       if (res.defaults) setDefaultSchemeList(res.defaults);
+      if (res.voice_catalogs && typeof res.voice_catalogs === 'object') {
+        setPgVoiceCatalogs(res.voice_catalogs);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -1111,6 +1445,7 @@ const PluginConfigInner: React.FC = () => {
       description: '请填写方案描述',
       max_reference_images: 7,
       params,
+      ...(name === 'playground_2026' ? { prompt_optimize: seedPromptOptimize(null, 'video') } : {}),
     });
     setEditingScheme(JSON.parse(JSON.stringify(newScheme)));
     setEditingSchemeIndex(-1);
@@ -1119,14 +1454,35 @@ const PluginConfigInner: React.FC = () => {
 
   const handleEditScheme = (scheme: any, index: number) => {
     // 编辑：只改基本信息与参数，不带出 IO 编辑器
-    setEditingScheme(JSON.parse(JSON.stringify(scheme)));
+    const next = JSON.parse(JSON.stringify(scheme));
+    if (name === 'playground_2026' && (next.type === 'image' || next.type === 'video')) {
+      next.prompt_optimize = seedPromptOptimize(next.prompt_optimize, next.type);
+    }
+    if (name === 'playground_2026' && next.type === 'audio') {
+      next.voice_library = seedVoiceLibrary(next.voice_library, pgVoiceCatalogs);
+    }
+    if (isImageSpecialForcedOn(next.id)) {
+      const raw = next.image_special_params;
+      const hasMap = !!(raw?.image_size?.size_map && typeof raw.image_size.size_map === 'object'
+        && Object.keys(raw.image_size.size_map).length);
+      next.image_special_params = hasMap
+        ? { ...seedImageSpecialParams(raw), smart_size: 'auto', enabled: true }
+        : officialImageSpecialParams(next.id);
+    }
+    setEditingScheme(next);
     setEditingSchemeIndex(index);
     setSchemeEditVisible(true);
   };
 
   const handleOpenSchemeIo = (scheme: any, index: number) => {
-    if (scheme.type !== 'image' && scheme.type !== 'video') {
-      message.warning('仅图片、视频方案支持 IO 配置');
+    if (
+      scheme.type !== 'image' &&
+      scheme.type !== 'video' &&
+      !(name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat'))
+    ) {
+      message.warning(
+        name === 'playground_2026' ? '仅图片、视频、音频、聊天方案支持 IO 配置' : '仅图片、视频方案支持 IO 配置',
+      );
       return;
     }
     setEditingIoScheme(ensureSchemeIoDefaults(JSON.parse(JSON.stringify(scheme))));
@@ -1172,15 +1528,22 @@ const PluginConfigInner: React.FC = () => {
     if (!editingScheme) return;
     // 编辑抽屉不改 IO；新建或类型切换后若为空则补默认 IO
     let next = { ...editingScheme };
-    if (next.type === 'image' || next.type === 'video') {
+    if (next.type === 'image' || next.type === 'video' || (name === 'playground_2026' && next.type === 'audio')) {
       next = ensureSchemeIoDefaults(next);
     }
-    if (name === 'playground_2026' && (next.type === 'image' || next.type === 'video')) {
+    if (name === 'playground_2026' && (next.type === 'image' || next.type === 'video' || next.type === 'audio')) {
       const quickCount = (next.params || []).filter((p: any) => p?.quick).length;
       if (quickCount > SCHEME_QUICK_BAR_MAX) {
         message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
         return;
       }
+    }
+    if (name === 'playground_2026' && isImageSpecialForcedOn(next.id)) {
+      next.image_special_params = {
+        ...seedImageSpecialParams(next.image_special_params),
+        smart_size: 'auto',
+        enabled: true,
+      };
     }
     const refPort = (next.inputs || []).find(
       (p: any) => p?.key === 'reference_images' || p?.bind_key === 'image_urls' || p?.bind_key === 'reference_urls',
@@ -1197,7 +1560,9 @@ const PluginConfigInner: React.FC = () => {
           ? maxFromIo
           : typeof next.max_reference_images === 'number'
             ? next.max_reference_images
-            : 7,
+            : next.type === 'audio'
+              ? 0
+              : 7,
     };
     const nextList = editingSchemeIndex >= 0
       ? schemeList.map((s, i) => (i === editingSchemeIndex ? {
@@ -1423,12 +1788,13 @@ function formatOptionLabelsDisplay(
     setEditingScheme({ ...editingScheme, params: newParams });
   };
 
-  const fetchApiLogs = async (page = 1, pageSize = apiLogsPageSize) => {
+  const fetchApiLogs = async (page = 1, pageSize = apiLogsPageSize, status = logStatusFilter) => {
     try {
       setApiLogsLoading(true);
       const params: any = { page, page_size: pageSize };
       if (logSourceFilter) params.source = logSourceFilter;
       if (logKeyword) params.keyword = logKeyword;
+      if (status) params.status = status;
       const res = await (request.get(`/plugins/${name}/api-logs`, { params }) as any);
       if (res.logs) setApiLogs(res.logs);
       if (res.total != null) setApiLogsTotal(res.total);
@@ -1447,8 +1813,7 @@ function formatOptionLabelsDisplay(
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditUidMap, setAuditUidMap] = useState<Record<string, { uid: string; username: string }>>({});
-  const [auditPage, setAuditPage] = useState(1);
-  const [auditPageSize, setAuditPageSize] = useState(15);
+  const { page: auditPage, pageSize: auditPageSize, setPage: setAuditPage, setPageSize: setAuditPageSize } = useListPager();
 
   useEffect(() => {
     fetchData();
@@ -1580,11 +1945,19 @@ function formatOptionLabelsDisplay(
         if (storageRes.workflow_node_limit != null) {
           setWorkflowNodeLimit(Number(storageRes.workflow_node_limit) || 200);
         }
-        if (storageRes.workflow_enabled != null) {
-          setWorkflowEnabled(!!storageRes.workflow_enabled);
-        }
-        if (storageRes.workflow_menu_title != null) {
-          setWorkflowMenuTitle(storageRes.workflow_menu_title || '工作流');
+        if (name === 'playground_2026') {
+          setUserNavModules(normalizeUserNavModules(storageRes.user_nav_modules, {
+            audioEnabled: storageRes.audio_enabled,
+            workflowEnabled: storageRes.workflow_enabled,
+            workflowMenuTitle: storageRes.workflow_menu_title,
+          }));
+          setImageEditEnabled(storageRes.image_edit_enabled === true);
+          setVideoEditWorkbenchEnabled(storageRes.video_edit_workbench_enabled === true);
+        } else if (storageRes.workflow_enabled != null) {
+          setUserNavModules(patchUserNavModule(defaultUserNavModules(), 'workflow', {
+            enabled: !!storageRes.workflow_enabled,
+            title: storageRes.workflow_menu_title || '',
+          }));
         }
         if (storageRes.show_in_playground_prompt != null) setShowInPlaygroundPrompt(storageRes.show_in_playground_prompt);
         if (storageRes.docs_api_allow_guest != null) {
@@ -1638,6 +2011,8 @@ function formatOptionLabelsDisplay(
     if (!plugin) return;
     try {
       await request.post(`/plugins/${plugin.name}/toggle`, { is_enabled: checked ? 1 : 0 });
+      invalidateAdminPluginsCache();
+      invalidateActivePluginsCache();
       message.success(checked ? '插件已开启' : '插件已关闭');
       fetchData();
     } catch (error) {
@@ -1702,6 +2077,10 @@ function formatOptionLabelsDisplay(
               workflow_menu_title: workflowMenuTitle.trim(),
               volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
               director_enabled: pgAdvancedNodeDirectorEnabled,
+              audio_enabled: userNavModules.some((m) => m.id === 'audio' && m.enabled),
+              image_edit_enabled: imageEditEnabled,
+              video_edit_workbench_enabled: videoEditWorkbenchEnabled,
+              user_nav_modules: userNavModules,
             }
           : {}),
         show_in_playground_prompt: showInPlaygroundPrompt,
@@ -1813,11 +2192,13 @@ function formatOptionLabelsDisplay(
           <div>
             <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>左侧菜单显示</Text><br />
             <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-              开启后，管理后台「站点插件」下出现二级菜单，点击可直达本插件配置页
+              开启后，管理后台「站点插件」下出现二级菜单，点击可直达本插件配置页。插件启用状态关闭时，此处开启也不会显示入口。
             </Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Tag color={showInAdminMenu ? 'success' : 'default'} style={{ margin: 0 }}>{showInAdminMenu ? '已开启' : '已关闭'}</Tag>
+            <Tag color={showInAdminMenu && isEnabled ? 'success' : 'default'} style={{ margin: 0 }}>
+              {showInAdminMenu ? (isEnabled ? '已开启' : '已开启（停用中不显示）') : '已关闭'}
+            </Tag>
             <Switch checked={showInAdminMenu} onChange={setShowInAdminMenu} />
           </div>
         </div>
@@ -1858,6 +2239,58 @@ function formatOptionLabelsDisplay(
           </div>
         )}
       </div>
+
+      {name === 'playground_2026' && (
+        <PluginModule>
+          <PlaygroundUserNavConfig
+            items={userNavModules}
+            onChange={setUserNavModules}
+            isLight={_isLight}
+          />
+        </PluginModule>
+      )}
+
+      {name === 'playground_2026' && (
+        <div style={{
+          background: _isLight ? '#fff' : '#141414', borderRadius: 8,
+          border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
+          padding: '16px 20px', marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片编辑</Text><br />
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+                开启后，用户端图片工具中显示「编辑图片」。默认关闭。
+              </Text>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Tag color={imageEditEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{imageEditEnabled ? '已开启' : '已关闭'}</Tag>
+              <Switch checked={imageEditEnabled} onChange={setImageEditEnabled} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {name === 'playground_2026' && (
+        <div style={{
+          background: _isLight ? '#fff' : '#141414', borderRadius: 8,
+          border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
+          padding: '16px 20px', marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>视频编辑工作台</Text><br />
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+                开启后，侧栏飞出层「编辑视频」进入播放器工作台。生成页轮盘里的编辑视频模式不受影响。默认关闭。
+              </Text>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Tag color={videoEditWorkbenchEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{videoEditWorkbenchEnabled ? '已开启' : '已关闭'}</Tag>
+              <Switch checked={videoEditWorkbenchEnabled} onChange={setVideoEditWorkbenchEnabled} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 模型创作中心提示词输入窗口加载显示 (仅限素材资产管理插件) */}
       {isEnabled && (name === 'asset_manager' || name === 'asset_manager_intl') && (
@@ -2573,7 +3006,7 @@ function formatOptionLabelsDisplay(
                 清除运行时缓存
               </Button>
             </Popconfirm>
-            <Button type="primary" icon={<PlusOutlined />} disabled={haRules.length >= 32} onClick={openHaCreate}>
+            <Button type="primary" icon={<PlusOutlined />} disabled={haRules.length >= HA_MAX_RULES} onClick={openHaCreate}>
               新建规则
             </Button>
           </Space>
@@ -2600,19 +3033,26 @@ function formatOptionLabelsDisplay(
             {
               title: '最大尝试',
               dataIndex: 'retries',
-              width: 96,
+              width: 90,
               align: 'center',
+            },
+            {
+              title: '首包超时',
+              dataIndex: 'ttfb',
+              width: 90,
+              align: 'center',
+              render: (v?: number) => ((v && v > 0) ? `${v}s` : '关闭'),
             },
             {
               title: '墙钟预算',
               dataIndex: 'budget',
-              width: 110,
-              render: (v: number) => (v > 0 ? `${v}s` : '自动'),
+              width: 100,
+              render: (v: number) => `${v > 0 ? v : 900}s`,
             },
             {
               title: '终态错误',
               dataIndex: 'err',
-              width: 96,
+              width: 90,
               render: (v: string) => (v === 'last' ? '末败' : '首败'),
             },
             {
@@ -2636,11 +3076,20 @@ function formatOptionLabelsDisplay(
             {
               title: '操作',
               key: 'actions',
-              width: 220,
+              width: 268,
               fixed: 'right' as const,
               render: (_: unknown, r: HaRuleDto) => (
                 <Space size={4} wrap>
                   <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openHaEdit(r)}>编辑</Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    disabled={haRules.length >= HA_MAX_RULES}
+                    onClick={() => openHaCopy(r)}
+                  >
+                    复制
+                  </Button>
                   <Button type="link" size="small" disabled={r.id === haDef} onClick={() => setHaDefault(r.id)}>设为默认</Button>
                   <Popconfirm
                     title="确认删除该规则？"
@@ -2681,7 +3130,7 @@ function formatOptionLabelsDisplay(
             <Row gutter={16}>
               <Col span={24}>
                 <div style={{ marginBottom: 16 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>规则名称</Text>
+                  <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>规则名称</Text>
                   <Input
                     value={haDraft.name}
                     maxLength={64}
@@ -2691,7 +3140,7 @@ function formatOptionLabelsDisplay(
               </Col>
             </Row>
             <Row gutter={16}>
-              <Col span={8}>
+              <Col span={12}>
                 <div style={{ marginBottom: 16 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>最大尝试次数（含首次）</Text>
                   <InputNumber
@@ -2702,22 +3151,11 @@ function formatOptionLabelsDisplay(
                     onChange={v => patchHaDraft(r => ({ ...r, retries: Number(v) || 1 }))}
                   />
                   <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
-                    含第一次调用；未达上限也可能因无可用子渠、熔断、预算或黑名单提前停
+                    含第一次调用；未达上限也可能因无可用子渠、熔断或黑名单提前停
                   </Text>
                 </div>
               </Col>
-              <Col span={8}>
-                <div style={{ marginBottom: 16 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>整次墙钟预算（秒，0=自动）</Text>
-                  <InputNumber
-                    min={0}
-                    style={{ width: '100%' }}
-                    value={haDraft.budget}
-                    onChange={v => patchHaDraft(r => ({ ...r, budget: Math.max(0, Number(v) || 0) }))}
-                  />
-                </div>
-              </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <div style={{ marginBottom: 16 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>终态错误</Text>
                   <div>
@@ -2729,6 +3167,41 @@ function formatOptionLabelsDisplay(
                       <Radio.Button value="last">末败</Radio.Button>
                     </Radio.Group>
                   </div>
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+                    首败对外展示首次失败原因；末败展示最后一次尝试的错误
+                  </Text>
+                </div>
+              </Col>
+            </Row>
+            <Row gutter={16}>
+              <Col span={12}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>单次首包超时（秒，0=关闭）</Text>
+                  <InputNumber
+                    min={0}
+                    max={3600}
+                    style={{ width: '100%' }}
+                    value={haDraft.ttfb ?? 0}
+                    onChange={v => patchHaDraft(r => ({ ...r, ttfb: v === null ? 0 : Math.max(0, Number(v)) }))}
+                  />
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+                    单次超时上限（0=关闭）。生图专线建议设为 0 或 120s+ 避免误掐；超时切备渠防假死
+                  </Text>
+                </div>
+              </Col>
+              <Col span={12}>
+                <div style={{ marginBottom: 16 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>整次墙钟预算（秒）</Text>
+                  <InputNumber
+                    min={10}
+                    max={3600}
+                    style={{ width: '100%' }}
+                    value={haDraft.budget > 0 ? haDraft.budget : 900}
+                    onChange={v => patchHaDraft(r => ({ ...r, budget: Math.max(10, Number(v) || 900) }))}
+                  />
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+                    整组调度的最终时间兜底底线（默认900s），需避开外层反向代理 504
+                  </Text>
                 </div>
               </Col>
             </Row>
@@ -2785,6 +3258,31 @@ function formatOptionLabelsDisplay(
             </div>
           </>
         )}
+      </Modal>
+
+      <Modal
+        title="复制高可用规则"
+        open={!!haCopySource}
+        onCancel={() => setHaCopySource(null)}
+        onOk={commitHaCopy}
+        confirmLoading={savingHa}
+        okText="确定"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            将复制「{haCopySource?.name}」的全部参数，仅名称不同
+          </Text>
+        </div>
+        <Input
+          autoFocus
+          maxLength={64}
+          placeholder="请输入新规则名称"
+          value={haCopyName}
+          onChange={e => setHaCopyName(e.target.value)}
+          onPressEnter={commitHaCopy}
+        />
       </Modal>
     </div>
   );
@@ -2906,18 +3404,14 @@ function formatOptionLabelsDisplay(
         loading={auditLoading}
         size="small"
         scroll={{ x: 860 }}
-        pagination={{
+        pagination={listPagination({
           current: auditPage,
           pageSize: auditPageSize,
-          showSizeChanger: true,
-          pageSizeOptions: ['10', '15', '30', '50', '100'],
-          showTotal: (total) => `共 ${total} 条`,
-          showQuickJumper: true,
           onChange: (page, size) => {
             setAuditPage(page);
             setAuditPageSize(size);
           },
-        }}
+        })}
         expandable={{
           expandedRowRender: record => {
             const aid = record.asset_id;
@@ -3000,6 +3494,7 @@ function formatOptionLabelsDisplay(
 
   const apiLogTab = (
     <div>
+      <PluginLogRetentionCard pluginName={name || ''} title="接口日志保留天数" />
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Select
@@ -3013,11 +3508,31 @@ function formatOptionLabelsDisplay(
               { value: 'relay_convert', label: '转发规则替换' },
             ]}
           />
+          <Select
+            placeholder="按状态筛选" allowClear
+            value={logStatusFilter || undefined}
+            onChange={(val) => {
+              const next = val || '';
+              setLogStatusFilter(next);
+              fetchApiLogs(1, apiLogsPageSize, next);
+            }}
+            style={{ width: 120 }}
+            options={[
+              { value: 'success', label: '成功' },
+              { value: 'failed', label: '失败' },
+            ]}
+          />
           <Input.Search
             placeholder="搜索接口名 / 用户UID"
             allowClear
             value={logKeyword}
-            onChange={(e) => setLogKeyword(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setLogKeyword(val);
+              if (!val) {
+                fetchApiLogs(1, apiLogsPageSize, logStatusFilter);
+              }
+            }}
             onSearch={() => fetchApiLogs(1)}
             style={{ width: 220 }}
           />
@@ -3034,19 +3549,15 @@ function formatOptionLabelsDisplay(
         loading={apiLogsLoading}
         size="small"
         scroll={{ x: 880 }}
-        pagination={{
+        pagination={listPagination({
           current: apiLogsPage,
           total: apiLogsTotal,
           pageSize: apiLogsPageSize,
-          showSizeChanger: true,
-          pageSizeOptions: ['10', '15', '30', '50', '100'],
-          showTotal: (total) => `共 ${total} 条`,
-          showQuickJumper: true,
           onChange: (page, size) => {
             setApiLogsPageSize(size);
             fetchApiLogs(page, size);
           },
-        }}
+        })}
         expandable={{
           expandedRowRender: (record) => (
             <ApiLogPayloadExpand
@@ -3123,7 +3634,7 @@ function formatOptionLabelsDisplay(
       width: 100,
       render: (t: string) => t ? (
         <Tag style={{ borderRadius: 4, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-          {t.includes('视频增强') ? <ThunderboltOutlined style={{ marginRight: 4 }} /> : t.includes('视频') ? <VideoCameraOutlined style={{ marginRight: 4 }} /> : t.includes('图片') ? <PictureOutlined style={{ marginRight: 4 }} /> : null}
+          {t.includes('画质增强') || t.includes('图像增强') || t.includes('视频增强') ? <ThunderboltOutlined style={{ marginRight: 4 }} /> : t.includes('视频') ? <VideoCameraOutlined style={{ marginRight: 4 }} /> : t.includes('图片') ? <PictureOutlined style={{ marginRight: 4 }} /> : (name === 'playground_2026' && t.includes('音频')) ? <AudioOutlined style={{ marginRight: 4 }} /> : null}
           {t}
         </Tag>
       ) : <Text type="secondary">-</Text>
@@ -3143,18 +3654,45 @@ function formatOptionLabelsDisplay(
     {
       title: '绑定方案',
       key: 'pg_scheme_id',
-      width: 180,
+      width: name === 'playground_2026' ? 220 : 180,
       render: (_: any, record: any) => {
         const scheme = pgSchemes.find(s => s.id === record.pg_scheme_id);
-        return scheme ? (
-          <Tag color="blue" style={{ borderRadius: 12, fontSize: 12 }}>{scheme.name}</Tag>
-        ) : (
-          <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 12 }}>未绑定</Text>
+        if (!scheme) {
+          return (
+            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 12 }}>未绑定</Text>
+          );
+        }
+        return (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Tag color="blue" style={{ borderRadius: 12, fontSize: 12, marginInlineEnd: 0 }}>{scheme.name}</Tag>
+            {name === 'playground_2026' && (
+              <Popconfirm
+                title="确定取消绑定该方案？"
+                okText="删除"
+                cancelText="取消"
+                onConfirm={() => handleUnbindScheme(record.id)}
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={savingPlayground}
+                  style={{ padding: '0 4px', height: 22, minWidth: 22 }}
+                  title="删除绑定"
+                />
+              </Popconfirm>
+            )}
+          </div>
         );
       }
     },
     {
-      title: '排序权重',
+      title: (
+        <Tooltip title="与模型列表「页面排序」同步，数值越大越靠前">
+          <span>页面排序</span>
+        </Tooltip>
+      ),
       key: 'pg_sort_order',
       width: 120,
       sorter: (a: any, b: any) => (a.pg_sort_order || 0) - (b.pg_sort_order || 0),
@@ -3212,7 +3750,7 @@ function formatOptionLabelsDisplay(
                 setEditingSortValue(record.pg_sort_order || 0);
               }}
               style={{ padding: '0 4px', height: 22, minWidth: 22 }}
-              title="修改排序权重"
+              title="修改页面排序"
             />
           </div>
         );
@@ -3262,8 +3800,7 @@ function formatOptionLabelsDisplay(
       width: name === 'playground_2026' ? 340 : 200,
       render: (_: any, record: any) => {
         const featureKind = name === 'playground_2026' ? featureKindFromTypeName(record.type_name) : null;
-        return (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap', alignItems: 'center' }}>
+        const schemeBtn = (
           <Button
             type="text"
             size="small"
@@ -3273,6 +3810,10 @@ function formatOptionLabelsDisplay(
           >
             方案
           </Button>
+        );
+        return (
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'nowrap', alignItems: 'center' }}>
+          {name !== 'playground_2026' && schemeBtn}
           {record.pg_scheme_id && (
             <>
               <Button
@@ -3287,6 +3828,10 @@ function formatOptionLabelsDisplay(
                   } else {
                     setPgIspDraft(null);
                   }
+                  const po = record.pg_prompt_optimize;
+                  setPgPoDraft(parsePromptOptimizeBinding(po));
+                  const vl = record.pg_voice_library;
+                  setPgVlDraft(vl && typeof vl === 'object' ? parseVoiceLibraryBinding(vl) : null);
                   setPgIspModalVisible(false);
                   setPgOverrideModalVisible(true);
                 }}
@@ -3317,6 +3862,8 @@ function formatOptionLabelsDisplay(
               onClick={() => {
                 setPgFeatureModelId(record.id);
                 setPgFeatureDraft(parseFeatureAttrList(record.feature_attributes));
+                setPgInputProtocolDraft(typeof record.pg_input_protocol === 'string' ? record.pg_input_protocol : '');
+                setPgThinkingProfileDraft(typeof record.pg_thinking_profile === 'string' ? record.pg_thinking_profile : '');
                 setPgFeatureModalVisible(true);
               }}
               style={{ color: '#722ed1', padding: '0 4px' }}
@@ -3324,6 +3871,7 @@ function formatOptionLabelsDisplay(
               特性配置
             </Button>
           )}
+          {name === 'playground_2026' && schemeBtn}
         </div>
         );
       }
@@ -3381,18 +3929,11 @@ function formatOptionLabelsDisplay(
           rowKey="id"
           size="small"
           scroll={{ x: name === 'playground_2026' ? 1280 : 1000 }}
-          pagination={{
+          pagination={listPagination({
             current: pgPage,
             pageSize: pgPageSize,
-            showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100', '200'],
-            showTotal: (total) => `共 ${total} 项`,
-            showQuickJumper: true,
-            onChange: (page, size) => {
-              setPgPage(page);
-              setPgPageSize(size);
-            },
-          }}
+            onChange: onPgPageChange,
+          })}
           style={{ marginBottom: name === 'playground_2026' ? 0 : 16 }}
         />
 
@@ -3407,31 +3948,57 @@ function formatOptionLabelsDisplay(
 
       {/* 参数覆写 Modal */}
       <Modal
-        title={`参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`}
+        title={
+          name === 'playground_2026' ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 28, gap: 12 }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {`参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`}
+              </span>
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={savingPlayground}
+                onClick={handleResetParamOverrides}
+              >
+                重置
+              </Button>
+            </div>
+          ) : `参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`
+        }
         open={pgOverrideModalVisible}
         onCancel={() => {
           setPgOverrideModalVisible(false);
           setPgIspModalVisible(false);
         }}
-        width={name === 'playground_2026' ? 720 : 640}
+        width={name === 'playground_2026' ? 760 : 640}
         footer={
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <Button danger loading={savingPlayground} onClick={handleResetParamOverrides}>重置为预设</Button>
-            <div style={{ display: 'flex', gap: 8 }}>
+          name === 'playground_2026' ? (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Button onClick={() => { setPgOverrideModalVisible(false); setPgIspModalVisible(false); }} disabled={savingPlayground}>取消</Button>
               <Button type="primary" loading={savingPlayground} onClick={handleConfirmParamOverrides}>确认</Button>
             </div>
-          </div>
+          ) : (
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Button danger loading={savingPlayground} onClick={handleResetParamOverrides}>重置为预设</Button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button onClick={() => { setPgOverrideModalVisible(false); setPgIspModalVisible(false); }} disabled={savingPlayground}>取消</Button>
+                <Button type="primary" loading={savingPlayground} onClick={handleConfirmParamOverrides}>确认</Button>
+              </div>
+            </div>
+          )
         }
       >
         {(() => {
           const model = pgModels.find(m => m.id === pgOverrideModelId);
           const scheme = pgSchemes.find(s => s.id === model?.pg_scheme_id);
-          if (!scheme?.params) return <Text type="secondary">该模型未绑定方案或方案无参数</Text>;
+          if (!scheme) return <Text type="secondary">该模型未绑定方案</Text>;
+          if (!scheme?.params && !(name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video' || scheme.type === 'audio'))) {
+            return <Text type="secondary">该模型未绑定方案或方案无参数</Text>;
+          }
           const overrides = pgOverrideData || { modify: {}, remove: [], add: [] };
           const removes = new Set(overrides.remove || []);
           const modifies = overrides.modify || {};
-          const showQuickBar = name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video');
+          const showQuickBar = name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video' || scheme.type === 'audio');
           const tryEnableQuick = (merged: any, skip: { key?: string; addIndex?: number }) => {
             if (!isQuickBarEligible(merged)) {
               message.error('快捷栏仅支持已配置选项的单选或下拉参数');
@@ -3451,6 +4018,35 @@ function formatOptionLabelsDisplay(
                   ? `基于系统方案「${scheme.name}」的模型级调参，控件类型、选项与默认值以此面板为准（仅对本模型生效）`
                   : `基于方案「${scheme.name}」的参数个性化调整（仅对此模型生效）`}
               </Text>
+              {name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video') && (
+                <>
+                  <SchemePromptOptimizeField
+                    mode="model"
+                    schemeType={scheme.type}
+                    value={pgPoDraft}
+                    inheritValue={scheme.prompt_optimize}
+                    inheritSchemeName={scheme.name}
+                    isLight={_isLight}
+                    onChange={setPgPoDraft}
+                  />
+                  <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+                </>
+              )}
+              {name === 'playground_2026' && scheme.type === 'audio' && (
+                <>
+                  <SchemeVoiceLibraryField
+                    mode="model"
+                    schemeType={scheme.type}
+                    value={pgVlDraft}
+                    inheritValue={scheme.voice_library}
+                    inheritSchemeName={scheme.name}
+                    catalogs={pgVoiceCatalogs}
+                    isLight={_isLight}
+                    onChange={setPgVlDraft}
+                  />
+                  <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+                </>
+              )}
               {name === 'playground_2026' && scheme.type === 'image' && (
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
@@ -3475,22 +4071,28 @@ function formatOptionLabelsDisplay(
                           配置
                         </Button>
                       )}
-                      <Switch
-                        checked={!!pgIspDraft?.enabled}
-                        onChange={(v) => {
-                          if (!v) setPgIspModalVisible(false);
-                          setPgIspDraft(v
-                            ? seedImageSpecialParams(pgIspDraft)
-                            : { ...normalizeImageSpecialParams(pgIspDraft), enabled: false });
-                        }}
-                      />
+                      <Tooltip
+                        title={isImageSpecialForcedOn(scheme?.id) ? 'GPT-Image-2 按官方规则必须开启图片专用参数' : undefined}
+                      >
+                        <Switch
+                          checked={isImageSpecialForcedOn(scheme?.id) || !!pgIspDraft?.enabled}
+                          disabled={isImageSpecialForcedOn(scheme?.id)}
+                          onChange={(v) => {
+                            if (isImageSpecialForcedOn(scheme?.id)) return;
+                            if (!v) setPgIspModalVisible(false);
+                            setPgIspDraft(v
+                              ? seedImageSpecialParams(pgIspDraft)
+                              : { ...normalizeImageSpecialParams(pgIspDraft), enabled: false });
+                          }}
+                        />
+                      </Tooltip>
                     </div>
                   </div>
                   <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
                 </>
               )}
               {/* 预设参数列表 */}
-              {scheme.params.map((p: any) => {
+              { (scheme.params || []).map((p: any) => {
                 const isRemoved = removes.has(p.key);
                 const mod = modifies[p.key] || {};
                 const mergedParam = { ...p, ...mod };
@@ -3506,10 +4108,13 @@ function formatOptionLabelsDisplay(
                   : !isRemoved;
                 const effectiveType = mod.type || p.type;
                 const fieldHint = { fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 4 } as const;
-                const sameValue = (a: any, b: any) =>
-                  Array.isArray(a) && Array.isArray(b)
-                    ? JSON.stringify(a) === JSON.stringify(b)
-                    : a === b || String(a) === String(b);
+                const sameValue = (a: any, b: any) => {
+                  if (Array.isArray(a) && Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
+                  if (a && typeof a === 'object' && b && typeof b === 'object') {
+                    return JSON.stringify(a) === JSON.stringify(b);
+                  }
+                  return a === b || String(a) === String(b);
+                };
                 const applyModPatch = (partial: Record<string, any>) => {
                   const next = { ...mod };
                   Object.entries(partial).forEach(([field, value]) => {
@@ -3561,9 +4166,17 @@ function formatOptionLabelsDisplay(
                       />
                     </div>
                     {isParamOn && (
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {name === 'playground_2026' && (
-                          <div style={{ width: 140 }}>
+                      name === 'playground_2026' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: effectiveType === 'slider'
+                            ? 'minmax(148px, 1.3fr) repeat(4, minmax(0, 1fr))'
+                            : 'minmax(160px, 200px) minmax(120px, 160px)',
+                          gap: 8,
+                          alignItems: 'end',
+                        }}>
+                          <div>
                             <Text style={fieldHint}>控件类型</Text>
                             <Select
                               size="small"
@@ -3573,10 +4186,115 @@ function formatOptionLabelsDisplay(
                               onChange={(v) => applyModPatch(patchForControlTypeChange(p, mod, v))}
                             />
                           </div>
-                        )}
+                          {effectiveType === 'slider' && ([
+                            { field: 'min', label: `最小值${p.unit ? ` (${p.unit})` : ''}`, fallback: 0 },
+                            { field: 'max', label: `最大值${p.unit ? ` (${p.unit})` : ''}`, fallback: 100 },
+                            { field: 'step', label: '步长', fallback: 1 },
+                          ] as const).map(({ field, label, fallback }) => {
+                            const original = p[field] ?? fallback;
+                            return (
+                              <div key={field}>
+                                <Text style={fieldHint}>{label}</Text>
+                                <Input
+                                  size="small"
+                                  type="number"
+                                  value={String(mod[field] !== undefined ? mod[field] : original)}
+                                  onChange={e => patchModField(field, parseNum(e.target.value, original))}
+                                />
+                              </div>
+                            );
+                          })}
+                          <div>
+                            <Text style={fieldHint}>默认值</Text>
+                            {effectiveType === 'switch' ? (
+                              <Switch
+                                size="small"
+                                checked={mod.default !== undefined ? mod.default : p.default}
+                                onChange={v => patchModField('default', v)}
+                              />
+                            ) : (
+                              <Input
+                                size="small"
+                                value={String(mod.default !== undefined ? mod.default : p.default ?? '')}
+                                onChange={e => {
+                                  const rawVal = e.target.value;
+                                  let val: any = rawVal;
+                                  if (typeof (mod.default ?? p.default) === 'number' || effectiveType === 'slider') {
+                                    if (rawVal !== '' && !rawVal.endsWith('.') && !isNaN(Number(rawVal))) {
+                                      val = Number(rawVal);
+                                    } else if (effectiveType === 'slider') {
+                                      val = Number(rawVal) || 0;
+                                    }
+                                  }
+                                  patchModField('default', val);
+                                }}
+                              />
+                            )}
+                          </div>
+                        </div>
                         {effectiveType !== 'switch' && effectiveType !== 'slider' && (
-                          (name === 'playground_2026' || Array.isArray(p.options))
-                        ) && (
+                          <>
+                            <div>
+                              <Text style={fieldHint}>选项列表</Text>
+                              <Input
+                                size="small"
+                                value={Array.isArray(mergedParam.options) ? mergedParam.options.join(', ') : ''}
+                                placeholder="用英文逗号分隔，例如 Low,Medium,High"
+                                onChange={(e) => {
+                                  const { options, option_labels: parsedLabels } = parseOptionsAndLabels(e.target.value);
+                                  const srcOpts = p.options || [];
+                                  const isNumeric = typeof (mod.default ?? p.default) === 'number'
+                                    || (Array.isArray(srcOpts) && srcOpts.length > 0 && typeof srcOpts[0] === 'number');
+                                  const nextOpts = isNumeric
+                                    ? options.map((x) => (!Number.isNaN(Number(x)) ? Number(x) : x))
+                                    : options;
+                                  const mergedLabels = { ...(mergedParam.option_labels || {}), ...parsedLabels };
+                                  applyModPatch({
+                                    options: nextOpts,
+                                    option_labels: Object.keys(mergedLabels).length > 0 ? mergedLabels : {},
+                                  });
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <Text style={fieldHint}>选项中文映射</Text>
+                              <Input
+                                size="small"
+                                value={formatOptionLabelsDisplay(mergedParam.option_labels, mergedParam.options)}
+                                placeholder="可选，例如 Low:常用画质,Medium:高画质,High:高精细画质"
+                                onChange={(e) => {
+                                  const newLabels = parseOptionLabelsMapping(e.target.value, mergedParam.options || []);
+                                  applyModPatch({
+                                    option_labels: Object.keys(newLabels).length > 0 ? newLabels : {},
+                                  });
+                                }}
+                              />
+                            </div>
+                          </>
+                        )}
+                        {showQuickBar && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
+                              <Tooltip title={SCHEME_QUICK_BAR_HELP}>
+                                <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
+                              </Tooltip>
+                            </div>
+                            <Switch
+                              size="small"
+                              checked={!!(mod.quick !== undefined ? mod.quick : p.quick)}
+                              disabled={!isQuickBarEligible({ ...p, ...mod }) && !(mod.quick !== undefined ? mod.quick : p.quick)}
+                              onChange={(v) => {
+                                if (v && !tryEnableQuick({ ...p, ...mod }, { key: p.key })) return;
+                                patchModField('quick', v);
+                              }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                      ) : (
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {effectiveType !== 'switch' && effectiveType !== 'slider' && Array.isArray(p.options) && (
                           <div style={{ flex: 1, minWidth: 200 }}>
                             <Text style={fieldHint}>选项 (逗号分隔)</Text>
                             <Input
@@ -3638,24 +4356,8 @@ function formatOptionLabelsDisplay(
                             />
                           )}
                         </div>
-                        {showQuickBar && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 4 }}>
-                            <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
-                            <Tooltip title={SCHEME_QUICK_BAR_HELP}>
-                              <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
-                            </Tooltip>
-                            <Switch
-                              size="small"
-                              checked={!!(mod.quick !== undefined ? mod.quick : p.quick)}
-                              disabled={!isQuickBarEligible({ ...p, ...mod }) && !(mod.quick !== undefined ? mod.quick : p.quick)}
-                              onChange={(v) => {
-                                if (v && !tryEnableQuick({ ...p, ...mod }, { key: p.key })) return;
-                                patchModField('quick', v);
-                              }}
-                            />
-                          </div>
-                        )}
                       </div>
+                      )
                     )}
                   </div>
                 );
@@ -3699,9 +4401,29 @@ function formatOptionLabelsDisplay(
                     </div>
                     {/* 按类型显示对应配置字段 */}
                     {(ap.type === 'select' || ap.type === 'radio') && (
+                      <>
                       <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                         <div style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>选项 (逗号分隔)</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>
+                            {name === 'playground_2026' ? '选项列表' : '选项 (逗号分隔)'}
+                          </Text>
+                          {name === 'playground_2026' ? (
+                            <Input
+                              size="small"
+                              value={Array.isArray(ap.options) ? ap.options.join(',') : ''}
+                              placeholder="例如: opaque,transparent 或 16:9,9:16"
+                              onChange={(e) => {
+                                const { options, option_labels: parsedLabels } = parseOptionsAndLabels(e.target.value);
+                                const isNumeric = options.length > 0 && options.every((x) => !Number.isNaN(Number(x)));
+                                const parsedOpts = isNumeric ? options.map(Number) : options;
+                                const mergedLabels = { ...(ap.option_labels || {}), ...parsedLabels };
+                                updateAdd({
+                                  options: parsedOpts,
+                                  option_labels: Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined,
+                                });
+                              }}
+                            />
+                          ) : (
                           <Input size="small" defaultValue={(ap.options || []).join(', ')} key={`add-opts-${idx}-${(ap.options || []).length}`}
                             onBlur={e => {
                               const opts = e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -3710,6 +4432,7 @@ function formatOptionLabelsDisplay(
                               updateAdd({ options: parsedOpts });
                             }}
                             onPressEnter={e => (e.target as HTMLInputElement).blur()} />
+                          )}
                         </div>
                         <div style={{ width: 100 }}>
                           <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>默认值</Text>
@@ -3724,6 +4447,23 @@ function formatOptionLabelsDisplay(
                           }} />
                         </div>
                       </div>
+                      {name === 'playground_2026' && (
+                        <div style={{ marginBottom: 6 }}>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>
+                            选项中文映射
+                          </Text>
+                          <Input
+                            size="small"
+                            value={formatOptionLabelsDisplay(ap.option_labels, ap.options)}
+                            placeholder="可选，例如 opaque:不透明,transparent:透明"
+                            onChange={(e) => {
+                              const newLabels = parseOptionLabelsMapping(e.target.value, ap.options || []);
+                              updateAdd({ option_labels: Object.keys(newLabels).length > 0 ? newLabels : undefined });
+                            }}
+                          />
+                        </div>
+                      )}
+                      </>
                     )}
                     {ap.type === 'slider' && (
                       <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
@@ -3782,10 +4522,12 @@ function formatOptionLabelsDisplay(
 
       {/* IO 覆写 Modal */}
       <Modal
-        title={`IO 调整 — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}`}
+        title={`IO配置 — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}`}
         open={pgIoOverrideModalVisible}
         onCancel={() => setPgIoOverrideModalVisible(false)}
-        width={720}
+        width={780}
+        style={{ top: 40 }}
+        bodyStyle={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto' }}
         footer={
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <Button danger loading={savingPlayground} onClick={handleResetIoOverrides}>重置为方案默认</Button>
@@ -3804,9 +4546,12 @@ function formatOptionLabelsDisplay(
           return (
             <div>
               <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12, display: 'block', marginBottom: 12 }}>
-                基于方案「{scheme.name}」的工作流 IO 个性化调整（仅对此模型生效）
+                基于方案「{scheme.name}」个性化调整（仅对此模型生效），页面与方案 IO 配置一致
               </Text>
               <ModelIoOverridesEditor
+                schemeId={scheme.id}
+                schemeType={scheme.type}
+                schemeParams={scheme.params || []}
                 schemeInputs={seeded.inputs || []}
                 schemeOutputs={seeded.outputs || []}
                 overrides={pgIoOverrideData}
@@ -3824,6 +4569,7 @@ function formatOptionLabelsDisplay(
           open={pgFeatureModalVisible}
           onCancel={() => { if (!pgFeatureSaving) setPgFeatureModalVisible(false); }}
           confirmLoading={pgFeatureSaving}
+          width={560}
           onOk={async () => {
             const model = pgModels.find(m => m.id === pgFeatureModelId);
             if (!model) {
@@ -3831,7 +4577,15 @@ function formatOptionLabelsDisplay(
               return;
             }
             const attrs = parseFeatureAttrList(pgFeatureDraft);
-            const next = pgModels.map(m => m.id === pgFeatureModelId ? { ...m, feature_attributes: attrs } : m);
+            const isChat = featureKindFromTypeName(model.type_name) === 'chat';
+            const next = pgModels.map(m => m.id === pgFeatureModelId ? {
+              ...m,
+              feature_attributes: attrs,
+              ...(isChat ? {
+                pg_input_protocol: pgInputProtocolDraft || undefined,
+                pg_thinking_profile: pgThinkingProfileDraft || undefined,
+              } : {}),
+            } : m);
             setPgFeatureSaving(true);
             const ok = await persistPlaygroundModels(next, { successMessage: '特性配置已保存' });
             setPgFeatureSaving(false);
@@ -3848,14 +4602,56 @@ function formatOptionLabelsDisplay(
               return <Text type="secondary">该模型类型未配置二级功能属性</Text>;
             }
             const fromType = pgModelTypes.find((t) => t.id === model.type_id)?.default_features;
-            const options = parseFeatureAttrList(fromType?.length ? fromType : model.type_default_features);
+            const kind = featureKindFromTypeName(model.type_name);
+            let options = parseFeatureAttrList(fromType?.length ? fromType : model.type_default_features);
+            if (kind === 'chat') {
+              for (const attr of CHAT_UNDERSTAND_ATTRS) {
+                if (!options.includes(attr)) options = [...options, attr];
+              }
+            }
             return (
-              <FeatureAttributesEditor
-                value={pgFeatureDraft}
-                options={options}
-                onChange={setPgFeatureDraft}
-                isLight={_isLight}
-              />
+              <div>
+                <FeatureAttributesEditor
+                  value={pgFeatureDraft}
+                  options={options}
+                  onChange={setPgFeatureDraft}
+                  isLight={_isLight}
+                />
+                {kind === 'chat' ? (
+                  <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div>
+                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>输入协议</Text>
+                      <Select
+                        value={pgInputProtocolDraft || undefined}
+                        placeholder="未设置（沿用内置规则）"
+                        style={{ width: '100%' }}
+                        optionLabelProp="label"
+                        popupMatchSelectWidth
+                        options={CHAT_INPUT_PROTOCOLS.map((p) => ({
+                          value: p.id,
+                          label: chatProtocolSelectLabel(p.label, p.detail, _isLight),
+                        }))}
+                        onChange={(v) => setPgInputProtocolDraft(typeof v === 'string' ? v : '')}
+                      />
+                    </div>
+                    <div>
+                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>思考预设</Text>
+                      <Select
+                        value={pgThinkingProfileDraft || undefined}
+                        placeholder="未设置（沿用内置规则）"
+                        style={{ width: '100%' }}
+                        optionLabelProp="label"
+                        popupMatchSelectWidth
+                        options={CHAT_THINKING_PROFILES.map((p) => ({
+                          value: p.id,
+                          label: chatProtocolSelectLabel(p.label, p.detail, _isLight),
+                        }))}
+                        onChange={(v) => setPgThinkingProfileDraft(typeof v === 'string' ? v : '')}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             );
           })()}
         </Modal>
@@ -3936,7 +4732,13 @@ function formatOptionLabelsDisplay(
         </div>
         {(() => {
           const currentModelType = pgModels.find(m => m.id === pgCurrentId)?.type_name || '';
-          const modelSchemeType = currentModelType.includes('视频') ? 'video' : currentModelType.includes('图片') ? 'image' : 'chat';
+          const modelSchemeType = currentModelType.includes('视频')
+            ? 'video'
+            : currentModelType.includes('图片')
+              ? 'image'
+              : name === 'playground_2026' && (currentModelType.includes('音频') || currentModelType.includes('语音'))
+                ? 'audio'
+                : 'chat';
           const filteredSchemes = pgSchemes.filter(s => s.type === modelSchemeType);
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -4029,6 +4831,7 @@ function formatOptionLabelsDisplay(
               <Radio.Button value="chat">对话</Radio.Button>
               <Radio.Button value="image">图片</Radio.Button>
               <Radio.Button value="video">视频</Radio.Button>
+              {name === 'playground_2026' && <Radio.Button value="audio">音频</Radio.Button>}
             </Radio.Group>
             <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddScheme} style={{ flexShrink: 0 }}>新增方案</Button>
           </div>
@@ -4039,6 +4842,7 @@ function formatOptionLabelsDisplay(
             video: { label: '视频生成方案', icon: <VideoCameraOutlined />, color: '#1677ff', schemes: [] },
             image: { label: '图片生成方案', icon: <PictureOutlined />, color: '#52c41a', schemes: [] },
             chat: { label: '聊天对话方案', icon: <MessageOutlined />, color: '#722ed1', schemes: [] },
+            audio: { label: '音频生成方案', icon: <AudioOutlined />, color: '#13c2c2', schemes: [] },
             other: { label: '其他方案', icon: <AppstoreOutlined />, color: '#faad14', schemes: [] }
           };
           schemeList.forEach((scheme, idx) => {
@@ -4046,8 +4850,9 @@ function formatOptionLabelsDisplay(
               if (pgSchemeTypeFilter === 'chat' && scheme.type !== 'chat') return;
               if (pgSchemeTypeFilter === 'video' && scheme.type !== 'video') return;
               if (pgSchemeTypeFilter === 'image' && scheme.type !== 'image') return;
+              if (pgSchemeTypeFilter === 'audio' && scheme.type !== 'audio') return;
             }
-            const key = scheme.type === 'video' ? 'video' : scheme.type === 'image' ? 'image' : scheme.type === 'chat' ? 'chat' : 'other';
+            const key = scheme.type === 'video' ? 'video' : scheme.type === 'image' ? 'image' : scheme.type === 'chat' ? 'chat' : scheme.type === 'audio' ? 'audio' : 'other';
             typeGroups[key].schemes.push({ scheme, idx });
           });
           const activeGroups = Object.entries(typeGroups).filter(([, g]) => g.schemes.length > 0);
@@ -4132,15 +4937,15 @@ function formatOptionLabelsDisplay(
                         {/* 右侧操作按钮 */}
                         <div style={{ display: 'flex', gap: 0, flexShrink: 0, alignItems: 'center', marginLeft: 'auto' }}>
                           <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEditScheme(scheme, idx)} style={{ color: '#2563eb', padding: '0 4px', height: actionBtnH }}>编辑</Button>
-                          <Tooltip title={scheme.type === 'image' || scheme.type === 'video' ? '' : '仅图片、视频方案支持 IO 配置'}>
+                          <Tooltip title={scheme.type === 'image' || scheme.type === 'video' || (name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat')) ? '' : (name === 'playground_2026' ? '仅图片、视频、音频、聊天方案支持 IO 配置' : '仅图片、视频方案支持 IO 配置')}>
                             <span>
                               <Button
                                 size="small"
                                 type="text"
                                 icon={<ApiOutlined />}
-                                disabled={scheme.type !== 'image' && scheme.type !== 'video'}
+                                disabled={scheme.type !== 'image' && scheme.type !== 'video' && !(name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat'))}
                                 onClick={() => handleOpenSchemeIo(scheme, idx)}
-                                style={{ color: scheme.type === 'image' || scheme.type === 'video' ? '#0d9488' : undefined, padding: '0 4px', height: actionBtnH }}
+                                style={{ color: scheme.type === 'image' || scheme.type === 'video' || (name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat')) ? '#0d9488' : undefined, padding: '0 4px', height: actionBtnH }}
                               >
                                 IO配置
                               </Button>
@@ -4226,7 +5031,9 @@ function formatOptionLabelsDisplay(
                   value={editingScheme.type}
                   onChange={v => {
                     let next = { ...editingScheme, type: v };
-                    if (v !== 'chat') {
+                    if (name === 'playground_2026' && v === 'audio' && editingScheme.type !== 'audio') {
+                      next = ensureSchemeIoDefaults({ ...next, inputs: [], outputs: [] });
+                    } else if (v !== 'chat') {
                       const ioEmpty =
                         !Array.isArray(next.inputs) ||
                         next.inputs.length === 0 ||
@@ -4234,10 +5041,21 @@ function formatOptionLabelsDisplay(
                         next.outputs.length === 0;
                       if (ioEmpty) next = ensureSchemeIoDefaults(next);
                     }
+                    if (name === 'playground_2026' && (v === 'image' || v === 'video')) {
+                      next.prompt_optimize = seedPromptOptimize(next.prompt_optimize, v);
+                    }
+                    if (name === 'playground_2026' && v === 'audio') {
+                      next.voice_library = seedVoiceLibrary(next.voice_library, pgVoiceCatalogs);
+                    }
                     setEditingScheme(next);
                   }}
                   style={{ width: '100%' }}
-                  options={[{ label: '视频 (video)', value: 'video' }, { label: '图片 (image)', value: 'image' }, { label: '聊天 (chat)', value: 'chat' }]}
+                  options={[
+                    { label: '视频 (video)', value: 'video' },
+                    { label: '图片 (image)', value: 'image' },
+                    { label: '聊天 (chat)', value: 'chat' },
+                    ...(name === 'playground_2026' ? [{ label: '音频 (audio)', value: 'audio' }] : []),
+                  ]}
                 />
               </div>
             </div>
@@ -4247,6 +5065,33 @@ function formatOptionLabelsDisplay(
             </div>
 
             <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+
+            {name === 'playground_2026' && (editingScheme.type === 'image' || editingScheme.type === 'video') && (
+              <>
+                <SchemePromptOptimizeField
+                  mode="scheme"
+                  schemeType={editingScheme.type}
+                  value={editingScheme.prompt_optimize}
+                  isLight={_isLight}
+                  onChange={(next) => setEditingScheme({ ...editingScheme, prompt_optimize: next || { enabled: false, body: '' } })}
+                />
+                <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+              </>
+            )}
+
+            {name === 'playground_2026' && editingScheme.type === 'audio' && (
+              <>
+                <SchemeVoiceLibraryField
+                  mode="scheme"
+                  schemeType={editingScheme.type}
+                  value={editingScheme.voice_library}
+                  catalogs={pgVoiceCatalogs}
+                  isLight={_isLight}
+                  onChange={(next) => setEditingScheme({ ...editingScheme, voice_library: next || seedVoiceLibrary({ enabled: false }, pgVoiceCatalogs) })}
+                />
+                <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
+              </>
+            )}
 
             {name === 'playground_2026' && editingScheme.type === 'image' && (
               <>
@@ -4258,7 +5103,7 @@ function formatOptionLabelsDisplay(
                   </Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                  {!!editingScheme.image_special_params?.enabled && (
+                  {(isImageSpecialForcedOn(editingScheme.id) || !!editingScheme.image_special_params?.enabled) && (
                     <Button
                       size="small"
                       icon={<SettingOutlined />}
@@ -4275,17 +5120,23 @@ function formatOptionLabelsDisplay(
                       配置
                     </Button>
                   )}
-                  <Switch
-                    checked={!!editingScheme.image_special_params?.enabled}
-                    onChange={(v) => {
-                      if (!v) setImageSpecialModalOpen(false);
-                      const prev = normalizeImageSpecialParams(editingScheme.image_special_params);
-                      const next = v
-                        ? seedImageSpecialParams(editingScheme.image_special_params)
-                        : { ...prev, enabled: false };
-                      setEditingScheme({ ...editingScheme, image_special_params: next });
-                    }}
-                  />
+                  <Tooltip
+                    title={isImageSpecialForcedOn(editingScheme.id) ? 'GPT-Image-2 按官方规则必须开启图片专用参数' : undefined}
+                  >
+                    <Switch
+                      checked={isImageSpecialForcedOn(editingScheme.id) || !!editingScheme.image_special_params?.enabled}
+                      disabled={isImageSpecialForcedOn(editingScheme.id)}
+                      onChange={(v) => {
+                        if (isImageSpecialForcedOn(editingScheme.id)) return;
+                        if (!v) setImageSpecialModalOpen(false);
+                        const prev = normalizeImageSpecialParams(editingScheme.image_special_params);
+                        const next = v
+                          ? seedImageSpecialParams(editingScheme.image_special_params)
+                          : { ...prev, enabled: false };
+                        setEditingScheme({ ...editingScheme, image_special_params: next });
+                      }}
+                    />
+                  </Tooltip>
                 </div>
               </div>
               <Divider style={{ margin: '8px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
@@ -4443,7 +5294,7 @@ function formatOptionLabelsDisplay(
                     />
                   </div>
                 )}
-                {name === 'playground_2026' && (editingScheme.type === 'image' || editingScheme.type === 'video') && (
+                {name === 'playground_2026' && (editingScheme.type === 'image' || editingScheme.type === 'video' || editingScheme.type === 'audio') && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
                     <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
                     <Tooltip
@@ -4489,7 +5340,7 @@ function formatOptionLabelsDisplay(
             params={editingIoScheme.params || []}
             inputs={editingIoScheme.inputs || []}
             outputs={editingIoScheme.outputs || []}
-            onChange={({ inputs, outputs }) => setEditingIoScheme({ ...editingIoScheme, inputs, outputs })}
+            onChange={(next) => setEditingIoScheme({ ...editingIoScheme, ...next })}
             isLight={_isLight}
           />
         )}
@@ -5216,6 +6067,7 @@ function formatOptionLabelsDisplay(
         workflow_node_limit: workflowNodeLimit,
         workflow_enabled: workflowEnabled,
         workflow_menu_title: workflowMenuTitle.trim(),
+        user_nav_modules: userNavModules,
         volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
         director_enabled: pgAdvancedNodeDirectorEnabled,
         show_in_playground_prompt: showInPlaygroundPrompt,
@@ -5244,6 +6096,14 @@ function formatOptionLabelsDisplay(
             ...(featureKindFromTypeName(m.type_name) ? {
               feature_attributes: parseFeatureAttrList(m.feature_attributes),
               feature_keys: Array.isArray(m.pg_feature_keys) ? m.pg_feature_keys : [],
+            } : {}),
+            ...(name === 'playground_2026' && featureKindFromTypeName(m.type_name) === 'chat' ? {
+              ...(typeof m.pg_input_protocol === 'string' && m.pg_input_protocol
+                ? { input_protocol: m.pg_input_protocol }
+                : {}),
+              ...(typeof m.pg_thinking_profile === 'string' && m.pg_thinking_profile
+                ? { thinking_profile: m.pg_thinking_profile }
+                : {}),
             } : {}),
           })),
           advanced_nodes: {
@@ -5287,7 +6147,7 @@ function formatOptionLabelsDisplay(
             </span>
             <Switch
               checked={workflowEnabled}
-              onChange={(checked) => setWorkflowEnabled(checked)}
+              onChange={(checked) => setUserNavModules((prev) => patchUserNavModule(prev, 'workflow', { enabled: checked }))}
             />
           </div>
         </div>
@@ -5315,7 +6175,7 @@ function formatOptionLabelsDisplay(
             size="small"
             placeholder="工作流"
             value={workflowMenuTitle}
-            onChange={(e) => setWorkflowMenuTitle(e.target.value)}
+            onChange={(e) => setUserNavModules((prev) => patchUserNavModule(prev, 'workflow', { title: e.target.value }))}
             style={{ width: 160 }}
             allowClear
           />
@@ -5371,6 +6231,10 @@ function formatOptionLabelsDisplay(
           </Text>
         </div>
       </div>
+
+      <PluginModule>
+        <PlaygroundDemoImageConfig />
+      </PluginModule>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
         <Button
@@ -5512,7 +6376,7 @@ function formatOptionLabelsDisplay(
       width: 100,
       render: (t: string) => t ? (
         <Tag style={{ borderRadius: 4, background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.04)', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-          {t.includes('视频增强') ? <ThunderboltOutlined style={{ marginRight: 4 }} /> : t.includes('视频') ? <VideoCameraOutlined style={{ marginRight: 4 }} /> : t.includes('图片') ? <PictureOutlined style={{ marginRight: 4 }} /> : null}
+          {t.includes('画质增强') || t.includes('图像增强') || t.includes('视频增强') ? <ThunderboltOutlined style={{ marginRight: 4 }} /> : t.includes('视频') ? <VideoCameraOutlined style={{ marginRight: 4 }} /> : t.includes('图片') ? <PictureOutlined style={{ marginRight: 4 }} /> : null}
           {t}
         </Tag>
       ) : <Text type="secondary">-</Text>
@@ -5548,30 +6412,22 @@ function formatOptionLabelsDisplay(
         </Tooltip>
       ),
       key: 'mp_level_ids',
-      width: 220,
+      width: 240,
       render: (_: any, record: any) => (
-        <div>
-          <div style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', marginBottom: 4 }}>
-            {record.mp_enabled ? '不可查看' : '可查看'}
-          </div>
-          <Select
-            mode="multiple"
-            size="small"
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            maxTagCount="responsive"
-            placeholder={record.mp_enabled ? '默认全部可查看' : '默认全部不可查看'}
-            value={record.mp_level_ids || []}
-            onChange={(vals: number[]) => handleMpLevelIdsChange(record.id, vals)}
-            options={levels.map(lv => ({ label: lv.name, value: lv.id }))}
-            style={{ width: '100%' }}
-          />
-        </div>
+        <MpLevelSelectCell
+          record={record}
+          levels={levels}
+          _isLight={_isLight}
+          onChange={handleMpLevelIdsChange}
+        />
       )
     },
     {
-      title: '排序权重',
+      title: (
+        <Tooltip title="与模型列表「页面排序」同步，数值越大越靠前">
+          <span>页面排序</span>
+        </Tooltip>
+      ),
       key: 'mp_sort_order',
       width: 120,
       sorter: (a: any, b: any) => (a.mp_sort_order || 0) - (b.mp_sort_order || 0),
@@ -5770,18 +6626,11 @@ function formatOptionLabelsDisplay(
             rowKey="id"
             size="small"
             scroll={{ x: 1400 }}
-            pagination={{
+            pagination={listPagination({
               current: mpPage,
               pageSize: mpPageSize,
-              showSizeChanger: true,
-              pageSizeOptions: ['10', '20', '50', '100', '200'],
-              showTotal: (total) => `共 ${total} 项`,
-              showQuickJumper: true,
-              onChange: (page, size) => {
-                setMpPage(page);
-                setMpPageSize(size);
-              },
-            }}
+              onChange: onMpPageChange,
+            })}
             style={{ marginBottom: 16 }}
           />
 
@@ -5889,7 +6738,18 @@ function formatOptionLabelsDisplay(
                 { key: 'pg_storage', label: '存储配置', children: storageTab },
                 { key: 'playground_models', label: '创作模型管理', children: playgroundModelTab },
                 { key: 'playground_schemes', label: '创作方案配置', children: playgroundSchemeTab },
+                { key: 'playground_chat_config', label: '聊天功能配置', children: (
+                  <PluginModule>
+                    <PlaygroundChatConfigTab
+                      items={userNavModules}
+                      onChange={setUserNavModules}
+                      isLight={_isLight}
+                    />
+                  </PluginModule>
+                ) },
                 { key: 'playground_workflow_config', label: '工作流配置', children: playgroundWorkflowConfigTab },
+                { key: 'playground_skill_config', label: 'Skill 配置', children: <PluginModule><PlaygroundSkillConfigTab /></PluginModule> },
+                { key: 'playground_prompt_optimize', label: 'AI 优化提示词', children: <PluginModule><PlaygroundPromptOptimizeConfigTab isLight={_isLight} /></PluginModule> },
               ]
             : plugin.name === 'playground'
               ? [
@@ -5958,6 +6818,7 @@ function formatOptionLabelsDisplay(
                               { key: 'preset', label: '预设素材', children: <AdminPresetAssets pluginNs={plugin.name} /> },
                               { key: 'relay_convert', label: '转换素材', children: <RelayConvertAssets pluginNs={plugin.name} /> },
                               { key: 'api_proxy', label: 'API 素材', children: <ApiProxyAssets pluginNs={plugin.name} /> },
+                              { key: 'cloud_assets', label: '云端素材', children: <CloudAssetsTab pluginNs={plugin.name} /> },
                               { key: 'api_log', label: '接口日志', children: apiLogTab },
                             ]
                             : [

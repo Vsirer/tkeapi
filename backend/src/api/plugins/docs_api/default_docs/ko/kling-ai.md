@@ -5,7 +5,6 @@
 ### 1. 비디오 모델 API
 * **텍스트 기반 비디오 생성**: `/v1/videos/text2video` (`POST`)
 * **이미지 기반 비디오 생성**: `/v1/videos/image2video` (`POST`)
-* **다중 이미지 기반 비디오 생성**: `/v1/videos/multi-image2video` (`POST`)
 * **Omni 비디오 참조 비디오 생성**: `/v1/videos/omni-video` (`POST`)
 * **작업 상태 조회**: `/v1/videos/{endpoint}/{task_id}` (`GET`)
 

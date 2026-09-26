@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::models::{ApiToken, BillingRule, Channel, Model};
@@ -17,6 +17,47 @@ use tokio::sync::mpsc;
 
 use super::upstream_headers;
 
+/// 高效检测流式响应中是否包含上游业务错误帧（仅嗅探头尾关键行，高并发下长流 0 遍历开销）
+pub fn detect_stream_error(raw_response_text: &str) -> Option<(u16, String)> {
+    let s = raw_response_text.trim();
+    if s.is_empty() || (!s.contains("\"error\"") && !s.contains("\"ErrorCode\"") && !s.contains("\"algo_msg\"")) {
+        return None;
+    }
+
+    // 1. 纯 JSON 报错响应（非 SSE）
+    if s.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+            if crate::relay::response_formatter::is_upstream_error_response(&v) {
+                return Some((
+                    crate::relay::proxy::infer_error_status_code(&v),
+                    crate::relay::proxy::extract_error_message(s),
+                ));
+            }
+        }
+    }
+
+    // 2. 错误绝大多数只在首包或尾部；仅嗅探前 5 行与后 5 行，跳过中间成百上千行正常文本
+    for line in s.lines().take(5).chain(s.lines().rev().take(5)) {
+        let line = line.trim();
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let data = data.trim();
+        if data == "[DONE]" || !data.contains("\"error\"") {
+            continue;
+        }
+        let Some(start) = data.find('{') else { continue };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data[start..]) {
+            if crate::relay::response_formatter::is_upstream_error_response(&v) {
+                let status = crate::relay::proxy::infer_error_status_code(&v);
+                let msg = crate::relay::response_formatter::extract_error_message_from_value(&v)
+                    .unwrap_or_else(|| crate::relay::proxy::extract_error_message(data));
+                return Some((status, msg));
+            }
+        }
+    }
+
+    None
+}
+
 /// 流结束后统一结算：resolve_model → calculate_relay_cost → record_and_bill_inner
 async fn settle_after_stream(
     state: &Arc<AppState>,
@@ -26,8 +67,8 @@ async fn settle_after_stream(
     db_model: Option<&Model>,
     db_rule: &mut Option<BillingRule>,
     ctx: &crate::relay::proxy::UserContext,
-    usage: crate::relay::usage_extractor::UsageTokens,
-    features: crate::relay::usage_extractor::ExtractedFeatures,
+    mut usage: crate::relay::usage_extractor::UsageTokens,
+    mut features: crate::relay::usage_extractor::ExtractedFeatures,
     detail_extra: Option<String>,
     start_time: std::time::Instant,
     entry_endpoint: &str,
@@ -39,29 +80,42 @@ async fn settle_after_stream(
     upstream_req_content: Option<String>,
     category: &str,
     pending_log_id: Option<i64>,
+    stream_fail: Option<(u16, String)>,
+    upstream_request_id: Option<String>,
 ) {
-    let map_res =
-        crate::relay::router::mapping_resolution(Some(category), features.resolution.as_deref());
-    let (resolved_model, mapping_source) =
-        crate::relay::router::resolve_model(channel, model, db_model, map_res);
-    let (cost, mut detail) = crate::relay::calculate_relay_cost(
-        state,
-        db_model,
-        db_rule.as_mut(),
-        channel,
-        ctx,
-        &usage,
-        &features,
-        mapping_source.as_deref(),
-        model,
-        &resolved_model,
-    )
-    .await;
-    if let Some(extra) = detail_extra {
-        detail.push_str(&extra);
-    }
     let latency_ms = start_time.elapsed().as_millis() as u32;
     let ep = format!("{}|{}", entry_endpoint, upstream_path);
+
+    let (status_code, error_msg, cost, detail) = if let Some((code, err)) = stream_fail {
+        // 异常断流或上游业务报错：全额退还预扣款，用量清零不扣费
+        usage.prompt = 0;
+        usage.completion = 0;
+        let detail_text = format!("流传输失败已退款 | {}", err);
+        (code, Some(err), 0.0, detail_text)
+    } else {
+        let map_res =
+            crate::relay::router::mapping_resolution(Some(category), features.resolution.as_deref());
+        let (resolved_model, mapping_source) =
+            crate::relay::router::resolve_model(channel, model, db_model, map_res);
+        let (c, mut d) = crate::relay::calculate_relay_cost(
+            state,
+            db_model,
+            db_rule.as_mut(),
+            channel,
+            ctx,
+            &usage,
+            &mut features,
+            mapping_source.as_deref(),
+            model,
+            &resolved_model,
+        )
+        .await;
+        if let Some(extra) = detail_extra {
+            d.push_str(&extra);
+        }
+        (200, None, c, d)
+    };
+
     crate::relay::proxy::record_and_bill_inner(crate::relay::proxy::BillRecord {
         ctx: crate::relay::ha::HaBillCtx::new(state, token, model, &ep)
             .category(category)
@@ -74,8 +128,8 @@ async fn settle_after_stream(
         pre_deduct_gift,
         latency_ms,
         is_stream: 1,
-        status_code: 200,
-        error_msg: None,
+        status_code,
+        error_msg: error_msg.as_deref(),
         request: Some(request_content),
         response: Some(response_content),
         upstream_req: upstream_req_content,
@@ -83,6 +137,7 @@ async fn settle_after_stream(
         features: Some(features),
         time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
         plugin_tag: None,
+        upstream_request_id,
     })
     .await;
 }
@@ -115,12 +170,14 @@ pub async fn handle_chat_stream(
     mut db_rule: Option<BillingRule>,
 ) -> impl IntoResponse {
     let upstream_hdrs = response.headers().clone();
+    let up_req_id = upstream_headers::extract_upstream_request_id(&upstream_hdrs);
     let (tx, rx) = mpsc::channel::<Result<String, axum::Error>>(100);
     let mut upstream_stream = response.bytes_stream();
 
     tokio::spawn(async move {
         let mut buffer = String::new();
         let mut raw_response_text = String::new();
+        let mut stream_fail: Option<(u16, String)> = None;
         let passthrough = sse_body_passthrough(&entry_endpoint);
 
         while let Some(chunk_result) = upstream_stream.next().await {
@@ -156,12 +213,19 @@ pub async fn handle_chat_stream(
                         }
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    stream_fail = Some((502, format!("上游流式传输中断: {}", e)));
+                    break;
+                }
             }
         }
 
         if !passthrough {
             let _ = tx.send(Ok("data: [DONE]\n\n".to_string())).await;
+        }
+
+        if stream_fail.is_none() {
+            stream_fail = detect_stream_error(&raw_response_text);
         }
 
         let mut usage = crate::relay::usage_extractor::UsageTokens {
@@ -206,6 +270,8 @@ pub async fn handle_chat_stream(
             upstream_req_content,
             "聊天",
             pending_log_id,
+            stream_fail,
+            up_req_id,
         )
         .await;
     });
@@ -237,11 +303,13 @@ pub async fn handle_image_stream(
     mut db_rule: Option<BillingRule>,
 ) -> impl IntoResponse {
     let upstream_hdrs = response.headers().clone();
+    let up_req_id = upstream_headers::extract_upstream_request_id(&upstream_hdrs);
     let (tx, rx) = mpsc::channel::<Result<Bytes, axum::Error>>(100);
     let mut upstream_stream = response.bytes_stream();
 
     tokio::spawn(async move {
         let mut full_response_text = String::new();
+        let mut stream_fail: Option<(u16, String)> = None;
 
         while let Some(chunk_result) = upstream_stream.next().await {
             match chunk_result {
@@ -251,8 +319,15 @@ pub async fn handle_image_stream(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    stream_fail = Some((502, format!("上游流式传输中断: {}", e)));
+                    break;
+                }
             }
+        }
+
+        if stream_fail.is_none() {
+            stream_fail = detect_stream_error(&full_response_text);
         }
 
         let usage = crate::relay::usage_extractor::parse_usage(&full_response_text);
@@ -286,6 +361,8 @@ pub async fn handle_image_stream(
             upstream_req_content,
             "图片",
             pending_log_id,
+            stream_fail,
+            up_req_id,
         )
         .await;
     });
@@ -318,11 +395,13 @@ pub async fn handle_native_stream(
     hint_category: String,
 ) -> impl IntoResponse {
     let upstream_hdrs = response.headers().clone();
+    let up_req_id = upstream_headers::extract_upstream_request_id(&upstream_hdrs);
     let (tx, rx) = mpsc::channel::<Result<Bytes, axum::Error>>(100);
     let mut upstream_stream = response.bytes_stream();
 
     tokio::spawn(async move {
         let mut full_response_text = String::new();
+        let mut stream_fail: Option<(u16, String)> = None;
 
         while let Some(chunk_result) = upstream_stream.next().await {
             match chunk_result {
@@ -332,8 +411,15 @@ pub async fn handle_native_stream(
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    stream_fail = Some((502, format!("上游流式传输中断: {}", e)));
+                    break;
+                }
             }
+        }
+
+        if stream_fail.is_none() {
+            stream_fail = detect_stream_error(&full_response_text);
         }
 
         // 统一从完整响应文本提取 token 用量（复用 parse_usage 完整能力，覆盖 OpenAI/Gemini/Anthropic 等所有格式）
@@ -346,6 +432,11 @@ pub async fn handle_native_stream(
             prompt_tokens = crate::relay::chat::estimate_prompt_tokens(&req_json);
             completion_tokens = (full_response_text.len() as f64 / 4.0).ceil() as i32;
         }
+        let usage = crate::relay::usage_extractor::UsageTokens {
+            prompt: prompt_tokens,
+            completion: completion_tokens,
+            ..fallback
+        };
 
         let mut features = crate::relay::usage_extractor::features_from_exchange(
             Some(request_content_str.as_str()),
@@ -354,11 +445,6 @@ pub async fn handle_native_stream(
                 .filter(|uc| *uc != request_content_str.as_str()),
             Some(full_response_text.as_str()),
         );
-        let usage = crate::relay::usage_extractor::UsageTokens {
-            prompt: prompt_tokens,
-            completion: completion_tokens,
-            ..fallback
-        };
         crate::relay::usage_extractor::enrich_features_from_usage(&mut features, &usage);
         settle_after_stream(
             &state,
@@ -383,6 +469,8 @@ pub async fn handle_native_stream(
             upstream_req_content,
             hint_category.as_str(),
             pending_log_id,
+            stream_fail,
+            up_req_id,
         )
         .await;
     });
@@ -392,3 +480,5 @@ pub async fn handle_native_stream(
         axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
     )
 }
+
+

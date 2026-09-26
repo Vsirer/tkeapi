@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /**
@@ -12,13 +12,37 @@
 import useAuthStore from '../store/auth';
 import useSettingsStore from '../store/settings';
 
-/** 优先级：用户个人时区 > 站点默认 > Asia/Shanghai */
+/** 站点默认时区（基础设置）。管理后台筛选/展示都走这个。 */
+export function resolveSiteTimedisplay(): string {
+  return useSettingsStore.getState().settings?.site?.default_timezone?.trim() || 'Asia/Shanghai';
+}
+
+/** 浏览器 IANA 时区；读不到则空串（注册时后端再回退 UTC）。 */
+export function browserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+function isValidIanaTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 管理后台：站点默认时区。用户端：个人时区合法则用之，否则 UTC。 */
 export function resolveTimedisplay(): string {
+  if (useAuthStore.getState().user?.role === 'admin') {
+    return resolveSiteTimedisplay();
+  }
   const userTz = useAuthStore.getState().user?.timezone?.trim();
-  if (userTz) return userTz;
-  const siteTz = useSettingsStore.getState().settings?.site?.default_timezone?.trim();
-  if (siteTz) return siteTz;
-  return 'Asia/Shanghai';
+  if (userTz && isValidIanaTimezone(userTz)) return userTz;
+  return 'UTC';
 }
 
 /** 是否在时间字符串后追加 (UTC+8) 一类后缀 */

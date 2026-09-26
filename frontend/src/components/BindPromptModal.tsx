@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -105,9 +105,19 @@ const BindPromptModal: React.FC = () => {
     setOpen(false);
   };
 
-  const handleGoBind = () => {
+  const handleGoBind = (target?: 'mobile' | 'email') => {
     setOpen(false);
-    navigate('/profile');
+    if (target) {
+      navigate(`/profile?bind=${target}`);
+      return;
+    }
+    if (needMobile && !hasValidMobile(u?.mobile)) {
+      navigate('/profile?bind=mobile');
+    } else if (needEmail && !hasValidEmail(u?.email)) {
+      navigate('/profile?bind=email');
+    } else {
+      navigate('/profile');
+    }
   };
 
   const needMobile = !!reg?.require_bind_mobile;
@@ -134,13 +144,14 @@ const BindPromptModal: React.FC = () => {
   };
 
   const statusRow = (
-    key: string,
+    key: 'mobile' | 'email',
     icon: React.ReactNode,
     label: string,
     bound: boolean,
   ) => (
     <div
       key={key}
+      onClick={bound ? undefined : () => handleGoBind(key)}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -149,6 +160,7 @@ const BindPromptModal: React.FC = () => {
         borderRadius: 14,
         background: tc.rowBg,
         border: `1px solid ${tc.rowBorder}`,
+        cursor: bound ? 'default' : 'pointer',
       }}
     >
       <div
@@ -176,18 +188,29 @@ const BindPromptModal: React.FC = () => {
       {bound ? (
         <CheckCircleFilled style={{ color: tc.ok, fontSize: 16 }} />
       ) : (
-        <span
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleGoBind(key);
+          }}
           style={{
-            fontSize: 11,
-            padding: '2px 8px',
+            fontSize: 12,
+            padding: '3px 10px',
             borderRadius: 999,
             border: `1px solid ${tc.btnBorder}`,
-            color: tc.textMuted,
+            background: tc.btnBg,
+            color: tc.btnText,
+            cursor: 'pointer',
             lineHeight: '18px',
+            fontWeight: 500,
+            whiteSpace: 'nowrap',
+            transition: 'all 0.2s',
           }}
+          className="bind-prompt-hover-btn"
         >
-          待完善
-        </span>
+          直接去绑定
+        </button>
       )}
     </div>
   );
@@ -317,7 +340,7 @@ const BindPromptModal: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <Button
               type="default"
-              onClick={handleGoBind}
+              onClick={() => handleGoBind()}
               style={{
                 height: 48,
                 borderRadius: 24,

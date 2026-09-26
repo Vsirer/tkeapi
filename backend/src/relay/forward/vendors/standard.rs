@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use super::super::media;
@@ -248,11 +248,6 @@ pub(crate) fn build_dashscope_video_body(model: &str, body: &serde_json::Value) 
                 serde_json::json!(size.to_uppercase()),
             );
         }
-    } else if let Some(res) = params.get("resolution").and_then(|v| v.as_str()) {
-        params.insert(
-            "resolution".to_string(),
-            serde_json::json!(res.to_uppercase()),
-        );
     }
     params
         .entry("resolution".to_string())
@@ -596,6 +591,16 @@ pub(crate) fn build_volcengine_content_body(model: &str, body: &serde_json::Valu
         result["execution_expires_after"] = serde_json::json!(3600);
     }
 
+    // ── 分辨率默认兜底 ──
+    // 若用户未指定 resolution，则默认设为 "720p"；用户传参直接透传保持原样（部分上游对大小写敏感）
+    if result
+        .get("resolution")
+        .and_then(|v| v.as_str())
+        .map_or(true, |s| s.trim().is_empty())
+    {
+        result["resolution"] = serde_json::json!("720p");
+    }
+
     result
 }
 
@@ -764,10 +769,6 @@ pub(crate) fn build_bytefor_video_body(model: &str, body: &serde_json::Value) ->
         } else {
             fwd["resolution"] = serde_json::json!("720P");
         }
-    } else {
-        if let Some(res_str) = fwd["resolution"].as_str() {
-            fwd["resolution"] = serde_json::json!(res_str.to_uppercase());
-        }
     }
     if let Some(obj) = fwd.as_object_mut() {
         obj.remove("quality");
@@ -812,3 +813,4 @@ pub(crate) fn build_bytefor_video_body(model: &str, body: &serde_json::Value) ->
 
     fwd
 }
+

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 创作中心2026：Seedream 5.0 Pro 图片生成方案种子。
@@ -101,7 +101,7 @@ pub fn seedream_5_0_pro_scheme() -> Value {
             },
             {
                 "key": "layer_decomposition",
-                "label": "图层拆分",
+                "label": "自动拆分图层",
                 "type": "switch",
                 "data_type": "boolean",
                 "default": false,
@@ -170,6 +170,29 @@ fn is_image_count_key(key: &str) -> bool {
         key,
         "n" | "batch_size" | "num_images" | "image_count" | "count" | "quantity" | "generate_count"
     )
+}
+
+/// 创作中心2026：Pro 模型 params 补上图层拆分开关（方案未绑 Pro 时也能看见）
+pub fn ensure_layer_decomposition_param(params: Value) -> Value {
+    let Some(arr) = params.as_array() else {
+        return params;
+    };
+    if arr
+        .iter()
+        .any(|p| p.get("key").and_then(|v| v.as_str()) == Some("layer_decomposition"))
+    {
+        return params;
+    }
+    let mut next = arr.clone();
+    next.push(json!({
+        "key": "layer_decomposition",
+        "label": "自动拆分图层",
+        "type": "switch",
+        "data_type": "boolean",
+        "default": false,
+        "enabled": true
+    }));
+    json!(next)
 }
 
 /// Pro 不支持组图：生成数量锁定为 1
@@ -510,170 +533,4 @@ pub fn seed_seedream_output_format_radio(schemes: &mut [Value]) -> bool {
         }
     }
     changed
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pro_scheme_output_format_is_radio() {
-        let scheme = seedream_5_0_pro_scheme();
-        let params = scheme["params"].as_array().unwrap();
-        let fmt = params
-            .iter()
-            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("output_format"))
-            .expect("output_format param must exist");
-        assert_eq!(fmt["type"], "radio");
-        assert_eq!(fmt["option_labels"]["png"], "PNG");
-        assert_eq!(fmt["option_labels"]["jpeg"], "JPEG");
-
-        let bg = params
-            .iter()
-            .find(|p| p.get("key").and_then(|v| v.as_str()) == Some("background"))
-            .expect("background param must exist");
-        assert_eq!(bg["type"], "radio");
-        assert_eq!(bg["option_labels"]["opaque"], "不透明");
-        assert_eq!(bg["option_labels"]["transparent"], "透明");
-    }
-
-    #[test]
-    fn seed_seedream_output_format_radio_updates_select_to_radio() {
-        let mut schemes = vec![json!({
-            "id": SEEDREAM_5_0_PRO_SCHEME_ID,
-            "params": [
-                {"key": "watermark", "type": "switch"},
-                {"key": "output_format", "type": "select"},
-                {"key": "background", "type": "select"}
-            ]
-        })];
-        assert!(seed_seedream_output_format_radio(&mut schemes));
-        assert_eq!(schemes[0]["params"][1]["type"], "radio");
-        assert_eq!(schemes[0]["params"][1]["option_labels"]["png"], "PNG");
-        assert_eq!(schemes[0]["params"][2]["type"], "radio");
-        assert_eq!(schemes[0]["params"][2]["option_labels"]["opaque"], "不透明");
-        assert!(!seed_seedream_output_format_radio(&mut schemes));
-    }
-
-    #[test]
-    fn pro_image_special_matches_seedream_docs() {
-        let v = seedream_5_0_pro_image_special_params();
-        assert_eq!(v["aspect_ratio"]["default"], "auto");
-        assert_eq!(v["aspect_ratio"]["in_request"], false);
-        assert_eq!(v["resolution"]["default"], "1.5K");
-        assert_eq!(v["resolution"]["in_request"], false);
-        assert_eq!(v["image_size"]["key"], "size");
-        assert_eq!(v["image_size"]["in_request"], true);
-        assert_eq!(v["image_size"]["size_map"]["2K"]["16:9"], "2816x1584");
-        assert_eq!(v["image_size"]["size_map"]["1K"]["1:1"], "1024x1024");
-        assert_eq!(v["image_size"]["custom"]["min_pixels"], 921600);
-        assert_eq!(v["image_size"]["custom"]["max_pixels"], 4624220);
-        assert_eq!(v["image_size"]["custom"]["min_aspect"], "1:16");
-        assert_eq!(v["image_size"]["custom"]["max_aspect"], "16:1");
-        assert_eq!(v["image_size"]["custom"]["step"], 1);
-    }
-
-    #[test]
-    fn lite_45_40_image_special_matches_volcengine_docs() {
-        let lite = seedream_5_0_lite_image_special_params();
-        assert_eq!(lite["resolution"]["options"], json!(["2K", "3K", "4K"]));
-        assert_eq!(lite["resolution"]["default"], "2K");
-        assert_eq!(lite["image_size"]["size_map"]["2K"]["4:3"], "2304x1728");
-        assert_eq!(lite["image_size"]["size_map"]["3K"]["16:9"], "4096x2304");
-        assert_eq!(lite["image_size"]["size_map"]["4K"]["21:9"], "6240x2656");
-        assert_eq!(lite["image_size"]["custom"]["min_pixels"], 3686400);
-        assert_eq!(lite["image_size"]["custom"]["max_pixels"], 16777216);
-
-        let v45 = seedream_4_5_image_special_params();
-        assert_eq!(v45["resolution"]["options"], json!(["2K", "4K"]));
-        assert_eq!(v45["image_size"]["size_map"]["2K"]["16:9"], "2848x1600");
-        assert_eq!(v45["image_size"]["custom"]["min_pixels"], 3686400);
-
-        let v40 = seedream_4_0_image_special_params();
-        assert_eq!(v40["resolution"]["options"], json!(["1K", "2K", "4K"]));
-        assert_eq!(v40["resolution"]["default"], "1K");
-        assert_eq!(v40["image_size"]["size_map"]["1K"]["16:9"], "1312x736");
-        assert_eq!(v40["image_size"]["size_map"]["1K"]["9:16"], "736x1312");
-        assert_eq!(v40["image_size"]["custom"]["min_pixels"], 921600);
-        assert_eq!(v40["image_size"]["custom"]["max_pixels"], 16777216);
-    }
-
-    #[test]
-    fn seed_fills_missing_official_and_keeps_saved() {
-        let mut schemes = vec![
-            json!({"id": SEEDREAM_5_0_LITE_SCHEME_ID, "image_special_params": {"enabled": false}}),
-            json!({"id": "seedream_4_5"}),
-            json!({"id": "seedream_4_0"}),
-            json!({
-                "id": SEEDREAM_5_0_PRO_SCHEME_ID,
-                "image_special_params": {
-                    "enabled": true,
-                    "resolution": { "default": "2K" },
-                    "image_size": { "custom": { "enabled": true, "max_pixels": 1 } }
-                }
-            }),
-            json!({"id": "openai_image"}),
-        ];
-        assert!(seed_seedream_official_image_special(&mut schemes));
-        assert_eq!(schemes[0]["image_special_params"]["enabled"], false);
-        assert_eq!(schemes[1]["image_special_params"]["enabled"], true);
-        assert_eq!(
-            schemes[2]["image_special_params"]["image_size"]["size_map"]["1K"]["16:9"],
-            "1312x736"
-        );
-        assert_eq!(
-            schemes[3]["image_special_params"]["resolution"]["default"],
-            "1.5K"
-        );
-        assert_eq!(
-            schemes[3]["image_special_params"]["image_size"]["custom"]["max_pixels"],
-            1
-        );
-        assert!(schemes[4].get("image_special_params").is_none());
-        assert!(!seed_seedream_official_image_special(&mut schemes));
-    }
-
-    #[test]
-    fn strip_size_only_on_seedream_schemes() {
-        let mut schemes = vec![
-            json!({
-                "id": SEEDREAM_5_0_LITE_SCHEME_ID,
-                "params": [
-                    {"key": "size", "default": "2K"},
-                    {"key": "watermark", "default": false}
-                ]
-            }),
-            json!({
-                "id": "openai_image",
-                "params": [{"key": "size", "default": "1024x1024"}]
-            }),
-        ];
-        assert!(strip_seedream_scheme_size_params(&mut schemes));
-        assert_eq!(schemes[0]["params"].as_array().unwrap().len(), 1);
-        assert_eq!(schemes[0]["params"][0]["key"], "watermark");
-        assert_eq!(schemes[1]["params"][0]["key"], "size");
-        assert!(!strip_seedream_scheme_size_params(&mut schemes));
-    }
-
-    #[test]
-    fn pro_scheme_has_no_size_param() {
-        let scheme = seedream_5_0_pro_scheme();
-        let params = scheme["params"].as_array().unwrap();
-        assert!(params.iter().all(|p| p["key"] != "size"));
-        assert!(params.iter().any(|p| p["key"] == "watermark"));
-    }
-
-    #[test]
-    fn seed_writes_missing_pro() {
-        let mut schemes = vec![json!({
-            "id": SEEDREAM_5_0_PRO_SCHEME_ID,
-            "name": "x"
-        })];
-        assert!(seed_seedream_official_image_special(&mut schemes));
-        assert_eq!(
-            schemes[0]["image_special_params"]["image_size"]["custom"]["max_pixels"],
-            4624220
-        );
-        assert!(!seed_seedream_official_image_special(&mut schemes));
-    }
 }

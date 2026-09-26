@@ -1270,13 +1270,17 @@ response = client.chat.completions.create(
     const currentSiteOrigin = window.location.origin && window.location.origin !== 'null'
       ? window.location.origin.replace(/\/$/, '')
       : '';
-    const currentApiBaseUrl = `${currentSiteOrigin}/v1`;
+    const configuredApiBaseUrl = '__PORTAL_API_BASE_URL__';
+    const currentApiBaseUrl = configuredApiBaseUrl && configuredApiBaseUrl.indexOf('PORTAL_API_BASE_URL') === -1
+      ? configuredApiBaseUrl
+      : `${currentSiteOrigin}/v1`;
     window.currentApiBaseUrl = currentApiBaseUrl;
 
     function resolveCurrentSiteOrigin(value) {
-      return typeof value === 'string'
-        ? value.split(currentSiteOriginToken).join(currentSiteOrigin)
-        : value;
+      if (typeof value !== 'string') return value;
+      return value
+        .split(currentSiteOriginToken + '/v1').join(currentApiBaseUrl)
+        .split(currentSiteOriginToken).join(currentSiteOrigin);
     }
 
     function applyCurrentSiteOrigin() {

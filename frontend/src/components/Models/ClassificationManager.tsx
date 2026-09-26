@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -138,7 +138,8 @@ const ClassificationManager: React.FC<ClassificationManagerProps> = ({
 
   const renderSystemIcon = (name: string) => {
     const lowerName = name.toLowerCase();
-    if (lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={18} />;
+    if (lowerName.includes('画质增强') || lowerName.includes('quality enhancement') || lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={18} />;
+    if (lowerName.includes('图像增强') || lowerName.includes('image enhancement') || lowerName.includes('image-enhance') || lowerName.includes('imageenhance') || lowerName.includes('image_enhance')) return <Sparkles size={18} />;
     if (lowerName.includes('图片') || lowerName.includes('image')) return <ImageIcon size={18} />;
     if (lowerName.includes('视频') || lowerName.includes('video')) return <Video size={18} />;
     if (lowerName.includes('音频') || lowerName.includes('audio')) return <AudioLines size={18} />;

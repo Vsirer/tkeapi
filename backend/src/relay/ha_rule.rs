@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! HA 规则包：稀疏熔断表 + 旧扁平配置迁移。热路径经 `relay_settings` 缓存 `Arc` 共享。
@@ -25,8 +25,10 @@ pub struct HaRule {
     pub id: String,
     pub name: String,
     pub retries: u32,
-    #[serde(default)]
+    #[serde(default = "default_budget")]
     pub budget: u64,
+    #[serde(default = "default_ttfb")]
+    pub ttfb: u64,
     #[serde(default = "default_err")]
     pub err: String,
     #[serde(default)]
@@ -35,6 +37,14 @@ pub struct HaRule {
     pub allow: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
+}
+
+fn default_budget() -> u64 {
+    900
+}
+
+fn default_ttfb() -> u64 {
+    0
 }
 
 fn default_err() -> String {
@@ -66,7 +76,8 @@ impl HaRule {
             id: id.to_string(),
             name: name.to_string(),
             retries: 3,
-            budget: 0,
+            budget: default_budget(),
+            ttfb: default_ttfb(),
             err: default_err(),
             melt: default_melt(),
             allow: Vec::new(),
@@ -103,7 +114,7 @@ fn default_melt() -> HashMap<String, u32> {
 
 pub fn default_rule_arc() -> Arc<HaRule> {
     static R: OnceLock<Arc<HaRule>> = OnceLock::new();
-    R.get_or_init(|| Arc::new(HaRule::default_rule("r1", "默认")))
+    R.get_or_init(|| Arc::new(HaRule::default_rule("r1", "通用对话")))
         .clone()
 }
 
@@ -228,11 +239,14 @@ fn sanitize_rule(r: HaRule, id: String) -> Result<HaRule, String> {
             n.chars().take(MAX_NAME).collect()
         }
     };
+    let budget = if r.budget == 0 { default_budget() } else { r.budget };
+    let ttfb = r.ttfb.min(300);
     Ok(HaRule {
         id,
         name,
         retries: r.retries,
-        budget: r.budget,
+        budget,
+        ttfb,
         err: err.to_string(),
         melt,
         allow: normalize_keywords(r.allow),
@@ -301,11 +315,14 @@ fn migrate_flat(map: &HashMap<String, String>) -> HaRulesBundle {
     let retries = parse_i64(map, "ha_max_retries", 3)
         .max(1)
         .min(MAX_RETRIES as i64) as u32;
+    let raw_budget = parse_i64(map, "ha_total_timeout_secs", 900) as u64;
+    let budget = if raw_budget == 0 { default_budget() } else { raw_budget };
     let r = HaRule {
         id: "r1".into(),
-        name: "默认".into(),
+        name: "通用对话".into(),
         retries,
-        budget: parse_i64(map, "ha_total_timeout_secs", 0) as u64,
+        budget,
+        ttfb: default_ttfb(),
         err: default_err(),
         melt,
         allow: keywords("ha_meltdown_whitelist"),

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 插件中心「通用壳」：列表/开关、`plugin_configs`、HA/存储/审核、创作中心、模型广场。
@@ -11,12 +11,11 @@
 //! - `mod.rs` — router、seed、`is_plugin_compiled`、registry/config、HA/存储/审核、object_store、api_logs
 //! - `playground.rs` — 创作中心 schemes 与配置 API
 //! - `marketplace.rs` — 模型广场缓存与 API
-//! - `volc_enhance.rs` — 火山画质增强（`plugin_volcengine_enhance` feature，关 feature 时不编译）
 //! - `*_seed.rs` — 方案种子，由迁移或 init 调用
 //!
 //! ## 新插件
 //! 业务 API 放 `plugins/{name}/` 自有目录并在 `api/mod.rs` 挂 router；勿把业务逻辑堆进本目录。
-//! 仅插件中心 UI 需要的配置键：创作中心→`playground.rs`，广场→`marketplace.rs`，Volc→`volc_enhance.rs`，
+//! 仅插件中心 UI 需要的配置键：创作中心→`playground.rs`，广场→`marketplace.rs`，
 //! 通用 toggle/upsert→`mod.rs`；router 用 `playground::handler` 等显式路径，handler 用 `pub(crate)`。
 //!
 //! ## 可移除（feature 三连）
@@ -35,24 +34,23 @@ use axum::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-pub(crate) mod quick_bar_seed;
-pub(crate) mod seedream_5_0_pro_seed;
-pub(crate) mod minimax_h3_seed;
 pub(crate) mod dashscope_video_seed;
-pub(crate) mod seedance2_seed;
+pub(crate) mod doubao_seed_evolving_seed;
+pub(crate) mod doubao_tts_2_seed;
 pub(crate) mod duration_slider_seed;
+pub(crate) mod glm_deepseek_chat_seed;
 pub(crate) mod gpt_image_2_seed;
 pub(crate) mod marketplace_visibility;
+pub(crate) mod minimax_h3_seed;
+pub(crate) mod quick_bar_seed;
+pub(crate) mod seedance2_seed;
+pub(crate) mod seedream_5_0_pro_seed;
 pub use marketplace_visibility::*;
 
 mod marketplace;
 mod playground;
-#[cfg(feature = "plugin_volcengine_enhance")]
-mod volc_enhance;
 
 pub use marketplace::*;
-#[cfg(feature = "plugin_volcengine_enhance")]
-pub use volc_enhance::*;
 
 use crate::{
     auth,
@@ -64,7 +62,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 pub fn router() -> Router<Arc<AppState>> {
-    let mut r = Router::new()
+    let r = Router::new()
         .route("/", get(list_plugins))
         .route("/{name}/toggle", post(toggle_plugin))
         .route("/{name}/config", post(update_plugin_config))
@@ -104,27 +102,11 @@ pub fn router() -> Router<Arc<AppState>> {
             post(marketplace::batch_toggle_marketplace_models),
         )
         .route("/{name}/test-connection", post(test_tos_connection))
-        .route("/{name}/api-logs", get(get_plugin_api_logs));
-
-    #[cfg(feature = "plugin_volcengine_enhance")]
-    {
-        r = r
-            .route(
-                "/{name}/volcengine-enhance-config",
-                get(volc_enhance::get_volcengine_enhance_config)
-                    .post(volc_enhance::save_volcengine_enhance_config),
-            )
-            .route(
-                "/{name}/test-volcengine-connection",
-                post(volc_enhance::test_volcengine_connection),
-            )
-            .route("/{name}/enhance-logs", get(volc_enhance::get_volcengine_enhance_logs))
-            .route(
-                "/{name}/enhance-logs/recover",
-                get(volc_enhance::get_volcengine_enhance_logs_recover_status)
-                    .post(volc_enhance::start_volcengine_enhance_logs_recover),
-            );
-    }
+        .route("/{name}/api-logs", get(get_plugin_api_logs))
+        .route(
+            "/{name}/log-retention",
+            get(get_plugin_log_retention).put(save_plugin_log_retention),
+        );
 
     r
 }
@@ -141,6 +123,7 @@ pub fn is_plugin_compiled(name: &str) -> bool {
         "team_marketing" => cfg!(all(feature = "commercial_plugins", plugin_team_marketing)),
         "volcengine_ark_monitor" => cfg!(feature = "commercial_plugins"),
         "volcengine_enhance" => cfg!(feature = "plugin_volcengine_enhance"),
+        "tencent_enhance" => cfg!(feature = "plugin_tencent_enhance"),
         "asset_manager" => cfg!(feature = "commercial_plugins"),
         "asset_manager_intl" => cfg!(feature = "commercial_plugins"),
         "upstream_asset_relay" => cfg!(feature = "commercial_plugins"),
@@ -302,6 +285,22 @@ pub struct ConfigRequest {
     pub volc_enhance_enabled: Option<bool>,
     /// 创作中心2026：是否开放导演台节点
     pub director_enabled: Option<bool>,
+    /// 创作中心2026：技能功能总开关（默认关闭）
+    pub skill_enabled: Option<bool>,
+    /// 创作中心2026：音频模块总开关（默认关闭）
+    pub audio_enabled: Option<bool>,
+    /// 创作中心2026：图片编辑入口总开关（默认关闭）
+    pub image_edit_enabled: Option<bool>,
+    /// 创作中心2026：视频编辑工作台入口总开关（默认关闭；不关闭生成页 edit-video）
+    pub video_edit_workbench_enabled: Option<bool>,
+    /// 创作中心2026：用户端左侧功能菜单（顺序即展示顺序）
+    pub user_nav_modules: Option<Value>,
+    /// 创作中心2026：用户端技能菜单名称（默认「技能」）
+    pub skill_menu_title: Option<String>,
+    /// 创作中心2026：每用户自建技能条数上限
+    pub skill_user_limit: Option<i64>,
+    /// 创作中心2026：AI 优化提示词所用聊天模型 mid
+    pub prompt_optimize_model_mid: Option<String>,
     pub show_in_playground_prompt: Option<bool>, // 体验中心提示词输入窗口加载显示
     pub docs_api_allow_guest: Option<bool>,      // 文档API是否允许免登录访问
     pub show_in_admin_menu: Option<i64>,         // 管理后台左侧二级菜单开关
@@ -497,7 +496,7 @@ async fn update_plugin_config(
         .await?;
     }
 
-    if let Some(title) = payload.workflow_menu_title {
+    if let Some(ref title) = payload.workflow_menu_title {
         upsert_config(&state, &name, "workflow_menu_title", title.trim()).await?;
     }
 
@@ -516,6 +515,109 @@ async fn update_plugin_config(
                 &state,
                 &name,
                 "pg_advanced_node_director_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
+        }
+        if let Some(enabled) = payload.skill_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "skill_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
+        }
+        if let Some(enabled) = payload.image_edit_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "image_edit_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
+        }
+        if let Some(enabled) = payload.video_edit_workbench_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "video_edit_workbench_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
+        }
+        if let Some(title) = payload.skill_menu_title {
+            upsert_config(&state, &name, "skill_menu_title", title.trim()).await?;
+        }
+        if let Some(limit) = payload.skill_user_limit {
+            let v = if limit < 1 {
+                1
+            } else if limit > 500 {
+                500
+            } else {
+                limit
+            };
+            upsert_config(&state, &name, "skill_user_limit", &v.to_string()).await?;
+        }
+        if let Some(ref mid) = payload.prompt_optimize_model_mid {
+            let mid = mid.trim();
+            if !mid.is_empty() {
+                upsert_config(&state, &name, "prompt_optimize_model_mid", mid).await?;
+            }
+        }
+        #[cfg(feature = "commercial_plugins")]
+        {
+            let existing = load_plugin_configs(&state, &name).await.unwrap_or_default();
+            let nav_items = crate::api::plugins::playground_2026::user_nav::from_save_payload(
+                &existing,
+                payload.user_nav_modules.as_ref(),
+                payload.audio_enabled,
+                payload.workflow_enabled,
+                payload.workflow_menu_title.as_deref(),
+            );
+            upsert_config(
+                &state,
+                &name,
+                "user_nav_modules",
+                &crate::api::plugins::playground_2026::user_nav::to_json_string(&nav_items),
+            )
+            .await?;
+            upsert_config(
+                &state,
+                &name,
+                "audio_enabled",
+                if crate::api::plugins::playground_2026::user_nav::audio_enabled(&nav_items) {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .await?;
+            upsert_config(
+                &state,
+                &name,
+                "workflow_enabled",
+                if crate::api::plugins::playground_2026::user_nav::workflow_enabled(&nav_items) {
+                    "true"
+                } else {
+                    "false"
+                },
+            )
+            .await?;
+            upsert_config(
+                &state,
+                &name,
+                "workflow_menu_title",
+                &crate::api::plugins::playground_2026::user_nav::workflow_menu_title(&nav_items),
+            )
+            .await?;
+        }
+        #[cfg(not(feature = "commercial_plugins"))]
+        if let Some(enabled) = payload.audio_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "audio_enabled",
                 if enabled { "true" } else { "false" },
             )
             .await?;
@@ -575,13 +677,34 @@ async fn update_plugin_config(
     Ok(Json(json!({ "message": "ok" })))
 }
 
-// ========== 存储配置 ==========
+// ========== 存储配置与内存缓存 ==========
 
-/// 辅助：从 DB 加载插件的所有 config
+use dashmap::DashMap;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+static PLUGIN_CONFIGS_CACHE: LazyLock<DashMap<String, (Instant, HashMap<String, String>)>> =
+    LazyLock::new(DashMap::new);
+
+const PLUGIN_CONFIG_TTL: Duration = Duration::from_secs(300);
+
+/// 主动失效插件配置内存缓存（写穿/更新时调用）
+pub fn invalidate_plugin_configs_cache(plugin_name: &str) {
+    PLUGIN_CONFIGS_CACHE.remove(plugin_name);
+}
+
+/// 辅助：加载插件的所有 config（优先复用内存缓存，减少高并发下数据库读压力）
 async fn load_plugin_configs(
     state: &AppState,
     plugin_name: &str,
 ) -> Result<HashMap<String, String>, sqlx::Error> {
+    if let Some(entry) = PLUGIN_CONFIGS_CACHE.get(plugin_name) {
+        let (cached_at, ref map) = *entry;
+        if cached_at.elapsed() < PLUGIN_CONFIG_TTL {
+            return Ok(map.clone());
+        }
+    }
+
     let rows: Vec<(String, String)> =
         sqlx::query_as(&state.db.format_query(
             "SELECT config_key, config_value FROM plugin_configs WHERE plugin_name = ?",
@@ -590,7 +713,9 @@ async fn load_plugin_configs(
         .fetch_all(&state.db.pool)
         .await?;
 
-    Ok(rows.into_iter().collect())
+    let map: HashMap<String, String> = rows.into_iter().collect();
+    PLUGIN_CONFIGS_CACHE.insert(plugin_name.to_string(), (Instant::now(), map.clone()));
+    Ok(map)
 }
 
 /// 公开版本：供其他模块调用
@@ -631,6 +756,36 @@ pub async fn save_convert_cache_retention_days(
     .await
 }
 
+/// 插件日志自动清理保留天数（plugin_configs）；缺省 60；0=关闭。
+pub const PLUGIN_LOG_RETENTION_KEY: &str = "plugin_log_retention_days";
+pub const DEFAULT_PLUGIN_LOG_RETENTION_DAYS: i32 = 60;
+
+/// 读取插件级日志保留天数；未配置时默认 60。
+pub async fn load_plugin_log_retention_days(state: &AppState, plugin_name: &str) -> i32 {
+    if let Ok(configs) = load_plugin_configs(state, plugin_name).await {
+        if let Some(v) = configs.get(PLUGIN_LOG_RETENTION_KEY) {
+            if let Ok(n) = v.trim().parse::<i32>() {
+                return n.clamp(0, 365);
+            }
+        }
+    }
+    DEFAULT_PLUGIN_LOG_RETENTION_DAYS
+}
+
+pub async fn save_plugin_log_retention_days(
+    state: &AppState,
+    plugin_name: &str,
+    days: i32,
+) -> Result<(), sqlx::Error> {
+    upsert_config(
+        state,
+        plugin_name,
+        PLUGIN_LOG_RETENTION_KEY,
+        &days.clamp(0, 365).to_string(),
+    )
+    .await
+}
+
 /// 辅助：保存 config（upsert）—— 改用数据库原生 ON CONFLICT DO UPDATE 确保原子性（修复 Issue 5）
 pub async fn upsert_config(
     state: &AppState,
@@ -638,6 +793,7 @@ pub async fn upsert_config(
     key: &str,
     value: &str,
 ) -> Result<(), sqlx::Error> {
+    invalidate_plugin_configs_cache(plugin_name);
     // PostgreSQL 使用 ON CONFLICT (plugin_name, config_key) DO UPDATE
     // SQLite 兑换成 INSERT OR REPLACE -- format_query 会处理占位符转换
     let sql = state.db.format_query(
@@ -883,10 +1039,101 @@ async fn get_storage_config(
         obj.insert("default_max_assets".into(), json!(default_max_assets));
         obj.insert("workflow_node_limit".into(), json!(workflow_node_limit));
         obj.insert("workflow_enabled".into(), json!(workflow_enabled));
-        obj.insert(
-            "workflow_menu_title".into(),
-            json!(workflow_menu_title),
-        );
+        obj.insert("workflow_menu_title".into(), json!(workflow_menu_title));
+        if name == "playground_2026" {
+            let skill_enabled: bool = configs
+                .get("skill_enabled")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false);
+            let skill_menu_title: String = configs
+                .get("skill_menu_title")
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "技能".to_string());
+            let skill_user_limit: i64 = configs
+                .get("skill_user_limit")
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v >= 1)
+                .map(|v: i64| v.min(500))
+                .unwrap_or(50);
+            obj.insert("skill_enabled".into(), json!(skill_enabled));
+            obj.insert("skill_menu_title".into(), json!(skill_menu_title));
+            obj.insert("skill_user_limit".into(), json!(skill_user_limit));
+            obj.insert(
+                "image_edit_enabled".into(),
+                json!(configs
+                    .get("image_edit_enabled")
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false)),
+            );
+            obj.insert(
+                "video_edit_workbench_enabled".into(),
+                json!(configs
+                    .get("video_edit_workbench_enabled")
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false)),
+            );
+            #[cfg(feature = "commercial_plugins")]
+            {
+                let po_mid = configs
+                    .get("prompt_optimize_model_mid")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_default();
+                let po_llms =
+                    crate::api::plugins::playground_2026::prompt_optimize::list_chat_llms(&state)
+                        .await
+                        .unwrap_or_default();
+                let po_resolved =
+                    crate::api::plugins::playground_2026::prompt_optimize::resolve_llm(
+                        &po_mid, &po_llms,
+                    );
+                obj.insert(
+                    "prompt_optimize_model_mid".into(),
+                    json!(po_resolved.map(|m| m.mid.clone()).unwrap_or(po_mid)),
+                );
+                obj.insert(
+                    "prompt_optimize_llm_options".into(),
+                    crate::api::plugins::playground_2026::prompt_optimize::options_json(&po_llms),
+                );
+            }
+            #[cfg(feature = "commercial_plugins")]
+            {
+                let nav_items =
+                    crate::api::plugins::playground_2026::user_nav::from_configs(&configs);
+                obj.insert(
+                    "audio_enabled".into(),
+                    json!(
+                        crate::api::plugins::playground_2026::user_nav::audio_enabled(&nav_items)
+                    ),
+                );
+                obj.insert("user_nav_modules".into(), json!(nav_items));
+                obj.insert(
+                    "workflow_enabled".into(),
+                    json!(
+                        crate::api::plugins::playground_2026::user_nav::workflow_enabled(
+                            &nav_items
+                        )
+                    ),
+                );
+                obj.insert(
+                    "workflow_menu_title".into(),
+                    json!(
+                        crate::api::plugins::playground_2026::user_nav::workflow_menu_title(
+                            &nav_items
+                        )
+                    ),
+                );
+            }
+            #[cfg(not(feature = "commercial_plugins"))]
+            {
+                let audio_enabled: bool = configs
+                    .get("audio_enabled")
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false);
+                obj.insert("audio_enabled".into(), json!(audio_enabled));
+            }
+        }
         obj.insert(
             "show_in_playground_prompt".into(),
             json!(show_in_playground_prompt),
@@ -1365,7 +1612,14 @@ async fn get_ha_logs(
 
     let page_size = query.page_size.unwrap_or(15).clamp(1, 100);
     let keyword = query.keyword.as_deref().unwrap_or("").trim();
-    let kw = (!keyword.is_empty()).then(|| format!("%{keyword}%"));
+    let is_exact_log_id = keyword.starts_with("log_") || keyword.starts_with("tsk_");
+    let kw = (!keyword.is_empty()).then(|| {
+        if is_exact_log_id {
+            keyword.to_string()
+        } else {
+            format!("%{keyword}%")
+        }
+    });
 
     // 排序字段白名单
     let order_col = match query.sort_by.as_deref() {
@@ -1401,8 +1655,12 @@ async fn get_ha_logs(
     // 构造 WHERE 条件
     let mut conds = Vec::new();
     if kw.is_some() {
-        conds.push("(l.log_id LIKE ? OR l.model LIKE ? OR h.group_aid LIKE ? \
-                    OR EXISTS (SELECT 1 FROM users u2 WHERE u2.id = l.user_id AND (u2.uid LIKE ? OR u2.username LIKE ?)))");
+        if is_exact_log_id {
+            conds.push("l.log_id = ?");
+        } else {
+            conds.push("(l.log_id LIKE ? OR l.model LIKE ? OR h.group_aid LIKE ? \
+                        OR EXISTS (SELECT 1 FROM users u2 WHERE u2.id = l.user_id AND (u2.uid LIKE ? OR u2.username LIKE ?)))");
+        }
     }
     if df_val.is_some() {
         conds.push("h.created_at >= ?::timestamptz");
@@ -1421,8 +1679,12 @@ async fn get_ha_logs(
         ($q:expr) => {{
             let mut q = $q;
             if let Some(ref k) = kw {
-                for _ in 0..5 {
+                if is_exact_log_id {
                     q = q.bind(k);
+                } else {
+                    for _ in 0..5 {
+                        q = q.bind(k);
+                    }
                 }
             }
             if let Some(ref df) = df_val {
@@ -1510,8 +1772,20 @@ pub async fn get_volc_config(
     state: &AppState,
     plugin_name: &str,
 ) -> Option<crate::services::volcengine::VolcConfig> {
-    let configs = load_plugin_configs(state, plugin_name).await.ok()?;
-    crate::services::volcengine::VolcConfig::from_map(&configs)
+    if let Ok(configs) = load_plugin_configs(state, plugin_name).await {
+        if let Some(cfg) = crate::services::volcengine::VolcConfig::from_map(&configs) {
+            return Some(cfg);
+        }
+    }
+    // 若为 upstream_asset_relay 插件且自身未独立配置火山审核凭证，优雅回退到 asset_manager 的配置
+    if plugin_name == "upstream_asset_relay" {
+        if let Ok(configs) = load_plugin_configs(state, "asset_manager").await {
+            if let Some(cfg) = crate::services::volcengine::VolcConfig::from_map(&configs) {
+                return Some(cfg);
+            }
+        }
+    }
+    None
 }
 
 fn normalize_plugin_default_provider(s: &str) -> &'static str {
@@ -1615,7 +1889,6 @@ pub async fn delete_stored_object(
     }
 }
 
-
 #[derive(serde::Serialize, sqlx::FromRow)]
 pub struct PluginApiLog {
     pub id: i64,
@@ -1635,6 +1908,7 @@ pub struct LogQuery {
     pub page_size: Option<i64>,
     pub source: Option<String>,
     pub keyword: Option<String>,
+    pub status: Option<String>,
 }
 
 /// 管理员：获取插件 API 日志
@@ -1644,13 +1918,7 @@ async fn get_plugin_api_logs(
     axum::extract::Query(query): axum::extract::Query<LogQuery>,
     Extension(claims): Extension<auth::Claims>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let role: String =
-        sqlx::query_scalar(&state.db.format_query("SELECT role FROM users WHERE id = ?"))
-            .bind(&claims.sub)
-            .fetch_optional(&state.db.pool)
-            .await?
-            .unwrap_or_default();
-    if role != "admin" {
+    if claims.role != "admin" {
         return Err(AppError::Forbidden("需要管理员权限".to_string()));
     }
 
@@ -1668,9 +1936,17 @@ async fn get_plugin_api_logs(
         param_idx += 1;
     }
 
+    let status_filter = query.status.as_deref().unwrap_or("").trim().to_lowercase();
+    if status_filter == "success" {
+        where_clause.push_str(" AND (status_code >= 200 AND status_code < 300)");
+    } else if status_filter == "failed" {
+        where_clause
+            .push_str(" AND (status_code IS NULL OR status_code < 200 OR status_code >= 300)");
+    }
+
     let keyword = query.keyword.as_deref().unwrap_or("").to_string();
     if !keyword.is_empty() {
-        where_clause.push_str(&format!(" AND (api_endpoint ILIKE ${p} OR user_id ILIKE ${p} OR EXISTS (SELECT 1 FROM users u WHERE u.id = plugin_api_logs.user_id AND u.uid ILIKE ${p}))", p = param_idx));
+        where_clause.push_str(&format!(" AND (api_endpoint ILIKE ${p} OR user_id ILIKE ${p} OR EXISTS (SELECT 1 FROM users u WHERE u.id = plugin_api_logs.user_id AND (u.uid ILIKE ${p} OR u.username ILIKE ${p})))", p = param_idx));
         param_idx += 1;
     }
 
@@ -1753,4 +2029,294 @@ pub async fn is_plugin_enabled(state: &crate::AppState, name: &str) -> bool {
         Err(_) => None,
     };
     enabled.unwrap_or(0) == 1
+}
+
+#[derive(serde::Deserialize)]
+struct PluginLogRetentionReq {
+    retention_days: i32,
+}
+
+/// 管理员：获取插件日志保留天数设置
+async fn get_plugin_log_retention(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Extension(claims): Extension<auth::Claims>,
+) -> AppResult<Json<serde_json::Value>> {
+    if claims.role != "admin" {
+        return Err(AppError::Forbidden("需要管理员权限".to_string()));
+    }
+    let days = load_plugin_log_retention_days(&state, &name).await;
+    Ok(Json(serde_json::json!({ "retention_days": days })))
+}
+
+/// 管理员：保存插件日志保留天数设置
+async fn save_plugin_log_retention(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Extension(claims): Extension<auth::Claims>,
+    Json(req): Json<PluginLogRetentionReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    if claims.role != "admin" {
+        return Err(AppError::Forbidden("需要管理员权限".to_string()));
+    }
+    save_plugin_log_retention_days(&state, &name, req.retention_days)
+        .await
+        .map_err(|e| AppError::Internal(format!("保存失败: {}", e)))?;
+    Ok(Json(serde_json::json!({
+        "message": "已保存",
+        "retention_days": req.retention_days.clamp(0, 365)
+    })))
+}
+
+/// 辅助：按 created_at 分批删除单表过期行（每批 2000 条，杜绝长事务锁表）
+async fn delete_batch_by_created_at(state: &AppState, table: &str, pk: &str, days: i32) -> i64 {
+    let mut total = 0i64;
+    let sql = state.db.format_query(&format!(
+        "DELETE FROM {table} WHERE {pk} IN (
+            SELECT {pk} FROM {table}
+            WHERE created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day')
+            LIMIT 2000
+        )"
+    ));
+    loop {
+        match sqlx::query(&sql)
+            .bind(days as f64)
+            .execute(&state.db.pool)
+            .await
+        {
+            Ok(res) => {
+                let rows = res.rows_affected() as i64;
+                total += rows;
+                if rows < 2000 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            Err(e) => {
+                tracing::warn!("[PluginLogCleanup] 清理表 {table} 失败: {:?}", e);
+                break;
+            }
+        }
+    }
+    total
+}
+
+/// 辅助：清理通过 log_id 关联 logs 表的插件日志关联表（只删子表关联行，绝不删除 logs 主表）
+async fn delete_batch_joined_logs(state: &AppState, table: &str, days: i32) -> i64 {
+    let mut total = 0i64;
+    let sql = state.db.format_query(&format!(
+        "DELETE FROM {table} WHERE log_id IN (
+            SELECT t.log_id FROM {table} t
+            JOIN logs l ON l.id = t.log_id
+            WHERE l.created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day')
+            LIMIT 2000
+        )"
+    ));
+    loop {
+        match sqlx::query(&sql)
+            .bind(days as f64)
+            .execute(&state.db.pool)
+            .await
+        {
+            Ok(res) => {
+                let rows = res.rows_affected() as i64;
+                total += rows;
+                if rows < 2000 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            Err(e) => {
+                tracing::warn!("[PluginLogCleanup] 清理关联表 {table} 失败: {:?}", e);
+                break;
+            }
+        }
+    }
+    // 顺带清理原 logs 已不存在的孤立关联行
+    let _ = sqlx::query(&format!(
+        "DELETE FROM {table} WHERE log_id IN (
+            SELECT t.log_id FROM {table} t
+            LEFT JOIN logs l ON l.id = t.log_id
+            WHERE l.id IS NULL
+            LIMIT 2000
+        )"
+    ))
+    .execute(&state.db.pool)
+    .await;
+
+    total
+}
+
+/// 分批清理各插件专属日志（严禁删除 logs 核心表及业务关联表）
+pub async fn cleanup_expired_plugin_logs(state: &AppState) {
+    tracing::info!("[PluginLogCleanup] 开始检查并清理各插件过期日志...");
+
+    // 1. 清理 plugin_api_logs（通用接口日志与上游转发转换日志）
+    // 精确收集写入 plugin_api_logs 的命名空间，避免在日志大表上执行全表 DISTINCT 扫描
+    let mut plugin_names: Vec<String> = sqlx::query_scalar::<_, String>("SELECT name FROM plugins")
+        .fetch_all(&state.db.pool)
+        .await
+        .unwrap_or_default();
+
+    plugin_names.push("uar:convert".to_string());
+    plugin_names.push("uar:download".to_string());
+    plugin_names.push("upstream_asset_relay".to_string());
+
+    for ns in plugin_names {
+        let lookup_ns = if ns.starts_with("uar:") {
+            "upstream_asset_relay"
+        } else {
+            ns.as_str()
+        };
+        let days = load_plugin_log_retention_days(state, lookup_ns).await;
+        if days <= 0 {
+            continue;
+        }
+
+        let mut deleted_total = 0i64;
+        let delete_sql = state.db.format_query(
+            "DELETE FROM plugin_api_logs WHERE id IN (
+                SELECT id FROM plugin_api_logs
+                WHERE plugin_name = ? AND created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day')
+                LIMIT 2000
+            )",
+        );
+        loop {
+            match sqlx::query(&delete_sql)
+                .bind(&ns)
+                .bind(days as f64)
+                .execute(&state.db.pool)
+                .await
+            {
+                Ok(res) => {
+                    let rows = res.rows_affected() as i64;
+                    deleted_total += rows;
+                    if rows < 2000 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[PluginLogCleanup] 清理 plugin_api_logs ({ns}) 失败: {:?}",
+                        e
+                    );
+                    break;
+                }
+            }
+        }
+        if deleted_total > 0 {
+            tracing::info!(
+                "[PluginLogCleanup] 成功清理 plugin_api_logs [{ns}] 过期记录共 {deleted_total} 条 (保留 {days} 天)"
+            );
+        }
+    }
+
+    // 2. 高可用插件使用日志（只删 ha_usage_logs，严禁触碰 logs 表）
+    let ha_days = load_plugin_log_retention_days(state, "high_availability_channel").await;
+    if ha_days > 0 {
+        let n = delete_batch_by_created_at(state, "ha_usage_logs", "log_id", ha_days).await;
+        if n > 0 {
+            tracing::info!(
+                "[PluginLogCleanup] 成功清理 ha_usage_logs 过期记录共 {n} 条 (保留 {ha_days} 天)"
+            );
+        }
+    }
+
+    // 3. 内容安全审核任务日志
+    let cs_days = load_plugin_log_retention_days(state, "content_security").await;
+    if cs_days > 0 {
+        let n = delete_batch_by_created_at(state, "content_security_logs", "id", cs_days).await;
+        if n > 0 {
+            tracing::info!("[PluginLogCleanup] 成功清理 content_security_logs 过期记录共 {n} 条 (保留 {cs_days} 天)");
+        }
+    }
+
+    // 4. 火山 MediaKit 画质增强任务日志（只删 volcengine_enhance_logs 关联表，绝不触碰 logs 表）
+    let enhance_days = load_plugin_log_retention_days(state, "volcengine_enhance").await;
+    if enhance_days > 0 {
+        let n = delete_batch_joined_logs(state, "volcengine_enhance_logs", enhance_days).await;
+        if n > 0 {
+            tracing::info!("[PluginLogCleanup] 成功清理 volcengine_enhance_logs 过期记录共 {n} 条 (保留 {enhance_days} 天)");
+        }
+    }
+
+    // 4b. 火山增强自测与级联流水（与直打关联表共用保留天数）
+    if enhance_days > 0 {
+        let n = delete_batch_by_created_at(state, "plugin_volcengine_enhance_logs", "id", enhance_days).await;
+        if n > 0 {
+            tracing::info!("[PluginLogCleanup] 成功清理 plugin_volcengine_enhance_logs 过期记录共 {n} 条 (保留 {enhance_days} 天)");
+        }
+    }
+
+    // 4c. 腾讯云增强物理产物与流水清理
+    let te_days = load_plugin_log_retention_days(state, "tencent_enhance").await;
+    #[cfg(feature = "plugin_tencent_enhance")]
+    crate::api::plugins::cleanup_tencent_enhance_logs(state, te_days).await;
+
+    // 5. 数据同步操作审计日志
+    let ds_days = load_plugin_log_retention_days(state, "data_sync").await;
+    if ds_days > 0 {
+        let n = delete_batch_by_created_at(state, "data_sync_logs", "id", ds_days).await;
+        if n > 0 {
+            tracing::info!(
+                "[PluginLogCleanup] 成功清理 data_sync_logs 过期记录共 {n} 条 (保留 {ds_days} 天)"
+            );
+        }
+    }
+
+    // 6. 站点图标同步历史日志
+    let icon_days = load_plugin_log_retention_days(state, "site_icons").await;
+    if icon_days > 0 {
+        let n = delete_batch_by_created_at(state, "site_icon_sync_logs", "id", icon_days).await;
+        if n > 0 {
+            tracing::info!("[PluginLogCleanup] 成功清理 site_icon_sync_logs 过期记录共 {n} 条 (保留 {icon_days} 天)");
+        }
+    }
+
+    // 7. ComfyUI 任务与终态排队记录（只删插件专属表，严禁触碰 logs 表）
+    let comfy_days = load_plugin_log_retention_days(state, "comfyui_bridge").await;
+    if comfy_days > 0 {
+        let n_jobs = delete_batch_joined_logs(state, "comfyui_jobs", comfy_days).await;
+
+        let mut n_queue = 0i64;
+        let queue_sql = state.db.format_query(
+            "DELETE FROM comfyui_request_queue WHERE id IN (
+                SELECT id FROM comfyui_request_queue
+                WHERE status IN ('succeeded', 'failed', 'cancelled', 'timeout')
+                  AND created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day')
+                LIMIT 2000
+            )",
+        );
+        loop {
+            match sqlx::query(&queue_sql)
+                .bind(comfy_days as f64)
+                .execute(&state.db.pool)
+                .await
+            {
+                Ok(res) => {
+                    let rows = res.rows_affected() as i64;
+                    n_queue += rows;
+                    if rows < 2000 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[PluginLogCleanup] 清理 comfyui_request_queue 失败: {:?}",
+                        e
+                    );
+                    break;
+                }
+            }
+        }
+        if n_jobs > 0 || n_queue > 0 {
+            tracing::info!(
+                "[PluginLogCleanup] 成功清理 comfyui_bridge 过期任务 {n_jobs} 条 / 队列 {n_queue} 条 (保留 {comfy_days} 天)"
+            );
+        }
+    }
+
+    tracing::info!("[PluginLogCleanup] 插件日志清理检查完成。");
 }

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 // Types for the Tkeapi frontend
@@ -31,6 +31,8 @@ export interface User {
   created_at: string;
   updated_at: string;
   register_ip?: string;
+  /** 最近一次登录或接口请求的客户端 IP */
+  last_active_ip?: string;
   admin_remark?: string;
   referral_history?: string;
   referred_by?: string;
@@ -51,6 +53,14 @@ export interface User {
   invoice_enabled?: number;
   invoice_mode?: string;
   invoice_config?: string;
+  /** 是否已通过个人实名（用户列表接口填充） */
+  kyc_personal?: boolean;
+  /** 是否已通过企业实名（用户列表接口填充） */
+  kyc_enterprise?: boolean;
+  /** 个人实名最新审核状态（用户列表接口填充） */
+  kyc_personal_status?: UserKycStatus | string | null;
+  /** 企业实名最新审核状态（用户列表接口填充） */
+  kyc_enterprise_status?: UserKycStatus | string | null;
 }
 
 export interface UserLevel {
@@ -159,6 +169,10 @@ export interface InvoiceRequestRecord {
   id: number;
   request_no?: string;
   user_id: string;
+  username?: string;
+  user_email?: string;
+  user_nickname?: string;
+  user_uid?: string;
   invoice_type: string;
   title_type: string;
   title: string;
@@ -173,6 +187,12 @@ export interface InvoiceRequestRecord {
   status: string;
   reject_reason?: string;
   invoice_file_url?: string;
+  invoice_code?: string;
+  invoice_number?: string;
+  admin_remark?: string;
+  issued_at?: string;
+  operator_id?: string;
+  operator_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -209,11 +229,16 @@ export interface ModelModel {
   site_discount_enabled?: number;
   global_discount?: number;
   global_discount_enabled?: number;
+  discount_schedule?: string;
   logo?: string;
   remark?: string;
   description?: string;
   feature_attributes?: string;
   is_system?: number;
+  library_mid?: string | null;
+  is_listed?: number;
+  listed_count?: number;
+  library_kind?: 'catalog' | 'unlisted' | string | null;
   sort_order?: number;
   created_at: string;
   updated_at?: string;
@@ -258,6 +283,7 @@ export interface RechargeRecord {
   user_id: string;
   amount: number;
   recharge_type: string;
+  order_no?: string;
   remark?: string;
   wallet_type?: string;
   operator?: string;
@@ -417,10 +443,17 @@ export interface RequestLog {
   endpoint: string;
   error_message?: string;
   upstream_url?: string;
+  upstream_request_id?: string;
   channel_group_aid?: string;
   /** 请求当时是否走 HA 组（写路径快照） */
   is_ha?: number;
   yid?: string;
+  /** 视频模型输入是否包含视频(1=含视频, 0=无视频) */
+  has_video?: number;
+  /** 任务动作类型(如 '视频', '图片', '聊天' 等) */
+  action_type?: string;
+  /** 列表 JOIN models.mid */
+  mid?: string;
   channel_name?: string;
   user_nickname?: string;
   /** 用户管理员备注（管理端可见） */
@@ -432,6 +465,8 @@ export interface RequestLog {
   token_kid?: string;
   /** 令牌当前是否开启高可用（JOIN 令牌表，非 logs.is_ha 渠道快照） */
   token_ha?: number;
+  /** 是否创作中心专用令牌（only_playground / only_playground_2026） */
+  token_pg?: number;
   request_content?: string;
   response_content?: string;
   post_response?: string;
@@ -551,6 +586,8 @@ interface SiteSettings {
   show_timezone?: boolean;
   ip_blacklist_enabled?: boolean;
   ip_blacklist?: string[];
+  ip_whitelist_enabled?: boolean;
+  ip_whitelist?: string[];
 }
 
 interface AuxiliaryCurrency {
@@ -568,6 +605,7 @@ interface CurrencySettings {
   auxiliary_currencies?: AuxiliaryCurrency[];
   quick_amounts?: number[];
   min_recharge_amount?: number;
+  max_recharge_amount?: number;
 }
 
 interface LoginSettings {
@@ -591,6 +629,10 @@ export interface RegistrationSettings {
   bind_enforcement?: 'all' | 'any' | 'prompt_only';
   /** 是否开启站点用户实名认证（KYC） */
   enable_user_kyc?: boolean;
+  /** 同一邮箱最多绑定用户数 */
+  max_accounts_per_email?: number;
+  /** 同一手机号最多绑定用户数 */
+  max_accounts_per_mobile?: number;
   // 以下字段仅管理后台完整接口返回，公开接口不包含
   ip_rate_limit_enabled?: boolean;
   ip_daily_limit?: number;
@@ -683,7 +725,6 @@ export interface AllSettings {
     wechat_enabled: boolean;
     alipay_enabled: boolean;
     stripe_enabled: boolean;
-    bonuspay_enabled: boolean;
     hyperbc_enabled: boolean;
     allinpay_enabled: boolean;
   };
@@ -748,11 +789,26 @@ export interface AllSettings {
     china_tax_rate?: number;
     china_invoice_notice?: string;
   };
-  log_cleanup?: any;
+  log_cleanup?: {
+    log_retention_days?: number;
+    log_row_retention_days?: number;
+    error_log_retention_days?: number;
+    daily_stats_hour?: number;
+    daily_stats_minute?: number;
+    clean_hour?: number;
+    clean_minute?: number;
+    archive_hour?: number;
+    archive_minute?: number;
+    error_clean_hour?: number;
+    error_clean_minute?: number;
+    storage_clean_hour?: number;
+    storage_clean_minute?: number;
+    maintenance_hour?: number;
+    maintenance_minute?: number;
+  };
   payment_wechat?: any;
   payment_alipay?: any;
   payment_stripe?: any;
-  payment_bonuspay?: any;
   payment_hyperbc?: any;
   payment_allinpay?: any;
   payment_channels_ui?: {
@@ -969,6 +1025,11 @@ export interface Announcement {
   is_popup?: number;
   is_active: number;
   sort_order?: number;
+  pin_expires_at?: string | null;
+  popup_expires_at?: string | null;
+  active_expires_at?: string | null;
+  /** created=新建时间, updated=最后修改时间 */
+  display_time_mode?: 'created' | 'updated' | string;
   created_at: string;
   updated_at: string;
 }

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -171,9 +171,9 @@ const FinanceDataAnalysis: React.FC = () => {
           <Col span={24} lg={12}>
             <Card 
               title="系统余额与赠送增加趋势 (Balance & Gift Trends)" 
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <div style={{ height: 350 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -204,9 +204,9 @@ const FinanceDataAnalysis: React.FC = () => {
           <Col span={24} lg={12}>
             <Card 
               title="每日系统在线充值合计趋势 (Daily Online Recharge)" 
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <div style={{ height: 350 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -235,9 +235,9 @@ const FinanceDataAnalysis: React.FC = () => {
           <Col span={24} lg={12}>
             <Card 
               title="站点资金趋势 (Site Funds Trend)" 
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <div style={{ height: 350 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -268,9 +268,9 @@ const FinanceDataAnalysis: React.FC = () => {
           <Col span={24} lg={12}>
             <Card 
               title="活跃令牌数 (Active Tokens)" 
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <div style={{ height: 350 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -293,9 +293,9 @@ const FinanceDataAnalysis: React.FC = () => {
           <Col span={24} lg={12}>
             <Card 
               title="用户数据趋势 (User Trends)" 
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <div style={{ height: 350 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -340,9 +340,9 @@ const FinanceDataAnalysis: React.FC = () => {
                   />
                 </div>
               }
-              bordered={false} 
+              variant="borderless" 
               style={{ background: cardBg, borderRadius: 12, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
-              headStyle={{ borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' }}
+              styles={{ header: { borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #f0f0f0' } }}
             >
               <style>{`
                 .custom-scrollbar::-webkit-scrollbar {

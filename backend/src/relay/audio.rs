@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Relay: POST /v1/audio/speech
@@ -81,6 +81,13 @@ pub async fn audio_speech(
 ) -> AppResult<Response> {
     let raw_path = uri.path();
     let entry_path = raw_path.to_string();
+    let log_id = headers
+        .get("x-log-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| upstream_headers::resolve_request_log_id(Some("音频")));
     // 判断是否为官方原生路由（/api/v3/tts/...），影响模型提取和响应格式
     let is_native_route = raw_path.starts_with("/api/");
     let request_content_str = serde_json::to_string(&body).unwrap_or_default();
@@ -170,10 +177,11 @@ pub async fn audio_speech(
             Some(r) => r,
             None => {
                 if forward::model_has_forward_rules(&state, model).await {
-                    ha.on_access_err(AppError::BadRequest(format!(
-                        "模型 '{}' 不支持当前接口，请检查模型对应的转发规则",
-                        model
-                    )));
+                    let err = forward::record_unsupported_forward_error(
+                        &state, &token, &channel, model, raw_path, &resolved_cat,
+                    )
+                    .await;
+                    ha.on_access_err(err);
                     break;
                 }
                 forward::infer_forward_from_base_url(
@@ -271,7 +279,7 @@ pub async fn audio_speech(
                     state: &state,
                     user_id: &token.user_id,
                     token_id: token.id,
-                    model: model,
+                    model,
                     endpoint: &ep,
                     is_stream: 0,
                     request_content: Some(&request_content_str),
@@ -281,7 +289,7 @@ pub async fn audio_speech(
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
                     forward_eid: Some(&resolved.eid),
-                    requested_log_id: None,
+                    requested_log_id: Some(&log_id),
                 })
                 .await,
             );
@@ -327,10 +335,9 @@ pub async fn audio_speech(
                 }
                 let builder =
                     crate::services::http_client::with_timeout(builder, timeout_ctx.resolve());
-                let resp = match builder.send().await {
+                let resp = match timeout_ctx.send(builder, false).await {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        let err_msg = e.to_string();
+                    Err(err_msg) => {
                         let latency_ms = start_time.elapsed().as_millis() as u32;
                         let bill = crate::relay::ha::FailBill::transport(
                             latency_ms,
@@ -540,7 +547,7 @@ pub async fn audio_speech(
                     &channel,
                     &ctx,
                     &usage_tokens,
-                    &features,
+                    &mut features,
                     mapping_source.as_deref(),
                     &model,
                     &final_resolved_model,
@@ -570,6 +577,7 @@ pub async fn audio_speech(
                     features: Some(features),
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
                     plugin_tag: None,
+                    upstream_request_id: upstream_headers::extract_upstream_request_id(&raw.headers),
                 })
                 .await;
 
@@ -584,10 +592,13 @@ pub async fn audio_speech(
             super::ProtectJoin::Ok(raw) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &url, ms).await;
-                return Ok(upstream_headers::with_content_type(
-                    &raw.headers,
-                    raw.content_type,
-                    raw.body,
+                return Ok(upstream_headers::with_request_id(
+                    upstream_headers::with_content_type(
+                        &raw.headers,
+                        raw.content_type,
+                        raw.body,
+                    ),
+                    &log_id,
                 ));
             }
             super::ProtectJoin::Retry => {
@@ -771,6 +782,7 @@ async fn record_volcengine_tts_error(
         client_msg: Some(err_msg),
         pre_deducted: pre_deduction,
         pre_deduct_gift,
+        upstream_request_id: None,
     })
     .await;
     status_code

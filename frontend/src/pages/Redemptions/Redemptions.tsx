@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
@@ -10,6 +10,7 @@ import {
   Table, Tag, Card, Typography, Space, Button, Modal, Form, Input, InputNumber,
   Popconfirm, Switch, App, Radio, DatePicker, Drawer, Tooltip
 } from 'antd';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import {
   SyncOutlined,
   PlusOutlined,
@@ -47,8 +48,7 @@ const Redemptions: React.FC = () => {
   // Group states
   const [groups, setGroups] = useState<RedemptionGroup[]>([]);
   const [loading, setLoading] = useState(true);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const { page: currentPage, pageSize, setPage: setCurrentPage, setPageSize } = useListPager();
   const [total, setTotal] = useState(0);
 
   // Drawer states
@@ -56,8 +56,7 @@ const Redemptions: React.FC = () => {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [drawerCodes, setDrawerCodes] = useState<Redemption[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
-  const [drawerCurrentPage, setDrawerCurrentPage] = useState(1);
-  const [drawerPageSize, setDrawerPageSize] = useState(10);
+  const { page: drawerCurrentPage, pageSize: drawerPageSize, setPage: setDrawerCurrentPage, setPageSize: setDrawerPageSize } = useListPager();
   const [drawerTotal, setDrawerTotal] = useState(0);
 
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -506,17 +505,16 @@ const Redemptions: React.FC = () => {
           columns={drawerColumns}
           rowKey="id"
           loading={drawerLoading}
-          pagination={{
+          pagination={listPagination({
             current: drawerCurrentPage,
             pageSize: drawerPageSize,
             total: drawerTotal,
-            showSizeChanger: true,
             onChange: (page, size) => {
               setDrawerCurrentPage(page);
               setDrawerPageSize(size);
               fetchDrawerCodes(selectedGroup, page, size);
             },
-          }}
+          })}
         />
       </Card>
     );
@@ -540,7 +538,6 @@ const Redemptions: React.FC = () => {
             onSearch={handleSearch}
             style={{ width: 220 }}
           />
-          <Button icon={<SyncOutlined />} onClick={() => fetchGroups(currentPage, pageSize, searchKeyword)}>{t('common.refresh')}</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)}>
             {t('redemptions.add')}
           </Button>
@@ -585,17 +582,16 @@ const Redemptions: React.FC = () => {
         rowKey="name"
         loading={loading}
         scroll={{ x: 'max-content' }}
-        pagination={{
+        pagination={listPagination({
           current: currentPage,
-          pageSize: pageSize,
-          total: total,
-          showSizeChanger: true,
+          pageSize,
+          total,
           onChange: (page, size) => {
             setCurrentPage(page);
             setPageSize(size);
             fetchGroups(page, size, searchKeyword);
           },
-        }}
+        })}
       />
 
       <Modal

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::auth;
@@ -143,19 +143,17 @@ pub async fn bind_mobile(
     crate::api::auth::verify_sms_code_pub(&state, &request.mobile, &request.code, "bind_mobile")
         .await?;
 
-    // 检查手机号是否已被其他用户绑定
-    let exists: bool = sqlx::query_scalar(
-        &state
-            .db
-            .format_query("SELECT EXISTS(SELECT 1 FROM users WHERE mobile = ? AND id != ?)"),
+    let settings = crate::api::settings::load_all_settings(&state).await?;
+    let limit = crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_mobile);
+    let mut tx = state.db.pool.begin().await?;
+    crate::auth::contact::assert_mobile_slot_tx(
+        &mut tx,
+        &state.db,
+        &request.mobile,
+        Some(&claims.sub),
+        limit,
     )
-    .bind(&request.mobile)
-    .bind(&claims.sub)
-    .fetch_one(&state.db.pool)
     .await?;
-    if exists {
-        return Err(AppError::Conflict("该手机号已被其他账号绑定".to_string()));
-    }
 
     sqlx::query(
         &state.db.format_query(
@@ -164,8 +162,9 @@ pub async fn bind_mobile(
     )
     .bind(&request.mobile)
     .bind(&claims.sub)
-    .execute(&state.db.pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Json(
         serde_json::json!({"success": true, "message": "手机号绑定成功"}),
@@ -197,19 +196,17 @@ pub async fn bind_email(
     crate::api::auth::verify_email_code_pub(&state, &request.email, &request.code, "bind_email")
         .await?;
 
-    // 检查邮箱是否已被其他用户使用
-    let exists: bool = sqlx::query_scalar(
-        &state
-            .db
-            .format_query("SELECT EXISTS(SELECT 1 FROM users WHERE email = ? AND id != ?)"),
+    let settings = crate::api::settings::load_all_settings(&state).await?;
+    let limit = crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_email);
+    let mut tx = state.db.pool.begin().await?;
+    crate::auth::contact::assert_email_slot_tx(
+        &mut tx,
+        &state.db,
+        &request.email,
+        Some(&claims.sub),
+        limit,
     )
-    .bind(&request.email)
-    .bind(&claims.sub)
-    .fetch_one(&state.db.pool)
     .await?;
-    if exists {
-        return Err(AppError::Conflict("该邮箱已被其他账号使用".to_string()));
-    }
 
     sqlx::query(
         &state.db.format_query(
@@ -218,8 +215,9 @@ pub async fn bind_email(
     )
     .bind(&request.email)
     .bind(&claims.sub)
-    .execute(&state.db.pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Json(
         serde_json::json!({"success": true, "message": "邮箱绑定成功"}),

@@ -1,15 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /**
  * 体验中心 - 项目列表首页 (Stitch Style)
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { getAnnouncementLabel } from '../../../utils/announcement';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../../../utils/announcement';
 import {
   parseNotificationPreferences,
   shouldShowWebNotifications,
@@ -316,7 +316,7 @@ const PlaygroundHome: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: popoverTimeColor, fontSize: 12 }}>
                     <ScheduleOutlined />
-                    {formatApiDateTime(item.created_at, 'YYYY-MM-DD HH:mm')}
+                    {formatApiDateTime(getAnnouncementDisplayTime(item), 'YYYY-MM-DD HH:mm')}
                   </div>
                 </div>
 

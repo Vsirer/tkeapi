@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -82,6 +82,7 @@ const PaymentSettings: React.FC = () => {
   const [updatingLevelId, setUpdatingLevelId] = useState<number | null>(null);
   const [batchUpdating, setBatchUpdating] = useState(false);
   const [selectedLevelKeys, setSelectedLevelKeys] = useState<React.Key[]>([]);
+  const [showLevelDetails, setShowLevelDetails] = useState(false);
 
   const totalLevelsCount = userLevels.length;
   const enabledLevelsCount = useMemo(
@@ -128,6 +129,7 @@ const PaymentSettings: React.FC = () => {
           ...response.currency,
           quick_amounts: amountsStr,
           min_recharge_amount: response.currency.min_recharge_amount ?? 5,
+          max_recharge_amount: response.currency.max_recharge_amount ?? 10000,
         });
       }
       if (response?.invoices) {
@@ -157,31 +159,16 @@ const PaymentSettings: React.FC = () => {
             },
           ]);
         } else {
-          setSellerSubjects([
-            {
-              id: 'seller_default',
-              company_name: 'TokensByte Inc.',
-              tax_id: 'US-987654321',
-              contact_email: 'billing@tokensbyte.com',
-              company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
-              company_phone: '',
-              bank_name: '',
-              bank_account: '',
-              support_normal: true,
-              support_special: true,
-              is_default: true,
-              enabled: true,
-            },
-          ]);
+          setSellerSubjects([]);
         }
       } else {
         formInvoices.setFieldsValue({
           invoice_enabled: true,
           invoice_mode: 'international',
-          invoice_company_name: 'TokensByte Inc.',
-          invoice_company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
-          invoice_tax_id: 'US-987654321',
-          invoice_contact_email: 'billing@tokensbyte.com',
+          invoice_company_name: '',
+          invoice_company_address: '',
+          invoice_tax_id: '',
+          invoice_contact_email: '',
           invoice_currency_symbol: '$',
           invoice_prefix: 'INV-',
           receipt_prefix: 'REC-',
@@ -193,22 +180,7 @@ const PaymentSettings: React.FC = () => {
           china_tax_rate: 6,
           china_invoice_notice: '增值税普通发票将在审核通过后发送至填写的邮箱。',
         });
-        setSellerSubjects([
-          {
-            id: 'seller_default',
-            company_name: 'TokensByte Inc.',
-            tax_id: 'US-987654321',
-            contact_email: 'billing@tokensbyte.com',
-            company_address: '100 Innovation Way, Suite 300, San Francisco, CA 94107',
-            company_phone: '',
-            bank_name: '',
-            bank_account: '',
-            support_normal: true,
-            support_special: true,
-            is_default: true,
-            enabled: true,
-          },
-        ]);
+        setSellerSubjects([]);
       }
       setChannels(mergeChannelList(response?.payment_channels_ui?.channels));
     } catch (error) {
@@ -408,18 +380,6 @@ const PaymentSettings: React.FC = () => {
             webhook_secret: gatewayValues.webhook_secret || '',
           },
         };
-      } else if (meta.gatewayKey === 'payment_bonuspay') {
-        gatewayPayload = {
-          payment_bonuspay: {
-            ...(fullSettings?.payment_bonuspay || {}),
-            enabled: !!displayValues.enabled,
-            partner_id: gatewayValues.partner_id || '',
-            merchant_private_key: gatewayValues.merchant_private_key || '',
-            bonuspay_public_key: gatewayValues.bonuspay_public_key || '',
-            api_url: gatewayValues.api_url || 'https://api.bonuspay.network',
-            crypto_exchange_rate: gatewayValues.crypto_exchange_rate || 1.0,
-          },
-        };
       } else if (meta.gatewayKey === 'payment_hyperbc') {
         gatewayPayload = {
           payment_hyperbc: {
@@ -478,6 +438,7 @@ const PaymentSettings: React.FC = () => {
           auxiliary_currencies: values.auxiliary_currencies || [],
           quick_amounts,
           min_recharge_amount: values.min_recharge_amount != null ? parseFloat(values.min_recharge_amount) : 5.0,
+          max_recharge_amount: values.max_recharge_amount != null ? parseFloat(values.max_recharge_amount) : 10000.0,
         },
       };
       const updatedSettings = await (request.post('/settings', payload) as any);
@@ -517,7 +478,6 @@ const PaymentSettings: React.FC = () => {
     if (id === 'wechat') return <WechatOutlined style={{ fontSize: size, color }} />;
     if (id === 'allinpay') return <ThunderboltOutlined style={{ fontSize: size, color }} />;
     if (id === 'stripe') return <CreditCardOutlined style={{ fontSize: size, color }} />;
-    if (id === 'bonuspay') return <ThunderboltOutlined style={{ fontSize: size, color }} />;
     if (id === 'hyperbc') return <span style={{ fontSize: size - 2, fontWeight: 'bold', color }}>₿</span>;
     return <BankOutlined style={{ fontSize: size, color }} />;
   };
@@ -606,35 +566,6 @@ const PaymentSettings: React.FC = () => {
           </Form.Item>
           <Form.Item label="Webhook Signing Secret" name="webhook_secret" rules={[{ required: true, message: '请输入 Webhook Secret' }]}>
             <Input.Password placeholder="whsec_xxxx" />
-          </Form.Item>
-        </>
-      );
-    }
-
-    if (key === 'payment_bonuspay') {
-      return (
-        <>
-          <Alert type="info" showIcon style={{ marginBottom: 16, borderRadius: 8 }}
-            message="BonusPay 接入指引"
-            description={<div style={{ fontSize: 13, lineHeight: 1.8 }}>
-              <div>在 bonuspay.network 获取 Partner-Id，并配置 RSA 密钥与回调地址</div>
-            </div>}
-          />
-          {notifyUrlBlock(notifyUrl('bonuspay'), 'BonusPay 异步回调通知地址')}
-          <Form.Item label="Partner-Id" name="partner_id" rules={[{ required: true, message: '请输入 Partner-Id' }]}>
-            <Input placeholder="例如：200000000888" />
-          </Form.Item>
-          <Form.Item label="商户 RSA 私钥" name="merchant_private_key" rules={[{ required: true, message: '请输入商户私钥' }]}>
-            <Input.TextArea rows={4} style={{ fontFamily: 'monospace', fontSize: 12 }} />
-          </Form.Item>
-          <Form.Item label="BonusPay RSA 公钥" name="bonuspay_public_key" rules={[{ required: true, message: '请输入 BonusPay 公钥' }]}>
-            <Input.TextArea rows={4} style={{ fontFamily: 'monospace', fontSize: 12 }} />
-          </Form.Item>
-          <Form.Item label="API 接口地址" name="api_url">
-            <Input placeholder="https://api.bonuspay.network" />
-          </Form.Item>
-          <Form.Item label="USDT / USDC 汇率" name="crypto_exchange_rate" rules={[{ required: true }]}>
-            <InputNumber min={0.01} step={0.1} style={{ width: '100%' }} />
           </Form.Item>
         </>
       );
@@ -954,6 +885,9 @@ const PaymentSettings: React.FC = () => {
     try {
       // 乐观更新前端状态
       setUserLevels((prev) => prev.map((l) => ({ ...l, invoice_enabled: targetVal })));
+      if (enable) {
+        setShowLevelDetails(false);
+      }
       // 并发持久化至后端数据库
       await Promise.all(
         needUpdate.map((l) =>
@@ -1355,6 +1289,15 @@ const PaymentSettings: React.FC = () => {
               <InputNumber style={{ width: '100%' }} min={0} step={1} />
             </Form.Item>
 
+            <Form.Item
+              label="最大充值金额限制"
+              name="max_recharge_amount"
+              rules={[{ required: true, message: '请输入最大充值金额' }]}
+              extra="设置用户单次最大的充值金额。设置为 0 代表无限制，默认值为 10000"
+            >
+              <InputNumber style={{ width: '100%' }} min={0} step={1} />
+            </Form.Item>
+
             <Form.Item style={{ marginTop: 16 }}>
               <Button type="primary" htmlType="submit" loading={loadingCurrency}>
                 {t('common.save', '保存设置')}
@@ -1521,6 +1464,16 @@ const PaymentSettings: React.FC = () => {
                     onChange={(checked) => handleToggleAllLevels(checked)}
                   />
                 </div>
+                {allLevelsEnabled && (
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={() => setShowLevelDetails((prev) => !prev)}
+                    style={{ fontSize: 12, padding: 0 }}
+                  >
+                    {showLevelDetails ? '收起各等级明细' : '按等级单独配置 / 查看明细'}
+                  </Button>
+                )}
               </div>
 
               {/* 右侧：一键全部开启 / 一键全部关闭 快捷操作组 */}
@@ -1575,73 +1528,106 @@ const PaymentSettings: React.FC = () => {
               </Space>
             </div>
 
-            {/* 多选批量操作工具栏 */}
-            {selectedLevelKeys.length > 0 && (
+            {(!allLevelsEnabled || showLevelDetails) ? (
+              <>
+                {/* 多选批量操作工具栏 */}
+                {selectedLevelKeys.length > 0 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 14px',
+                      marginBottom: 12,
+                      background: 'rgba(59, 130, 246, 0.08)',
+                      border: '1px solid rgba(59, 130, 246, 0.25)',
+                      borderRadius: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: '#2563eb', fontWeight: 500 }}>
+                      已勾选 {selectedLevelKeys.length} 个用户等级
+                    </span>
+                    <Space size={8}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        icon={<CheckOutlined />}
+                        loading={batchUpdating}
+                        disabled={!isInvoiceServiceEnabled}
+                        onClick={() => handleBatchToggleSelectedLevels(true)}
+                        style={{ borderRadius: 6, fontSize: 12 }}
+                      >
+                        批量开启所选
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        icon={<CloseOutlined />}
+                        loading={batchUpdating}
+                        disabled={!isInvoiceServiceEnabled}
+                        onClick={() => handleBatchToggleSelectedLevels(false)}
+                        style={{ borderRadius: 6, fontSize: 12 }}
+                      >
+                        批量关闭所选
+                      </Button>
+                      <Button
+                        size="small"
+                        type="text"
+                        onClick={() => setSelectedLevelKeys([])}
+                        style={{ fontSize: 12 }}
+                      >
+                        取消选择
+                      </Button>
+                    </Space>
+                  </div>
+                )}
+
+                <Table
+                  rowKey="id"
+                  loading={loadingUserLevels || batchUpdating}
+                  dataSource={userLevels}
+                  columns={userLevelColumns}
+                  pagination={false}
+                  size="middle"
+                  rowSelection={{
+                    selectedRowKeys: selectedLevelKeys,
+                    onChange: (keys) => setSelectedLevelKeys(keys),
+                    getCheckboxProps: () => ({
+                      disabled: !isInvoiceServiceEnabled,
+                    }),
+                  }}
+                />
+              </>
+            ) : (
               <div
                 style={{
+                  padding: '12px 16px',
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(16, 185, 129, 0.05)',
+                  border: '1px dashed rgba(16, 185, 129, 0.28)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  padding: '8px 14px',
-                  marginBottom: 12,
-                  background: 'rgba(59, 130, 246, 0.08)',
-                  border: '1px solid rgba(59, 130, 246, 0.25)',
-                  borderRadius: 8,
+                  flexWrap: 'wrap',
+                  gap: 10,
                 }}
               >
-                <span style={{ fontSize: 13, color: '#2563eb', fontWeight: 500 }}>
-                  已勾选 {selectedLevelKeys.length} 个用户等级
-                </span>
-                <Space size={8}>
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<CheckOutlined />}
-                    loading={batchUpdating}
-                    disabled={!isInvoiceServiceEnabled}
-                    onClick={() => handleBatchToggleSelectedLevels(true)}
-                    style={{ borderRadius: 6, fontSize: 12 }}
-                  >
-                    批量开启所选
-                  </Button>
-                  <Button
-                    size="small"
-                    danger
-                    icon={<CloseOutlined />}
-                    loading={batchUpdating}
-                    disabled={!isInvoiceServiceEnabled}
-                    onClick={() => handleBatchToggleSelectedLevels(false)}
-                    style={{ borderRadius: 6, fontSize: 12 }}
-                  >
-                    批量关闭所选
-                  </Button>
-                  <Button
-                    size="small"
-                    type="text"
-                    onClick={() => setSelectedLevelKeys([])}
-                    style={{ fontSize: 12 }}
-                  >
-                    取消选择
-                  </Button>
-                </Space>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <CheckCircleOutlined style={{ color: '#10b981', fontSize: 14 }} />
+                  <span style={{ fontSize: 13, color: 'var(--ant-color-text-secondary)' }}>
+                    已开启「全部等级统一开启」，所有用户等级（共 {totalLevelsCount} 个）均已默认开通发票与收据权限，各等级明细已自动精简折叠。
+                  </span>
+                </div>
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => setShowLevelDetails(true)}
+                  style={{ fontSize: 12, padding: 0 }}
+                >
+                  按等级自定义配置
+                </Button>
               </div>
             )}
-
-            <Table
-              rowKey="id"
-              loading={loadingUserLevels || batchUpdating}
-              dataSource={userLevels}
-              columns={userLevelColumns}
-              pagination={false}
-              size="middle"
-              rowSelection={{
-                selectedRowKeys: selectedLevelKeys,
-                onChange: (keys) => setSelectedLevelKeys(keys),
-                getCheckboxProps: () => ({
-                  disabled: !isInvoiceServiceEnabled,
-                }),
-              }}
-            />
           </div>
 
               <Divider style={{ margin: '24px 0 20px' }} />

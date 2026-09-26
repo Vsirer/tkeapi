@@ -1,17 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::error::AppResult;
 use crate::time_system::DbTs;
 use crate::AppState;
-use axum::{
-    extract::{Query, State},
-    Json,
-};
+use axum::{extract::{Query, State}, Json};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -31,9 +28,34 @@ pub struct FinanceQuery {
     pub exclude_type: Option<String>,
     pub wallet_type: Option<String>,
     pub referrer: Option<String>,
+    pub order_no: Option<String>,
+}
+
+/// 财务列表筛选：始终按站点默认时区解释墙钟。落库仍是 UTC。
+async fn finance_filter_tz(state: &AppState) -> chrono_tz::Tz {
+    let site_tz_name = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+    crate::time_system::parse_timedisplay(&site_tz_name)
 }
 
 // ========== 充值记录（recharge_records）==========
+
+/// 生成专属赠送金订单号（G 开头，与系统充值的 T 开头、BonusPay 的 BP 开头形成清晰区分）
+pub fn generate_gift_order_no() -> String {
+    format!(
+        "G{}R{}",
+        chrono::Local::now().format("%Y%m%d%H%M%S"),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
+}
+
+/// 生成标准系统充值/系统资金订单号（T 开头）
+pub fn generate_system_order_no() -> String {
+    format!(
+        "T{}R{}",
+        chrono::Local::now().format("%Y%m%d%H%M%S"),
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    )
+}
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct FinanceRechargeRecord {
@@ -47,6 +69,8 @@ pub struct FinanceRechargeRecord {
     pub referrer_username: Option<String>,
     pub amount: f64,
     pub recharge_type: String,
+    #[sqlx(default)]
+    pub order_no: Option<String>,
     pub remark: Option<String>,
     #[sqlx(default)]
     pub operator: Option<String>,
@@ -76,10 +100,19 @@ pub async fn list_recharges(
     let mut binds: Vec<String> = Vec::new();
 
     if let Some(ref search) = query.user_id {
-        where_clause.push_str(" AND (rr.user_id = ? OR u.uid = ? OR u.username LIKE ?)");
+        where_clause.push_str(" AND (rr.user_id = ? OR u.uid = ? OR u.username LIKE ? OR rr.order_no LIKE ? OR rr.remark LIKE ?)");
         binds.push(search.clone());
         binds.push(search.clone());
         binds.push(format!("%{}%", search));
+        binds.push(format!("%{}%", search));
+        binds.push(format!("%{}%", search));
+    }
+
+    if let Some(ref ono) = query.order_no {
+        where_clause.push_str(" AND (rr.order_no = ? OR rr.order_no LIKE ? OR rr.remark LIKE ?)");
+        binds.push(ono.clone());
+        binds.push(format!("%{}%", ono));
+        binds.push(format!("%{}%", ono));
     }
 
     if let Some(ref r_type) = query.recharge_type {
@@ -97,23 +130,27 @@ pub async fn list_recharges(
         binds.push(w_type.clone());
     }
 
+    let tz = finance_filter_tz(&state).await;
+
     if let Some(ref start) = query.start_time {
-        crate::api::date_helper::push_timestamptz_bound_default(
+        crate::api::date_helper::push_timestamptz_bound(
             &mut where_clause,
             &mut binds,
             "rr.created_at",
             start,
             false,
+            tz,
         );
     }
 
     if let Some(ref end) = query.end_time {
-        crate::api::date_helper::push_timestamptz_bound_default(
+        crate::api::date_helper::push_timestamptz_bound(
             &mut where_clause,
             &mut binds,
             "rr.created_at",
             end,
             true,
+            tz,
         );
     }
 
@@ -222,23 +259,27 @@ pub async fn list_orders(
         binds.push(method.clone());
     }
 
+    let tz = finance_filter_tz(&state).await;
+
     if let Some(ref start) = query.start_time {
-        crate::api::date_helper::push_timestamptz_bound_default(
+        crate::api::date_helper::push_timestamptz_bound(
             &mut where_clause,
             &mut binds,
             "o.created_at",
             start,
             false,
+            tz,
         );
     }
 
     if let Some(ref end) = query.end_time {
-        crate::api::date_helper::push_timestamptz_bound_default(
+        crate::api::date_helper::push_timestamptz_bound(
             &mut where_clause,
             &mut binds,
             "o.created_at",
             end,
             true,
+            tz,
         );
     }
 
@@ -956,3 +997,4 @@ pub async fn get_wallet_stats_batch(
 
     Ok(Json(result))
 }
+

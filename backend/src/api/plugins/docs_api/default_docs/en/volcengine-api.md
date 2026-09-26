@@ -7,13 +7,13 @@ If your client already uses Volcengine Ark request paths, point the Base URL to 
 * **Native Responses Endpoint**: `/api/v3/responses`
 * **Request Method**: `POST`
 
-Supports Volcengine Ark Request Payload. For parameter specifications, see the [Volcengine Ark Official Documentation](https://www.volcengine.com/docs/82379/1298454).
+Supports Volcengine Ark Request Payload. For parameter specifications, see the [Volcengine Ark Official Documentation](https://www.volcengine.com/docs/82379/1298454). [Chat & Responses API](https://www.volcengine.com/docs/82379/1298454)
 
 ### 2. Native Image Generation (Image Generations)
 * **Endpoint**: `/api/v3/images/generations`
 * **Request Method**: `POST`
 
-Prefer `doubao-seedream-5-0-pro-260628`. Layer split: `layer_decomposition`. Alpha: `background` (`opaque`/`transparent`). Scene bodies are in the doubao-seedream image article.
+Prefer `doubao-seedream-5-0-pro-260628` (high-precision single image). Layer split: `layer_decomposition`. Alpha: `background` (`opaque`/`transparent`). **Note: Pro supports single images only (sequential_image_generation / group generation is strictly unsupported)**; for group generation use `doubao-seedream-5-0-260128`. Scene bodies are in the doubao-seedream image article. [Image API](https://www.volcengine.com/docs/82379/1541523)
 
 ### 3. Native Video Generation Tasks (Video Studio)
 * **Submit Task**: `/api/v3/contents/generations/tasks` (`POST`)

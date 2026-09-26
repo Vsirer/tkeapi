@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /**
@@ -32,6 +32,10 @@ export function getAntdThemeTokens(mode: ThemeMode) {
       colorPrimary: SHADCN.zinc900,
       colorPrimaryHover: SHADCN.zinc800,
       colorPrimaryActive: SHADCN.zinc950,
+      colorPrimaryBg: 'rgba(24, 24, 27, 0.05)',
+      colorPrimaryBgHover: 'rgba(24, 24, 27, 0.09)',
+      colorPrimaryBorder: 'rgba(24, 24, 27, 0.15)',
+      colorPrimaryBorderHover: 'rgba(24, 24, 27, 0.25)',
       colorLink: SHADCN.zinc900,
       colorInfo: '#1677ff',
       /** 深色实心底上的浅色字（Tooltip / Tag 等）；勿改成深色 */
@@ -44,6 +48,9 @@ export function getAntdThemeTokens(mode: ThemeMode) {
       colorBorder: SHADCN.zinc300,
       colorBorderSecondary: SHADCN.zinc200,
       controlOutline: 'rgba(24, 24, 27, 0.12)',
+      controlItemBgActive: 'rgba(24, 24, 27, 0.06)',
+      controlItemBgActiveHover: 'rgba(24, 24, 27, 0.10)',
+      controlItemBgHover: 'rgba(24, 24, 27, 0.04)',
     };
   }
 
@@ -51,6 +58,10 @@ export function getAntdThemeTokens(mode: ThemeMode) {
     colorPrimary: SHADCN.zinc50,
     colorPrimaryHover: SHADCN.zinc200,
     colorPrimaryActive: '#ffffff',
+    colorPrimaryBg: 'rgba(255, 255, 255, 0.08)',
+    colorPrimaryBgHover: 'rgba(255, 255, 255, 0.12)',
+    colorPrimaryBorder: 'rgba(255, 255, 255, 0.20)',
+    colorPrimaryBorderHover: 'rgba(255, 255, 255, 0.30)',
     colorLink: SHADCN.zinc50,
     colorInfo: SHADCN.zinc50,
     /** 必须保持浅色：Menu hover / 折叠 Tooltip 都依赖此 token */
@@ -60,6 +71,9 @@ export function getAntdThemeTokens(mode: ThemeMode) {
     colorBgContainer: '#141414',
     colorBgElevated: '#1c1c1f',
     controlOutline: 'rgba(250, 250, 250, 0.16)',
+    controlItemBgActive: 'rgba(255, 255, 255, 0.12)',
+    controlItemBgActiveHover: 'rgba(255, 255, 255, 0.16)',
+    controlItemBgHover: 'rgba(255, 255, 255, 0.08)',
   };
 }
 
@@ -113,6 +127,11 @@ export function getAntdComponentTokens(mode: ThemeMode) {
     },
     Card: {
       colorBorderSecondary: isLight ? SHADCN.zinc200 : '#303030',
+    },
+    Select: {
+      optionSelectedBg: isLight ? 'rgba(24, 24, 27, 0.06)' : 'rgba(255, 255, 255, 0.12)',
+      optionSelectedColor: isLight ? SHADCN.zinc900 : '#ffffff',
+      optionActiveBg: isLight ? 'rgba(24, 24, 27, 0.04)' : 'rgba(255, 255, 255, 0.08)',
     },
   };
 }

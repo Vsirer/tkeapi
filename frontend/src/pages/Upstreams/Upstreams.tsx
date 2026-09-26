@@ -1,13 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Modal, Form, Input, InputNumber, Switch, message, Popconfirm, Card, Typography, Select, Divider, Grid } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
+import { listPagination } from '../../components/ListPagination';
 import { PlusOutlined, EditOutlined, DeleteOutlined, SyncOutlined, KeyOutlined, ApiOutlined, ProfileOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
@@ -228,7 +229,7 @@ const Upstreams: React.FC = () => {
           dataSource={upstreams}
           loading={loading}
           rowKey="id"
-          pagination={{ pageSize: 15 }}
+          pagination={listPagination()}
           renderCard={(record: any) => (
             <MobileCard
               title={<Text strong>{record.name}</Text>}
@@ -257,7 +258,7 @@ const Upstreams: React.FC = () => {
           columns={columns}
           rowKey="id"
           loading={loading}
-          pagination={{ pageSize: 15 }}
+          pagination={listPagination()}
         />
       )}
 

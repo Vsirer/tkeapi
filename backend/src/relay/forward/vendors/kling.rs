@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use super::super::media;
@@ -366,8 +366,7 @@ fn kling_v3_build_settings(body: &serde_json::Value) -> serde_json::Map<String, 
         .or_else(|| body.get("resolution"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_else(|| "720p".into());
+        .unwrap_or("720p");
     settings.insert("resolution".into(), serde_json::json!(resolution));
     if let Some(d) = body
         .pointer("/settings/duration")

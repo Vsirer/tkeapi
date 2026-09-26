@@ -13,7 +13,7 @@ OpenAI-compatible image APIs. Use the endpoints and parameters below.
 | :--- | :--- | :--- | :--- |
 | `model` | `string` | Yes | Image model name, e.g. `dall-e-3`, `qwen-image-3.0-pro`, `seedream-5.0-lite` |
 | `prompt` | `string` | Yes | Text description of the desired image(s) |
-| `n` | `integer` | No | Number of images (default `1`) |
+| `n` | `integer` | No | Number of images (default `1`. Note: Volcengine Seedream 5.0 Pro supports single image `n=1` only; use `seedream-5.0-lite` or 4.5 for groups) |
 | `size` | `string` | No | Resolution, e.g. `1024x1024` |
 | `resolution` | `string` | No | Alternate resolution field (e.g. `1k` / `2k`); use with models that expect it |
 | `response_format` | `string` | No | `url` (default) or `b64_json` |

@@ -1,18 +1,17 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::error::AppResult;
 use crate::AppState;
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
-use std::sync::Arc;
 
 /// 归档表 `stat_date` 使用**站点默认 timedisplay** 分桶（全站统一日历）。
-async fn archive_timezone(state: &Arc<AppState>) -> Tz {
+async fn archive_timezone(state: &AppState) -> Tz {
     let tz_name = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
     crate::time_system::parse_timedisplay(&tz_name)
 }
@@ -27,7 +26,9 @@ fn local_day_range_rfc3339(day: NaiveDate, tz: Tz) -> (String, String) {
 fn stats_upsert_sql_template() -> String {
     "INSERT INTO usage_daily_stats (
         stat_date, user_id, model, token_id, channel_id, action_type,
-        total_requests, total_tokens, total_cost, total_pre_deduct_gift, success_count, fail_count
+        total_requests, total_tokens, prompt_tokens, completion_tokens,
+        with_video_tokens,
+        total_cost, total_pre_deduct_gift, success_count, fail_count
     )
     SELECT
         ?::DATE,
@@ -38,6 +39,9 @@ fn stats_upsert_sql_template() -> String {
         COALESCE(action_type, ''),
         COUNT(*),
         SUM(prompt_tokens + completion_tokens),
+        SUM(prompt_tokens),
+        SUM(completion_tokens),
+        SUM(CASE WHEN has_video = 1 THEN completion_tokens ELSE 0 END),
         SUM(cost),
         SUM(pre_deduct_gift),
         COUNT(*) FILTER (WHERE status_code >= 200 AND status_code < 400),
@@ -50,15 +54,19 @@ fn stats_upsert_sql_template() -> String {
     DO UPDATE SET
         total_requests = EXCLUDED.total_requests,
         total_tokens = EXCLUDED.total_tokens,
+        prompt_tokens = EXCLUDED.prompt_tokens,
+        completion_tokens = EXCLUDED.completion_tokens,
+        with_video_tokens = EXCLUDED.with_video_tokens,
         total_cost = EXCLUDED.total_cost,
         total_pre_deduct_gift = EXCLUDED.total_pre_deduct_gift,
         success_count = EXCLUDED.success_count,
         fail_count = EXCLUDED.fail_count".to_string()
 }
 
+
 /// 按本地自然日推进；失败即中止；日间短暂让出连接池。
 async fn perform_batch_sync(
-    state: &Arc<AppState>,
+    state: &AppState,
     start: NaiveDate,
     end: NaiveDate,
     task_name: &str,
@@ -86,9 +94,27 @@ async fn perform_batch_sync(
         archive_tz.name()
     );
 
+    let min_log_ts: Option<DateTime<Utc>> = sqlx::query_scalar(
+        &state.db.format_query("SELECT MIN(created_at) FROM logs")
+    )
+    .fetch_one(&state.db.pool)
+    .await
+    .unwrap_or(None);
+
     let mut current_day = start;
     while current_day < end {
         let (start_str, end_str) = local_day_range_rfc3339(current_day, archive_tz);
+
+        // 若当天已完全早于 logs 表现存的最早时间戳，说明原始明细已被清理归档，直接跳过避免无效扫描
+        if let Some(min_ts) = min_log_ts {
+            if let Ok(day_end_dt) = DateTime::parse_from_rfc3339(&end_str) {
+                if day_end_dt.with_timezone(&Utc) <= min_ts {
+                    current_day += Duration::days(1);
+                    continue;
+                }
+            }
+        }
+
         match sqlx::query(&sql)
             .bind(current_day)
             .bind(&start_str)
@@ -128,74 +154,50 @@ fn local_ymd_num(local: chrono::DateTime<Tz>) -> u32 {
     (local.year() as u32) * 10000 + (local.month() as u32) * 100 + (local.day() as u32)
 }
 
-/// 睡到站点时区下一次 00:00 再跑增量同步；当日 0 点窗内失败则 5 分钟重试，避免全天空转。
-pub async fn run_daily_stats_loop(
-    state: Arc<AppState>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-) {
-    use chrono::Timelike;
 
-    loop {
-        let _ = sync_daily_stats(&state).await;
 
-        let archive_tz = archive_timezone(&state).await;
-        let local_now = chrono::Utc::now().with_timezone(&archive_tz);
-        let today_num = local_ymd_num(local_now);
-        let retry_in_window = local_now.hour() == 0
-            && LAST_SYNC_DATE.load(std::sync::atomic::Ordering::Relaxed) != today_num;
-
-        let wait = if retry_in_window {
-            std::time::Duration::from_secs(300)
-        } else {
-            crate::time_system::duration_until_next_local_hms(archive_tz.name(), 0, 0, 0)
-        };
-
-        tokio::select! {
-            _ = tokio::time::sleep(wait) => {}
-            _ = shutdown_rx.changed() => {
-                tracing::info!("[CronTask] DailyStatsSync 定时任务已优雅关闭退出");
-                return;
-            }
-        }
-    }
+/// 定时增量更新最近 3 天日志至每日用量汇总表（自动调度，同一天防重复执行）
+pub async fn sync_daily_stats(state: &AppState) -> AppResult<()> {
+    sync_daily_stats_internal(state, false).await
 }
 
-/// 定时增量更新最近 3 天（站点 timedisplay 本地日切后首小时）
-pub async fn sync_daily_stats(state: &Arc<AppState>) -> AppResult<()> {
-    use chrono::{Duration, Timelike};
+/// 强制增量更新最近 3 天日志至每日用量汇总表（手动触发维护，穿透防重标记实时聚合）
+pub async fn sync_daily_stats_force(state: &AppState) -> AppResult<()> {
+    sync_daily_stats_internal(state, true).await
+}
+
+async fn sync_daily_stats_internal(state: &AppState, force: bool) -> AppResult<()> {
+    use chrono::Duration;
 
     let archive_tz = archive_timezone(state).await;
     let local_now = chrono::Utc::now().with_timezone(&archive_tz);
-    if local_now.hour() != 0 {
-        return Ok(());
-    }
-
     let today_date_num = local_ymd_num(local_now);
-    if LAST_SYNC_DATE.load(std::sync::atomic::Ordering::Relaxed) == today_date_num {
+    if !force && LAST_SYNC_DATE.load(std::sync::atomic::Ordering::Relaxed) == today_date_num {
         return Ok(());
     }
 
     let today = local_now.date_naive();
     let three_days_ago = today - Duration::days(3);
     tracing::info!(
-        "[CronDailyStats] 凌晨增量同步启动: {} → {} (tz={})",
+        "[CronDailyStats] 每日用量增量统计启动: {} → {} (tz={}, force={})",
         three_days_ago,
         today,
-        archive_tz.name()
+        archive_tz.name(),
+        force
     );
 
     match perform_batch_sync(state, three_days_ago, today, "CronDailyStats").await {
         Ok(()) => {
-            tracing::info!("[CronDailyStats] 凌晨增量同步成功完成");
+            tracing::info!("[CronDailyStats] 每日用量增量统计成功完成");
             LAST_SYNC_DATE.store(today_date_num, std::sync::atomic::Ordering::Relaxed);
         }
-        Err(e) => tracing::warn!("[CronDailyStats] 凌晨增量同步失败: {:?}", e),
+        Err(e) => tracing::warn!("[CronDailyStats] 每日用量增量统计失败: {:?}", e),
     }
     Ok(())
 }
 
 /// 启动时后台回填（自动推断起点，按日推进）
-pub async fn backfill_usage_daily_stats_on_startup(state: &Arc<AppState>) -> AppResult<()> {
+pub async fn backfill_usage_daily_stats_on_startup(state: &AppState) -> AppResult<()> {
     use chrono::Duration;
 
     let archive_tz = archive_timezone(state).await;
@@ -241,7 +243,7 @@ pub async fn backfill_usage_daily_stats_on_startup(state: &Arc<AppState>) -> App
 
 /// 超级管理员手动校准入口
 pub async fn manual_sync_usage_stats(
-    state: &Arc<AppState>,
+    state: &AppState,
     start_date: Option<String>,
     end_date: Option<String>,
 ) -> AppResult<()> {

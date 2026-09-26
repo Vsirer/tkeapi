@@ -1,13 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 pub mod alipay;
 pub mod allinpay;
-pub mod bonuspay;
 pub mod hyperbc;
 pub mod stripe;
 pub mod wechat;

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use axum::{
@@ -322,60 +322,57 @@ pub async fn update_rule(
     }
     if let Some(pid) = &req.pid {
         let trimmed_pid = pid.trim().to_string();
-        if trimmed_pid.is_empty() {
-            return Err(crate::error::AppError::BadRequest(
-                "计费规则 PID 不能为空".to_string(),
-            ));
-        }
-        if trimmed_pid.len() != 5 || !trimmed_pid.chars().all(|c| c.is_ascii_digit()) {
-            return Err(crate::error::AppError::BadRequest(
-                "计费规则 PID 必须是 5 位数字字符串".to_string(),
-            ));
-        }
-        let is_system: i32 = sqlx::query_scalar(
-            &state
-                .db
-                .format_query("SELECT is_system FROM billing_rules WHERE id = ?"),
-        )
-        .bind(id)
-        .fetch_one(&state.db.pool)
-        .await?;
-        if is_system == 1 {
-            if !trimmed_pid.starts_with('7') {
+        if !trimmed_pid.is_empty() {
+            if trimmed_pid.len() != 5 || !trimmed_pid.chars().all(|c| c.is_ascii_digit()) {
                 return Err(crate::error::AppError::BadRequest(
-                    "系统计费规则 PID 必须是以 7 开头".to_string(),
+                    "计费规则 PID 必须是 5 位数字字符串".to_string(),
                 ));
             }
-        } else {
-            if !trimmed_pid.starts_with('6') {
-                return Err(crate::error::AppError::BadRequest(
-                    "手动添加的计费规则 PID 必须是以 6 开头".to_string(),
+            let is_system: i32 = sqlx::query_scalar(
+                &state
+                    .db
+                    .format_query("SELECT is_system FROM billing_rules WHERE id = ?"),
+            )
+            .bind(id)
+            .fetch_one(&state.db.pool)
+            .await?;
+            if is_system == 1 {
+                if !trimmed_pid.starts_with('7') {
+                    return Err(crate::error::AppError::BadRequest(
+                        "系统计费规则 PID 必须是以 7 开头".to_string(),
+                    ));
+                }
+            } else {
+                if !trimmed_pid.starts_with('6') {
+                    return Err(crate::error::AppError::BadRequest(
+                        "手动添加的计费规则 PID 必须是以 6 开头".to_string(),
+                    ));
+                }
+            }
+            let exists: Option<i64> = sqlx::query_scalar(
+                &state
+                    .db
+                    .format_query("SELECT id FROM billing_rules WHERE pid = ? AND id != ?"),
+            )
+            .bind(&trimmed_pid)
+            .bind(id)
+            .fetch_optional(&state.db.pool)
+            .await?;
+            if exists.is_some() {
+                return Err(crate::error::AppError::Conflict(
+                    "计费规则 PID 已存在".to_string(),
                 ));
             }
+            sqlx::query(
+                &state
+                    .db
+                    .format_query("UPDATE billing_rules SET pid = ? WHERE id = ?"),
+            )
+            .bind(trimmed_pid)
+            .bind(id)
+            .execute(&state.db.pool)
+            .await?;
         }
-        let exists: Option<i64> = sqlx::query_scalar(
-            &state
-                .db
-                .format_query("SELECT id FROM billing_rules WHERE pid = ? AND id != ?"),
-        )
-        .bind(&trimmed_pid)
-        .bind(id)
-        .fetch_optional(&state.db.pool)
-        .await?;
-        if exists.is_some() {
-            return Err(crate::error::AppError::Conflict(
-                "计费规则 PID 已存在".to_string(),
-            ));
-        }
-        sqlx::query(
-            &state
-                .db
-                .format_query("UPDATE billing_rules SET pid = ? WHERE id = ?"),
-        )
-        .bind(trimmed_pid)
-        .bind(id)
-        .execute(&state.db.pool)
-        .await?;
     }
     if let Some(provider_id) = req.provider_id {
         sqlx::query(
@@ -580,7 +577,7 @@ fn get_default_by_name(name: &str) -> Option<BillingRuleDefault> {
             duration_rate: 0.0,
             billing_rule: "seedance2.0",
             pricing_tiers: "[]",
-            extended_config: r#"{"enable_time_multipliers":false,"resolution_rates":{"480p":{"with_video":42,"without_video":70},"720p":{"with_video":42,"without_video":70}},"time_multipliers":[]}"#,
+            extended_config: r#"{"enable_time_multipliers":false,"resolution_rates":{"480p":{"with_video":42,"without_video":70},"720p":{"with_video":42,"without_video":70},"1080p":{"with_video":46,"without_video":77}},"time_multipliers":[]}"#,
         }),
         "语音合成按字符计费 (2.8元/万字符)" => Some(BillingRuleDefault {
             billing_type: "requests",
@@ -824,7 +821,7 @@ pub async fn ensure_volcengine_enhance_system_rules(state: &AppState) -> AppResu
     ).fetch_optional(pool).await.unwrap_or(None);
 
     let enhance_type_id: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM model_types WHERE name = '视频增强' LIMIT 1"
+        "SELECT id FROM model_types WHERE name IN ('画质增强', '视频增强', '图像增强') ORDER BY CASE name WHEN '画质增强' THEN 0 ELSE 1 END LIMIT 1"
     ).fetch_optional(pool).await.unwrap_or(None);
 
     let video_type_id: Option<i64> = sqlx::query_scalar(
@@ -927,14 +924,20 @@ pub async fn ensure_volcengine_enhance_system_rules(state: &AppState) -> AppResu
     ];
 
     for (name, rtype, desc, config, cat) in preset_forward_rules {
+        let eid = match state.db.generate_unique_forward_eid().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         let _ = sqlx::query(
             "INSERT INTO forward_rules (name, rule_type, description, config_json, category, is_system, eid) \
-             SELECT $1, $2, $3, $4, $5, 1, '1' || lpad((floor(random() * 10000)::int)::text, 4, '0') \
+             SELECT $1, $2, $3, $4, $5, 1, $6 \
              WHERE NOT EXISTS (SELECT 1 FROM forward_rules WHERE name = $1)"
         )
-        .bind(name).bind(rtype).bind(desc).bind(config).bind(cat)
+        .bind(name).bind(rtype).bind(desc).bind(config).bind(cat).bind(&eid)
         .execute(pool).await;
     }
+
+    let _ = crate::db::migrations::helpers::volc_mediakit_image::seed(pool).await;
 
     Ok(())
 }

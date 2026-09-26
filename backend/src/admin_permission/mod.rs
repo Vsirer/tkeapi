@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 mod policy;
@@ -153,6 +153,14 @@ pub async fn assert_can_assign_admin_group(
     } else {
         Err(AppError::BadRequest("管理员等级不存在".to_string()))
     }
+}
+
+/// 创建后不可在 admin / user 之间切换；未传 role 视为不改。
+pub fn assert_role_immutable(current_role: &str, new_role: Option<&str>) -> AppResult<()> {
+    if new_role.is_some_and(|r| r != current_role) {
+        return Err(AppError::BadRequest("用户角色不可修改".to_string()));
+    }
+    Ok(())
 }
 
 pub fn assert_super_admin_immutable(

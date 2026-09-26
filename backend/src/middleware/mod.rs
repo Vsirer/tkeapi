@@ -1,13 +1,21 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 pub mod live_metrics;
 pub mod rate_limit;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+static IN_FLIGHT_SEMAPHORE: LazyLock<Arc<tokio::sync::Semaphore>> = LazyLock::new(|| {
+    let limit = std::env::var("MAX_IN_FLIGHT_REQUESTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    Arc::new(tokio::sync::Semaphore::new(limit))
+});
 
 use axum::{
     extract::{Request, State},
@@ -16,9 +24,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+use crate::AppState;
 use crate::auth;
 use crate::error::AppError;
-use crate::AppState;
 
 /// API Key 脱敏：保留前8后4位，中间用 *** 替代
 fn mask_key(key: &str) -> String {
@@ -37,9 +45,7 @@ fn request_path(request: &Request) -> String {
 }
 
 fn auth_skip_error_log(path: &str) -> bool {
-    path.ends_with("/balance")
-        || path.ends_with("/health")
-        || path.ends_with("favicon.ico")
+    path.ends_with("/balance") || path.ends_with("/health") || path.ends_with("favicon.ico")
 }
 
 fn header_flag(request: &Request, name: &str) -> bool {
@@ -50,18 +56,48 @@ fn header_flag(request: &Request, name: &str) -> bool {
 }
 
 fn client_ip(request: &Request) -> &str {
-    request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .or_else(|| {
-            request
-                .headers()
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-        })
-        .unwrap_or("127.0.0.1")
+    crate::api::auth::parse_client_ip_from_headers(request.headers()).unwrap_or("127.0.0.1")
+}
+
+fn request_client_ip(request: &Request) -> String {
+    let fallback = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+    let addr = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0)
+        .unwrap_or(fallback);
+    crate::api::auth::extract_client_ip(request.headers(), &addr)
+}
+
+/// 判定请求是否具备合法的受信任 Web 浏览器环境上下文（防外部脚本单凭伪造请求头越权）
+fn is_trusted_web_context(request: &Request) -> bool {
+    // 1. 浏览器不可伪造的 Fetch Metadata 凭证（现代浏览器针对同源/同站 fetch 强制添加）
+    if let Some(site) = request.headers().get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
+        if site == "same-origin" || site == "same-site" {
+            return true;
+        }
+    }
+
+    // 2. 校验 Origin / Referer 是否与当前 Host、前端地址或本地地址匹配
+    let host = request.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let front = std::env::var("PUBLIC_FRONTEND_URL").ok();
+    for header in ["origin", "referer"] {
+        if let Some(val) = request.headers().get(header).and_then(|v| v.to_str().ok()) {
+            if (!host.is_empty() && val.contains(host))
+                || val.contains("localhost")
+                || val.contains("127.0.0.1")
+                || front.as_deref().is_some_and(|f| !f.is_empty() && val.contains(f))
+            {
+                return true;
+            }
+        }
+    }
+
+    // 3. 开发环境宽松放行（避免本地无头测试受阻）
+    matches!(
+        std::env::var("APP_ENV").unwrap_or_default().to_lowercase().as_str(),
+        "development" | "dev"
+    )
 }
 
 fn playground_allowed(token: &crate::models::ApiToken, request: &Request) -> bool {
@@ -72,13 +108,19 @@ fn playground_allowed(token: &crate::models::ApiToken, request: &Request) -> boo
     }
     let pg = header_flag(request, "x-playground");
     let pg2026 = header_flag(request, "x-playground-2026");
-    if only_pg && only_pg2026 {
+    let has_pg_flag = if only_pg && only_pg2026 {
         pg || pg2026
     } else if only_pg2026 {
         pg2026
     } else {
         pg
+    };
+    if !has_pg_flag {
+        return false;
     }
+
+    // 来源防御：受限令牌必须由合法的 Web 演练场前端发起，防止外部命令行或脚本伪装
+    is_trusted_web_context(request)
 }
 
 fn ip_whitelisted(token: &crate::models::ApiToken, request: &Request) -> bool {
@@ -101,19 +143,19 @@ async fn record_auth_error(
     if skip_log {
         return;
     }
-    crate::relay::proxy::record_error_log(
-        state,
-        user_id,
-        None,
-        token_id,
-        "unknown",
-        status,
-        path,
-        message,
-        None,
-        None,
-    )
-    .await;
+    let sql = state.db.format_query(
+        "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, is_stream, upstream_url, action_type, is_completed) VALUES (?, ?, 0, ?, 'unknown', 0, 0, 0, 0.0, ?, ?, ?, 0, 0, '', '', 1)"
+    );
+    let log_id = format!("log_{}", ulid::Ulid::new().to_string().to_lowercase());
+    let _ = sqlx::query(&sql)
+        .bind(&log_id)
+        .bind(user_id)
+        .bind(token_id.unwrap_or(0))
+        .bind(status as i32)
+        .bind(path)
+        .bind(message)
+        .execute(&state.db.pool)
+        .await;
 }
 
 /// Extract user claims from JWT token in Authorization header
@@ -160,6 +202,9 @@ pub async fn auth_middleware(
 
     match is_active {
         Ok(Some(active)) if active != 0 => {
+            let user_id = claims.sub.clone();
+            let ip = request_client_ip(&request);
+            crate::api::auth::note_last_active_ip(&state, &user_id, &ip);
             request.extensions_mut().insert(claims);
             next.run(request).await
         }
@@ -300,7 +345,8 @@ pub async fn api_key_middleware(
                 "Missing Authorization Header",
             )
             .await;
-            return AppError::AuthFailed("Missing Authorization Header".to_string()).into_response();
+            return AppError::AuthFailed("Missing Authorization Header".to_string())
+                .into_response();
         }
     };
 
@@ -481,8 +527,39 @@ pub async fn api_key_middleware(
         return AppError::TooManyRequests("RPM limit exceeded".to_string()).into_response();
     }
 
+    let in_flight_permit = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        IN_FLIGHT_SEMAPHORE.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        _ => {
+            record_auth_error(
+                &state,
+                skip_log,
+                &token.user_id,
+                Some(token.id),
+                429,
+                &path,
+                "In-flight concurrency limit reached, anti-avalanche triggered",
+            )
+            .await;
+            return AppError::TooManyRequests(
+                "系统并发处理饱和，触发防雪崩保护，请稍后重试".to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    let ip = request_client_ip(&request);
+    crate::api::auth::note_last_active_ip(&state, &token.user_id, &ip);
     let (global_guard, user_guard) = live_metrics::begin_request(&token.user_id, token.id);
+    let in_flight_guard = Arc::new(in_flight_permit);
     request.extensions_mut().insert(token);
+    request
+        .extensions_mut()
+        .insert(Arc::clone(&in_flight_guard));
     let mut response = next.run(request).await;
     response
         .extensions_mut()
@@ -490,5 +567,6 @@ pub async fn api_key_middleware(
             global_guard,
             user_guard,
         ));
+    response.extensions_mut().insert(in_flight_guard);
     response
 }

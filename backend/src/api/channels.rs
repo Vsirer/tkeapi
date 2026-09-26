@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::error::{AppError, AppResult};
@@ -505,6 +505,24 @@ pub async fn test_channel(
         .as_ref()
         .and_then(|m| m.type_name.clone())
         .unwrap_or_else(|| "聊天".to_string());
+    let is_image_tool = {
+        #[cfg(feature = "plugin_volcengine_enhance")]
+        {
+            db_model.as_ref().is_some_and(|m| {
+                crate::api::plugins::is_image_tool_mid(&m.mid)
+                    || crate::api::plugins::is_image_tool_mid(&m.model_id)
+            })
+        }
+        #[cfg(not(feature = "plugin_volcengine_enhance"))]
+        {
+            false
+        }
+    };
+    if is_image_tool {
+        category = "图片".to_string();
+    } else if category == "画质增强" {
+        category = "视频增强".to_string();
+    }
     let mut rule_is_stream = false;
     let mut db_forward_rule: Option<crate::models::ForwardRule> = None;
 
@@ -519,6 +537,11 @@ pub async fn test_channel(
         .await?;
         if let Some(r) = rule {
             category = r.category.clone();
+            if is_image_tool {
+                category = "图片".to_string();
+            } else if category == "画质增强" {
+                category = "视频增强".to_string();
+            }
             if r.name.contains("流式") || r.name.to_lowercase().contains("stream") {
                 rule_is_stream = true;
             }
@@ -534,10 +557,8 @@ pub async fn test_channel(
                     &r.eid,
                     mid,
                 );
-                crate::relay::forward::resolve_volcengine_media_enhance_path(
-                    &mut res,
-                    &resolved_model,
-                );
+                #[cfg(feature = "plugin_volcengine_enhance")]
+                crate::api::plugins::apply_volc_enhance_path(&mut res, &resolved_model);
                 resolved = Some(res);
             }
             db_forward_rule = Some(r);
@@ -568,8 +589,9 @@ pub async fn test_channel(
     crate::relay::forward::refine_target_type(&mut fwd, &channel.base_url);
     crate::relay::forward::apply_channel_provider(&mut fwd, &channel);
 
-    let is_image = category == "图片";
-    let is_video = category == "视频" || category == "视频增强";
+    let is_image = category == "图片" || category == "图像增强" || is_image_tool;
+    let is_video =
+        category == "视频" || category == "视频增强" || (category == "画质增强" && !is_image);
 
     // 视频拨测：默认 480p + 5 秒；提交失败再升 720p 重试一次
     let video_resolutions: &[&str] = if is_video { &["480p", "720p"] } else { &[""] };
@@ -1042,7 +1064,7 @@ pub async fn get_meltdown_status(
         }
 
         for sub_id in &sub_ids {
-            let ha_key = format!("ha_group_{}_config_{}", id, sub_id);
+            let ha_key = crate::relay::ha::ha_sub_channel_key(id, *sub_id);
             let name = sub_names
                 .get(sub_id)
                 .cloned()
@@ -1131,6 +1153,79 @@ pub async fn reset_meltdown(
     })))
 }
 
+#[derive(serde::Deserialize)]
+pub struct SetSubMeltdownRequest {
+    pub config_id: i64,
+    pub melted: bool,
+}
+
+/// 手动熔断或恢复高可用组内单个上游
+pub async fn set_sub_meltdown(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(req): Json<SetSubMeltdownRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let channel: Channel =
+        sqlx::query_as(&state.db.format_query("SELECT * FROM channels WHERE id = ?"))
+            .bind(id)
+            .fetch_one(&state.db.pool)
+            .await?;
+
+    if channel.provider_type != "high_availability_group" {
+        return Err(AppError::BadRequest("仅高可用渠道组支持子渠道熔断操作".into()));
+    }
+
+    let config: serde_json::Value =
+        serde_json::from_str(&channel.config).unwrap_or(serde_json::json!({}));
+    let sub_ids: Vec<i64> = config
+        .get("sub_channels")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+    if !sub_ids.contains(&req.config_id) {
+        return Err(AppError::BadRequest("该上游不在此高可用组内".into()));
+    }
+
+    let key = crate::relay::ha::ha_sub_channel_key(id, req.config_id);
+    if req.melted {
+        let bundle = crate::relay::relay_settings::get_cached_ha_rules(&state.db).await;
+        let rule = bundle.resolve_arc(
+            crate::relay::ha_rule::parse_rule_id(&channel.config).as_deref(),
+        );
+        let secs = match rule.melt_secs(503) {
+            0 => 300,
+            n => n,
+        };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(secs as u64);
+        state.failed_channels.insert(key.clone(), until);
+        tracing::info!(
+            "[Meltdown] 管理员手动熔断渠道 {} 子渠 {}，冷却 {} 秒",
+            id,
+            req.config_id,
+            secs
+        );
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "melted": true,
+            "remaining_seconds": secs,
+            "key": key,
+        })))
+    } else {
+        let cleared = state.failed_channels.remove(&key).is_some();
+        tracing::info!(
+            "[Meltdown] 管理员手动恢复渠道 {} 子渠 {}",
+            id,
+            req.config_id
+        );
+        Ok(Json(serde_json::json!({
+            "success": true,
+            "melted": false,
+            "cleared": cleared,
+            "key": key,
+        })))
+    }
+}
+
 /// 手动清零渠道分组已用额度（总/日/月）
 pub async fn reset_quota(
     State(state): State<Arc<AppState>>,
@@ -1152,3 +1247,14 @@ pub async fn reset_quota(
     tracing::info!("[Channel Quota Reset] 管理员手动清零渠道 {} 的已用额度", id);
     Ok(Json(serde_json::json!({ "success": true })))
 }
+
+/// 渠道调用计费全链路模拟仿真试算
+pub async fn simulate_channel_billing(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(req): Json<crate::relay::simulation::SimulateBillingRequest>,
+) -> AppResult<Json<crate::relay::simulation::SimulateBillingResponse>> {
+    let result = crate::relay::simulation::simulate_channel_billing(&state, id, req).await?;
+    Ok(Json(result))
+}
+

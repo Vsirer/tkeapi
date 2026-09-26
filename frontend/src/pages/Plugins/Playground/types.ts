@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /**
@@ -56,7 +56,7 @@ export interface PlaygroundModel {
   billing?: any;
   global_discount?: number;
   global_discount_enabled?: number;
-  /** 排序权重 */
+  /** 页面排序（与模型列表 models.sort_order 同步，越大越靠前） */
   sort_order?: number;
 }
 

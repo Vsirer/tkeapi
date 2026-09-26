@@ -1,0 +1,2360 @@
+<style>
+/* ── Arts homepage (fal.ai visual language) ── */
+.arts-home { color: var(--arts-ink); overflow: hidden; }
+.arts-home * { box-sizing: border-box; }
+
+.arts-hero {
+  position: relative;
+  min-height: calc(100vh - 450px);
+  background: #99edff;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 24px;
+  align-items: center;
+  padding: 88px 48px 72px;
+  overflow: hidden;
+}
+.arts-hero-art {
+  position: relative;
+  height: min(560px, 70vh);
+  min-height: 380px;
+  user-select: none;
+}
+.arts-hero-art canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* 浮动艺术构件组 */
+.arts-art-group {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: scale(0.96);
+  z-index: 2;
+}
+.arts-art-group.is-active {
+  opacity: 1;
+  pointer-events: none;
+  transform: scale(1);
+}
+
+/* 基础悬浮胶囊 */
+.arts-pill {
+  position: absolute;
+  border-radius: 999px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  z-index: 2;
+  will-change: transform;
+}
+
+/* 基础曲线 SVG */
+.arts-curve {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+  will-change: transform;
+}
+
+/* 悬浮微标星芒 */
+.arts-badge-art {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  user-select: none;
+  font-family: var(--font-sans);
+  line-height: 1;
+  will-change: transform;
+}
+
+/* ── 风格 0：青柠星核 (Lime Planet) ── */
+.arts-art-group-0 .arts-pill {
+  width: 220px;
+  height: 52px;
+  background: var(--arts-yellow, #fff200);
+  top: 14%;
+  right: 8%;
+  transform: rotate(-28deg);
+  animation: artsFloatPill0 5.4s ease-in-out infinite;
+}
+.arts-art-group-0 .arts-curve {
+  animation: artsFloatCurve0 6.2s ease-in-out infinite;
+}
+.arts-art-group-0 .arts-badge-art {
+  bottom: 12%;
+  left: 10%;
+  font-size: 28px;
+  color: #19191a;
+  animation: artsFloatStar0 4.8s ease-in-out infinite;
+}
+
+/* ── 风格 1：落日熔岩 (Sunset Lava) ── */
+.arts-art-group-1 .arts-pill {
+  width: 210px;
+  height: 50px;
+  background: #0052ff; /* 钴蓝高能胶囊 */
+  top: 18%;
+  left: 8%;
+  transform: rotate(32deg);
+  box-shadow: 0 12px 32px rgba(0, 82, 255, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.15);
+  animation: artsFloatPill1 5.8s ease-in-out infinite;
+}
+.arts-art-group-1 .arts-curve {
+  animation: artsFloatCurve1 6.8s ease-in-out infinite;
+}
+.arts-art-group-1 .arts-badge-art {
+  top: 12%;
+  right: 12%;
+  font-size: 32px;
+  color: #ffd000;
+  animation: artsFloatStar1 4.2s ease-in-out infinite;
+}
+
+/* ── 风格 2：极光光环 (Aurora Torus) ── */
+.arts-art-group-2 .arts-pill {
+  width: 205px;
+  height: 48px;
+  background: #c8f000; /* 青柠荧光胶囊 */
+  bottom: 16%;
+  right: 12%;
+  transform: rotate(-18deg);
+  box-shadow: 0 12px 30px rgba(200, 240, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  animation: artsFloatPill2 5.2s ease-in-out infinite;
+}
+.arts-art-group-2 .arts-curve {
+  animation: artsFloatCurve2 6.4s ease-in-out infinite;
+}
+.arts-art-group-2 .arts-badge-art {
+  top: 16%;
+  left: 14%;
+  font-size: 26px;
+  color: #7c4dff;
+  animation: artsFloatStar2 5.0s ease-in-out infinite;
+}
+
+/* ── 风格 3：冰蓝超新星 (Sapphire Nova) ── */
+.arts-art-group-3 .arts-pill {
+  width: 215px;
+  height: 50px;
+  background: #00b4d8;
+  top: 16%;
+  right: 10%;
+  transform: rotate(26deg);
+  box-shadow: 0 12px 30px rgba(0, 180, 216, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.15);
+  animation: artsFloatPill3 5.6s ease-in-out infinite;
+}
+.arts-art-group-3 .arts-curve {
+  animation: artsFloatCurve3 6.6s ease-in-out infinite;
+}
+.arts-art-group-3 .arts-badge-art {
+  bottom: 14%;
+  left: 12%;
+  font-size: 30px;
+  color: #00b4d8;
+  animation: artsFloatStar3 4.6s ease-in-out infinite;
+}
+
+/* ── 风格 4：黄金耀斑 (Solar Amber) ── */
+.arts-art-group-4 .arts-pill {
+  width: 220px;
+  height: 52px;
+  background: #ffaa00;
+  bottom: 18%;
+  left: 10%;
+  transform: rotate(-30deg);
+  box-shadow: 0 12px 32px rgba(255, 170, 0, 0.28), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  animation: artsFloatPill4 5.2s ease-in-out infinite;
+}
+.arts-art-group-4 .arts-curve {
+  animation: artsFloatCurve4 6.2s ease-in-out infinite;
+}
+.arts-art-group-4 .arts-badge-art {
+  top: 14%;
+  right: 14%;
+  font-size: 32px;
+  color: #f59e0b;
+  animation: artsFloatStar4 4.8s ease-in-out infinite;
+}
+
+/* 硬件加速浮动关键帧 */
+@keyframes artsFloatPill0 {
+  0%, 100% { transform: rotate(-28deg) translate3d(0, 0, 0); }
+  50% { transform: rotate(-25deg) translate3d(-6px, -14px, 0); }
+}
+@keyframes artsFloatCurve0 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(4px, -10px, 0) scale(1.015); }
+}
+@keyframes artsFloatStar0 {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); opacity: 0.85; }
+  50% { transform: translate3d(-4px, -12px, 0) rotate(18deg) scale(1.12); opacity: 1; }
+}
+
+@keyframes artsFloatPill1 {
+  0%, 100% { transform: rotate(32deg) translate3d(0, 0, 0); }
+  50% { transform: rotate(35deg) translate3d(8px, -12px, 0); }
+}
+@keyframes artsFloatCurve1 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-6px, -8px, 0) scale(1.02); }
+}
+@keyframes artsFloatStar1 {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(6px, -10px, 0) rotate(45deg) scale(1.18); }
+}
+
+@keyframes artsFloatPill2 {
+  0%, 100% { transform: rotate(-18deg) translate3d(0, 0, 0); }
+  50% { transform: rotate(-22deg) translate3d(-8px, -14px, 0); }
+}
+@keyframes artsFloatCurve2 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(5px, -12px, 0) scale(1.02); }
+}
+@keyframes artsFloatStar2 {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(-5px, -10px, 0) rotate(-30deg) scale(1.15); }
+}
+
+@keyframes artsFloatPill3 {
+  0%, 100% { transform: rotate(26deg) translate3d(0, 0, 0); }
+  50% { transform: rotate(29deg) translate3d(6px, -12px, 0); }
+}
+@keyframes artsFloatCurve3 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-5px, -10px, 0) scale(1.02); }
+}
+@keyframes artsFloatStar3 {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(5px, -8px, 0) rotate(35deg) scale(1.15); }
+}
+
+@keyframes artsFloatPill4 {
+  0%, 100% { transform: rotate(-30deg) translate3d(0, 0, 0); }
+  50% { transform: rotate(-26deg) translate3d(-8px, -12px, 0); }
+}
+@keyframes artsFloatCurve4 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(6px, -8px, 0) scale(1.015); }
+}
+@keyframes artsFloatStar4 {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(-6px, -12px, 0) rotate(-25deg) scale(1.18); }
+}
+
+.arts-hero-copy {
+  position: relative;
+  z-index: 2;
+  max-width: 640px;
+  padding-right: 12px;
+}
+.arts-hero-copy h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(2.4rem, 4.5vw, 4.4rem);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  color: #000;
+  margin: 0 0 28px;
+}
+.arts-hero-copy p {
+  font-family: var(--font-display);
+  font-size: 18px;
+  line-height: 1.55;
+  font-weight: 400;
+  color: #19191a;
+  max-width: 480px;
+  margin: 0 0 32px;
+}
+.arts-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.arts-btn {
+  --arts-btn-shift: 0px;
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 46px;
+  padding: 0 22px 0 20px;
+  border-radius: 4px !important;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  text-decoration: none !important;
+  isolation: isolate;
+  transform: translateY(0);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.22s ease,
+              background-color 0.22s ease,
+              border-color 0.22s ease,
+              color 0.22s ease;
+}
+.arts-btn::after {
+  content: '→';
+  position: relative;
+  z-index: 1;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  transform: translateX(var(--arts-btn-shift));
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.arts-btn:hover {
+  --arts-btn-shift: 5px;
+  transform: translateY(-2px);
+}
+.arts-btn:active {
+  transform: translateY(0);
+  transition-duration: 0.08s;
+}
+.arts-btn-solid {
+  background: #19191a !important;
+  color: #fafafa !important;
+  border: 1px solid #111;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.16), 0 8px 18px -10px rgba(0,0,0,0.45);
+}
+.arts-btn-solid::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.2) 48%, transparent 62%);
+  transform: translateX(-130%);
+  transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+  z-index: 0;
+}
+.arts-btn-solid:hover {
+  background: #000 !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 14px 28px -12px rgba(0,0,0,0.5);
+}
+.arts-btn-solid:hover::before {
+  transform: translateX(130%);
+}
+.arts-btn-ghost {
+  background: rgba(255,255,255,0.78) !important;
+  color: #19191a !important;
+  border: 1px solid rgba(18,18,22,0.2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 6px 16px -12px rgba(0,0,0,0.2);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.arts-btn-ghost:hover {
+  background: #fff !important;
+  border-color: #19191a;
+  box-shadow: 0 12px 24px -14px rgba(0,0,0,0.28);
+}
+.arts-api {
+  display: flex;
+  align-items: stretch;
+  max-width: 540px;
+  height: 42px;
+  min-height: 42px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(18, 18, 22, 0.15);
+  border-radius: 6px;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: #19191a;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.arts-api:hover {
+  border-color: rgba(18, 18, 22, 0.28);
+  box-shadow: 0 2px 6px -1px rgba(0, 0, 0, 0.08);
+}
+.arts-api-label {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #64748b;
+  background: rgba(0, 0, 0, 0.025);
+  border: none !important;
+  border-right: 1px solid rgba(18, 18, 22, 0.12) !important;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+  height: 100%;
+}
+body.arts-art .arts-api code,
+body.arts-art .arts-api #api-url-text,
+.arts-api code,
+.arts-api #api-url-text {
+  flex: 1 !important;
+  min-width: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 14px !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  color: #09090b !important;
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  line-height: normal !important;
+}
+body.arts-art .arts-api button,
+body.arts-art .arts-api .api-copy-btn,
+.arts-api button,
+.arts-api .api-copy-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 18px !important;
+  border: none !important;
+  border-left: 1px solid rgba(18, 18, 22, 0.14) !important;
+  border-radius: 0 !important;
+  background: #09090b !important;
+  color: #fafafa !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  box-shadow: none !important;
+  transform: none !important;
+  position: relative !important;
+  transition: background-color 0.18s ease, color 0.18s ease !important;
+}
+body.arts-art .arts-api button:hover,
+body.arts-art .arts-api .api-copy-btn:hover,
+.arts-api button:hover,
+.arts-api .api-copy-btn:hover {
+  background: #27272a !important;
+  filter: none !important;
+  transform: none !important;
+}
+body.arts-art .arts-api button:active,
+body.arts-art .arts-api .api-copy-btn:active,
+.arts-api button:active,
+.arts-api .api-copy-btn:active {
+  background: #000000 !important;
+  transform: none !important;
+}
+.arts-api button .copy-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.arts-api button .check-icon {
+  display: none;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+body.arts-art .arts-api .api-copy-btn.copied,
+.arts-api .api-copy-btn.copied {
+  background: #059669 !important;
+  border-left-color: #047857 !important;
+}
+body.arts-art .arts-api .api-copy-btn.copied .copy-icon,
+.arts-api .api-copy-btn.copied .copy-icon {
+  display: none !important;
+}
+body.arts-art .arts-api .api-copy-btn.copied .check-icon,
+.arts-api .api-copy-btn.copied .check-icon {
+  display: inline-block !important;
+}
+.arts-api .copy-tooltip {
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #111;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.arts-api .api-copy-btn.copied .copy-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.arts-cta .arts-btn-solid {
+  background: #fafafa !important;
+  color: #111 !important;
+  border-color: #fafafa;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.55), 0 10px 24px -12px rgba(0,0,0,0.55);
+}
+.arts-cta .arts-btn-solid:hover {
+  background: #fff !important;
+}
+.arts-cta .arts-btn-ghost {
+  background: transparent !important;
+  color: #fafafa !important;
+  border-color: rgba(255,255,255,0.28);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.arts-cta .arts-btn-ghost:hover {
+  background: rgba(255,255,255,0.08) !important;
+  border-color: #fff;
+}
+@media (prefers-reduced-motion: reduce) {
+  .arts-btn, .arts-btn::after, .arts-btn-solid::before, .arts-api button, .arts-api .copy-tooltip {
+    transition: none;
+  }
+  .arts-btn:hover { transform: none; }
+}
+
+.arts-trust {
+  background: #fff;
+  padding: 28px 48px 40px;
+  border-bottom: 1px solid var(--arts-line);
+}
+.arts-trust p {
+  text-align: center;
+  color: #8a8a90;
+  font-size: 14px;
+  margin: 0 0 22px;
+}
+.arts-trust-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 48px;
+  flex-wrap: wrap;
+  filter: grayscale(1);
+  opacity: 0.88;
+}
+.arts-trust-row span {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -0.04em;
+  color: #111;
+  white-space: nowrap;
+}
+
+.arts-gallery {
+  background: #fff;
+  padding: 56px 48px 24px;
+}
+.arts-gallery-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.arts-gallery-head h2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  margin: 0;
+}
+.arts-gallery-head a {
+  font-size: 22px;
+  color: #111 !important;
+  text-decoration: none;
+}
+.arts-gallery-track {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+.arts-gcard {
+  position: relative;
+  display: block;
+  aspect-ratio: 3 / 3.9;
+  border-radius: 14px;
+  overflow: hidden;
+  text-decoration: none !important;
+  color: #fff !important;
+  isolation: isolate;
+  background-color: #121214;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 18px -4px rgba(0, 0, 0, 0.22);
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s ease, border-color 0.35s ease;
+}
+.arts-gcard:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.45);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.arts-gcard .art {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), filter 0.6s ease;
+  transform: scale(1);
+}
+.arts-gcard:hover .art {
+  transform: scale(1.06);
+}
+.arts-gcard:nth-child(4n + 1) .art {
+  background-color: #0b2533;
+  background-image: url('/assets/images/portal/arts/card_cat.jpg'), radial-gradient(120% 90% at 20% 20%, #7dd3fc, transparent 55%), linear-gradient(160deg, #0ea5e9, #1e1b4b);
+}
+.arts-gcard:nth-child(4n + 2) .art {
+  background-color: #0c2719;
+  background-image: url('/assets/images/portal/arts/card_portrait.jpg'), radial-gradient(100% 80% at 80% 0%, #bef264, transparent 50%), linear-gradient(200deg, #14532d, #022c22);
+}
+.arts-gcard:nth-child(4n + 3) .art {
+  background-color: #8c3f1e;
+  background-image: url('/assets/images/portal/arts/card_dancers.jpg'), radial-gradient(90% 80% at 70% 80%, #fdba74, transparent 50%), linear-gradient(180deg, #7c2d12, #1c1917);
+}
+.arts-gcard:nth-child(4n + 4) .art {
+  background-color: #875b05;
+  background-image: url('/assets/images/portal/arts/card_king.jpg'), radial-gradient(90% 70% at 10% 90%, #fde047, transparent 50%), linear-gradient(140deg, #ca8a04, #451a03);
+}
+.arts-gcard::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 36%, rgba(0,0,0,0.32) 64%, rgba(0,0,0,0.88) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+.arts-gcard-body {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.arts-gcard h3 {
+  position: static;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(21px, 2.3vw, 26px);
+  font-weight: 700;
+  letter-spacing: -0.038em;
+  line-height: 1.08;
+  color: #ffffff;
+  word-break: break-word;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+.arts-gcard .sub,
+.arts-gcard span {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: clamp(14px, 1.4vw, 17px);
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  margin-top: 3px;
+  opacity: 0.95;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.arts-build {
+  background: #fff;
+  padding: 80px 48px 40px;
+  display: grid;
+  grid-template-columns: 0.85fr 1.15fr;
+  gap: 40px;
+  align-items: start;
+  position: relative;
+}
+.arts-side-label {
+  position: absolute;
+  left: -8px;
+  top: 52%;
+  transform: rotate(-90deg);
+  transform-origin: left center;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  font-weight: 600;
+  color: transparent;
+  -webkit-text-stroke: 1px #7dd3fc;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.arts-build h2 {
+  font-family: var(--font-display);
+  font-size: clamp(3rem, 5.5vw, 5.4rem);
+  font-weight: 500;
+  line-height: 0.9;
+  letter-spacing: -0.045em;
+  margin: 0;
+  color: #111;
+}
+.arts-panel {
+  background: var(--arts-lavender);
+  border-radius: 18px;
+  padding: 36px 36px 32px;
+  color: #111;
+}
+.arts-panel.mint { background: var(--arts-mint); }
+.arts-panel.cyan { background: #c4f4ff; }
+.arts-kicker {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--arts-purple);
+  margin-bottom: 14px;
+  text-transform: uppercase;
+}
+.arts-panel.mint .arts-kicker { color: #3f6b00; }
+.arts-panel.cyan .arts-kicker { color: #0369a1; }
+.arts-panel h3 {
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 2.4vw, 2.1rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  margin: 0 0 14px;
+}
+.arts-panel p { margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #222; }
+.arts-panel ul { margin: 0 0 22px; padding-left: 18px; }
+.arts-panel li { margin: 0 0 6px; font-size: 14.5px; }
+.arts-stack { display: flex; flex-direction: column; gap: 16px; }
+
+.arts-why {
+  margin: 48px 48px 0;
+  background: #111;
+  color: #f5f5f5;
+  border-radius: 20px;
+  padding: 64px 48px 56px;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 40px;
+  position: relative;
+  overflow: hidden;
+}
+.arts-why h2 {
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 4vw, 3.6rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  margin: 0 0 16px;
+}
+.arts-why .sub { color: #c4c4c8; max-width: 460px; margin-bottom: 28px; font-size: 16px; }
+.arts-why-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 32px; margin-bottom: 28px; }
+.arts-stat-item { display: flex; flex-direction: column; gap: 4px; transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
+.arts-stat-item:hover { transform: translateY(-2px); }
+.arts-why-stats b,
+.arts-stat-num {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 34px;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: #f5f5f5;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+.arts-stat-item:hover .arts-stat-num {
+  color: #ffffff;
+  text-shadow: 0 0 16px rgba(255, 255, 255, 0.25);
+}
+.arts-why-stats span {
+  color: #9a9aa0;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: color 0.2s ease;
+}
+.arts-stat-item:hover span { color: #c4c4c8; }
+.arts-stat-infinity.popped {
+  animation: arts-pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+@keyframes arts-pop-in {
+  0% { transform: scale(0.7); opacity: 0.5; }
+  50% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.arts-badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.arts-badges i {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 999px;
+  padding: 6px 12px;
+  color: #d4d4d8;
+}
+.arts-why-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.arts-wcard {
+  border-radius: 14px;
+  padding: 22px 20px;
+  min-height: 140px;
+}
+.arts-wcard h3 { font-size: 16px; margin: 0 0 8px; letter-spacing: -0.02em; }
+.arts-wcard p { margin: 0; font-size: 13.5px; line-height: 1.5; color: inherit; opacity: 0.82; }
+.arts-wcard.c1 { background: #c4f4ff; color: #111; }
+.arts-wcard.c2 { background: #e6ffd2; color: #111; }
+.arts-wcard.c3 { background: #ede0ff; color: #111; }
+.arts-wcard.c4 { background: #1c1c1e; color: #f5f5f5; border: 1px solid rgba(255,255,255,0.08); }
+
+.arts-qnav {
+  padding: 56px 48px 24px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.arts-qnav a {
+  display: block;
+  padding: 28px 24px;
+  border: 1px solid var(--arts-line);
+  border-radius: 16px;
+  text-decoration: none !important;
+  color: #111 !important;
+  background: #fff;
+  transition: border-color 0.15s;
+}
+.arts-qnav a:hover { border-color: #111; }
+.arts-qnav h3 { margin: 0 0 8px; font-family: var(--font-display); font-size: 22px; letter-spacing: -0.03em; }
+.arts-qnav p { margin: 0; color: #6b6b70; font-size: 14px; }
+
+.arts-cta {
+  margin: 24px 48px 72px;
+  background: #111;
+  color: #fff;
+  border-radius: 20px;
+  padding: 72px 48px;
+  text-align: left;
+}
+.arts-cta h2 {
+  font-family: var(--font-display);
+  font-size: clamp(2.2rem, 4vw, 3.4rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  margin: 0 0 16px;
+  max-width: 720px;
+}
+.arts-cta p { color: #c4c4c8; max-width: 560px; margin: 0 0 28px; font-size: 16px; }
+.arts-cta p code {
+  color: #fff !important;
+  border-color: rgba(255,255,255,0.2) !important;
+}
+.arts-cta .arts-hero-actions { margin: 0; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Dark Mode High-Contrast & Border Compatibility (shadcn/ui spec)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 1. API Bar in Dark Mode (High contrast dark glass capsule on cyan hero) */
+html[data-theme="dark"] .arts-api,
+body.dark .arts-api {
+  background: #111113 !important;
+  border: 1px solid rgba(0, 0, 0, 0.28) !important;
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.25) !important;
+}
+html[data-theme="dark"] .arts-api:hover,
+body.dark .arts-api:hover {
+  border-color: rgba(0, 0, 0, 0.45) !important;
+}
+html[data-theme="dark"] .arts-api-label,
+body.dark .arts-api-label {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #94a3b8 !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+html[data-theme="dark"] .arts-api code,
+html[data-theme="dark"] .arts-api #api-url-text,
+body.dark .arts-api code,
+body.dark .arts-api #api-url-text {
+  color: #f8fafc !important;
+}
+html[data-theme="dark"] .arts-api button,
+html[data-theme="dark"] .arts-api .api-copy-btn,
+body.dark .arts-api button,
+body.dark .arts-api .api-copy-btn {
+  background: #27272a !important;
+  color: #f4f4f5 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+html[data-theme="dark"] .arts-api button:hover,
+html[data-theme="dark"] .arts-api .api-copy-btn:hover,
+body.dark .arts-api button:hover,
+body.dark .arts-api .api-copy-btn:hover {
+  background: #3f3f46 !important;
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-api .api-copy-btn.copied,
+body.dark .arts-api .api-copy-btn.copied {
+  background: #059669 !important;
+  border-left-color: #047857 !important;
+}
+
+/* 2. Trust Bar */
+html[data-theme="dark"] .arts-trust,
+body.dark .arts-trust {
+  background: #0c0c0d !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+html[data-theme="dark"] .arts-trust p,
+body.dark .arts-trust p {
+  color: #a1a1aa !important;
+}
+html[data-theme="dark"] .arts-trust-row,
+body.dark .arts-trust-row {
+  filter: none !important;
+  opacity: 0.95 !important;
+}
+html[data-theme="dark"] .arts-trust-row span,
+body.dark .arts-trust-row span {
+  background: transparent !important;
+  color: #f4f4f5 !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  transition: color 0.2s ease, opacity 0.2s ease;
+}
+html[data-theme="dark"] .arts-trust-row span:hover,
+body.dark .arts-trust-row span:hover {
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+/* 3. Models Gallery Section */
+html[data-theme="dark"] .arts-gallery,
+body.dark .arts-gallery {
+  background: #0c0c0d !important;
+}
+html[data-theme="dark"] .arts-gallery-head h2,
+body.dark .arts-gallery-head h2 {
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .arts-gallery-head a,
+body.dark .arts-gallery-head a {
+  color: #fafafa !important;
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+html[data-theme="dark"] .arts-gallery-head a:hover,
+body.dark .arts-gallery-head a:hover {
+  color: #38bdf8 !important;
+  transform: translateX(4px);
+}
+html[data-theme="dark"] .arts-gcard,
+body.dark .arts-gcard {
+  background-color: #141416 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5) !important;
+}
+html[data-theme="dark"] .arts-gcard:hover,
+body.dark .arts-gcard:hover {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.7) !important;
+}
+
+/* 4. Build Panels */
+html[data-theme="dark"] .arts-build,
+body.dark .arts-build {
+  background: #0c0c0d !important;
+}
+html[data-theme="dark"] .arts-side-label,
+body.dark .arts-side-label {
+  -webkit-text-stroke: 1px rgba(56, 189, 248, 0.45) !important;
+  color: transparent !important;
+}
+html[data-theme="dark"] .arts-build h2,
+body.dark .arts-build h2 {
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .arts-panel,
+body.dark .arts-panel {
+  background: rgba(124, 77, 255, 0.08) !important;
+  border: 1px solid rgba(168, 85, 247, 0.22) !important;
+  box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .arts-panel.mint,
+body.dark .arts-panel.mint {
+  background: rgba(74, 222, 128, 0.08) !important;
+  border: 1px solid rgba(74, 222, 128, 0.22) !important;
+}
+html[data-theme="dark"] .arts-panel.cyan,
+body.dark .arts-panel.cyan {
+  background: rgba(56, 189, 248, 0.08) !important;
+  border: 1px solid rgba(56, 189, 248, 0.22) !important;
+}
+html[data-theme="dark"] .arts-kicker,
+body.dark .arts-kicker {
+  color: #c084fc !important;
+}
+html[data-theme="dark"] .arts-panel.mint .arts-kicker,
+body.dark .arts-panel.mint .arts-kicker {
+  color: #86efac !important;
+}
+html[data-theme="dark"] .arts-panel.cyan .arts-kicker,
+body.dark .arts-panel.cyan .arts-kicker {
+  color: #7dd3fc !important;
+}
+html[data-theme="dark"] .arts-panel h3,
+body.dark .arts-panel h3 {
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-panel p,
+body.dark .arts-panel p {
+  color: #d4d4d8 !important;
+}
+html[data-theme="dark"] .arts-panel ul,
+body.dark .arts-panel ul,
+html[data-theme="dark"] .arts-panel li,
+body.dark .arts-panel li {
+  color: #e4e4e7 !important;
+}
+html[data-theme="dark"] .arts-panel .arts-btn-solid,
+body.dark .arts-panel .arts-btn-solid {
+  background: #fafafa !important;
+  color: #09090b !important;
+  border: 1px solid #e4e4e7 !important;
+  box-shadow: 0 4px 14px -3px rgba(0, 0, 0, 0.35) !important;
+}
+html[data-theme="dark"] .arts-panel .arts-btn-solid:hover,
+body.dark .arts-panel .arts-btn-solid:hover {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-color: #ffffff !important;
+}
+
+/* 5. Why Choose Us Section */
+html[data-theme="dark"] .arts-why,
+body.dark .arts-why {
+  background: #141416 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.6) !important;
+}
+html[data-theme="dark"] .arts-why h2,
+body.dark .arts-why h2 {
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .arts-why .sub,
+body.dark .arts-why .sub {
+  color: #a1a1aa !important;
+}
+html[data-theme="dark"] .arts-why-stats b,
+html[data-theme="dark"] .arts-stat-num,
+body.dark .arts-why-stats b,
+body.dark .arts-stat-num {
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-why-stats span,
+body.dark .arts-why-stats span {
+  color: #a1a1aa !important;
+}
+html[data-theme="dark"] .arts-badges i,
+body.dark .arts-badges i {
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: #d4d4d8 !important;
+}
+html[data-theme="dark"] .arts-badges i:hover,
+body.dark .arts-badges i:hover {
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+/* Why feature cards with shadcn dark tinted translucent styling */
+html[data-theme="dark"] .arts-wcard.c1,
+body.dark .arts-wcard.c1 {
+  background: rgba(56, 189, 248, 0.08) !important;
+  border: 1px solid rgba(56, 189, 248, 0.22) !important;
+  color: #f0f9ff !important;
+}
+html[data-theme="dark"] .arts-wcard.c1 h3,
+body.dark .arts-wcard.c1 h3 {
+  color: #7dd3fc !important;
+}
+html[data-theme="dark"] .arts-wcard.c2,
+body.dark .arts-wcard.c2 {
+  background: rgba(132, 204, 22, 0.08) !important;
+  border: 1px solid rgba(132, 204, 22, 0.22) !important;
+  color: #f7fee7 !important;
+}
+html[data-theme="dark"] .arts-wcard.c2 h3,
+body.dark .arts-wcard.c2 h3 {
+  color: #bef264 !important;
+}
+html[data-theme="dark"] .arts-wcard.c3,
+body.dark .arts-wcard.c3 {
+  background: rgba(168, 85, 247, 0.08) !important;
+  border: 1px solid rgba(168, 85, 247, 0.22) !important;
+  color: #faf5ff !important;
+}
+html[data-theme="dark"] .arts-wcard.c3 h3,
+body.dark .arts-wcard.c3 h3 {
+  color: #d8b4fe !important;
+}
+html[data-theme="dark"] .arts-wcard.c4,
+body.dark .arts-wcard.c4 {
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #f4f4f5 !important;
+}
+html[data-theme="dark"] .arts-wcard.c4 h3,
+body.dark .arts-wcard.c4 h3 {
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-wcard p,
+body.dark .arts-wcard p {
+  color: #a1a1aa !important;
+}
+
+/* 6. Quick Nav Section */
+html[data-theme="dark"] .arts-qnav,
+body.dark .arts-qnav {
+  background: #0c0c0d !important;
+}
+html[data-theme="dark"] .arts-qnav a,
+body.dark .arts-qnav a {
+  background: #161618 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.4) !important;
+  color: #fafafa !important;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease !important;
+}
+html[data-theme="dark"] .arts-qnav a:hover,
+body.dark .arts-qnav a:hover {
+  background: #1c1c1f !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  transform: translateY(-2px);
+}
+html[data-theme="dark"] .arts-qnav h3,
+body.dark .arts-qnav h3 {
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-qnav p,
+body.dark .arts-qnav p {
+  color: #a1a1aa !important;
+}
+
+/* 7. CTA Section */
+html[data-theme="dark"] .arts-cta,
+body.dark .arts-cta {
+  background: #141416 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.6) !important;
+}
+html[data-theme="dark"] .arts-cta h2,
+body.dark .arts-cta h2 {
+  color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-cta p,
+body.dark .arts-cta p {
+  color: #a1a1aa !important;
+}
+html[data-theme="dark"] .arts-cta p code,
+body.dark .arts-cta p code {
+  color: #38bdf8 !important;
+  background: rgba(56, 189, 248, 0.1) !important;
+  border-color: rgba(56, 189, 248, 0.25) !important;
+}
+html[data-theme="dark"] .arts-cta .arts-btn-solid,
+body.dark .arts-cta .arts-btn-solid {
+  background: #fafafa !important;
+  color: #09090b !important;
+  border: 1px solid #e4e4e7 !important;
+}
+html[data-theme="dark"] .arts-cta .arts-btn-solid:hover,
+body.dark .arts-cta .arts-btn-solid:hover {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border-color: #ffffff !important;
+}
+html[data-theme="dark"] .arts-cta .arts-btn-ghost,
+body.dark .arts-cta .arts-btn-ghost {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #fafafa !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+}
+html[data-theme="dark"] .arts-cta .arts-btn-ghost:hover,
+body.dark .arts-cta .arts-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+
+@media (max-width: 1100px) {
+  .arts-hero, .arts-build, .arts-why { grid-template-columns: 1fr; }
+  .arts-hero { padding: 72px 24px 48px; min-height: auto; }
+  .arts-hero-art { height: 320px; min-height: 280px; }
+  .arts-art-group-0 .arts-pill,
+  .arts-art-group-1 .arts-pill,
+  .arts-art-group-2 .arts-pill,
+  .arts-art-group-3 .arts-pill,
+  .arts-art-group-4 .arts-pill {
+    width: 140px;
+    height: 36px;
+  }
+  .arts-badge-art {
+    font-size: 20px !important;
+  }
+  .arts-gallery-track { grid-template-columns: repeat(2, 1fr); }
+  .arts-qnav { grid-template-columns: 1fr; }
+  .arts-gallery, .arts-trust, .arts-build, .arts-qnav { padding-left: 24px; padding-right: 24px; }
+  .arts-why, .arts-cta { margin-left: 16px; margin-right: 16px; padding: 40px 24px; }
+  .arts-hero-copy h1 { font-size: clamp(2.0rem, 6.5vw, 3.2rem); line-height: 1.22; }
+}
+@media (max-width: 640px) {
+  .arts-hero-copy h1 { font-size: clamp(1.8rem, 7.5vw, 2.3rem); line-height: 1.25; margin-bottom: 22px; }
+  .arts-gallery-track, .arts-why-cards { grid-template-columns: 1fr; }
+  .arts-hero-actions { flex-direction: column; }
+  .arts-btn { width: 100%; }
+}
+</style>
+
+{% set_global marketplace_href = nav.marketplace_path | default(value="/home/models") %}
+{% if nav.items %}
+  {% for item in nav.items %}
+    {% if item.key == "marketplace" and item.path %}
+      {% set_global marketplace_href = item.path %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
+<div class="arts-home">
+  <header class="arts-hero">
+    <div class="arts-hero-art" id="arts-hero-art" aria-hidden="true">
+      <canvas id="arts-pixels"></canvas>
+
+      <!-- 风格 0：青柠星核 (Lime Planet) -->
+      <div class="arts-art-group arts-art-group-0" data-group-index="0">
+        <div class="arts-pill"></div>
+        <svg class="arts-curve" viewBox="0 0 520 480" fill="none">
+          <path d="M28 340 C 140 210, 250 420, 500 250" stroke="#7C4DFF" stroke-width="18" stroke-linecap="round"/>
+        </svg>
+        <div class="arts-badge-art">✦</div>
+      </div>
+
+      <!-- 风格 1：落日熔岩 (Sunset Lava) -->
+      <div class="arts-art-group arts-art-group-1" data-group-index="1">
+        <div class="arts-pill"></div>
+        <svg class="arts-curve" viewBox="0 0 520 480" fill="none">
+          <path d="M40 160 C 180 320, 320 80, 480 260" stroke="#00F5D4" stroke-width="16" stroke-linecap="round"/>
+          <path d="M60 380 C 220 220, 340 400, 490 180" stroke="#C8F000" stroke-width="10" stroke-dasharray="8 8" stroke-linecap="round" opacity="0.9"/>
+        </svg>
+        <div class="arts-badge-art">★</div>
+      </div>
+
+      <!-- 风格 2：极光光环 (Aurora Torus) -->
+      <div class="arts-art-group arts-art-group-2" data-group-index="2">
+        <div class="arts-pill"></div>
+        <svg class="arts-curve" viewBox="0 0 520 480" fill="none">
+          <path d="M30 200 C 120 420, 360 40, 490 320" stroke="#FF2E93" stroke-width="16" stroke-linecap="round"/>
+          <path d="M80 120 C 200 60, 440 380, 460 380" stroke="#7C4DFF" stroke-width="8" stroke-linecap="round" opacity="0.8"/>
+        </svg>
+        <div class="arts-badge-art">◆</div>
+      </div>
+
+      <!-- 风格 3：冰蓝超新星 (Sapphire Nova) -->
+      <div class="arts-art-group arts-art-group-3" data-group-index="3">
+        <div class="arts-pill"></div>
+        <svg class="arts-curve" viewBox="0 0 520 480" fill="none">
+          <path d="M35 320 C 160 140, 340 420, 495 180" stroke="#00B4D8" stroke-width="16" stroke-linecap="round"/>
+          <path d="M50 140 C 200 360, 380 90, 470 330" stroke="#FF2E93" stroke-width="8" stroke-dasharray="6 6" stroke-linecap="round" opacity="0.85"/>
+        </svg>
+        <div class="arts-badge-art">✷</div>
+      </div>
+
+      <!-- 风格 4：黄金耀斑 (Solar Amber) -->
+      <div class="arts-art-group arts-art-group-4" data-group-index="4">
+        <div class="arts-pill"></div>
+        <svg class="arts-curve" viewBox="0 0 520 480" fill="none">
+          <path d="M25 190 C 170 380, 350 110, 495 290" stroke="#FFAA00" stroke-width="16" stroke-linecap="round"/>
+          <path d="M70 360 C 220 180, 360 420, 460 150" stroke="#7C4DFF" stroke-width="10" stroke-linecap="round" opacity="0.8"/>
+        </svg>
+        <div class="arts-badge-art">▲</div>
+      </div>
+    </div>
+    <div class="arts-hero-copy">
+      <h1 data-i18n-dynamic="{{ home.hero_title | default(value="") }}" data-i18n-key="hero_title">{{ home.hero_title | default(value="一个接口，调用全球数百个 AI 模型") }}</h1>
+      <p data-i18n-dynamic="{{ home.hero_subtitle | default(value="") }}" data-i18n-key="hero_subtitle">{{ home.hero_subtitle | default(value="OpenAI兼容和原生格式，极速接入主流模型，零门槛开始") }}</p>
+      <div class="arts-hero-actions">
+        <a href="{% if nav.register_link %}{{ nav.register_link | safe }}{% else %}/register{% endif %}" class="arts-btn arts-btn-solid" data-i18n-dynamic="{{ nav.register_text | default(value="") }}" data-i18n-key="nav_register">{{ nav.register_text | default(value="免费注册") }}</a>
+        <a href="/home/contact" class="arts-btn arts-btn-ghost" data-i18n="nav_contact">联系我们</a>
+      </div>
+      <div class="arts-api">
+        <span class="arts-api-label" data-i18n="api_base_url">API Base URL</span>
+        <code id="api-url-text">{{ home.api_base_url | default(value="") }}</code>
+        <button class="api-copy-btn" type="button" onclick="copyApiUrl()" aria-label="复制 API 地址">
+          <svg class="copy-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+          <svg class="check-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <span class="btn-text" data-i18n="btn_copy">Copy</span>
+          <span class="copy-tooltip" data-i18n="btn_copied">Copied!</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <section class="arts-trust">
+    <p data-i18n="arts_trusted">Trusted by developers and leading companies.</p>
+    <div class="arts-trust-row">
+      <span>OpenAI</span>
+      <span>Anthropic</span>
+      <span>Google</span>
+      <span>DeepSeek</span>
+      <span>ByteDance</span>
+    </div>
+  </section>
+
+  <section class="arts-gallery">
+    <div class="arts-gallery-head">
+      <h2 data-i18n="arts_gallery_title">Explore all models</h2>
+      <a href="{{ nav.marketplace_path | default(value="/home/models") | safe }}" aria-label="explore">→</a>
+    </div>
+    <div class="arts-gallery-track">
+      {% if models and models | length > 0 %}
+        {% for model in models %}
+          {% if loop.index <= 4 %}
+          <a class="arts-gcard" href="{{ nav.marketplace_path | default(value="/home/models") | safe }}">
+            <div class="art"></div>
+            <div class="arts-gcard-body">
+              <h3>{{ model.model_name | default(value=model.model_id) }}</h3>
+              <span class="sub">{% if model.model_type and model.model_type | length > 0 %}{{ model.model_type }}{% elif model.type_name and model.type_name | length > 0 %}{{ model.type_name }}{% elif model.provider %}{{ model.provider }}{% else %}Text to Video{% endif %}</span>
+            </div>
+          </a>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <a class="arts-gcard" href="{{ nav.marketplace_path | default(value="/home/models") | safe }}">
+          <div class="art"></div>
+          <div class="arts-gcard-body">
+            <h3>MiniMax H3</h3>
+            <span class="sub">Max Text to Video</span>
+          </div>
+        </a>
+        <a class="arts-gcard" href="{{ nav.marketplace_path | default(value="/home/models") | safe }}">
+          <div class="art"></div>
+          <div class="arts-gcard-body">
+            <h3>Wan3</h3>
+            <span class="sub">Reference to Video</span>
+          </div>
+        </a>
+        <a class="arts-gcard" href="{{ nav.marketplace_path | default(value="/home/models") | safe }}">
+          <div class="art"></div>
+          <div class="arts-gcard-body">
+            <h3>Seeddance 2.5</h3>
+            <span class="sub">Image to Video</span>
+          </div>
+        </a>
+        <a class="arts-gcard" href="{{ nav.marketplace_path | default(value="/home/models") | safe }}">
+          <div class="art"></div>
+          <div class="arts-gcard-body">
+            <h3>Artsdance</h3>
+            <span class="sub">Reference to Video</span>
+          </div>
+        </a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="arts-build">
+    <span class="arts-side-label" aria-hidden="true">LIGHTNING FAST INFERENCE</span>
+    <h2 data-i18n="arts_build_title">Build,<br>deploy,<br>train.</h2>
+    <div class="arts-stack">
+      {% if home.features and home.features | length > 0 %}
+        {% for feat in home.features %}
+          {% if loop.index <= 3 %}
+          <div class="arts-panel{% if loop.index == 2 %} mint{% elif loop.index == 3 %} cyan{% endif %}">
+            <div class="arts-kicker">{% if loop.index == 1 %}MODEL APIs{% elif loop.index == 2 %}SERVERLESS{% else %}COMPUTE{% endif %}</div>
+            <h3 data-i18n-dynamic="{{ feat.title | default(value="") }}" data-i18n-key="feat{{ loop.index }}_title">{{ feat.title }}</h3>
+            <p data-i18n-dynamic="{{ feat.description | default(value="") }}" data-i18n-key="feat{{ loop.index }}_desc">{{ feat.description }}</p>
+            {% if loop.index == 1 %}
+            <a href="{{ marketplace_href | default(value="/home/models") | safe }}" class="arts-btn arts-btn-solid" data-i18n="arts_explore_models">Explore models</a>
+            {% endif %}
+          </div>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <div class="arts-panel">
+          <div class="arts-kicker">MODEL APIs</div>
+          <h3 data-i18n="feat1_title">一键极速接入</h3>
+          <p data-i18n="feat1_desc">OpenAI 兼容 API 格式，只需修改 Base URL 和 Key，即可无缝替换至数百个主流模型，零代码成本迁移。</p>
+          <p data-i18n="arts_use_for">Use it for:</p>
+          <ul>
+            <li data-i18n="feat2_title">全球模型全面覆盖</li>
+            <li data-i18n="feat3_title">智能分流与高可用</li>
+            <li data-i18n="feat4_title">极致安全数据脱敏</li>
+          </ul>
+          <a href="{{ marketplace_href | default(value="/home/models") | safe }}" class="arts-btn arts-btn-solid" data-i18n="arts_explore_models">Explore models</a>
+        </div>
+        <div class="arts-panel mint">
+          <div class="arts-kicker">SERVERLESS</div>
+          <h3 data-i18n="feat3_title">智能分流与高可用</h3>
+          <p data-i18n="feat3_desc">全球边缘节点路由，支持在主渠道高负载或故障时自动无感容灾重试，首字耗时降至毫秒级。</p>
+        </div>
+        <div class="arts-panel cyan">
+          <div class="arts-kicker">COMPUTE</div>
+          <h3 data-i18n="feat2_title">全球模型全面覆盖</h3>
+          <p data-i18n="feat2_desc">聚合 OpenAI、Anthropic、Google Gemini、DeepSeek、字节跳动火山引擎等数十家顶级服务商的模型矩阵。</p>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="arts-why">
+    <div>
+      <h2 data-i18n="feat_title">为什么选择我们</h2>
+      <p class="sub" data-i18n="feat_subtitle">为开发者和企业打造的下一代极速 AI 大模型分发网关</p>
+      <div class="arts-why-stats" id="arts-why-stats">
+        <div class="arts-stat-item">
+          <b class="arts-stat-num" data-target="200" data-suffix="+">200+</b>
+          <span data-i18n="stats_models">AI 模型</span>
+        </div>
+        <div class="arts-stat-item">
+          <b class="arts-stat-num" data-target="99.99" data-decimals="2" data-suffix="%">99.99%</b>
+          <span data-i18n="stats_uptime">服务可用率</span>
+        </div>
+        <div class="arts-stat-item">
+          <b class="arts-stat-num" data-target="80" data-prefix="&lt;" data-suffix="ms">&lt;80ms</b>
+          <span data-i18n="stats_latency">首字平均延迟</span>
+        </div>
+        <div class="arts-stat-item">
+          <b class="arts-stat-num arts-stat-infinity" data-special="infinity" data-final="&infin;">&infin;</b>
+          <span data-i18n="stats_concurrency">并发无上限</span>
+        </div>
+      </div>
+      <div class="arts-badges">
+        <i data-i18n-dynamic="SOC 2 认证|SOC 2|SOC 2 認証|SOC 2 인증|Chứng nhận SOC 2">SOC 2 认证</i>
+        <i data-i18n-dynamic="单点登录|SSO|シングルサインオン|SSO|Đăng nhập một lần">单点登录</i>
+        <i data-i18n-dynamic="私网专线|Private endpoints|プライベートエンドポイント|프라이빗 엔드포인트|Điểm cuối riêng tư">私网专线</i>
+        <i data-i18n-dynamic="7×24h 运维|24/7|24/7 サポート|24/7 지원|Hỗ trợ 24/7">7×24h 运维</i>
+      </div>
+    </div>
+    <div class="arts-why-cards">
+      <div class="arts-wcard c1"><h3 data-i18n="feat1_title">一键极速接入</h3><p data-i18n="feat1_desc">OpenAI 兼容 API 格式，只需修改 Base URL 和 Key。</p></div>
+      <div class="arts-wcard c2"><h3 data-i18n="feat3_title">智能分流与高可用</h3><p data-i18n="feat3_desc">全球边缘节点路由，首字耗时降至毫秒级。</p></div>
+      <div class="arts-wcard c3"><h3 data-i18n="feat2_title">全球模型全面覆盖</h3><p data-i18n="feat2_desc">聚合数十家顶级服务商的模型矩阵。</p></div>
+      <div class="arts-wcard c4"><h3 data-i18n="feat4_title">极致安全数据脱敏</h3><p data-i18n="feat4_desc">IP 白名单、端到端加密与日志脱敏。</p></div>
+    </div>
+  </section>
+
+  <nav class="arts-qnav">
+    {% if columns.models.enabled | default(value=true) %}
+    <a href="{{ marketplace_href | default(value="/home/models") | safe }}">
+      <h3 data-i18n-dynamic="{{ columns.models.title | default(value="") }}" data-i18n-key="qnav1_title">{{ columns.models.title | default(value="模型数据") }}</h3>
+      <p data-i18n="qnav1_desc">查看平台全部 AI 模型，覆盖文本、图像、视频、语音等能力</p>
+    </a>
+    {% endif %}
+    {% if columns.contact.enabled | default(value=true) %}
+    <a href="/home/contact">
+      <h3 data-i18n-dynamic="{{ columns.contact.title | default(value="") }}" data-i18n-key="qnav2_title">{{ columns.contact.title | default(value="联系我们") }}</h3>
+      <p data-i18n="qnav2_desc">技术支持、商务合作、定制化需求</p>
+    </a>
+    {% endif %}
+    {% if columns.about.enabled | default(value=true) %}
+    <a href="/home/about">
+      <h3 data-i18n-dynamic="{{ columns.about.title | default(value="") }}" data-i18n-key="qnav3_title">{{ columns.about.title | default(value="关于我们") }}</h3>
+      <p data-i18n="qnav3_desc">了解团队愿景与技术实力</p>
+    </a>
+    {% endif %}
+  </nav>
+
+  <section class="arts-cta">
+    <h2 data-i18n-dynamic="{{ home.cta_title | default(value="") }}" data-i18n-key="cta_title">{{ home.cta_title | default(value="准备好开始构建了吗？") }}</h2>
+    <p class="cta-desc" data-i18n-dynamic="{{ home.cta_description | default(value="") }}" data-i18n-key="cta_description">{{ home.cta_description | default(value="只需 3 分钟即可获取您的 API 密钥并开始创新。基础 URL：https://api.artsapi.com/api，零成本平滑迁移。") | safe }}</p>
+    <div class="arts-hero-actions">
+      <a href="{% if nav.register_link %}{{ nav.register_link | safe }}{% else %}/register{% endif %}" class="arts-btn arts-btn-solid cta-primary" data-i18n-dynamic="{{ nav.register_text | default(value="") }}" data-i18n-key="nav_register">{{ nav.register_text | default(value="免费注册") }}</a>
+      <a href="/home/contact" class="arts-btn arts-btn-ghost cta-secondary" data-i18n="nav_contact">联系我们</a>
+    </div>
+  </section>
+</div>
+
+<script>
+(function initArtsHeroArtEngine() {
+  const container = document.getElementById('arts-hero-art');
+  const canvas = document.getElementById('arts-pixels');
+  if (!container || !canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  const TOTAL_STYLES = 5;
+
+  // 1. 刷新避重与初始随机：确保每次初次进入与刷新均能随机展现完全不同的艺术形态
+  let activeStyle = 0;
+  try {
+    const prev = parseInt(sessionStorage.getItem('arts_hero_style_idx') ?? '-1', 10);
+    const pool = [0, 1, 2, 3, 4].filter(function(i) { return i !== prev; });
+    activeStyle = pool[Math.floor(Math.random() * pool.length)];
+    sessionStorage.setItem('arts_hero_style_idx', activeStyle.toString());
+  } catch (_) {
+    activeStyle = Math.floor(Math.random() * TOTAL_STYLES);
+  }
+
+  // 2. 调色板定义（fal.ai 风格高饱和波普像素色系）
+  const PALETTES = {
+    0: ['#c8f000', '#d8ff3a', '#eaff6a', '#9fd400', '#b6e600'], // 青柠星核
+    1: ['#ff3366', '#ff5c35', '#ffaa00', '#ffd000', '#ff1a75', '#ff7a00'], // 落日熔岩
+    2: ['#7c4dff', '#6366f1', '#a855f7', '#00f5d4', '#ec4899', '#38bdf8'], // 极光光环
+    3: ['#00b4d8', '#90e0ef', '#0077b6', '#caf0f8', '#48cae4', '#06b6d4'], // 冰蓝超新星
+    4: ['#f59e0b', '#fbbf24', '#fef08a', '#d97706', '#b45309', '#eab308']  // 黄金耀斑
+  };
+
+  const groups = container.querySelectorAll('.arts-art-group');
+
+  function setActiveStyle(idx) {
+    activeStyle = idx;
+    groups.forEach(function(g) {
+      const gIdx = parseInt(g.getAttribute('data-group-index'), 10);
+      g.classList.toggle('is-active', gIdx === idx);
+    });
+    try {
+      sessionStorage.setItem('arts_hero_style_idx', idx.toString());
+    } catch (_) {}
+  }
+
+  setActiveStyle(activeStyle);
+
+  // ── 广告语标题轮换：每次打开/刷新页面时随机展示 (通用 / 视频艺术 / 大语言模型) ──
+  const HERO_SLOGANS = [
+    "一个接口，调用全球数百个 AI 模型|One interface, access hundreds of AI models worldwide|単一のインターフェースで、世界中の何百ものAIモデルにアクセス|단 하나의 인터페이스로 전 세계 수백 개의 AI 모델에 연결|Một giao diện, truy cập hàng trăm mô hình AI trên toàn cầu",
+    "聚合顶尖视频与视觉大模型，让艺术灵感即刻成片|Aggregate top video and vision models, turn creative inspiration into footage instantly|最先端の動画・画像生成AIを集約し、クリエイティブな閃きを即座に映像化|최고 수준의 비디오 및 비전 모델을 통합하여 창의적인 영감을 즉시 영상으로 완성|Tích hợp các mô hình video và thị giác hàng đầu, hiện thực hóa cảm hứng nghệ thuật tức thì",
+    "汇聚全球顶尖大语言模型，为智能应用注入澎湃算力|Aggregate world-leading LLMs, powering intelligent applications with immense compute|世界最高峰の大規模言語モデルを集約し、インテリジェントなアプリに圧倒的な演算力を注入|전 세계 최고의 LLM을 통합하여 지능형 애플리케이션에 강력한 연산력을 공급|Hội tụ các mô hình ngôn ngữ lớn hàng đầu thế giới, tiếp sức mạnh điện toán cho các ứng dụng thông minh"
+  ];
+  const titleEl = document.querySelector('.arts-hero-copy h1');
+  if (titleEl) {
+    const curTitle = (titleEl.textContent || '').trim();
+    const isDefaultOrSlogan = !curTitle || HERO_SLOGANS.some(function(s) { return s.indexOf(curTitle) !== -1; }) || curTitle === "一个接口，调用全球数百个 AI 模型" || curTitle === "聚合顶尖视频与视觉大模型，让艺术灵感即刻成片" || curTitle === "汇聚全球顶尖大语言模型，为智能应用注入澎湃算力";
+    if (isDefaultOrSlogan) {
+      let sloganIdx = 0;
+      try {
+        const prevSlogan = parseInt(sessionStorage.getItem('arts_hero_slogan_idx') ?? '-1', 10);
+        const pool = [0, 1, 2].filter(function(i) { return i !== prevSlogan; });
+        sloganIdx = pool[Math.floor(Math.random() * pool.length)];
+        sessionStorage.setItem('arts_hero_slogan_idx', sloganIdx.toString());
+      } catch (_) {
+        sloganIdx = Math.floor(Math.random() * HERO_SLOGANS.length);
+      }
+      titleEl.setAttribute('data-i18n-dynamic', HERO_SLOGANS[sloganIdx]);
+      titleEl.setAttribute('data-i18n-key', `hero_slogan_${sloganIdx}`);
+      const curLang = localStorage.getItem('lang') || 'zh';
+      if (typeof translateText === 'function') {
+        titleEl.textContent = translateText(HERO_SLOGANS[sloganIdx], curLang);
+      }
+    }
+  }
+
+  // 3. Canvas 平面 3D 积木体素慢速掉落与堆砌物理动效引擎
+  let width = 0;
+  let height = 0;
+  let dpr = 1;
+  let cell = 12;
+  let cols = 0;
+  let rows = 0;
+
+  // ── 立体积木体素 (3D Voxel Brick on Plane) 绘制器 ──
+  // 纯正面正交视角，无需景深旋转，依靠顶面高光与侧面凹凸阴影呈现真实 3D 积木堆砌质感
+  // 支持 scale 局部缩放与中心对齐，实现从背景钻出膨胀与消隐收缩
+  function draw3DVoxelBrick(px, py, size, baseCol, hiCol, shCol, alpha, groundShadowDist, squishY, scale) {
+    const sc = scale !== undefined ? scale : 1.0;
+    if (alpha <= 0.01 || sc <= 0.03 || size < 2) return;
+    ctx.globalAlpha = Math.min(1, Math.max(0, alpha));
+
+    const s = Math.max(2, Math.round(size * sc));
+    const sq = squishY || 1.0;
+    const drawH = Math.max(2, Math.round(s * sq));
+
+    // 中心对齐缩放 (体素从背景由中心向外膨胀钻出)
+    const cx = px + size * 0.5;
+    const cy = py + size * 0.5;
+    const drawX = Math.round(cx - s * 0.5);
+    const drawY = Math.round(cy - drawH * 0.5 + (s - drawH) * 0.5);
+
+    // 落地软投影 (距离目标落点越近越浓实，钻出初期虚化)
+    if (groundShadowDist > 1 && groundShadowDist < 160 && sc > 0.35) {
+      const shAlpha = Math.max(0, 0.26 * (1 - groundShadowDist / 160) * sc * alpha);
+      ctx.fillStyle = 'rgba(0, 0, 0, ' + shAlpha.toFixed(3) + ')';
+      const shW = Math.max(3, s * (1 - Math.min(0.45, groundShadowDist / 200)));
+      ctx.fillRect(px + (size - shW) * 0.5, py + groundShadowDist + size * 0.72, shW, Math.max(2, size * 0.26));
+    }
+
+    // 正面基底
+    ctx.fillStyle = baseCol;
+    ctx.fillRect(drawX, drawY, s, drawH);
+
+    // 3D 向光顶面斜切高光
+    if (hiCol && s > 3) {
+      ctx.fillStyle = hiCol;
+      ctx.fillRect(drawX, drawY, s, Math.max(1.8, Math.round(drawH * 0.28)));
+    }
+
+    // 3D 背光侧面与底边立体凹凸深色切面
+    if (shCol && s > 3) {
+      ctx.fillStyle = shCol;
+      const edgeW = Math.max(1.8, Math.round(s * 0.22));
+      const edgeH = Math.max(1.8, Math.round(drawH * 0.22));
+      ctx.fillRect(drawX + s - edgeW, drawY, edgeW, drawH);
+      ctx.fillRect(drawX, drawY + drawH - edgeH, s, edgeH);
+    }
+  }
+
+  // ── 着地撞击微尘火花系统 ──
+  const dustParticles = [];
+  function emitDust(x, y, color) {
+    const count = 2 + Math.floor(Math.random() * 2);
+    for (let i = 0; i < count; i++) {
+      const dir = (Math.random() > 0.5 ? 1 : -1) * (0.8 + Math.random() * 1.8);
+      dustParticles.push({
+        x: x,
+        y: y,
+        vx: dir,
+        vy: -(0.5 + Math.random() * 1.2),
+        size: Math.max(2, Math.round(cell * 0.22)),
+        color: color,
+        life: 1.0,
+        decay: 0.04 + Math.random() * 0.03
+      });
+    }
+  }
+
+  function updateDust() {
+    for (let i = dustParticles.length - 1; i >= 0; i--) {
+      const p = dustParticles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.90;
+      p.vy += 0.05; // 微重力下落
+      p.life -= p.decay;
+      if (p.life <= 0) {
+        dustParticles.splice(i, 1);
+      }
+    }
+  }
+
+  // ── 5 大参数化参数生成数据池 (每次加载与刷新完全不重复) ──
+  let voxels = [];
+
+  function buildThemeVoxels(themeIdx) {
+    voxels = [];
+    dustParticles.length = 0;
+
+    const vList = [];
+    // 每次生成时引入微幅随机质心扰动，消除任何固定呆板感
+    const cx = cols * (0.43 + (Math.random() - 0.5) * 0.08);
+    const cy = rows * (0.48 + (Math.random() - 0.5) * 0.08);
+
+    if (themeIdx === 0) {
+      // ════ 风格 0：青柠星核 · 参数化有机星体与卫星群 (每次形态与卫星数随机) ════
+      const sphereCount = 3 + Math.floor(Math.random() * 4); // 3 ~ 6 颗随机球体
+      const spheres = [];
+      // 主核心
+      spheres.push({
+        x: cx + (Math.random() - 0.5) * cols * 0.06,
+        y: cy + (Math.random() - 0.5) * rows * 0.06,
+        r: cols * (0.22 + Math.random() * 0.08)
+      });
+      // 随机卫星与外延伴星
+      for (let s = 1; s < sphereCount; s++) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = spheres[0].r * (0.55 + Math.random() * 0.65);
+        spheres.push({
+          x: cx + Math.cos(ang) * dist,
+          y: cy + Math.sin(ang) * dist * 0.88,
+          r: cols * (0.08 + Math.random() * 0.13)
+        });
+      }
+
+      const palVariants = [
+        [
+          { base: '#c8f000', hi: '#f4ff85', sh: '#7aa300' },
+          { base: '#d8ff3a', hi: '#ffffff', sh: '#8bb800' },
+          { base: '#eaff6a', hi: '#ffffff', sh: '#9fd400' },
+          { base: '#b6e600', hi: '#e2ff70', sh: '#6d9400' },
+          { base: '#9fd400', hi: '#d8ff4f', sh: '#5e8500' }
+        ],
+        [
+          { base: '#10b981', hi: '#6ee7b7', sh: '#047857' },
+          { base: '#34d399', hi: '#a7f3d0', sh: '#059669' },
+          { base: '#c8f000', hi: '#f4ff85', sh: '#7aa300' },
+          { base: '#06b6d4', hi: '#67e8f9', sh: '#0e7490' }
+        ]
+      ];
+      const pal = palVariants[Math.floor(Math.random() * palVariants.length)];
+      const threshold = 1.0 + Math.random() * 0.12;
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          let field = 0;
+          for (let b = 0; b < spheres.length; b++) {
+            const dx = x - spheres[b].x;
+            const dy = y - spheres[b].y;
+            field += (spheres[b].r * spheres[b].r) / (dx * dx + dy * dy + 0.35);
+          }
+          if (field > threshold) {
+            const p = pal[(x * 5 + y * 11) % pal.length];
+            vList.push({ gx: x, gy: y, colors: p });
+          }
+        }
+      }
+
+    } else if (themeIdx === 1) {
+      // ════ 风格 1：落日熔岩 · 参数化多核与等离子流 (倾斜角与颈部随时改变) ════
+      const isTriple = Math.random() > 0.65;
+      const angle = (Math.random() - 0.5) * Math.PI * 0.7;
+      const coreDist = cols * (0.16 + Math.random() * 0.14);
+      const rA = cols * (0.16 + Math.random() * 0.08);
+      const rB = cols * (0.14 + Math.random() * 0.08);
+
+      const c1x = cx - Math.cos(angle) * coreDist * 0.5;
+      const c1y = cy - Math.sin(angle) * coreDist * 0.5;
+      const c2x = cx + Math.cos(angle) * coreDist * 0.5;
+      const c2y = cy + Math.sin(angle) * coreDist * 0.5;
+
+      const palVariants = [
+        [
+          { base: '#ff5c35', hi: '#ffd000', sh: '#b51d00' },
+          { base: '#ffaa00', hi: '#fff066', sh: '#d16600' },
+          { base: '#ff3366', hi: '#ffa1be', sh: '#9e002e' },
+          { base: '#ffd000', hi: '#ffffff', sh: '#c78d00' },
+          { base: '#ff1a75', hi: '#ff7ab0', sh: '#8c0038' }
+        ],
+        [
+          { base: '#f43f5e', hi: '#fda4af', sh: '#be123c' },
+          { base: '#fb923c', hi: '#fed7aa', sh: '#c2410c' },
+          { base: '#facc15', hi: '#fef08a', sh: '#a16207' },
+          { base: '#e11d48', hi: '#fecdd3', sh: '#9f1239' }
+        ]
+      ];
+      const pal = palVariants[Math.floor(Math.random() * palVariants.length)];
+      const bridgeW = cols * (0.11 + Math.random() * 0.06);
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const d1 = Math.sqrt((x - c1x) * (x - c1x) + (y - c1y) * (y - c1y) * 1.05);
+          const d2 = Math.sqrt((x - c2x) * (x - c2x) + (y - c2y) * (y - c2y) * 1.08);
+          const dBridge = Math.sqrt((x - cx) * (x - cx) * 0.8 + (y - cy) * (y - cy) * 1.8);
+
+          let inShape = d1 < rA || d2 < rB || dBridge < bridgeW;
+          if (isTriple) {
+            const c3y = cy - rows * 0.18;
+            const d3 = Math.sqrt((x - cx) * (x - cx) + (y - c3y) * (y - c3y));
+            if (d3 < cols * 0.12) inShape = true;
+          }
+
+          if (inShape) {
+            const p = pal[(x * 7 + y * 9) % pal.length];
+            vList.push({ gx: x, gy: y, colors: p });
+          }
+        }
+      }
+
+    } else if (themeIdx === 2) {
+      // ════ 风格 2：极光量子光环 · 参数化拓扑环面 (同心双环或椭圆环) ════
+      const ringMode = Math.random() > 0.45 ? 1 : 0;
+      const ringR = cols * (0.20 + Math.random() * 0.06);
+      const ringThick = cols * (0.075 + Math.random() * 0.03);
+      const flatY = 1.0 + Math.random() * 0.45;
+      const pal = [
+        { base: '#7c4dff', hi: '#c7b0ff', sh: '#4c19cc' },
+        { base: '#00f5d4', hi: '#94fff1', sh: '#009985' },
+        { base: '#ec4899', hi: '#ff9ecc', sh: '#a30d58' },
+        { base: '#6366f1', hi: '#a9abff', sh: '#3337a8' }
+      ];
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const dx = x - cx;
+          const dy = (y - cy) * flatY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const diff = Math.abs(dist - ringR);
+
+          let isHit = diff < ringThick;
+          if (ringMode === 1) {
+            const innerDiff = Math.abs(dist - ringR * 0.45);
+            if (innerDiff < ringThick * 0.7) isHit = true;
+          } else {
+            if (dist < cols * 0.065) isHit = true;
+          }
+
+          if (isHit) {
+            const p = pal[(x * 8 + y * 13) % pal.length];
+            vList.push({ gx: x, gy: y, colors: p });
+          }
+        }
+      }
+
+    } else if (themeIdx === 3) {
+      // ════ 风格 3：冰蓝超新星 · 参数化晶体瓣簇 (放射多瓣晶胞) ════
+      const lobes = 4 + Math.floor(Math.random() * 3); // 4~6 瓣晶体
+      const rot = Math.random() * Math.PI;
+      const baseR = cols * (0.18 + Math.random() * 0.05);
+      const amp = cols * (0.08 + Math.random() * 0.05);
+      const pal = [
+        { base: '#00b4d8', hi: '#caf0f8', sh: '#0077b6' },
+        { base: '#06b6d4', hi: '#cffafe', sh: '#0891b2' },
+        { base: '#38bdf8', hi: '#e0f2fe', sh: '#0284c7' },
+        { base: '#6366f1', hi: '#e0e7ff', sh: '#4338ca' }
+      ];
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const dx = x - cx;
+          const dy = (y - cy) * 1.15;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const ang = Math.atan2(dy, dx) + rot;
+          const starR = baseR + Math.cos(ang * lobes) * amp;
+
+          if (dist < starR || (dist < baseR * 0.5)) {
+            const p = pal[(x * 9 + y * 7) % pal.length];
+            vList.push({ gx: x, gy: y, colors: p });
+          }
+        }
+      }
+
+    } else {
+      // ════ 风格 4：黄金耀斑日冕 · 参数化日珥脉冲 (耀斑放射波纹) ════
+      const flareCount = 5 + Math.floor(Math.random() * 3);
+      const sunR = cols * (0.20 + Math.random() * 0.05);
+      const pal = [
+        { base: '#f59e0b', hi: '#fef08a', sh: '#b45309' },
+        { base: '#fbbf24', hi: '#ffffff', sh: '#d97706' },
+        { base: '#f97316', hi: '#ffedd5', sh: '#c2410c' },
+        { base: '#eab308', hi: '#fef9c3', sh: '#a16207' }
+      ];
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const dx = x - cx;
+          const dy = (y - cy) * 1.1;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const ang = Math.atan2(dy, dx);
+          const flareR = sunR + Math.pow(Math.sin(ang * flareCount * 0.5), 4) * (cols * 0.12);
+
+          if (dist < flareR) {
+            const p = pal[(x * 6 + y * 11) % pal.length];
+            vList.push({ gx: x, gy: y, colors: p });
+          }
+        }
+      }
+    }
+
+    // 为体素初始化「背景钻出 + 持续循环掉落堆砌」物理属性
+    for (let i = 0; i < vList.length; i++) {
+      const item = vList[i];
+      const targetPx = item.gx * cell;
+      const targetPy = item.gy * cell;
+
+      // 初始分流：约 45% 的核心底座体素已稳定就位，确保初次加载时星体轮廓立即可辨
+      // 其余 55% 体素在半空背景中随机准备钻出并陆续下落堆砌
+      const isInitialSettled = (i % 9 < 4) || (item.gy > rows * 0.65 && Math.random() > 0.35);
+
+      if (isInitialSettled) {
+        voxels.push({
+          gx: item.gx,
+          gy: item.gy,
+          targetX: targetPx,
+          targetY: targetPy,
+          curX: targetPx,
+          curY: targetPy,
+          vx: 0,
+          vy: 0,
+          colors: item.colors,
+          state: 'SETTLED',
+          scale: 1.0,
+          alpha: 1.0,
+          squish: 1.0,
+          bounces: 2,
+          settleLife: 4.0 + Math.random() * 8.0, // 存留一段时间后温柔交替重入循环
+          delayTimer: 0
+        });
+      } else {
+        // 从目标上方 35~130px 的半空深色背景中随机就位准备钻出
+        const spawnY = Math.max(8, targetPy - (35 + Math.random() * 115));
+        const spawnX = targetPx + (Math.random() - 0.5) * 6;
+        const initialDelay = Math.random() * 2.6 + (rows - item.gy) * 0.03;
+
+        voxels.push({
+          gx: item.gx,
+          gy: item.gy,
+          targetX: targetPx,
+          targetY: targetPy,
+          curX: spawnX,
+          curY: spawnY,
+          vx: 0,
+          vy: 0,
+          colors: item.colors,
+          state: 'DORMANT', // DORMANT -> EMERGING -> FALLING -> BOUNCING -> SETTLED -> DISSOLVING -> DORMANT
+          scale: 0.05,
+          alpha: 0.0,
+          squish: 1.0,
+          bounces: 0,
+          settleLife: 5.5 + Math.random() * 8.5,
+          delayTimer: initialDelay
+        });
+      }
+    }
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    width = container.clientWidth;
+    height = container.clientHeight;
+    cell = Math.max(10, Math.floor(Math.min(width, height) / 28));
+    cols = Math.ceil(width / cell);
+    rows = Math.ceil(height / cell);
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    buildThemeVoxels(activeStyle);
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ── 交互式鼠标/触控橡皮擦除系统 ──
+  const pointer = {
+    x: -9999,
+    y: -9999,
+    prevX: -9999,
+    prevY: -9999,
+    vx: 0,
+    vy: 0,
+    active: false,
+    auraAlpha: 0.0
+  };
+
+  function updatePointerCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    if (pointer.active) {
+      pointer.vx = px - pointer.x;
+      pointer.vy = py - pointer.y;
+      pointer.prevX = pointer.x;
+      pointer.prevY = pointer.y;
+    } else {
+      pointer.vx = 0;
+      pointer.vy = 0;
+      pointer.prevX = px;
+      pointer.prevY = py;
+    }
+    pointer.x = px;
+    pointer.y = py;
+    pointer.active = true;
+  }
+
+  container.addEventListener('pointerenter', updatePointerCoords);
+  container.addEventListener('pointermove', updatePointerCoords);
+  container.addEventListener('pointerdown', updatePointerCoords);
+  container.addEventListener('pointerleave', function() {
+    pointer.active = false;
+  });
+  container.addEventListener('pointercancel', function() {
+    pointer.active = false;
+  });
+
+  // 线段连续扫掠最短距离（防止快速划过漏掉方块）
+  function distToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const l2 = dx * dx + dy * dy;
+    if (l2 < 0.0001) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+
+  // ── 4. requestAnimationFrame 物理模拟与持续循环 ──
+  let isVisible = true;
+  let lastTime = 0;
+  const startTime = performance.now();
+  const frameInterval = 1000 / 40; // ~40fps: 节奏舒缓，丝滑解压
+
+  // 慢速重力加速度与终端限速
+  const GRAVITY = 0.15;
+  const MAX_FALL_SPEED = 3.8;
+
+  function renderFrame(now) {
+    if (!isVisible) return;
+    requestAnimationFrame(renderFrame);
+
+    if (now - lastTime < frameInterval) return;
+    lastTime = now;
+
+    const t = (now - startTime) * 0.001;
+    ctx.clearRect(0, 0, width, height);
+
+    updateDust();
+
+    const dt = 0.025; // 相对物理步长
+    const brickSize = cell - 1.4;
+    // 聚焦微缩擦除半径：仅精准擦除光标直触及近邻方块
+    const eraseRadius = Math.max(14, Math.round(cell * 1.35));
+    const canErase = pointer.active && pointer.x >= -eraseRadius && pointer.x <= width + eraseRadius && pointer.y >= -eraseRadius && pointer.y <= height + eraseRadius;
+
+    // 1. 遍历所有体素进行物理驱动与状态演化
+    for (let i = 0; i < voxels.length; i++) {
+      const vk = voxels[i];
+
+      // 鼠标/触控擦除检测：精准命中活跃方块时施加反向飞散冲量与微尘火花
+      if (canErase && (vk.state === 'SETTLED' || vk.state === 'FALLING' || vk.state === 'BOUNCING' || vk.state === 'EMERGING')) {
+        const vcx = vk.curX + brickSize * 0.5;
+        const vcy = vk.curY + brickSize * 0.5;
+        const dist = distToSegment(vcx, vcy, pointer.prevX, pointer.prevY, pointer.x, pointer.y);
+        if (dist < eraseRadius) {
+          vk.state = 'ERASED';
+          const pushDx = vcx - pointer.x;
+          const pushDy = vcy - pointer.y;
+          const pushDist = Math.hypot(pushDx, pushDy) || 1;
+          const impulse = Math.max(1.8, (1 - dist / eraseRadius) * 4.6);
+          vk.vx = (pushDx / pushDist) * impulse + pointer.vx * 0.18 + (Math.random() - 0.5) * 2.0;
+          vk.vy = (pushDy / pushDist) * impulse + pointer.vy * 0.18 - (1.0 + Math.random() * 2.0);
+          emitDust(vcx, vcy, vk.colors.hi || vk.colors.base);
+        }
+      }
+
+      if (vk.state === 'DORMANT') {
+        vk.delayTimer -= dt;
+        if (vk.delayTimer <= 0) {
+          // 准备从背景中钻出
+          vk.state = 'EMERGING';
+          vk.scale = 0.06;
+          vk.alpha = 0.0;
+          vk.curX = vk.targetX + (Math.random() - 0.5) * 6;
+          vk.curY = Math.max(8, vk.targetY - (35 + Math.random() * 115));
+          vk.vy = 0.15;
+          vk.vx = 0;
+          vk.bounces = 0;
+          vk.squish = 1.0;
+        }
+      } else if (vk.state === 'EMERGING') {
+        // 从深色背景中由虚到实、由小到大平滑「钻出」物质化
+        vk.scale += (1.0 - vk.scale) * 0.11;
+        vk.alpha += (1.0 - vk.alpha) * 0.13;
+        vk.curY += vk.vy; // 伴随微幅舒缓下沉
+        vk.vy = Math.min(1.2, vk.vy + 0.03);
+
+        if (vk.scale >= 0.88 && vk.alpha >= 0.85) {
+          vk.scale = 1.0;
+          vk.alpha = 1.0;
+          vk.state = 'FALLING';
+          vk.vy = Math.max(vk.vy, 0.45);
+        }
+      } else if (vk.state === 'FALLING' || vk.state === 'BOUNCING') {
+        // 慢动作匀加速重力下落
+        vk.vy = Math.min(MAX_FALL_SPEED, vk.vy + GRAVITY);
+        vk.curY += vk.vy;
+        // 横向柔和吸附归位
+        vk.curX += (vk.targetX - vk.curX) * 0.12;
+
+        // 碰撞检测：触及目标堆砌接触面 targetY
+        if (vk.curY >= vk.targetY) {
+          vk.curY = vk.targetY;
+          vk.curX = vk.targetX;
+          // 弹性轻弹反弹 (Restitution Bounce)
+          vk.vy = -vk.vy * 0.30;
+          vk.bounces++;
+          vk.squish = 0.84; // 触地弹性挤压
+
+          // 首次触地迸发微尘火花
+          if (vk.bounces === 1) {
+            emitDust(vk.targetX + brickSize * 0.5, vk.targetY + brickSize, vk.colors.base);
+          }
+
+          if (vk.bounces >= 2 || Math.abs(vk.vy) < 0.22) {
+            vk.state = 'SETTLED';
+            vk.curY = vk.targetY;
+            vk.curX = vk.targetX;
+            vk.vy = 0;
+            vk.vx = 0;
+            vk.settleLife = 5.5 + Math.random() * 8.5;
+          }
+        }
+      } else if (vk.state === 'SETTLED') {
+        // 弹性形变平滑复原
+        if (vk.squish < 1.0) {
+          vk.squish += (1.0 - vk.squish) * 0.18;
+        }
+
+        // 存留期计数：到期后进入消隐回归背景循环，保持画面永远流动
+        vk.settleLife -= dt;
+        if (vk.settleLife <= 0) {
+          vk.state = 'DISSOLVING';
+        }
+      } else if (vk.state === 'DISSOLVING') {
+        // 温柔消隐回归背景深空
+        vk.alpha -= 0.025;
+        vk.scale -= 0.02;
+        if (vk.alpha <= 0.03 || vk.scale <= 0.08) {
+          vk.state = 'DORMANT';
+          vk.alpha = 0;
+          vk.scale = 0;
+          // 随机休眠 1.2~4.2 秒后在半空重新钻出下落
+          vk.delayTimer = 1.2 + Math.random() * 3.0;
+        }
+      } else if (vk.state === 'ERASED') {
+        // 受到鼠标动量激震向外飞散并迅速缩小消散
+        vk.curX += vk.vx;
+        vk.curY += vk.vy;
+        vk.vx *= 0.88;
+        vk.vy += 0.12; // 伴随微弱重力坠落感
+        vk.scale -= 0.07;
+        vk.alpha -= 0.08;
+
+        if (vk.scale <= 0.04 || vk.alpha <= 0.02) {
+          vk.state = 'DORMANT';
+          vk.alpha = 0;
+          vk.scale = 0;
+          vk.curX = vk.targetX;
+          vk.curY = vk.targetY;
+          vk.vx = 0;
+          vk.vy = 0;
+          // 阶梯式有机慢速补全：下方体素优先唤醒，叠加随机错峰时间 (0.8s ~ 3.2s)
+          vk.delayTimer = 0.8 + Math.random() * 2.4 + (rows - vk.gy) * 0.035;
+        }
+      }
+
+      // 计算绘制属性并渲染 3D 积木
+      if (vk.state !== 'DORMANT') {
+        let drawY = vk.curY;
+        // 堆砌稳定后伴随轻柔正弦浮力起伏
+        if (vk.state === 'SETTLED') {
+          drawY += Math.sin(t * 1.4 + vk.gx * 0.35) * 0.75;
+        }
+
+        // 钻出阶段的微光破空特效 (Subtle Portal Glow)
+        if (vk.state === 'EMERGING' && vk.scale < 0.75) {
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, vk.alpha * 0.32);
+          ctx.fillStyle = vk.colors.hi || vk.colors.base;
+          const pad = Math.round(cell * 0.35 * (1 - vk.scale));
+          ctx.fillRect(vk.curX - pad, drawY - pad, brickSize * vk.scale + pad * 2, brickSize * vk.scale + pad * 2);
+          ctx.restore();
+        }
+
+        const dropShadowDist = Math.max(0, vk.targetY - vk.curY);
+        draw3DVoxelBrick(
+          vk.curX,
+          drawY,
+          brickSize,
+          vk.colors.base,
+          vk.colors.hi,
+          vk.colors.sh,
+          vk.alpha,
+          dropShadowDist,
+          vk.squish,
+          vk.scale
+        );
+      }
+    }
+
+    // 2. 绘制微尘火花
+    for (let i = 0; i < dustParticles.length; i++) {
+      const dp = dustParticles[i];
+      ctx.globalAlpha = Math.max(0, dp.life);
+      ctx.fillStyle = dp.color;
+      ctx.fillRect(dp.x, dp.y, dp.size, dp.size);
+    }
+    ctx.globalAlpha = 1.0;
+
+    // 3. 鼠标交互微光笔刷环 (Ethereal Eraser Aura)
+    if (pointer.active) {
+      pointer.auraAlpha += (1.0 - pointer.auraAlpha) * 0.16;
+    } else {
+      pointer.auraAlpha += (0.0 - pointer.auraAlpha) * 0.12;
+    }
+
+    if (pointer.auraAlpha > 0.015 && pointer.x > -500) {
+      ctx.save();
+      // 外圈细虚线呼吸环
+      ctx.beginPath();
+      ctx.arc(pointer.x, pointer.y, eraseRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.20 * pointer.auraAlpha).toFixed(3) + ')';
+      ctx.lineWidth = 1.0;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+
+      // 内圈柔和径向微光
+      const grad = ctx.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, eraseRadius);
+      grad.addColorStop(0, 'rgba(255, 255, 255, ' + (0.09 * pointer.auraAlpha).toFixed(3) + ')');
+      grad.addColorStop(0.7, 'rgba(255, 255, 255, ' + (0.025 * pointer.auraAlpha).toFixed(3) + ')');
+      grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 步进更新上一帧指针坐标与阻尼速度
+    if (pointer.active) {
+      pointer.prevX = pointer.x;
+      pointer.prevY = pointer.y;
+      pointer.vx *= 0.5;
+      pointer.vy *= 0.5;
+    }
+  }
+
+  // 5. 视口感知暂停：离开可视区不占用任何 CPU
+  if ('IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        isVisible = entry.isIntersecting;
+        if (isVisible) {
+          lastTime = performance.now();
+          requestAnimationFrame(renderFrame);
+        }
+      });
+    }, { threshold: 0.05 });
+    observer.observe(container);
+  } else {
+    requestAnimationFrame(renderFrame);
+  }
+})();
+
+(function initWhyStatsCounter() {
+  const statsContainer = document.getElementById('arts-why-stats');
+  if (!statsContainer) return;
+
+  const statNums = statsContainer.querySelectorAll('.arts-stat-num');
+  if (!statNums.length) return;
+
+  function easeOutQuart(t) {
+    return 1 - Math.pow(1 - t, 4);
+  }
+
+  const items = Array.from(statNums).map(el => {
+    const isSpecial = el.getAttribute('data-special') === 'infinity';
+    const target = parseFloat(el.getAttribute('data-target')) || 0;
+    const decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
+    const prefix = el.getAttribute('data-prefix') || '';
+    const suffix = el.getAttribute('data-suffix') || '';
+    const finalHtml = el.getAttribute('data-final') || el.innerHTML;
+    return { el, isSpecial, target, decimals, prefix, suffix, finalHtml };
+  });
+
+  let animated = false;
+
+  function startAnimation() {
+    if (animated) return;
+    animated = true;
+
+    const duration = 1600;
+    const startTime = performance.now();
+    const infinityMilestones = ['100', '1.2k', '18k', '99k+', '500k+', '999k+', '∞'];
+
+    function step(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = easeOutQuart(progress);
+
+      items.forEach(item => {
+        if (item.isSpecial) {
+          if (progress < 0.88) {
+            const idx = Math.min(Math.floor(progress * infinityMilestones.length), infinityMilestones.length - 2);
+            item.el.textContent = infinityMilestones[idx];
+          } else {
+            if (item.el.innerHTML !== item.finalHtml) {
+              item.el.innerHTML = item.finalHtml;
+              item.el.classList.add('popped');
+            }
+          }
+        } else {
+          const val = item.target * eased;
+          const formatted = item.decimals > 0 ? val.toFixed(item.decimals) : Math.round(val).toString();
+          item.el.textContent = item.prefix + formatted + item.suffix;
+        }
+      });
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        items.forEach(item => {
+          if (item.isSpecial) {
+            item.el.innerHTML = item.finalHtml;
+            item.el.classList.add('popped');
+          } else {
+            const finalNum = item.decimals > 0 ? item.target.toFixed(item.decimals) : item.target.toString();
+            item.el.textContent = item.prefix + finalNum + item.suffix;
+          }
+        });
+      }
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  function prepareInitialState() {
+    items.forEach(item => {
+      if (item.isSpecial) {
+        item.el.textContent = '0';
+      } else {
+        const zero = item.decimals > 0 ? (0).toFixed(item.decimals) : '0';
+        item.el.textContent = item.prefix + zero + item.suffix;
+      }
+    });
+  }
+
+  if ('IntersectionObserver' in window) {
+    let prepared = false;
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          observer.unobserve(entry.target);
+          if (!prepared) {
+            prepareInitialState();
+            prepared = true;
+          }
+          setTimeout(startAnimation, 100);
+        }
+      });
+    }, {
+      threshold: 0.15,
+      rootMargin: '0px 0px -20px 0px'
+    });
+
+    prepareInitialState();
+    prepared = true;
+    observer.observe(statsContainer);
+  } else {
+    prepareInitialState();
+    setTimeout(startAnimation, 200);
+  }
+})();
+</script>

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import dayjs, { type Dayjs } from 'dayjs';
@@ -52,7 +52,7 @@ function isDayEnd(w: ReturnType<typeof pickerWall>): boolean {
   return w.h === 23 && w.m === 59 && w.s === 59;
 }
 
-/** 当前时刻的 timedisplay 墙钟（与日志展示时区一致） */
+/** 当前时刻的 timedisplay 墙钟（管理后台站点时区，用户端个人时区） */
 export function timedisplayNow(): Dayjs {
   return dayjs().tz(resolveTimedisplay());
 }
@@ -61,6 +61,12 @@ export function timedisplayNow(): Dayjs {
 export function defaultLogDayRange(): [Dayjs, Dayjs] {
   const now = timedisplayNow();
   return [now.startOf('day'), now.endOf('day')];
+}
+
+/** 财务明细默认「本月」范围（站点 timedisplay 自然月） */
+export function defaultMonthRange(): [Dayjs, Dayjs] {
+  const now = timedisplayNow();
+  return [now.startOf('month'), now.endOf('month')];
 }
 
 /**

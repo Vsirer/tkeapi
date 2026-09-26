@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -44,6 +44,7 @@ import request from '../../utils/request';
 import { formatApiDateTime } from '../../utils/timedisplay';
 import { toTimeRangeParams } from '../../utils/dateRangeParams';
 import { useThemeStore } from '../../store/theme';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import type { SellerInvoiceSubject } from '../../types';
 
 const { Title, Text } = Typography;
@@ -108,8 +109,7 @@ const InvoiceAudit: React.FC = () => {
   const [data, setData] = useState<InvoiceRequestRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [total, setTotal] = useState<number>(0);
-  const [page, setPage] = useState<number>(1);
-  const [pageSize, setPageSize] = useState<number>(20);
+  const { page, pageSize, setPage, onChange } = useListPager();
 
   // 统计指标
   const [stats, setStats] = useState<InvoiceStats>({
@@ -832,18 +832,12 @@ const InvoiceAudit: React.FC = () => {
           dataSource={data}
           columns={columns}
           scroll={{ x: 1100 }}
-          pagination={{
+          pagination={listPagination({
             current: page,
             pageSize,
             total,
-            showTotal: (tot) => `共 ${tot} 笔申请`,
-            showSizeChanger: true,
-            pageSizeOptions: ['10', '20', '50', '100'],
-            onChange: (p, ps) => {
-              setPage(p);
-              setPageSize(ps);
-            },
-          }}
+            onChange,
+          })}
         />
       </Card>
 

@@ -1,11 +1,11 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
 
 fn local_day_start(day: NaiveDate, tz: chrono_tz::Tz) -> DateTime<Utc> {
     let ndt = day.and_hms_opt(0, 0, 0).unwrap_or_else(|| {
@@ -62,7 +62,8 @@ fn naive_local_to_utc(ndt: NaiveDateTime, tz: chrono_tz::Tz) -> DateTime<Utc> {
 }
 
 /// 解析单侧边界为 UTC 绝对时刻。
-/// `is_end=true` 时返回**半开上界**（不含）：纯日期为次日 00:00；带时刻的闭区间末日则 +1ms。
+/// `is_end=true` 时返回**半开上界**（不含）：纯日期为次日 00:00；
+/// 无偏移时刻若已是 00:00:00 则视为次日半开上界，其余闭区间时刻 +1ms。
 pub fn parse_instant_bound(raw_date: &str, is_end: bool, tz: chrono_tz::Tz) -> DateTime<Utc> {
     let s = raw_date.trim();
     if let Some(dt) = parse_absolute_datetime(s) {
@@ -78,7 +79,12 @@ pub fn parse_instant_bound(raw_date: &str, is_end: bool, tz: chrono_tz::Tz) -> D
         if let Ok(ndt) = NaiveDateTime::parse_from_str(s, fmt) {
             let utc = naive_local_to_utc(ndt, tz);
             return if is_end {
-                utc + Duration::milliseconds(1)
+                // 次日 00:00:00 已是自然日半开上界（与纯日期 end 对齐），不再 +1ms
+                if ndt.num_seconds_from_midnight() == 0 && ndt.nanosecond() == 0 {
+                    utc
+                } else {
+                    utc + Duration::milliseconds(1)
+                }
             } else {
                 utc
             };
@@ -210,15 +216,28 @@ pub fn get_timezone_time_bounds(tz: chrono_tz::Tz) -> TimeBounds {
     }
 }
 
-/// 统一解析 timedisplay：请求头覆盖 > 用户 `users.timezone` > 站点默认。
-/// `timesystem` 始终为 UTC，本函数只返回表现层/计费自然日时区。
+/// 统一解析 timedisplay。
+/// 管理端：请求头 > 站点默认。用户端：请求头 / 个人时区合法 IANA，否则 timesystem UTC。
 pub async fn resolve_user_timezone(
     db: &crate::db::Database,
-    _is_admin: bool,
+    is_admin: bool,
     user_id: &str,
     header_tz: &str,
 ) -> Result<chrono_tz::Tz, sqlx::Error> {
-    let default_site_tz = crate::relay::relay_settings::get_cached_site_timezone(db).await;
+    let header = if header_tz.trim().is_empty() {
+        None
+    } else {
+        Some(header_tz)
+    };
+
+    if is_admin {
+        let default_site_tz = crate::relay::relay_settings::get_cached_site_timezone(db).await;
+        return Ok(crate::time_system::resolve_timedisplay(
+            header,
+            None,
+            Some(default_site_tz.as_ref()),
+        ));
+    }
 
     let user_tz: Option<String> = if user_id.is_empty() {
         None
@@ -229,24 +248,18 @@ pub async fn resolve_user_timezone(
             .await?
     };
 
-    let header = if header_tz.trim().is_empty() {
-        None
-    } else {
-        Some(header_tz)
-    };
-
-    Ok(crate::time_system::resolve_timedisplay(
+    Ok(crate::time_system::resolve_user_end_timedisplay(
         header,
         user_tz.as_deref(),
-        Some(default_site_tz.as_ref()),
     ))
 }
 
-/// 按 user_id 解析 timedisplay IANA 名（无请求头时供网关计费使用）
+/// 按 user_id 解析用户端 timedisplay IANA 名（无请求头时供网关计费使用）。
+/// 个人时区非法或缺失时回退 timesystem UTC。
 pub async fn resolve_user_timedisplay_name(
     db: &crate::db::Database,
     user_id: &str,
-    site_default: &str,
+    _site_default: &str,
 ) -> String {
     let user_tz: Option<String> = sqlx::query_scalar::<_, String>(
         &db.format_query("SELECT timezone FROM users WHERE id = ?"),
@@ -256,7 +269,7 @@ pub async fn resolve_user_timedisplay_name(
     .await
     .ok()
     .flatten();
-    crate::time_system::resolve_timedisplay(None, user_tz.as_deref(), Some(site_default))
+    crate::time_system::resolve_user_end_timedisplay(None, user_tz.as_deref())
         .name()
         .to_string()
 }
@@ -501,4 +514,47 @@ pub fn model_detail_days(end: Option<NaiveDate>, today: NaiveDate) -> Vec<NaiveD
         .rev()
         .map(|i| range_end - Duration::days(i))
         .collect()
+}
+
+/// 严格双轨汇总指定用户的历史与实时消费金额 (总消耗, 赠送金消耗, 现金实付消耗)
+/// 历史天（<今日）优先走 usage_daily_stats 聚合，今日实时（>=今日）走 logs 表。
+/// 确保在 logs 表超期行归档删除后，历史消费与财务开票数据依然 100% 精准无损、零漏洞。
+pub async fn query_user_consumption_summary(
+    db: &crate::db::Database,
+    user_id: &str,
+    tz: chrono_tz::Tz,
+) -> (f64, f64, f64) {
+    let bounds = get_timezone_time_bounds(tz);
+    let history_end = bounds.yesterday;
+    let today_start_ts = bounds.today_start_ts;
+
+    // 1. 历史自然日汇总 (usage_daily_stats)
+    let hist_sql = db.format_query(
+        "SELECT COALESCE(SUM(total_cost), 0.0), COALESCE(SUM(total_pre_deduct_gift), 0.0) \
+         FROM usage_daily_stats WHERE user_id = ? AND stat_date <= ?"
+    );
+    let hist: (f64, f64) = sqlx::query_as(&hist_sql)
+        .bind(user_id)
+        .bind(history_end)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap_or((0.0, 0.0));
+
+    // 2. 今日实时调用汇总 (logs)
+    let today_sql = db.format_query(
+        "SELECT COALESCE(SUM(cost), 0.0), COALESCE(SUM(LEAST(cost, pre_deduct_gift)), 0.0) \
+         FROM logs WHERE user_id = ? AND created_at >= ?::timestamptz"
+    );
+    let today: (f64, f64) = sqlx::query_as(&today_sql)
+        .bind(user_id)
+        .bind(&today_start_ts)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap_or((0.0, 0.0));
+
+    let total_cost = hist.0 + today.0;
+    let total_gift = hist.1 + today.1;
+    let total_real = (total_cost - total_gift).max(0.0);
+
+    (total_cost, total_gift, total_real)
 }

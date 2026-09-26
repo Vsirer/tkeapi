@@ -1,6 +1,6 @@
 # Google Gemini Native API Guide
 
-If you are using the official Google SDK, or wish to use Gemini Multi-modal, System Instructions, or JSON Mode, call the Google-compatible paths below.
+If you are using the official Google SDK, or wish to use Gemini Multi-modal, System Instructions, or JSON Mode, call the Google-compatible paths below. [Gemini API](https://ai.google.dev/gemini-api/docs)
 
 ### 1. Text Generation (Non-stream)
 * **Path**: `/v1beta/models/{model}:generateContent`

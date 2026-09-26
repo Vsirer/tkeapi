@@ -1,6 +1,6 @@
 # Volcengine Seedance Video Generation
 
-Prefer **Seedance 2.5** (`doubao-seedance-2-5`). OpenAI-compatible: `POST /v1/video/generations`. Official `content` → `/api/v3/contents/generations/tasks`. [Video API](https://www.volcengine.com/docs/82379/1520757)
+OpenAI-compatible: `POST /v1/video/generations`. Native: `/api/v3/contents/generations/tasks`. [Video API](https://www.volcengine.com/docs/82379/1520757)
 
 Duration `4`–`30` or `-1`; resolution `480p`/`720p`/`1080p`; up to 50 refs (30 images + 10 videos + 10 audios).
 

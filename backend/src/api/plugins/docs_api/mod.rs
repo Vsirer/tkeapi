@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! DocsApi plugin — API docs manager + seeded markdown under `default_docs/`.
@@ -70,13 +70,6 @@ static KLING_VID_ZH: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{}\n\n{}",
         include_str!("default_docs/zh/kling-video.md"),
-        include_str!("default_docs/zh/common-errors.md")
-    )
-});
-static MINIMAX_IMG_ZH: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "{}\n\n{}",
-        include_str!("default_docs/zh/minimax-image.md"),
         include_str!("default_docs/zh/common-errors.md")
     )
 });
@@ -749,14 +742,16 @@ pub async fn seed_default_docs_direct(pool: &Pool<Postgres>) -> Result<(), sqlx:
 
         // 插入属于该目录的文章
         for (art_title, art_slug, art_order, art_content) in articles {
+            let is_active = if art_slug == "volcengine-mediakit" { 0 } else { 1 };
             let art_id: i32 = sqlx::query_scalar(
                 "INSERT INTO plugin_docs (parent_id, title, content, is_dir, sort_order, is_active, slug, created_at, updated_at) \
-                 VALUES ($1, $2, $3, 0, $4, 1, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
+                 VALUES ($1, $2, $3, 0, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id"
             )
             .bind(cat_id)
             .bind(art_title)
             .bind(art_content)
             .bind(art_order)
+            .bind(is_active)
             .bind(art_slug)
             .fetch_one(pool)
             .await?;
@@ -803,7 +798,7 @@ pub fn get_default_docs_data() -> Vec<(
                     "开放端点一览表",
                     "endpoints",
                     20,
-                    "# 开放端点一览表\n\n使用本平台 API 密钥即可调用以下端点：\n\n### 1. OpenAI 协议路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| OpenAI 聊天对话 | `/v1/chat/completions` | `POST` | OpenAI 兼容 |\n| Responses | `/v1/responses` | `POST` | OpenAI 兼容 |\n| 向量化 (Embeddings) | `/v1/embeddings` | `POST` | OpenAI 兼容 |\n| 图像生成 (Text2Image) | `/v1/images/generations` | `POST` | OpenAI 兼容 |\n| 图像编辑 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 兼容 |\n| 异步视频任务提交 | `/v1/video/generations` | `POST` | OpenAI 兼容 |\n| 异步视频任务状态查询 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 兼容 |\n| 异步视频任务取消 | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI 兼容 |\n| 文本语音合成 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 兼容 |\n| 令牌可用额度查询 | `/v1/balance` | `GET` | 账户信息 |\n| 账户总余额查询 | `/v1/user/balance` | `GET` | 账户信息 |\n| 可用模型列表 | `/v1/models` | `GET` | 账户信息 |\n\n### 2. 火山方舟 (Volcengine) 路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| 聊天对话 (OpenAI 兼容) | `/api/v3/chat/completions` | `POST` | 火山方舟 |\n| 原生响应 (Responses) | `/api/v3/responses` | `POST` | 火山方舟 |\n| 多模态向量化 (Multimodal Embeddings) | `/api/v3/embeddings/multimodal` | `POST` | 火山方舟 |\n| 图像生成 (Generations) | `/api/v3/images/generations` | `POST` | 火山方舟 |\n| 异步视频任务提交 | `/api/v3/contents/generations/tasks` | `POST` | 火山方舟 |\n| 异步视频任务查询 | `/api/v3/contents/generations/tasks/{task_id}` | `GET` | 火山方舟 |\n| 异步视频任务取消 | `/api/v3/contents/generations/tasks/{task_id}` | `DELETE` | 火山方舟 |\n| 语音合成 (SSE 文本流) | `/api/v3/tts/unidirectional/sse` | `POST` | 火山方舟 |\n| 语音合成 (Chunked 二进制) | `/api/v3/tts/unidirectional` | `POST` | 火山方舟 |\n| 视频画质增强 (标准/专业) | `/api/v1/tools/enhance-video` | `POST` | 火山 MediaKit |\n| 视频画质增强 (极速版) | `/api/v1/tools/enhance-video-fast` | `POST` | 火山 MediaKit |\n| 视频画质增强 (大模型版) | `/api/v1/tools/enhance-video-generative` | `POST` | 火山 MediaKit |\n| 视频字幕擦除 | `/api/v1/tools/erase-video-subtitle` | `POST` | 火山 MediaKit |\n| 媒体任务状态查询 | `/api/v1/tasks/{task_id}` | `GET` | 火山 MediaKit |\n\n### 3. 其他厂商原生路由\n| 厂商名称 | 端点名称 | 路径 (Path) | 请求方式 |\n| :--- | :--- | :--- | :--- |\n| 阿里百炼 | 万相视频生成 (提交) | `/api/v1/services/aigc/video-generation/video-synthesis` | `POST` |\n| 阿里百炼 | 万相生图任务 (提交) | `/api/v1/services/aigc/multimodal-generation/generation` | `POST` |\n| 阿里百炼 | 异步任务查询 (通用) | `/api/v1/tasks/{task_id}` | `GET` |\n| 阿里百炼 | 文本向量化 | `/compatible-mode/v1/embeddings` | `POST` |\n| 阿里百炼 | 文档重排序 (Rerank) | `/compatible-api/v1/reranks` | `POST` |\n| 可灵 AI | 文生视频 (Kling) | `/v1/videos/text2video` | `POST` |\n| 可灵 AI | 图生视频 (Kling) | `/v1/videos/image2video` | `POST` |\n| 可灵 AI | 任务状态查询 (视频/图片) | `/v1/videos/{endpoint}/{task_id}` | `GET` |\n| Google | Gemini 文本生成 | `/v1beta/models/{model}:generateContent` | `POST` |\n| Google | Gemini 流式文本生成 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |\n| Anthropic | Claude 原生消息 | `/v1/messages` | `POST` |\n| MiniMax | Anthropic 兼容 Messages | `/anthropic/v1/messages` | `POST` |"
+                    "# 开放端点一览表\n\n使用本平台 API 密钥即可调用以下端点：\n\n### 1. OpenAI 协议路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| OpenAI 聊天对话 | `/v1/chat/completions` | `POST` | OpenAI 兼容 |\n| Responses | `/v1/responses` | `POST` | OpenAI 兼容 |\n| 向量化 (Embeddings) | `/v1/embeddings` | `POST` | OpenAI 兼容 |\n| 图像生成 (Text2Image) | `/v1/images/generations` | `POST` | OpenAI 兼容 |\n| 图像编辑 (Image Edit) | `/v1/images/edits` | `POST` | OpenAI 兼容 |\n| 异步视频任务提交 | `/v1/video/generations` | `POST` | OpenAI 兼容 |\n| 异步视频任务状态查询 | `/v1/video/generations/{task_id}` | `GET` | OpenAI 兼容 |\n| 异步视频任务取消 | `/v1/video/generations/{task_id}` | `DELETE` | OpenAI 兼容 |\n| 文本语音合成 (Text-to-Speech) | `/v1/audio/speech` | `POST` | OpenAI 兼容 |\n| 令牌可用额度查询 | `/v1/balance` | `GET` | 账户信息 |\n| 账户总余额查询 | `/v1/user/balance` | `GET` | 账户信息 |\n| 可用模型列表 | `/v1/models` | `GET` | 账户信息 |\n\n### 2. 火山引擎(方舟) (Volcengine) 路由\n| 端点名称 | 路径 (Path) | 请求方式 | 协议类型 |\n| :--- | :--- | :--- | :--- |\n| 聊天对话 (OpenAI 兼容) | `/api/v3/chat/completions` | `POST` | 火山引擎(方舟) |\n| 原生响应 (Responses) | `/api/v3/responses` | `POST` | 火山引擎(方舟) |\n| 多模态向量化 (Multimodal Embeddings) | `/api/v3/embeddings/multimodal` | `POST` | 火山引擎(方舟) |\n| 图像生成 (Generations) | `/api/v3/images/generations` | `POST` | 火山引擎(方舟) |\n| 异步视频任务提交 | `/api/v3/contents/generations/tasks` | `POST` | 火山引擎(方舟) |\n| 异步视频任务查询 | `/api/v3/contents/generations/tasks/{task_id}` | `GET` | 火山引擎(方舟) |\n| 异步视频任务取消 | `/api/v3/contents/generations/tasks/{task_id}` | `DELETE` | 火山引擎(方舟) |\n| 语音合成 (SSE 文本流) | `/api/v3/tts/unidirectional/sse` | `POST` | 火山引擎(方舟) |\n| 语音合成 (Chunked 二进制) | `/api/v3/tts/unidirectional` | `POST` | 火山引擎(方舟) |\n| 视频画质增强 (标准/专业) | `/api/v1/tools/enhance-video` | `POST` | 火山 MediaKit |\n| 视频画质增强 (极速版) | `/api/v1/tools/enhance-video-fast` | `POST` | 火山 MediaKit |\n| 视频画质增强 (大模型版) | `/api/v1/tools/enhance-video-generative` | `POST` | 火山 MediaKit |\n| 视频字幕擦除 | `/api/v1/tools/erase-video-subtitle` | `POST` | 火山 MediaKit |\n| 媒体任务状态查询 | `/api/v1/tasks/{task_id}` | `GET` | 火山 MediaKit |\n\n### 3. 其他厂商原生路由\n| 厂商名称 | 端点名称 | 路径 (Path) | 请求方式 |\n| :--- | :--- | :--- | :--- |\n| 阿里百炼 | 万相视频生成 (提交) | `/api/v1/services/aigc/video-generation/video-synthesis` | `POST` |\n| 阿里百炼 | 万相生图任务 (提交) | `/api/v1/services/aigc/multimodal-generation/generation` | `POST` |\n| 阿里百炼 | 异步任务查询 (通用) | `/api/v1/tasks/{task_id}` | `GET` |\n| 阿里百炼 | 文本向量化 | `/compatible-mode/v1/embeddings` | `POST` |\n| 阿里百炼 | 文档重排序 (Rerank) | `/compatible-api/v1/reranks` | `POST` |\n| 可灵 AI | 文生视频 (Kling) | `/v1/videos/text2video` | `POST` |\n| 可灵 AI | 图生视频 (Kling) | `/v1/videos/image2video` | `POST` |\n| 可灵 AI | 任务状态查询 (视频/图片) | `/v1/videos/{endpoint}/{task_id}` | `GET` |\n| Google | Gemini 文本生成 | `/v1beta/models/{model}:generateContent` | `POST` |\n| Google | Gemini 流式文本生成 | `/v1beta/models/{model}:streamGenerateContent` | `POST` |\n| Anthropic | Claude 原生消息 | `/v1/messages` | `POST` |\n| MiniMax | Anthropic 兼容 Messages | `/anthropic/v1/messages` | `POST` |"
                 )
             ]
         ),
@@ -822,7 +817,6 @@ pub fn get_default_docs_data() -> Vec<(
                 ("Kling-v3 视频生成", "kling-video", 70, &*KLING_VID_ZH),
                 ("千问 图像生成", "wan-image", 75, &*WAN_IMG_ZH),
                 ("万相 视频生成", "wan-video", 76, &*WAN_VID_ZH),
-                ("MiniMax 图像生成", "minimax-image", 80, &*MINIMAX_IMG_ZH),
                 ("MiniMax 视频生成", "minimax-video", 90, &*MINIMAX_VID_ZH),
             ]
         ),
@@ -854,7 +848,7 @@ OpenAI 兼容生图接口。按下方参数与示例调用即可。
 | :--- | :--- | :--- | :--- |
 | `model` | `string` | 是 | 图像生成模型名，如 `dall-e-3` (OpenAI), `qwen-image-3.0-pro` (阿里千问), `seedream-5.0-lite` (即梦) |
 | `prompt` | `string` | 是 | 描述画面的文本提示词 |
-| `n` | `integer` | 否 | 生成张数（默认 `1`） |
+| `n` | `integer` | 否 | 生成张数（默认 `1`。注：火山 Seedream 5.0 Pro 仅支持单图 `n=1`，组图需使用 `seedream-5.0-lite` 或 4.5） |
 | `size` | `string` | 否 | 分辨率（例如 `1024x1024`），可与 `resolution` 二选一 |
 | `resolution` | `string` | 否 | 分辨率选项（如 `1k` / `2k`），与 `size` 二选一 |
 | `response_format` | `string` | 否 | `url`（默认）或 `b64_json` |
@@ -994,14 +988,14 @@ OpenAI 兼容异步视频接口 `/v1/video/generations`。多数视频模型为�
 | `negative_prompt` | `string` | 否 | 负向提示词，用于规避不需要的画面元素 |
 | `images` / `image_urls` | `array` | 否 | 参考底图对象/链接数组（`image_urls` 与 `images` 效果完全相同）。支持 HTTP URL 或 Base64。单张通常作为首帧，双张支持指定首尾帧，三张及以上用于多图参考（可灵/火山等） |
 | `videos` | `array` | 否 | 参考视频链接数组，用于视频生成视频或视频控制（如可灵 Omni 视频参考/Bytefor 视频参考） |
-| `audios` | `array` | 否 | 参考音频链接数组，用于提供配乐或参考音频（如火山方舟/Bytefor等） |
+| `audios` | `array` | 否 | 参考音频链接数组，用于提供配乐或参考音频（如火山引擎(方舟)/Bytefor等） |
 | `files` | `array` | 否 | 参考文件 URL（万相等；默认 role `file`） |
 | `links` | `array` | 否 | 参考网页 URL（万相等；默认 role `link`） |
 | `resolution` | `string` | 否 | 目标分辨率（如 `1080p`, `720p`, `480p`），系统会自动将尺寸传译并适配到对应厂商支持的规格（如可灵 `1080p` 自动映射为 `pro` 模式，`720p` 映射为 `std` 模式） |
 | `ratio` | `string` | 否 | 宽高比（如 `16:9`, `9:16`, `adaptive`）。Seedance 2.5 首帧/编辑/延长须 `adaptive` |
 | `duration` | `integer` | 否 | 时长（秒）。Seedance 2.5 为 `4`–`30` 或 `-1`；2.0 为 `4`–`15` 或 `-1` |
 | `generate_audio` | `boolean` | 否 | 是否同步生成匹配的视频背景音效/配音（默认 `false`） |
-| `watermark` | `boolean` | 否 | 是否在生成的视频中添加水印（支持火山方舟、阿里百炼等部分通道） |
+| `watermark` | `boolean` | 否 | 是否在生成的视频中添加水印（支持火山引擎(方舟)、阿里百炼等部分通道） |
 | `web_search` | `boolean` | 否 | 是否启用联网搜索（默认 `false`；火山/Gemini 等生效，万相忽略） |
 | `seed` | `integer` | 否 | 随机数种子（用于控制视频生成的确定性） |
 
@@ -1051,7 +1045,7 @@ curl -X POST https://{{domain}}/v1/video/generations \
 ### 3. 取消视频任务
 * **路径**: `/v1/video/generations/{task_id}` 或 `/v1/tasks/{task_id}`
 * **请求方式**: `DELETE`
-* **说明**: 取消尚未完成的任务。本站 ComfyUI：须节点确认已停掉且尚未出片才会退还冻结预扣；若已经生成成功，取消失败并照常扣费。火山方舟请使用原生 `DELETE /api/v3/contents/generations/tasks/{task_id}`
+* **说明**: 取消尚未完成的任务。本站 ComfyUI：须节点确认已停掉且尚未出片才会退还冻结预扣；若已经生成成功，取消失败并照常扣费。火山引擎(方舟)请使用原生 `DELETE /api/v3/contents/generations/tasks/{task_id}`
 
 ```bash
 curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
@@ -1104,7 +1098,7 @@ curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
                     "语音合成(Text-to-Speech)",
                     "text-to-speech",
                     40,
-                    "# 语音合成接口 (Text-to-Speech)\n\nOpenAI 兼容语音合成：`POST /v1/audio/speech`。\n\n### 1. 语音合成接口\n* **路径**: `/v1/audio/speech`\n* **请求方式**: `POST`\n\n#### 请求参数说明\n| 参数名 | 类型 | 必填 | 说明 |\n| :--- | :--- | :--- | :--- |\n| `model` | `string` | 是 | 语音合成模型名，如 `tts-1` (OpenAI), `seed-tts-2.0` (火山语音大模型) |\n| `input` | `string` | 是 | 待合成的文本内容，长度上限通常由具体模型规格决定 |\n| `voice` | `string` | 是 | 音色标识，如火山方舟需传入 speaker ID（例如 `zh_female_vv_uranus_bigtts`） |\n| `response_format` | `string` | 否 | 音频流返回格式，可选：`mp3` (默认), `opus`, `aac`, `flac`, `wav`, `pcm` |\n| `speed` | `number` | 否 | 语速调节倍数（`0.25` ~ `4.0`，默认 `1.0`） |\n\n#### 调用示例\n```bash\ncurl -X POST https://{{domain}}/v1/audio/speech \\\n  -H \"Authorization: Bearer sk-your_token\" \\\n  -H \"Content-Type: application/json\" \\\n  -o output.mp3 \\\n  -d '{\n    \"model\": \"seed-tts-2.0\",\n    \"input\": \"您好，欢迎使用统一智能语音合成系统，请在下方输入您希望合成的文本内容。\",\n    \"voice\": \"zh_female_vv_uranus_bigtts\",\n    \"response_format\": \"mp3\"\n  }'\n```\n\n> [!NOTE]\n> 网关在此接口中会返回纯二进制的音频数据流（HTTP 二进制响应，Content-Type 为 `audio/mpeg` 或对应的音频格式类型）。返回音频二进制流，可直接保存为文件播放。"
+                    "# 语音合成接口 (Text-to-Speech)\n\nOpenAI 兼容语音合成：`POST /v1/audio/speech`。\n\n### 1. 语音合成接口\n* **路径**: `/v1/audio/speech`\n* **请求方式**: `POST`\n\n#### 请求参数说明\n| 参数名 | 类型 | 必填 | 说明 |\n| :--- | :--- | :--- | :--- |\n| `model` | `string` | 是 | 语音合成模型名，如 `tts-1` (OpenAI), `seed-tts-2.0` (火山语音大模型) |\n| `input` | `string` | 是 | 待合成的文本内容，长度上限通常由具体模型规格决定 |\n| `voice` | `string` | 是 | 音色标识，如火山引擎(方舟)需传入 speaker ID（例如 `zh_female_vv_uranus_bigtts`） |\n| `response_format` | `string` | 否 | 音频流返回格式，可选：`mp3` (默认), `opus`, `aac`, `flac`, `wav`, `pcm` |\n| `speed` | `number` | 否 | 语速调节倍数（`0.25` ~ `4.0`，默认 `1.0`） |\n\n#### 调用示例\n```bash\ncurl -X POST https://{{domain}}/v1/audio/speech \\\n  -H \"Authorization: Bearer sk-your_token\" \\\n  -H \"Content-Type: application/json\" \\\n  -o output.mp3 \\\n  -d '{\n    \"model\": \"seed-tts-2.0\",\n    \"input\": \"您好，欢迎使用统一智能语音合成系统，请在下方输入您希望合成的文本内容。\",\n    \"voice\": \"zh_female_vv_uranus_bigtts\",\n    \"response_format\": \"mp3\"\n  }'\n```\n\n> [!NOTE]\n> 网关在此接口中会返回纯二进制的音频数据流（HTTP 二进制响应，Content-Type 为 `audio/mpeg` 或对应的音频格式类型）。返回音频二进制流，可直接保存为文件播放。"
                 ),
                 (
                     "余额与可用模型查询(Info)",
@@ -1115,12 +1109,12 @@ curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
             ]
         ),
         (
-            "4.火山方舟原生协议",
+            "4.火山引擎(方舟)原生协议",
             "volcengine-ark",
             40,
             vec![
                 (
-                    "火山方舟原生API接入",
+                    "火山引擎(方舟)原生API接入",
                     "volcengine-api",
                     10,
                     include_str!("default_docs/zh/volcengine-api.md"),
@@ -1142,19 +1136,19 @@ curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
                     "阿里百炼(DashScope)原生接入",
                     "ali-dashscope",
                     10,
-                    "# 阿里百炼 (DashScope) 原生接口说明\n\n阿里云百炼兼容路径。OpenAI 兼容示例见 **`wan-image`（千问 图像生成）**、**`wan-video`（万相 视频生成）**；此处仅列原生路径与其它能力。\n\n### 1. 图像 / 视频原生路径\n| 能力 | 路径 |\n| :--- | :--- |\n| 图像提交 | `POST /api/v1/services/aigc/multimodal-generation/generation` |\n| 视频提交 | `POST /api/v1/services/aigc/video-generation/video-synthesis` |\n| 任务查询 | `GET /api/v1/tasks/{task_id}` |\n\n异步任务需请求头 `X-DashScope-Async: enable`。请求体含 `input`/`parameters` 时网关原样透传。\n\n### 2. 文本向量化 (Embeddings) 与 Rerank\n* **向量化**: `/compatible-mode/v1/embeddings` (`POST`)，如 `text-embedding-v4`\n* **重排**:\n  * 兼容路径: `/compatible-api/v1/reranks`（如 qwen3-rerank）\n  * 原生路径: `/api/v1/services/rerank/text-rerank/text-rerank`（如 gte-rerank-v2）"
+                    "# 阿里百炼 (DashScope) 原生接口说明\n\n阿里云百炼兼容路径。OpenAI 兼容示例见 **`wan-image`（千问 图像生成）**、**`wan-video`（万相 视频生成）**；此处仅列原生路径与其它能力。[图片生成 API](https://help.aliyun.com/zh/model-studio/developer-reference/text-to-image-api-reference) | [视频生成 API](https://help.aliyun.com/zh/model-studio/developer-reference/text-to-video-api-reference)\n\n### 1. 图像 / 视频原生路径\n| 能力 | 路径 |\n| :--- | :--- |\n| 图像提交 | `POST /api/v1/services/aigc/multimodal-generation/generation` |\n| 视频提交 | `POST /api/v1/services/aigc/video-generation/video-synthesis` |\n| 任务查询 | `GET /api/v1/tasks/{task_id}` |\n\n异步任务需请求头 `X-DashScope-Async: enable`。请求体含 `input`/`parameters` 时网关原样透传。\n\n### 2. 文本向量化 (Embeddings) 与 Rerank\n* **向量化**: `/compatible-mode/v1/embeddings` (`POST`)，如 `text-embedding-v4`\n* **重排**:\n  * 兼容路径: `/compatible-api/v1/reranks`（如 qwen3-rerank）\n  * 原生路径: `/api/v1/services/rerank/text-rerank/text-rerank`（如 gte-rerank-v2）"
                 ),
                 (
                     "可灵AI(Kling)原生接入",
                     "kling-ai",
                     20,
-                    "# 可灵 AI (Kling) 原生协议说明\n\n可灵兼容路径。使用本平台 API 密钥调用即可。 \n\n### 1. 视频模型接口\n* **文生视频**: `/v1/videos/text2video` (`POST`)\n* **图生视频**: `/v1/videos/image2video` (`POST`)\n* **多图生视频**: `/v1/videos/multi-image2video` (`POST`)\n* **Omni 视频参考生视频**: `/v1/videos/omni-video` (`POST`)\n* **任务状态查询**: `/v1/videos/{endpoint}/{task_id}` (`GET`)\n\n*注：在查询接口中，`{endpoint}` 对应您提交任务时所用的服务类型（如 `text2video`、`image2video` 等）。*\n\n### 2. 图像模型接口\n* **标准文/图生图**: `/v1/images/generations` (`POST`)\n* **多图生图**: `/v1/images/multi-image2image` (`POST`)\n* **Omni 生图**: `/v1/images/omni-image` (`POST`)\n* **任务状态查询**: `/v1/images/{endpoint}/{task_id}` (`GET`)\n\n### 3. 可灵官方文档参考\n详细的请求载荷结构（例如 `camera_control` 镜头控制、`aspect_ratio` 比例控制、首尾帧图片等）请对照官方标准。您可以从这里跳转官方文档说明：\n* [可灵 OmniVideo 官方规范](https://klingai.com/document-api/apiReference/model/OmniVideo)\n* [可灵 OmniImage 官方规范](https://klingai.com/document-api/apiReference/model/OmniImage)"
+                    "# 可灵 AI (Kling) 原生协议说明\n\n可灵兼容路径。使用本平台 API 密钥调用即可。[图片生成 API](https://klingai.com/document-api/apiReference/model/OmniImage) | [视频生成 API](https://klingai.com/document-api/apiReference/model/OmniVideo)\n\n### 1. 视频模型接口\n* **文生视频**: `/v1/videos/text2video` (`POST`)\n* **图生视频**: `/v1/videos/image2video` (`POST`)\n* **Omni 视频参考生视频**: `/v1/videos/omni-video` (`POST`)\n* **任务状态查询**: `/v1/videos/{endpoint}/{task_id}` (`GET`)\n\n*注：在查询接口中，`{endpoint}` 对应您提交任务时所用的服务类型（如 `text2video`、`image2video` 等）。*\n\n### 2. 图像模型接口\n* **标准文/图生图**: `/v1/images/generations` (`POST`)\n* **多图生图**: `/v1/images/multi-image2image` (`POST`)\n* **Omni 生图**: `/v1/images/omni-image` (`POST`)\n* **任务状态查询**: `/v1/images/{endpoint}/{task_id}` (`GET`)\n\n### 3. 可灵官方文档参考\n详细的请求载荷结构（例如 `camera_control` 镜头控制、`aspect_ratio` 比例控制、首尾帧图片等）请对照官方标准。您可以从这里跳转官方文档说明：\n* [可灵 OmniVideo 官方规范](https://klingai.com/document-api/apiReference/model/OmniVideo)\n* [可灵 OmniImage 官方规范](https://klingai.com/document-api/apiReference/model/OmniImage)"
                 ),
                 (
                     "MiniMax 视频原生接入",
                     "minimax-native",
                     30,
-                    "# MiniMax 视频原生接口说明\n\n若客户端已使用 MiniMax 官方视频请求体，可直接把 Base URL 改为本平台，并继续使用 MiniMax 的原生路径与字段。\n\n### 1. 提交视频任务\n* **路径**: `/v2/video_generation`\n* **请求方式**: `POST`\n\n支持官方 `content` 多模态数组，以及 `resolution`、`ratio`、`duration`、`callback_url`、`aigc_watermark` 等原生字段。\n\n### 2. 查询任务状态\n* **路径**: `/v2/query/video_generation/{task_id}`\n* **请求方式**: `GET`\n\n### 3. 兼容说明\n* 若您使用 OpenAI SDK，继续走 `/v1/video/generations`\n* 若您已接入 MiniMax 官方 SDK / 请求体，直接走 `/v2/video_generation`\n* 两种入口复用同一套模型权限、渠道路由、计费与日志"
+                    "# MiniMax 视频原生接口说明\n\n若客户端已使用 MiniMax 官方视频请求体，可直接把 Base URL 改为本平台，并继续使用 MiniMax 的原生路径与字段。[视频生成 API](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)\n\n### 1. 提交视频任务\n* **路径**: `/v2/video_generation`\n* **请求方式**: `POST`\n\n支持官方 `content` 多模态数组，以及 `resolution`、`ratio`、`duration`、`callback_url`、`aigc_watermark` 等原生字段。\n\n### 2. 查询任务状态\n* **路径**: `/v2/query/video_generation/{task_id}`\n* **请求方式**: `GET`\n\n### 3. 兼容说明\n* 若您使用 OpenAI SDK，继续走 `/v1/video/generations`\n* 若您已接入 MiniMax 官方 SDK / 请求体，直接走 `/v2/video_generation`\n* 两种入口复用同一套模型权限、渠道路由、计费与日志"
                 )
             ]
         ),
@@ -1167,13 +1161,13 @@ curl -X DELETE https://{{domain}}/v1/video/generations/video_task_abc123xyz789 \
                     "GoogleGemini原生接入",
                     "google-gemini",
                     10,
-                    "# Google Gemini 原生接口说明\n\n若使用 Google SDK 或 Gemini 请求格式，按下方路径并以本平台 API 密钥调用即可。\n\n### 1. 文本生成 (Non-stream)\n* **路径**: `/v1beta/models/{model}:generateContent`\n* **请求方式**: `POST`\n\n### 2. 流式生成 (Streaming)\n* **路径**: `/v1beta/models/{model}:streamGenerateContent`\n* **请求方式**: `POST`\n\n#### 核心请求载荷示例\n```json\n{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"请扮演我的私人旅行助手，规划一份 3 天的京都赏樱路线。\"\n        }\n      ]\n    }\n  ],\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"你是一个专业的旅行规划师，语气亲切幽默。\"\n      }\n    ]\n  },\n  \"generationConfig\": {\n    \"temperature\": 0.4,\n    \"maxOutputTokens\": 2000,\n    \"responseMimeType\": \"text/plain\"\n  }\n}\n```\n\n#### 鉴权方式（三选一）\n* 标准头: `Authorization: Bearer sk-your_token`\n* Google 头: `X-Goog-Api-Key: sk-your_token`\n* URL 尾部参数: `?key=sk-your_token`"
+                    "# Google Gemini 原生接口说明\n\n若使用 Google SDK 或 Gemini 请求格式，按下方路径并以本平台 API 密钥调用即可。[Gemini API 官方文档](https://ai.google.dev/gemini-api/docs)\n\n### 1. 文本生成 (Non-stream)\n* **路径**: `/v1beta/models/{model}:generateContent`\n* **请求方式**: `POST`\n\n### 2. 流式生成 (Streaming)\n* **路径**: `/v1beta/models/{model}:streamGenerateContent`\n* **请求方式**: `POST`\n\n#### 核心请求载荷示例\n```json\n{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"请扮演我的私人旅行助手，规划一份 3 天的京都赏樱路线。\"\n        }\n      ]\n    }\n  ],\n  \"systemInstruction\": {\n    \"parts\": [\n      {\n        \"text\": \"你是一个专业的旅行规划师，语气亲切幽默。\"\n      }\n    ]\n  },\n  \"generationConfig\": {\n    \"temperature\": 0.4,\n    \"maxOutputTokens\": 2000,\n    \"responseMimeType\": \"text/plain\"\n  }\n}\n```\n\n#### 鉴权方式（三选一）\n* 标准头: `Authorization: Bearer sk-your_token`\n* Google 头: `X-Goog-Api-Key: sk-your_token`\n* URL 尾部参数: `?key=sk-your_token`"
                 ),
                 (
                     "AnthropicClaude原生接入",
                     "anthropic-claude",
                     20,
-                    "# Anthropic Claude 原生接口说明\n\nAnthropic Messages 兼容路径。可直接发送 Claude 请求体（如 `claude-3-5-sonnet-20241022`）。\n\n### 1. 消息生成对话 (Messages API)\n* **请求路径**: `/v1/messages`\n* **请求方式**: `POST`\n\n#### 核心请求参数说明\n* **model** (string, 必填)\n  指定 Claude 模型名，如 `claude-3-5-sonnet-20241022`。\n* **messages** (array, 必填)\n  历史对话数据数组，结构如 `[{\"role\": \"user\", \"content\": \"你好\"}]`。\n* **max_tokens** (integer, 必填)\n  生成的最大 Token 限制。注意：Anthropic 官方协议要求此参数必须填写。\n* **system** (string, 可选)\n  系统提示词（System Prompt），用于设定模型的角色和行为。\n* **stream** (boolean, 可选)\n  是否以 SSE（Server-Sent Events）流式格式返回。可选值为 `true` 或 `false`。\n* **temperature** (number, 可选)\n  采样温度，介于 `0.0` 到 `1.0` 之间。\n\n#### 调用示例 (Curl)\n```bash\ncurl -X POST https://{{domain}}/v1/messages \\\n  -H \"x-api-key: sk-your_token\" \\\n  -H \"anthropic-version: 2023-06-01\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"claude-3-5-sonnet-20241022\",\n    \"max_tokens\": 1024,\n    \"messages\": [\n      {\"role\": \"user\", \"content\": \"你好，请用一句话描述你自己的核心特征。\"}\n    ]\n  }'\n```\n\n### 2. 接口鉴权方式\n调用原生 Claude 接口时，网关支持以下两种鉴权请求头：\n1. **统一 Bearer Token 鉴权 (推荐)**:\n   ```http\n   Authorization: Bearer sk-your_token\n   ```\n2. **Anthropic 官方 API Key 键**:\n   ```http\n   x-api-key: sk-your_token\n   ```"
+                    "# Anthropic Claude 原生接口说明\n\nAnthropic Messages 兼容路径。可直接发送 Claude 请求体（如 `claude-3-5-sonnet-20241022`）。[Messages API 官方文档](https://docs.anthropic.com/en/api/messages)\n\n### 1. 消息生成对话 (Messages API)\n* **请求路径**: `/v1/messages`\n* **请求方式**: `POST`\n\n#### 核心请求参数说明\n* **model** (string, 必填)\n  指定 Claude 模型名，如 `claude-3-5-sonnet-20241022`。\n* **messages** (array, 必填)\n  历史对话数据数组，结构如 `[{\"role\": \"user\", \"content\": \"你好\"}]`。\n* **max_tokens** (integer, 必填)\n  生成的最大 Token 限制。注意：Anthropic 官方协议要求此参数必须填写。\n* **system** (string, 可选)\n  系统提示词（System Prompt），用于设定模型的角色和行为。\n* **stream** (boolean, 可选)\n  是否以 SSE（Server-Sent Events）流式格式返回。可选值为 `true` 或 `false`。\n* **temperature** (number, 可选)\n  采样温度，介于 `0.0` 到 `1.0` 之间。\n\n#### 调用示例 (Curl)\n```bash\ncurl -X POST https://{{domain}}/v1/messages \\\n  -H \"x-api-key: sk-your_token\" \\\n  -H \"anthropic-version: 2023-06-01\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"claude-3-5-sonnet-20241022\",\n    \"max_tokens\": 1024,\n    \"messages\": [\n      {\"role\": \"user\", \"content\": \"你好，请用一句话描述你自己的核心特征。\"}\n    ]\n  }'\n```\n\n### 2. 接口鉴权方式\n调用原生 Claude 接口时，网关支持以下两种鉴权请求头：\n1. **统一 Bearer Token 鉴权 (推荐)**:\n   ```http\n   Authorization: Bearer sk-your_token\n   ```\n2. **Anthropic 官方 API Key 键**:\n   ```http\n   x-api-key: sk-your_token\n   ```"
                 )
             ]
         ),

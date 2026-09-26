@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Shared proxy utilities — user context, billing, logging.
@@ -13,6 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::ApiToken;
 use crate::models::Channel;
 use crate::AppState;
+use futures::StreamExt;
 use regex::Regex;
 use std::sync::Arc;
 
@@ -188,7 +189,7 @@ pub async fn find_active_model_exact(
 
     // 1. 获取所有匹配的活跃模型候选（ORDER BY m.id 保证多候选时返回顺序确定性）
     let sql = format!(
-        "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.model_id = ? AND m.is_active = 1{} ORDER BY m.id",
+        "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.model_id = ? AND m.is_active = 1 AND m.is_listed = 1{} ORDER BY m.id",
         cat_filter
     );
     let formatted_sql = state.db.format_query(&sql);
@@ -200,7 +201,7 @@ pub async fn find_active_model_exact(
         query.fetch_all(&state.db.pool).await.unwrap_or_default();
 
     if candidates.is_empty() && category.is_some() {
-        let fallback_sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.model_id = ? AND m.is_active = 1 ORDER BY m.id";
+        let fallback_sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.model_id = ? AND m.is_active = 1 AND m.is_listed = 1 ORDER BY m.id";
         candidates = sqlx::query_as(&state.db.format_query(fallback_sql))
             .bind(model_id)
             .fetch_all(&state.db.pool)
@@ -218,27 +219,45 @@ pub async fn find_active_model_exact(
         if !ch_models.is_empty() {
             // 优先匹配 mid（精确锁定唯一模型记录及其关联计费规则）
             if let Some(exact) = candidates.iter().find(|m| ch_models.contains(&m.mid)) {
-                return Some(exact.clone());
+                return allow_volc_preset(state, exact.clone()).await;
             }
             // 兜底匹配 model_id
             if let Some(exact) = candidates.iter().find(|m| ch_models.contains(&m.model_id)) {
-                return Some(exact.clone());
+                return allow_volc_preset(state, exact.clone()).await;
             }
         }
     }
 
     // 3. 默认返回第一个（ORDER BY m.id 保证确定性）
-    Some(candidates.into_iter().next().unwrap())
+    allow_volc_preset(state, candidates.into_iter().next().unwrap()).await
+}
+
+/// 插件关闭时，MediaKit 预置模型不能被当成已激活模型解析。
+async fn allow_volc_preset(
+    state: &AppState,
+    model: crate::models::Model,
+) -> Option<crate::models::Model> {
+    #[cfg(feature = "plugin_volcengine_enhance")]
+    if crate::api::plugins::volc_preset_blocked(state, &model.mid).await {
+        return None;
+    }
+    #[cfg(not(feature = "plugin_volcengine_enhance"))]
+    let _ = state;
+    Some(model)
 }
 
 /// 根据 mid 查找处于激活状态的模型数据
 pub async fn find_active_model_by_mid(state: &AppState, mid: &str) -> Option<crate::models::Model> {
-    let sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.mid = ? AND m.is_active = 1 LIMIT 1";
-    sqlx::query_as(&state.db.format_query(sql))
+    let sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.mid = ? AND m.is_active = 1 AND m.is_listed = 1 LIMIT 1";
+    match sqlx::query_as(&state.db.format_query(sql))
         .bind(mid)
         .fetch_optional(&state.db.pool)
         .await
         .unwrap_or(None)
+    {
+        Some(model) => allow_volc_preset(state, model).await,
+        None => None,
+    }
 }
 
 // ── Access Check ────────────────────────────────────────────────
@@ -246,8 +265,8 @@ pub async fn find_active_model_by_mid(state: &AppState, mid: &str) -> Option<cra
 /// 根据 category 推断标准 endpoint 路径（用于错误日志记录）
 pub fn category_endpoint(category: Option<&str>) -> &'static str {
     match category {
-        Some("图片") => "/v1/images/generations",
-        Some("视频") | Some("视频增强") => "/v1/video/generations",
+        Some("图片") | Some("图像增强") => "/v1/images/generations",
+        Some("视频") | Some("视频增强") | Some("画质增强") => "/v1/video/generations",
         Some("音频") => "/v1/audio/speech",
         Some("向量") => "/v1/embeddings",
         Some("排序") => "/v1/rerank",
@@ -255,12 +274,17 @@ pub fn category_endpoint(category: Option<&str>) -> &'static str {
     }
 }
 
-/// 入口类型与模型真实类型是否互通（目前仅视频 ↔ 视频增强）
+/// 入口类型与模型真实类型是否互通（视频 ↔ 画质增强，图片 ↔ 画质增强；旧名视频增强/图像增强仍认）
 #[inline]
 fn category_compatible(expected: &str, resolved: &str) -> bool {
-    expected == resolved
-        || (expected == "视频" && resolved == "视频增强")
-        || (expected == "视频增强" && resolved == "视频")
+    if expected == resolved {
+        return true;
+    }
+    let video_ok = |s: &str| matches!(s, "视频" | "视频增强" | "画质增强");
+    let image_ok = |s: &str| matches!(s, "图片" | "图像增强" | "画质增强");
+    let enhance = |s: &str| matches!(s, "画质增强" | "视频增强" | "图像增强");
+    (enhance(expected) || enhance(resolved))
+        && ((video_ok(expected) && video_ok(resolved)) || (image_ok(expected) && image_ok(resolved)))
 }
 
 /// 类型隔离失败文案：真实类型 + 实际入口（action_type 另记入口，见 check_access_with_model）
@@ -284,6 +308,8 @@ pub fn action_type_from_path(endpoint: &str) -> Option<&'static str> {
     const RULES: &[(&str, &str)] = &[
         ("enhance-video", "视频增强"),
         ("erase-video", "视频增强"),
+        ("enhance-image", "图片"),
+        ("remove-image-background", "图片"),
         ("contents/generations", "视频"),
         ("video-generation", "视频"),
         ("video-synthesis", "视频"),
@@ -318,15 +344,14 @@ pub async fn check_model_permission(
         let msg = format!("Model {} not allowed for this token", model);
         record_error_log(
             state,
-            &token.user_id,
+            token,
             None,
-            Some(token.id),
             model,
             403,
             endpoint,
+            action_type.unwrap_or_default(),
             &msg,
             None,
-            action_type,
         )
         .await;
         return Err(AppError::Forbidden(msg));
@@ -380,6 +405,7 @@ pub async fn check_access_with_model(
 
     let ep = category_endpoint(category);
     let ch_id = Some(channel.id);
+
     let up_url = Some(channel.base_url.as_str());
 
     // 类型安全隔离：action_type 记入口 expected（Tab=endpoint），文案带模型真实类型 resolved
@@ -388,15 +414,14 @@ pub async fn check_access_with_model(
             let msg = type_mismatch_message(model, &resolved_cat, expected_cat);
             record_error_log(
                 state,
-                &token.user_id,
+                token,
                 ch_id,
-                Some(token.id),
                 model,
                 400,
                 ep,
+                expected_cat,
                 &msg,
                 up_url,
-                Some(expected_cat),
             )
             .await;
             return Err(AppError::BadRequest(msg));
@@ -423,41 +448,44 @@ pub async fn check_access_with_model(
         };
         record_error_log(
             state,
-            &token.user_id,
+            token,
             ch_id,
-            Some(token.id),
             model,
             402,
             ep,
+            &resolved_cat,
             &msg,
             up_url,
-            Some(&resolved_cat),
         )
         .await;
         return Err(AppError::PaymentRequired(msg));
     }
 
     // 低余额：按类别限制未完成任务路数（金额门禁已过；不二次扣在途预扣）
+    let inflight_cat = if resolved_cat == "画质增强" {
+        category.unwrap_or("画质增强")
+    } else {
+        resolved_cat.as_str()
+    };
     if let Err(e) = super::relay_settings::enforce_inflight_gate(
         &state.db,
         &token.user_id,
         avail,
-        &resolved_cat,
+        inflight_cat,
     )
     .await
     {
         if let AppError::TooManyRequests(msg) = &e {
             record_error_log(
                 state,
-                &token.user_id,
+                token,
                 ch_id,
-                Some(token.id),
                 model,
                 429,
                 ep,
+                &resolved_cat,
                 msg,
                 up_url,
-                Some(&resolved_cat),
             )
             .await;
         }
@@ -504,7 +532,7 @@ pub async fn select_channel_for_model(
 }
 
 /// 渠道选择（支持透传 Model 实体，提取其 mid 规避 select_channel 内部的查表动作）。
-/// `log_miss`: 选渠失败时是否写入日志。failover 循环中若已有上游错误应传 false，终态为 No available channels 时传 true。
+/// `log_miss`: 选渠失败时是否写入日志。failover 循环中若已有上游错误应传 false，终态为无可用渠道时传 true。
 /// `action_type`: 调用方已知类别，选渠失败落库时透传。
 pub async fn select_channel_with_db(
     state: &Arc<AppState>,
@@ -520,7 +548,6 @@ pub async fn select_channel_with_db(
     ha_pool: &mut Option<super::ha::HaPoolSnap>,
 ) -> AppResult<Channel> {
     let mids = db_model.map(|m| vec![m.mid.clone()]);
-    let allow_ha = super::ha::policy(state, token.high_availability).await;
     match router::select_channel(
         state,
         model,
@@ -528,7 +555,6 @@ pub async fn select_channel_with_db(
         level_id,
         exclude_aids,
         mids.as_deref(),
-        allow_ha,
         ha_pool,
     )
     .await
@@ -543,15 +569,14 @@ pub async fn select_channel_with_db(
                 };
                 record_error_log(
                     state,
-                    &token.user_id,
+                    token,
                     None,
-                    Some(token.id),
                     model,
                     404,
                     endpoint,
+                    action_type.unwrap_or_default(),
                     &msg,
                     None,
-                    action_type,
                 )
                 .await;
             }
@@ -694,6 +719,7 @@ pub async fn pre_deduct_or_intercept(
                 client_msg: Some(&err_msg),
                 pre_deducted: 0.0,
                 pre_deduct_gift: 0.0,
+                upstream_request_id: None,
             })
             .await;
             Err(if is_balance {
@@ -719,11 +745,10 @@ pub async fn pre_deduct_or_intercept(
 pub fn sanitize_base64(text: &str) -> String {
     static RE_URI: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static RE_RAW: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re_uri = RE_URI
-        .get_or_init(|| Regex::new(r"data:[^;]+;base64,[A-Za-z0-9+/=]{100,}").unwrap());
+    let re_uri =
+        RE_URI.get_or_init(|| Regex::new(r"data:[^;]+;base64,[A-Za-z0-9+/=]{100,}").unwrap());
     let text = re_uri.replace_all(text, "base64数据");
-    let re_raw = RE_RAW
-        .get_or_init(|| Regex::new(r#""[A-Za-z0-9+/]{200,}={0,2}""#).unwrap());
+    let re_raw = RE_RAW.get_or_init(|| Regex::new(r#""[A-Za-z0-9+/]{200,}={0,2}""#).unwrap());
     re_raw.replace_all(&text, "\"base64数据\"").into_owned()
 }
 
@@ -776,22 +801,11 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
             action_type = cat.to_string();
         }
     }
-    let log_id_prefix = if !action_type.is_empty() && action_type != "聊天" {
-        "tsk_"
-    } else {
-        "log_"
-    };
     let generated_log_id = requested_log_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            format!(
-                "{}{}",
-                log_id_prefix,
-                ulid::Ulid::new().to_string().to_lowercase()
-            )
-        });
+        .unwrap_or_else(|| super::upstream_headers::resolve_request_log_id(Some(&action_type)));
     let forward_eid: Option<String> = forward_eid.filter(|s| !s.is_empty()).map(|s| s.to_string());
 
     let channel_config_id = super::ha::resolve_log_config_id(state, channel).await;
@@ -894,7 +908,7 @@ async fn resolve_model_meta(
             String::new()
         };
         let sql = format!(
-            "{} WHERE m.model_id = ? AND m.is_active = 1{} ORDER BY m.id",
+            "{} WHERE m.model_id = ? AND m.is_active = 1 AND m.is_listed = 1{} ORDER BY m.id",
             base_select, cat_filter
         );
         let mut rows = sqlx::query(&state.db.format_query(&sql))
@@ -905,7 +919,7 @@ async fn resolve_model_meta(
 
         if rows.is_empty() && hint_category.is_some() {
             let fallback_sql = format!(
-                "{} WHERE m.model_id = ? AND m.is_active = 1 ORDER BY m.id",
+                "{} WHERE m.model_id = ? AND m.is_active = 1 AND m.is_listed = 1 ORDER BY m.id",
                 base_select
             );
             rows = sqlx::query(&state.db.format_query(&fallback_sql))
@@ -958,7 +972,11 @@ async fn resolve_model_meta(
     };
 
     action_type = row.try_get("category_name").unwrap_or_default();
-    if action_type.is_empty() {
+    if action_type == "画质增强" {
+        if let Some(cat) = hint_category.filter(|c| !c.is_empty() && *c != "画质增强") {
+            action_type = cat.to_string();
+        }
+    } else if action_type.is_empty() {
         if let Some(cat) = hint_category.filter(|c| !c.is_empty()) {
             action_type = cat.to_string();
         }
@@ -978,56 +996,48 @@ async fn resolve_model_meta(
     (action_type, billing_pid, enable_log)
 }
 
+/// 统一记录 Relay 前置拦截与校验失败日志（极简高效，直接传 &token，区分 endpoint 与 upstream_url）
 pub async fn record_error_log(
     state: &Arc<AppState>,
-    user_id: &str,
+    token: &ApiToken,
     channel_id: Option<i64>,
-    token_id: Option<i64>,
     model: &str,
     status_code: u16,
     endpoint: &str,
+    category: &str,
     error_msg: &str,
     upstream_url: Option<&str>,
-    action_type: Option<&str>,
 ) {
     let db_error_msg = extract_error_message(error_msg);
-    // 优先用调用方透传的类型；仅未透传时（鉴权中间件）才按路径兜底
-    let resolved_type = action_type
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| action_type_from_path(endpoint).map(|s| s.to_string()))
-        .unwrap_or_default();
-    let sql = state.db.format_query(
-        "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, request_content, response_content, is_stream, upstream_url, action_type, is_completed) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0.0, ?, ?, ?, 0, NULL, NULL, 0, ?, ?, 1)"
-    );
-    let cid = channel_id.unwrap_or(0);
-    let tid = token_id.unwrap_or(0);
-    let log_prefix = if !resolved_type.is_empty() && resolved_type != "聊天" {
+    let (real_ep, ep_up_url) = endpoint.split_once('|').unwrap_or((endpoint, ""));
+    let actual_upstream = upstream_url.unwrap_or(ep_up_url);
+    let cat = if !category.is_empty() {
+        category
+    } else {
+        action_type_from_path(real_ep).unwrap_or_default()
+    };
+    let prefix = if !cat.is_empty() && cat != "聊天" {
         "tsk_"
     } else {
         "log_"
     };
-    let error_log_id = format!(
-        "{}{}",
-        log_prefix,
-        ulid::Ulid::new().to_string().to_lowercase()
+    let log_id = format!("{}{}", prefix, ulid::Ulid::new().to_string().to_lowercase());
+    let sql = state.db.format_query(
+        "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, is_stream, upstream_url, action_type, is_completed) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0.0, ?, ?, ?, 0, 0, ?, ?, 1)"
     );
-
     let res = sqlx::query(&sql)
-        .bind(&error_log_id)
-        .bind(user_id)
-        .bind(cid)
-        .bind(tid)
+        .bind(&log_id)
+        .bind(&token.user_id)
+        .bind(channel_id.unwrap_or(0))
+        .bind(token.id)
         .bind(model)
         .bind(status_code as i32)
-        .bind(endpoint)
+        .bind(real_ep)
         .bind(&db_error_msg)
-        .bind(upstream_url.unwrap_or(""))
-        .bind(&resolved_type)
+        .bind(actual_upstream)
+        .bind(cat)
         .execute(&state.db.pool)
         .await;
-
     if let Err(e) = res {
         tracing::warn!("[ErrorLog] 记录错误日志失败: {:?}", e);
     }
@@ -1053,6 +1063,7 @@ pub struct BillRecord<'a> {
     pub features: Option<crate::relay::usage_extractor::ExtractedFeatures>,
     pub time_multiplier: Option<f64>,
     pub plugin_tag: Option<&'a str>,
+    pub upstream_request_id: Option<String>,
 }
 
 /// 计费记录统一入口；log_id 有值 UPDATE 预记录行，无值 INSERT
@@ -1076,6 +1087,7 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
         features: billed_features,
         time_multiplier: bill_time_multiplier,
         plugin_tag,
+        upstream_request_id,
     } = p;
     let state = ctx.state;
     let token = ctx.token;
@@ -1111,31 +1123,32 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
     };
 
     // ── 计费特征快照（与扣费同源；已传入则复用）──
-    let billing_features_json: Option<String> = {
-        let mut feat = crate::relay::usage_extractor::build_billing_features(
-            request_content.as_deref(),
-            upstream_req_content.as_deref(),
-            response_content.as_deref(),
-            billed_features,
-            bill_time_multiplier,
-        );
-        // 级联：从 plugin_tag.cascade 补 version/resolution（不改用户入参）
-        if let Some(tag) = plugin_tag {
-            if feat.version.is_none() {
-                if let Some(ver) = crate::relay::cascade::cascade_json_str(tag, "/cascade/version") {
-                    feat.version = Some(ver);
-                }
-            }
-            if feat.resolution.is_none() {
-                if let Some(res) =
-                    crate::relay::cascade::cascade_json_str(tag, "/cascade/resolution")
-                {
-                    feat.resolution = Some(res);
-                }
+    let mut feat = crate::relay::usage_extractor::build_billing_features(
+        request_content.as_deref(),
+        upstream_req_content.as_deref(),
+        response_content.as_deref(),
+        billed_features,
+        bill_time_multiplier,
+    );
+    // 级联：从 plugin_tag.cascade 补 version/resolution（不改用户入参）
+    if let Some(tag) = plugin_tag {
+        if feat.version.is_none() {
+            if let Some(ver) = crate::relay::cascade::cascade_json_str(tag, "/cascade/version")
+            {
+                feat.version = Some(ver);
             }
         }
-        serde_json::to_string(&feat).ok()
-    };
+        if feat.resolution.is_none() {
+            if let Some(res) =
+                crate::relay::cascade::cascade_json_str(tag, "/cascade/resolution")
+            {
+                feat.resolution = Some(res);
+            }
+        }
+    }
+    let has_video_val: i16 = if feat.has_video { 1 } else { 0 };
+    let billing_features_json: Option<String> = serde_json::to_string(&feat).ok();
+    let prompt_for_log = usage.context_input_tokens();
 
     let req_content = filter_content(request_content, true);
     let upstream_req = filter_content(upstream_req_content, true);
@@ -1204,24 +1217,131 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
         // 异步任务预扣冻结判定：任务 ID 非空且计费详情中包含“冻结”
         let is_freeze = !task_id.is_empty() && billing_detail.as_deref().map_or(false, |d| d.contains("冻结"));
 
-        // 始终更新令牌最后使用时间
-        sqlx::query(&state.db.format_query(
-            "UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        ))
-        .bind(token.id)
-        .execute(&mut *tx)
-        .await?;
+        // 异步节流更新令牌最后使用时间（彻底移出主结算事务，消除高并发下针对同一 token 的行排他锁争夺）
+        super::token_quota::touch_token_last_used(state, token.id);
 
         let (settled_cost, apply_balance) = crate::money::settlement_delta(cost, pre_deducted);
-        if settled_cost > 0.0 || pre_deducted > 0.0 {
-            let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
-            let tz = crate::api::date_helper::resolve_user_timedisplay_name(
-                &state.db,
-                &token.user_id,
-                &site_tz,
-            )
-            .await;
+        let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+        let tz = crate::api::date_helper::resolve_user_timedisplay_name(
+            &state.db,
+            &token.user_id,
+            &site_tz,
+        )
+        .await;
 
+        let db_post_response = if is_freeze {
+            resp_content.clone()
+        } else {
+            None
+        };
+
+        let final_action_type = if !category.is_empty() {
+            category.clone()
+        } else {
+            hint_category.unwrap_or("").to_string()
+        };
+
+        // 【倒序写入第一阶段：大日志落库与 CAS 防重校验】
+        // 在持有 users 行锁之前，先完成耗时的大文本 UPDATE logs（PostgreSQL TOAST 耗时 20ms）。
+        // 此时锁定的仅是 logs 表当前行主键，完全不占 users 表行锁，并发请求互不阻塞！
+        // CAS status_code=0：避免孤儿清理/启动恢复已关单后退款后又被结算扣费覆盖
+        if let Some(log_id) = pending_log_id {
+            let touched = sqlx::query(&state.db.format_query(
+                "UPDATE logs SET channel_id = ?, model = ?, \
+                 prompt_tokens = ?, completion_tokens = ?, cached_tokens = ?, \
+                 cost = ?, status_code = ?, endpoint = ?, error_message = ?, latency_ms = ?, \
+                 request_content = ?, response_content = ?, post_response = ?, upstream_url = ?, \
+                 upstream_req_content = ?, billing_detail = ?, \
+                 task_id = CASE WHEN ? = '' OR ? IS NULL THEN task_id ELSE ? END, \
+                 action_type = ?, billing_pid = ?, \
+                 billing_features = ?, pre_deduct_gift = ?, is_completed = ?, \
+                 channel_config_id = ?, is_ha = ?, \
+                 plugin_tag = CASE WHEN ? = '' THEN plugin_tag ELSE ? END, \
+                 upstream_request_id = CASE WHEN ? = '' OR ? IS NULL THEN upstream_request_id ELSE ? END, \
+                 has_video = ? \
+                 WHERE id = ? AND status_code = 0",
+            ))
+            .bind(channel_id)
+            .bind(model_name)
+            .bind(prompt_for_log)
+            .bind(usage.completion)
+            .bind(usage.cached)
+            .bind(settled_cost)
+            .bind(status_code as i32)
+            .bind(system_endpoint)
+            .bind(db_error_msg)
+            .bind(latency_ms as i32)
+            .bind(&req_content)
+            .bind(&resp_content)
+            .bind(&db_post_response)
+            .bind(&final_endpoint)
+            .bind(&upstream_req)
+            .bind(&billing_detail)
+            .bind(&task_id).bind(&task_id).bind(&task_id)
+            .bind(&final_action_type)
+            .bind(&billing_pid)
+            .bind(&billing_features_json)
+            .bind(pre_deduct_gift)
+            .bind(if is_freeze { 0i16 } else { 1i16 })  // is_completed: 冻结任务=0(待结算), 同步请求=1(已完成)
+            .bind(channel_config_id)
+            .bind(is_ha)
+            .bind(plugin_tag.unwrap_or(""))
+            .bind(plugin_tag.unwrap_or(""))
+            .bind(&upstream_request_id).bind(&upstream_request_id).bind(&upstream_request_id)
+            .bind(has_video_val)
+            .bind(log_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if touched == 0 {
+                // 已被孤儿清理/启动恢复/并发结案；勿与预扣余额不足的 RowNotFound 混淆
+                return Err(sqlx::Error::Protocol("pending_cas_miss".into()));
+            }
+        } else {
+            let fb_prefix = if !final_action_type.is_empty() && final_action_type != "聊天" { "tsk_" } else { "log_" };
+            let fallback_log_id = format!("{}{}", fb_prefix, ulid::Ulid::new().to_string().to_lowercase());
+            sqlx::query(&state.db.format_query(
+                "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, request_content, response_content, post_response, is_stream, upstream_url, upstream_req_content, billing_detail, task_id, action_type, billing_pid, forward_eid, billing_features, pre_deduct_gift, plugin_tag, is_completed, channel_config_id, is_ha, upstream_request_id, has_video) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ))
+            .bind(&fallback_log_id)
+            .bind(&token.user_id)
+            .bind(channel_id)
+            .bind(token.id)
+            .bind(model_name)
+            .bind(prompt_for_log)
+            .bind(usage.completion)
+            .bind(usage.cached)
+            .bind(settled_cost)
+            .bind(status_code as i32)
+            .bind(system_endpoint)
+            .bind(db_error_msg)
+            .bind(latency_ms as i32)
+            .bind(&req_content)
+            .bind(&resp_content)
+            .bind(&db_post_response)
+            .bind(is_stream)
+            .bind(&final_endpoint)
+            .bind(&upstream_req)
+            .bind(&billing_detail)
+            .bind(&task_id)
+            .bind(&final_action_type)
+            .bind(&billing_pid)
+            .bind::<Option<String>>(None)  // forward_eid: 预记录阶段已写入，无预记录时留空
+            .bind(&billing_features_json)
+            .bind(pre_deduct_gift)
+            .bind(plugin_tag.unwrap_or(""))
+            .bind(if is_freeze { 0i16 } else { 1i16 })  // is_completed: 冻结任务=0(待结算), 同步请求=1(已完成)
+            .bind(channel_config_id)
+            .bind(is_ha)
+            .bind(&upstream_request_id)
+            .bind(has_video_val)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // 【倒序写入第二阶段：令牌与渠道配额消耗统计】
+        if settled_cost > 0.0 || pre_deducted > 0.0 {
             if settled_cost > 0.0 {
                 let _added = super::token_quota::consume_async_or_sync(
                     state,
@@ -1233,6 +1353,17 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
                 .await?;
             }
 
+            if channel_id > 0 && settled_cost > 0.0 {
+                super::channel_quota::record_channel_quota(channel_id, settled_cost);
+            }
+            if let Some(cfg_id) = channel_config_id {
+                if cfg_id > 0 && settled_cost > 0.0 {
+                    super::channel_quota::record_config_quota(cfg_id as i64, settled_cost);
+                }
+            }
+
+            // 【倒序写入第三阶段：用户钱包扣减/退补（锁持有时间压缩至 0.3ms 极速放锁）】
+            // 绝不在此之后执行任何大文本 I/O，更新后紧随 tx.commit()
             if apply_balance > 0.0 {
                 sqlx::query(&state.db.format_query(
                     "UPDATE users SET
@@ -1279,126 +1410,8 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
                 .execute(&mut *tx)
                 .await?;
             }
-
-            if channel_id > 0 && settled_cost > 0.0 {
-                super::channel_quota::consume_channel(
-                    &state.db, &mut tx, channel_id, settled_cost, &site_tz,
-                )
-                .await?;
-            }
-            if let Some(cfg_id) = channel_config_id {
-                if cfg_id > 0 && settled_cost > 0.0 {
-                    super::channel_quota::consume_config(
-                        &state.db, &mut tx, cfg_id as i64, settled_cost, &site_tz,
-                    )
-                    .await?;
-                }
-            }
         }
 
-        let db_post_response = if is_freeze {
-            resp_content.clone()
-        } else {
-            None
-        };
-
-        let final_action_type = if !category.is_empty() {
-            category.clone()
-        } else {
-            hint_category.unwrap_or("").to_string()
-        };
-
-        // 【一条日志原则】有 pending_log_id 时 UPDATE 预记录行，否则 INSERT 新行
-        // 成功写成功子渠；HA 全失败由 ha.fail 按首败一次落库
-        // CAS status_code=0：避免孤儿清理/启动恢复已关单后退款后又被结算扣费覆盖
-        if let Some(log_id) = pending_log_id {
-            let touched = sqlx::query(&state.db.format_query(
-                "UPDATE logs SET channel_id = ?, model = ?, \
-                 prompt_tokens = ?, completion_tokens = ?, cached_tokens = ?, \
-                 cost = ?, status_code = ?, endpoint = ?, error_message = ?, latency_ms = ?, \
-                 request_content = ?, response_content = ?, post_response = ?, upstream_url = ?, \
-                 upstream_req_content = ?, billing_detail = ?, \
-                 task_id = CASE WHEN ? = '' OR ? IS NULL THEN task_id ELSE ? END, \
-                 action_type = ?, billing_pid = ?, \
-                 billing_features = ?, pre_deduct_gift = ?, is_completed = ?, \
-                 channel_config_id = ?, is_ha = ?, \
-                 plugin_tag = CASE WHEN ? = '' THEN plugin_tag ELSE ? END \
-                 WHERE id = ? AND status_code = 0",
-            ))
-            .bind(channel_id)
-            .bind(model_name)
-            .bind(usage.prompt)
-            .bind(usage.completion)
-            .bind(usage.cached)
-            .bind(settled_cost)
-            .bind(status_code as i32)
-            .bind(system_endpoint)
-            .bind(db_error_msg)
-            .bind(latency_ms as i32)
-            .bind(&req_content)
-            .bind(&resp_content)
-            .bind(&db_post_response)
-            .bind(&final_endpoint)
-            .bind(&upstream_req)
-            .bind(&billing_detail)
-            .bind(&task_id).bind(&task_id).bind(&task_id)
-            .bind(&final_action_type)
-            .bind(&billing_pid)
-            .bind(&billing_features_json)
-            .bind(pre_deduct_gift)
-            .bind(if is_freeze { 0i16 } else { 1i16 })  // is_completed: 冻结任务=0(待结算), 同步请求=1(已完成)
-            .bind(channel_config_id)
-            .bind(is_ha)
-            .bind(plugin_tag.unwrap_or(""))
-            .bind(plugin_tag.unwrap_or(""))
-            .bind(log_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-            if touched == 0 {
-                // 已被孤儿清理/启动恢复/并发结案；勿与预扣余额不足的 RowNotFound 混淆
-                return Err(sqlx::Error::Protocol("pending_cas_miss".into()));
-            }
-        } else {
-            let fb_prefix = if !final_action_type.is_empty() && final_action_type != "聊天" { "tsk_" } else { "log_" };
-            let fallback_log_id = format!("{}{}", fb_prefix, ulid::Ulid::new().to_string().to_lowercase());
-            sqlx::query(&state.db.format_query(
-                "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, request_content, response_content, post_response, is_stream, upstream_url, upstream_req_content, billing_detail, task_id, action_type, billing_pid, forward_eid, billing_features, pre_deduct_gift, plugin_tag, is_completed, channel_config_id, is_ha) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ))
-            .bind(&fallback_log_id)
-            .bind(&token.user_id)
-            .bind(channel_id)
-            .bind(token.id)
-            .bind(model_name)
-            .bind(usage.prompt)
-            .bind(usage.completion)
-            .bind(usage.cached)
-            .bind(settled_cost)
-            .bind(status_code as i32)
-            .bind(system_endpoint)
-            .bind(db_error_msg)
-            .bind(latency_ms as i32)
-            .bind(&req_content)
-            .bind(&resp_content)
-            .bind(&db_post_response)
-            .bind(is_stream)
-            .bind(&final_endpoint)
-            .bind(&upstream_req)
-            .bind(&billing_detail)
-            .bind(&task_id)
-            .bind(&final_action_type)
-            .bind(&billing_pid)
-            .bind::<Option<String>>(None)  // forward_eid: 预记录阶段已写入，无预记录时留空
-            .bind(&billing_features_json)
-            .bind(pre_deduct_gift)
-            .bind(plugin_tag.unwrap_or(""))
-            .bind(if is_freeze { 0i16 } else { 1i16 })  // is_completed: 冻结任务=0(待结算), 同步请求=1(已完成)
-            .bind(channel_config_id)
-            .bind(is_ha)
-            .execute(&mut *tx)
-            .await?;
-        }
         tx.commit().await?;
         Ok(())
     }
@@ -1493,17 +1506,19 @@ async fn settle_pending_prepay(
     }
 
     let upd = match close {
-        Some((status_code, error_message, billing_detail)) => sqlx::query(&state.db.format_query(
-            "UPDATE logs SET status_code = ?, cost = 0.0, pre_deduct_gift = 0.0, \
+        Some((status_code, error_message, billing_detail)) => {
+            sqlx::query(&state.db.format_query(
+                "UPDATE logs SET status_code = ?, cost = 0.0, pre_deduct_gift = 0.0, \
              error_message = ?, billing_detail = ?, is_completed = 1 \
              WHERE id = ? AND status_code = 0",
-        ))
-        .bind(status_code)
-        .bind(error_message)
-        .bind(billing_detail)
-        .bind(log_id)
-        .execute(&mut *tx)
-        .await,
+            ))
+            .bind(status_code)
+            .bind(error_message)
+            .bind(billing_detail)
+            .bind(log_id)
+            .execute(&mut *tx)
+            .await
+        }
         None => sqlx::query(&state.db.format_query(
             "UPDATE logs SET cost = 0.0, pre_deduct_gift = 0.0 WHERE id = ? AND status_code = 0",
         ))
@@ -1633,11 +1648,13 @@ pub async fn cleanup_orphan_pending_logs(state: &Arc<AppState>) {
     }
 }
 
-/// 启动时恢复中断遗留的处理中日志（异步冻结为 status=200，不会命中）
-pub async fn recover_interrupted_logs(state: &Arc<AppState>) {
-    let orphans: Vec<i64> = match sqlx::query_scalar(&state.db.format_query(
-        "SELECT id FROM logs WHERE is_completed = 0 AND status_code = 0",
-    ))
+/// 启动时恢复中断遗留的处理中日志（分批并发平滑处理，防拖死数据库与主线程）
+pub async fn recover_interrupted_logs(state: Arc<AppState>) {
+    let orphans: Vec<i64> = match sqlx::query_scalar(
+        &state
+            .db
+            .format_query("SELECT id FROM logs WHERE is_completed = 0 AND status_code = 0"),
+    )
     .fetch_all(&state.db.pool)
     .await
     {
@@ -1650,20 +1667,27 @@ pub async fn recover_interrupted_logs(state: &Arc<AppState>) {
     if orphans.is_empty() {
         return;
     }
+    let total = orphans.len();
     tracing::info!(
-        "[StartupRecover] 发现 {} 条上次中断遗留的处理中日志",
-        orphans.len()
+        "[StartupRecover] 发现 {} 条上次中断遗留的处理中日志，开始并发恢复退费...",
+        total
     );
-    for log_id in orphans {
-        let _ = close_pending_and_refund(
-            state,
-            log_id,
-            503,
-            "服务升级重启，请求被中断",
-            "服务升级中断，预扣费已退回",
-        )
+    futures::stream::iter(orphans)
+        .for_each_concurrent(16, |log_id| {
+            let state = state.clone();
+            async move {
+                let _ = close_pending_and_refund(
+                    &state,
+                    log_id,
+                    503,
+                    "服务升级重启，请求被中断",
+                    "服务升级中断，预扣费已退回",
+                )
+                .await;
+            }
+        })
         .await;
-    }
+    tracing::info!("[StartupRecover] 全部 {} 条中断日志已恢复处理完毕", total);
 }
 
 /// 错误信息敏感词脱敏：URL 域名替换为 ***（保留协议和路径），密钥替换为 ***。
@@ -1733,6 +1757,7 @@ pub struct ZeroCostUpstreamFail<'a> {
     pub client_msg: Option<&'a str>,
     pub pre_deducted: f64,
     pub pre_deduct_gift: f64,
+    pub upstream_request_id: Option<String>,
 }
 
 /// 失败记账（cost=0）：返回 `(status_code, client_msg)`，由调用方决定 `upstream_fail` / `BadRequest` 等。
@@ -1773,6 +1798,7 @@ pub async fn record_zero_cost_fail(p: ZeroCostUpstreamFail<'_>) -> (u16, String)
         features: None,
         time_multiplier: None,
         plugin_tag: None,
+        upstream_request_id: p.upstream_request_id,
     })
     .await;
     (status_code, client_owned)
@@ -1802,18 +1828,40 @@ pub fn upstream_error_text(status: u16, body: &str) -> String {
     }
 }
 
-/// 从可能为 JSON 格式的错误响应体中提取最核心的错误文本信息
+/// 从错误响应体中提取最核心的错误文本信息（兼容 JSON、HTML 网页与纯文本，单行规整与 500 字符安全截断）
 pub fn extract_error_message(resp_body: &str) -> String {
-    let raw = resp_body
-        .find('{')
-        .map(|i| &resp_body[i..])
-        .unwrap_or(resp_body);
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(msg) = super::response_formatter::extract_error_message_from_value(&json) {
-            return msg;
-        }
+    let s = resp_body.trim();
+    if s.is_empty() {
+        return String::new();
     }
-    resp_body.to_string()
+    // 兼容 HTML 错误页提取 <title>
+    let raw = if s.starts_with('<') || s.contains("<html") || s.contains("<HTML") {
+        s.to_ascii_lowercase()
+            .find("<title>")
+            .and_then(|i| s[i + 7..].split_once("</title>"))
+            .map(|(t, _)| t.trim())
+            .unwrap_or("HTML error page")
+    } else {
+        s
+    };
+    // 兼容 JSON 提取业务报错
+    let msg = raw
+        .find('{')
+        .and_then(|i| serde_json::from_str::<serde_json::Value>(&raw[i..]).ok())
+        .and_then(|v| super::response_formatter::extract_error_message_from_value(&v))
+        .unwrap_or_else(|| raw.to_string());
+
+    // 压缩空格单行化与 500 字符安全截断
+    let clean = if msg.contains('\n') || msg.contains('\r') {
+        msg.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        msg
+    };
+    if clean.chars().count() > 500 {
+        format!("{} ...[截断]", clean.chars().take(500).collect::<String>())
+    } else {
+        clean
+    }
 }
 
 /// 文案中的显式 HTTP 码（`status 404`）。只认 3 位 4xx/5xx，避免厂商业务码如 40004。
@@ -2378,7 +2426,9 @@ fn parse_wav_duration(data: &[u8]) -> Option<f64> {
         let id = &data[pos..pos + 4];
         let len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().ok()?) as usize;
         if id == b"fmt " && pos + 8 + 16 <= data.len() {
-            byte_rate = Some(u32::from_le_bytes(data[pos + 16..pos + 20].try_into().ok()?));
+            byte_rate = Some(u32::from_le_bytes(
+                data[pos + 16..pos + 20].try_into().ok()?,
+            ));
         } else if id == b"data" {
             data_size = Some(len as u32);
         }
@@ -2412,7 +2462,9 @@ fn parse_mp3_duration(data: &[u8]) -> Option<f64> {
         return None;
     }
     let slice = &data[offset..];
-    let sync_pos = slice.windows(2).position(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0)?;
+    let sync_pos = slice
+        .windows(2)
+        .position(|w| w[0] == 0xFF && (w[1] & 0xE0) == 0xE0)?;
     let frame = &slice[sync_pos..];
     if frame.len() < 4 {
         return None;
@@ -2436,7 +2488,11 @@ fn parse_mp3_duration(data: &[u8]) -> Option<f64> {
         (2, 2) => 16000,
         _ => return None,
     };
-    if let Some(pos) = frame.windows(4).take(200).position(|w| w == b"Xing" || w == b"Info") {
+    if let Some(pos) = frame
+        .windows(4)
+        .take(200)
+        .position(|w| w == b"Xing" || w == b"Info")
+    {
         let xing_body = &frame[pos + 4..];
         if xing_body.len() >= 8 && (xing_body[3] & 0x01 != 0) {
             let frames = u32::from_be_bytes(xing_body[4..8].try_into().ok()?) as f64;

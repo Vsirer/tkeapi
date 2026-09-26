@@ -1,14 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Tooltip, Row, Col, Grid, theme, Spin, Dropdown, Progress, Checkbox, Select } from 'antd';
 import AppSwitch from '../../components/AppSwitch';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
+import { listPagination } from '../../components/ListPagination';
 import { PlusOutlined, EditOutlined, DeleteOutlined, CopyOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, KeyOutlined, CheckOutlined, ArrowLeftOutlined, DollarOutlined, BarChartOutlined, EllipsisOutlined, PieChartOutlined, InfoCircleOutlined, FileTextOutlined, ClearOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
@@ -131,10 +132,7 @@ const Tokens: React.FC = () => {
     }
   };
 
-  const isLocal = window.location.hostname === 'localhost' || /^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(window.location.hostname);
-  const baseUrl = isLocal
-    ? `${window.location.protocol}//${window.location.hostname}:3000`
-    : `${window.location.protocol}//${window.location.hostname}`;
+  const baseUrl = window.location.origin;
 
   const [isHAPluginEnabled, setIsHAPluginEnabled] = useState(false);
 
@@ -452,17 +450,26 @@ const Tokens: React.FC = () => {
         const periodicTooltipContent = (
           <div style={{ fontSize: '12px', padding: '4px' }}>
             <div style={{ fontWeight: 600, marginBottom: '4px' }}>{t('tokens.periodic_quota_details')}</div>
-            <div style={{ marginBottom: '2px' }}>{t('tokens.daily_cap')}: {record.daily_quota_limit < 0 ? t('tokens.unlimited') : `${dailyUsed.toFixed(6)} / ${record.daily_quota_limit}`}</div>
-            <div style={{ marginBottom: '2px' }}>{t('tokens.weekly_cap')}: {record.weekly_quota_limit < 0 ? t('tokens.unlimited') : `${weeklyUsed.toFixed(6)} / ${record.weekly_quota_limit}`}</div>
-            <div>{t('tokens.monthly_cap')}: {record.monthly_quota_limit < 0 ? t('tokens.unlimited') : `${monthlyUsed.toFixed(6)} / ${record.monthly_quota_limit}`}</div>
+            <div style={{ marginBottom: '2px' }}>
+              {t('tokens.daily_cap')}: {record.daily_quota_limit < 0 ? `${dailyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${dailyUsed.toFixed(6)} / ${record.daily_quota_limit}`}
+            </div>
+            <div style={{ marginBottom: '2px' }}>
+              {t('tokens.weekly_cap')}: {record.weekly_quota_limit < 0 ? `${weeklyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${weeklyUsed.toFixed(6)} / ${record.weekly_quota_limit}`}
+            </div>
+            <div>
+              {t('tokens.monthly_cap')}: {record.monthly_quota_limit < 0 ? `${monthlyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${monthlyUsed.toFixed(6)} / ${record.monthly_quota_limit}`}
+            </div>
           </div>
         );
 
         return (
-          <Tooltip title={periodic ? periodicTooltipContent : null}>
-            <Space direction="vertical" size={2} style={{ cursor: periodic ? 'pointer' : 'default' }}>
+          <Tooltip title={periodicTooltipContent}>
+            <Space direction="vertical" size={1} style={{ cursor: 'pointer' }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {t('tokens.used')}: {record.quota_used.toFixed(6)}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {t('tokens.today_used', '今日')}: {record.daily_quota_limit < 0 ? dailyUsed.toFixed(6) : `${dailyUsed.toFixed(6)} / ${record.daily_quota_limit}`}
               </Text>
               <Text style={{ fontSize: 12 }}>
                 {t('tokens.limit')}: {record.quota_limit < 0 ? t('tokens.unlimited') : record.quota_limit}
@@ -648,7 +655,7 @@ const Tokens: React.FC = () => {
               rowKey="id"
               compact={true}
               gap={10}
-              pagination={{ pageSize: 10 }}
+              pagination={listPagination()}
               renderCard={(record: any) => {
                 const isRevealed = !!revealedKeys[record.id];
                 const displayedKey = isRevealed 
@@ -763,15 +770,15 @@ const Tokens: React.FC = () => {
                       <CardRow label={t('tokens.available_quota')} compact={true}>
                         <Space direction="vertical" size={0}>
                           <Text style={{ fontSize: 12 }}>{record.quota_limit < 0 ? t('tokens.unlimited') : `${record.quota_used.toFixed(6)} / ${record.quota_limit}`}</Text>
-                          {hasPeriodicLimits(record) && (() => {
+                          {(() => {
                             const { dailyUsed, weeklyUsed, monthlyUsed } = getPeriodicUsed(record, quotaTz);
                             const parts: string[] = [];
-                            if (record.daily_quota_limit >= 0) parts.push(`${t('tokens.daily_cap')} ${dailyUsed.toFixed(6)}/${record.daily_quota_limit}`);
+                            parts.push(`${t('tokens.today_used', '今日')} ${record.daily_quota_limit < 0 ? dailyUsed.toFixed(6) : `${dailyUsed.toFixed(6)}/${record.daily_quota_limit}`}`);
                             if (record.weekly_quota_limit >= 0) parts.push(`${t('tokens.weekly_cap')} ${weeklyUsed.toFixed(6)}/${record.weekly_quota_limit}`);
                             if (record.monthly_quota_limit >= 0) parts.push(`${t('tokens.monthly_cap')} ${monthlyUsed.toFixed(6)}/${record.monthly_quota_limit}`);
-                            return parts.length > 0 ? (
+                            return (
                               <Text type="secondary" style={{ fontSize: 11 }}>{parts.join(' · ')}</Text>
-                            ) : null;
+                            );
                           })()}
                         </Space>
                       </CardRow>
@@ -810,7 +817,7 @@ const Tokens: React.FC = () => {
               columns={columns}
               rowKey="id"
               loading={loading}
-              pagination={{ pageSize: 10 }}
+              pagination={listPagination()}
               scroll={{ x: 'max-content' }}
             />
           )}
@@ -1453,10 +1460,13 @@ const Tokens: React.FC = () => {
             const { dailyUsed, weeklyUsed, monthlyUsed } = getPeriodicUsed(selectedToken, quotaTz);
 
             const items = [];
-            const totalItems = 1 + 
-              (selectedToken.daily_quota_limit >= 0 ? 1 : 0) + 
-              (selectedToken.weekly_quota_limit >= 0 ? 1 : 0) + 
-              (selectedToken.monthly_quota_limit >= 0 ? 1 : 0);
+            const hasDailyLimit = selectedToken.daily_quota_limit >= 0;
+            const hasWeeklyLimit = selectedToken.weekly_quota_limit >= 0;
+            const hasMonthlyLimit = selectedToken.monthly_quota_limit >= 0;
+
+            const totalItems = 2 + 
+              (hasWeeklyLimit ? 1 : 0) + 
+              (hasMonthlyLimit ? 1 : 0);
             
             let count = 0;
 
@@ -1473,21 +1483,19 @@ const Tokens: React.FC = () => {
               />
             );
 
-            // 2. 日额度
-            if (selectedToken.daily_quota_limit >= 0) {
-              count++;
-              items.push(
-                <QuotaProgressItem
-                  key="daily"
-                  label={t('tokens.daily_quota_limit_label')}
-                  used={dailyUsed}
-                  limit={selectedToken.daily_quota_limit}
-                  refreshText={getQuotaRefreshText('day', quotaTz, t)}
-                  isLight={isLight}
-                  isLast={count === totalItems}
-                />
-              );
-            }
+            // 2. 日额度 (始终展示每日额度使用情况)
+            count++;
+            items.push(
+              <QuotaProgressItem
+                key="daily"
+                label={hasDailyLimit ? t('tokens.daily_quota_limit_label') : t('tokens.daily_quota_label', '日额度')}
+                used={dailyUsed}
+                limit={selectedToken.daily_quota_limit}
+                refreshText={getQuotaRefreshText('day', quotaTz, t)}
+                isLight={isLight}
+                isLast={count === totalItems}
+              />
+            );
 
             // 3. 周额度
             if (selectedToken.weekly_quota_limit >= 0) {

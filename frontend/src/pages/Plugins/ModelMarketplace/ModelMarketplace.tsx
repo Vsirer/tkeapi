@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 /**
@@ -10,7 +10,7 @@
  * 参考 NeuralGrid 设计风格：深色主题 + 左侧筛选 + 模型卡片网格
  */
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAnnouncementLabel } from '../../../utils/announcement';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../../../utils/announcement';
 import { modelMatchesKeyword } from '../../../utils/modelKeywordMatch';
 import {
   parseNotificationPreferences,
@@ -20,7 +20,7 @@ import {
 import { Sidebar as SidebarIcon, Terminal } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ConfigProvider, theme, Input, Checkbox, Avatar, Dropdown, Spin, Empty, Tooltip, Popover, Button, Layout, Grid, Space, Result, Descriptions, Tag, Breadcrumb, Badge, List, message, Pagination } from 'antd';
+import { ConfigProvider, theme, Input, Checkbox, Avatar, Dropdown, Empty, Tooltip, Popover, Button, Layout, Grid, Space, Result, Descriptions, Tag, Breadcrumb, Badge, List, message, Pagination } from 'antd';
 import {
   RocketOutlined, CompassOutlined, SearchOutlined, ArrowLeftOutlined, AppstoreOutlined,
   MessageOutlined, PictureOutlined, VideoCameraOutlined,
@@ -42,6 +42,7 @@ import UserAvatarMenu from '../../../components/UserAvatarMenu';
 import { SunOutlined, MoonOutlined, FireOutlined } from '@ant-design/icons';
 import { formatApiDateTime, parseApiTimeAsUtc } from '../../../utils/timedisplay';
 import { resolveFreeImageCount } from '../../../utils/billingFreeImages';
+import { formatWeekdayRange, isAllWeekdays } from '../../../utils/timeMultipliers';
 import TrendingPage from './TrendingPage';
 import { copyToClipboard } from '../../../utils/clipboard';
 
@@ -52,6 +53,8 @@ interface Announcement {
   is_pinned: number;
   sort_order?: number;
   created_at: string;
+  updated_at?: string;
+  display_time_mode?: string;
 }
 
 interface MarketplaceModel {
@@ -64,6 +67,9 @@ interface MarketplaceModel {
   provider_name: string;
   provider_name_en?: string;
   provider_logo?: string;
+  api_provider_id?: number | null;
+  api_provider_name?: string;
+  api_provider_name_en?: string;
   type_id: number;
   type_name: string;
   type_name_en?: string;
@@ -78,6 +84,7 @@ interface MarketplaceModel {
   billing: any;
   created_at: string;
   has_ha?: boolean;
+  ha_sub_count?: number;
   variant_count?: number;
   variants?: MarketplaceModel[];
 }
@@ -90,13 +97,88 @@ interface FilterItem {
   provider_type?: string;
 }
 
-import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, ListOrdered, Code, LayoutGrid, Sparkles } from 'lucide-react';
+const MP_GRID_COL_MIN = 340;
+const MP_GRID_GAP = 20;
+const MP_GRID_MAX_COLS = 5;
+const MP_GRID_MAX_WIDTH = MP_GRID_MAX_COLS * 420 + (MP_GRID_MAX_COLS - 1) * MP_GRID_GAP;
+const MP_GRID_TEMPLATE_COLUMNS = `repeat(auto-fill, minmax(max(${MP_GRID_COL_MIN}px, calc((100% - ${(MP_GRID_MAX_COLS - 1) * MP_GRID_GAP}px) / ${MP_GRID_MAX_COLS})), 1fr))`;
+
+type MarketplaceQueryPatch = {
+  tab?: 'trending' | 'models';
+  type?: number | null;
+  provider?: number | null;
+  q?: string | null;
+  closeModel?: boolean;
+};
+
+function marketplaceVariants(model: MarketplaceModel): MarketplaceModel[] {
+  return model.variants && model.variants.length > 0 ? model.variants : [model];
+}
+
+function marketplaceModelMatchesFilters(
+  model: MarketplaceModel,
+  typeId: number | null,
+  providerId: number | null,
+): boolean {
+  return marketplaceVariants(model).some(
+    (v) =>
+      (typeId === null || v.type_id === typeId) &&
+      (providerId === null || v.provider_id === providerId),
+  );
+}
+
+function firstQueryToken(raw: string | null): string {
+  if (!raw) return '';
+  return raw.split(',')[0].trim();
+}
+
+function marketplaceWeekdayLabels(lang: string): string[] {
+  return lang.startsWith('zh')
+    ? ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+    : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+}
+
+function marketplaceMultiplierMeta(tm: any, invert: boolean, lang: string, remainder?: number) {
+  const labels = marketplaceWeekdayLabels(lang);
+  const allLabel = lang.startsWith('zh') ? '每天' : 'Every day';
+  const daysText = formatWeekdayRange(tm.days, labels, allLabel);
+  const ratio = Number(tm.multiplier);
+  const allDay = !!tm.all_day;
+  const remOk = remainder != null && Number.isFinite(remainder) && remainder >= 0;
+  const selected = (!allDay && invert && !remOk) ? 1 : ratio;
+  const rest = !allDay && invert
+    ? (remOk ? remainder as number : (ratio > 0 ? 1 / ratio : 1))
+    : 1;
+  return { daysText, selected, rest, invert: !allDay && invert, allDay, rawMultiplier: ratio };
+}
+
+function resolveFilterId(
+  raw: string | null,
+  items: FilterItem[],
+  extraMatch?: (item: FilterItem, token: string) => boolean,
+): number | null {
+  const token = firstQueryToken(raw);
+  if (!token) return null;
+  const lower = token.toLowerCase();
+  const found = items.find(
+    (item) =>
+      item.id.toString() === token ||
+      item.name.toLowerCase() === lower ||
+      extraMatch?.(item, lower) === true,
+  );
+  if (found) return found.id;
+  if (/^\d+$/.test(token)) return Number(token);
+  return null;
+}
+
+import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, ListOrdered, Code, LayoutGrid, Sparkles, Clock, CalendarDays, Info } from 'lucide-react';
 
 // 类型图标映射
 const getTypeIcon = (typeName: string) => {
   const style = { width: '1em', height: '1em' };
   const normalized = typeName.toLowerCase();
-  if (typeName.includes('视频增强') || normalized.includes('video enhancement') || normalized.includes('videoenhance') || normalized.includes('video-enhance') || normalized.includes('video_enhance')) return <Sparkles style={style} />;
+  if (typeName.includes('画质增强') || normalized.includes('quality enhancement') || typeName.includes('视频增强') || normalized.includes('video enhancement') || normalized.includes('videoenhance') || normalized.includes('video-enhance') || normalized.includes('video_enhance')) return <Sparkles style={style} />;
+  if (typeName.includes('图像增强') || normalized.includes('image enhancement') || normalized.includes('image-enhance') || normalized.includes('imageenhance') || normalized.includes('image_enhance')) return <Sparkles style={style} />;
   if (typeName.includes('聊天') || typeName.includes('对话') || normalized.includes('chat') || normalized.includes('llm')) return <MessageSquare style={style} />;
   if (typeName.includes('图片') || typeName.includes('图像') || normalized.includes('image')) return <ImageIcon style={style} />;
   if (typeName.includes('视频') || normalized.includes('video')) return <Video style={style} />;
@@ -114,7 +196,9 @@ const ENGLISH_CLASSIFICATION_NAMES: Record<string, string> = {
   '视频［NSFW］': 'Video [NSFW]',
   '图片 [NSFW]': 'Image [NSFW]',
   '图片［NSFW］': 'Image [NSFW]',
+  画质增强: 'Quality Enhancement',
   视频增强: 'Video Enhancement',
+  图像增强: 'Image Enhancement',
   视频: 'Video',
   图片: 'Image',
   图像: 'Image',
@@ -204,10 +288,107 @@ const getBillingLabel = (billing: any, tp: any) => {
 
 const LOBE_DEFAULT_ICON = '/assets/icons/lobe/default-model.svg';
 
-const lobeIconSrc = (logo?: string | null, providerLogo?: string | null) =>
-  logo ? `/assets/icons/lobe/${logo}.svg`
-    : providerLogo ? `/assets/icons/lobe/${providerLogo}.svg`
-      : LOBE_DEFAULT_ICON;
+const KNOWN_BRAND_LOGO_MAP: Record<string, string> = {
+  // 中文厂商与品牌
+  火山引擎: 'volcengine',
+  字节跳动: 'bytedance',
+  字节: 'bytedance',
+  谷歌: 'google',
+  阿里云: 'alibaba',
+  阿里: 'alibaba',
+  通义千问: 'qwen',
+  通义: 'qwen',
+  腾讯云: 'tencent',
+  腾讯: 'tencent',
+  '可灵 ai': 'kling',
+  可灵: 'kling',
+  快手: 'kling',
+  智谱: 'zhipu',
+  智谱ai: 'zhipu',
+  百川: 'baichuan',
+  百川智能: 'baichuan',
+  百度: 'baidu',
+  文心一言: 'baidu',
+  文心: 'baidu',
+  月之暗面: 'kimi',
+  阶跃星辰: 'stepfun',
+  零一万物: 'yi',
+  商汤: 'sensenova',
+  日日新: 'sensenova',
+  深度求索: 'deepseek',
+  海螺: 'minimax',
+  海螺ai: 'minimax',
+  // 常见英文与别名（含空格与连字符变体）
+  volcengine: 'volcengine',
+  bytedance: 'bytedance',
+  byteplus: 'volcengine',
+  alibaba: 'alibaba',
+  alibabacloud: 'alibabacloud',
+  'alibaba cloud': 'alibaba',
+  tencent: 'tencent',
+  'tencent cloud': 'tencent',
+  google: 'google',
+  'google cloud': 'google',
+  kling: 'kling',
+  'kling ai': 'kling',
+  zhipu: 'zhipu',
+  'zhipu ai': 'zhipu',
+  chatglm: 'glm',
+  glm: 'glm',
+  baichuan: 'baichuan',
+  baidu: 'baidu',
+  stepfun: 'stepfun',
+  sensenova: 'sensenova',
+  deepseek: 'deepseek',
+  minimax: 'minimax',
+  openai: 'openai',
+  anthropic: 'anthropic',
+  claude: 'anthropic',
+  meta: 'meta',
+  mistral: 'mistral',
+  cohere: 'cohere',
+  stability: 'stability',
+  midjourney: 'midjourney',
+  runway: 'runway',
+  suno: 'suno',
+  udio: 'udio',
+};
+
+const lobeIconSrc = (
+  logo?: string | null,
+  providerLogo?: string | null,
+  isLight: boolean = true,
+  fallbackName?: string | null
+) => {
+  const rawCandidate = (logo || providerLogo || fallbackName || '').trim();
+  if (!rawCandidate) return LOBE_DEFAULT_ICON;
+
+  // 1. Kimi 专属双模高保真图标判定：
+  // 无论传入的是 kimi、kimi.svg、kimi-dark、kimi-light、/assets/icons/lobe/kimi.svg 还是模型名称中包含 kimi (如 kimi-k1.5、kimi-k3)，
+  // 均优先自适应映射到高保真矢量资源（亮色模式黑色底色，暗色模式纯白底色，均保留经典海蓝圆点）
+  const allIdentifiers = `${logo || ''} ${providerLogo || ''} ${fallbackName || ''}`.toLowerCase();
+  if (allIdentifiers.includes('kimi')) {
+    return isLight ? '/assets/icons/lobe/kimi-light.svg' : '/assets/icons/lobe/kimi-dark.svg';
+  }
+
+  // 2. 完整 URL、Data URI 或站内绝对路径直接返回
+  if (
+    rawCandidate.startsWith('http://') ||
+    rawCandidate.startsWith('https://') ||
+    rawCandidate.startsWith('/') ||
+    rawCandidate.startsWith('data:')
+  ) {
+    return rawCandidate;
+  }
+
+  // 3. 常见品牌中英文别名智能映射
+  const cleaned = rawCandidate.replace(/\.svg$/i, '').trim().toLowerCase();
+  const matchedLogo = KNOWN_BRAND_LOGO_MAP[cleaned]
+    || KNOWN_BRAND_LOGO_MAP[rawCandidate.trim()]
+    || Object.keys(KNOWN_BRAND_LOGO_MAP).find(k => k.length >= 2 && (cleaned.includes(k) || k.includes(cleaned)));
+  const name = matchedLogo ? (KNOWN_BRAND_LOGO_MAP[matchedLogo] || matchedLogo) : cleaned.replace(/\s+/g, '');
+  return `/assets/icons/lobe/${name}.svg`;
+};
 
 /** 图标加载失败时降级到默认图；保持默认图标显示 */
 const handleLobeIconError = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -225,23 +406,49 @@ const isModelUnavailable = (model: any) =>
     (v: any) => !Array.isArray(v?.ha_subchannels) || v.ha_subchannels.length === 0
   );
 
-const getLogoFilter = (logoName: string | undefined, isLight: boolean) => {
-  if (isLight) return 'none';
-  if (!logoName) return 'none';
-  const name = logoName.toLowerCase();
-  if (name.includes('default')) return 'none';
+/** 高可用组可对应多个上游；倍率相同则计价相同，只保留一条展示 */
+function uniqueSubchannelsByRate(subs: any[]) {
+  const seen = new Set<string>();
+  return subs.filter((sub) => {
+    const key = (Number(sub?.rate) || 1).toFixed(6);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
-  // 包含以下关键字的单色/黑色图标，在暗色模式下反色为白色显示
+const NEW_MODEL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const isNewModel = (model: { created_at?: string; variants?: { created_at?: string }[] }) => {
+  const cutoff = Date.now() - NEW_MODEL_WINDOW_MS;
+  const stamps = [model.created_at, ...(model.variants || []).map(v => v.created_at)];
+  return stamps.some(createdAt => {
+    const t = parseApiTimeAsUtc(createdAt);
+    return !!t && t.getTime() >= cutoff;
+  });
+};
+
+const getLogoFilter = (logoName: string | undefined, isLight: boolean, resolvedSrc?: string) => {
+  if (isLight) return 'none';
+  const name = (logoName || '').toLowerCase();
+  const src = (resolvedSrc || '').toLowerCase();
+
+  // 1. 默认立方体图标绝对不反色
+  if (name.includes('default') || src.includes('default')) return 'none';
+
+  // 2. Kimi 拥有官方专属黑白+蓝点双模高保真图标，无论标识还是实际渲染 URL 包含 kimi，坚决禁止反色滤镜
+  if (name.includes('kimi') || src.includes('kimi')) return 'none';
+
+  // 3. 包含以下关键字的单色/黑色图标，在暗色模式下反色为白色显示
   const monochromeKeywords = [
     'openai', 'github', 'anthropic', 'groq', 'ollama',
     'moonshot', 'zeroone', 'openrouter', 'xai', 'grok',
     'hermes'
   ];
 
-  if (monochromeKeywords.some(keyword => name.includes(keyword))) {
+  if (monochromeKeywords.some(keyword => name.includes(keyword) || src.includes(keyword))) {
     return 'invert(1)';
   }
-  return 'brightness(0.9)';
+  return 'none';
 };
 
 interface CopyModelIdButtonProps {
@@ -288,6 +495,78 @@ const CopyModelIdButton: React.FC<CopyModelIdButtonProps> = ({ modelId, isLight,
   );
 };
 
+const MpSkel = ({ width, height, radius = 8, style }: { width: number | string; height: number; radius?: number; style?: React.CSSProperties }) => (
+  <div className="mp-skel" style={{ width, height, borderRadius: radius, flexShrink: 0, ...style }} />
+);
+
+const cardRevealDelayMs = (index: number, id: number) => {
+  const n = Math.imul(id | 0, 2654435761) >>> 0;
+  return index * 26 + (n % 16);
+};
+
+const MarketplaceModelsSkeleton = ({ isGrid, isXs }: { isGrid: boolean; isXs: boolean }) => {
+  const count = isXs ? 4 : 9;
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <MpSkel width={18} height={18} radius={6} />
+        <MpSkel width={72} height={16} radius={6} />
+        <MpSkel width={40} height={20} radius={10} />
+      </div>
+      <div
+        className="mp-grid"
+        style={isGrid
+          ? { display: 'grid', gridTemplateColumns: isXs ? '1fr' : MP_GRID_TEMPLATE_COLUMNS, gap: MP_GRID_GAP }
+          : { display: 'flex', flexDirection: 'column', gap: 12 }
+        }
+      >
+        {Array.from({ length: count }, (_, i) => (
+          <div
+            key={i}
+            className="mp-card mp-skel-card"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              padding: isGrid ? 15 : '16px 20px',
+              minHeight: isGrid ? undefined : 88,
+              borderRadius: 5,
+              cursor: 'default',
+              pointerEvents: 'none',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: isGrid ? 14 : 12 }}>
+              <MpSkel width={isGrid ? 48 : 20} height={isGrid ? 48 : 20} radius={5} />
+              <div style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+                <MpSkel width="72%" height={isGrid ? 18 : 16} radius={6} />
+                <MpSkel width="38%" height={12} radius={6} style={{ marginTop: 8 }} />
+              </div>
+            </div>
+            {isGrid && <div style={{ flex: 1, minHeight: 10 }} />}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isGrid ? '1fr 1fr' : '1fr',
+              gap: 16,
+              marginTop: isGrid ? 0 : 12,
+              paddingTop: isGrid ? 10 : 0,
+            }}>
+              <div>
+                <MpSkel width={40} height={12} radius={4} />
+                <MpSkel width={88} height={16} radius={6} style={{ marginTop: 8 }} />
+              </div>
+              {isGrid && (
+                <div>
+                  <MpSkel width={40} height={12} radius={4} />
+                  <MpSkel width={96} height={16} radius={6} style={{ marginTop: 8 }} />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const ModelMarketplace: React.FC = () => {
   const { t: _t, i18n } = useTranslation();
   const { t: tp } = useTranslation('model_marketplace');
@@ -324,26 +603,65 @@ const ModelMarketplace: React.FC = () => {
   const [unreadCount, setUnreadCount] = useState(0);
 
   const [loading, setLoading] = useState(true);
-  /** 首屏数据未就绪前不渲染侧栏壳，避免 Suspense 全屏菊花后再闪一次右侧菊花 */
-  const [initialReady, setInitialReady] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const [models, setModels] = useState<MarketplaceModel[]>([]);
   const [groupedModels, setGroupedModels] = useState<MarketplaceModel[]>([]);
   const [providers, setProviders] = useState<FilterItem[]>([]);
   const [types, setTypes] = useState<FilterItem[]>([]);
-  const [total, setTotal] = useState(0);
   const [trendingConfig, setTrendingConfig] = useState<any>(null);
-  const [activeView, setActiveView] = useState<'trending' | 'models'>('models');
-
-  // 筛选状态
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [selectedType, setSelectedType] = useState<number | null>(null);
-  const [selectedProviders, setSelectedProviders] = useState<number[]>([]);
   const [sortBy, setSortBy] = useState<'popular' | 'name' | 'newest'>('popular');
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedModel, _setSelectedModel] = useState<MarketplaceModel | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
+
+  const typeParam = searchParams.get('type') || searchParams.get('category') || searchParams.get('type_id');
+  const providerParam = searchParams.get('provider') || searchParams.get('providers') || searchParams.get('provider_id');
+  const qParam = searchParams.get('q') || searchParams.get('keyword');
+  const tabParam = searchParams.get('tab') || searchParams.get('view');
+  const selectedType = resolveFilterId(typeParam, types);
+  const selectedProvider = resolveFilterId(providerParam, providers, (item, token) =>
+    item.provider_type?.toLowerCase() === token,
+  );
+  const searchKeyword = qParam ?? '';
+  const activeView: 'trending' | 'models' =
+    tabParam === 'trending'
+      ? 'trending'
+      : tabParam === 'models' || typeParam || providerParam || qParam
+        ? 'models'
+        : trendingConfig?.enabled !== false
+          ? 'trending'
+          : 'models';
+
+  const patchMarketplaceParams = (patch: MarketplaceQueryPatch) => {
+    const next = new URLSearchParams(searchParams);
+    if (patch.tab) {
+      next.set('tab', patch.tab);
+      next.delete('view');
+    }
+    if (patch.type !== undefined) {
+      next.delete('category');
+      next.delete('type_id');
+      if (patch.type === null) next.delete('type');
+      else next.set('type', String(patch.type));
+    }
+    if (patch.provider !== undefined) {
+      next.delete('providers');
+      next.delete('provider_id');
+      if (patch.provider === null) next.delete('provider');
+      else next.set('provider', String(patch.provider));
+    }
+    if (patch.q !== undefined) {
+      next.delete('keyword');
+      if (patch.q) next.set('q', patch.q);
+      else next.delete('q');
+    }
+    if (patch.closeModel) {
+      next.delete('model');
+      _setSelectedModel(null);
+    }
+    setSearchParams(next);
+  };
 
   const setSelectedModel = (model: MarketplaceModel | null) => {
     _setSelectedModel(model);
@@ -357,7 +675,6 @@ const ModelMarketplace: React.FC = () => {
     setSearchParams(newParams);
   };
 
-  // Structured URL Navigation Handlers for Sidebar Menu & Tabs
   const handleNavHome = () => {
     _setSelectedModel(null);
     const newParams = new URLSearchParams();
@@ -370,106 +687,30 @@ const ModelMarketplace: React.FC = () => {
   };
 
   const handleNavTrending = () => {
-    _setSelectedModel(null);
-    const newParams = new URLSearchParams(searchParams);
-    newParams.set('tab', 'trending');
-    newParams.delete('type');
-    newParams.delete('category');
-    newParams.delete('provider');
-    newParams.delete('providers');
-    newParams.delete('q');
-    setSearchParams(newParams);
+    patchMarketplaceParams({
+      tab: 'trending',
+      type: null,
+      provider: null,
+      q: null,
+      closeModel: true,
+    });
   };
 
   const handleNavAllModels = () => {
-    _setSelectedModel(null);
-    const newParams = new URLSearchParams(searchParams);
-    newParams.set('tab', 'models');
-    newParams.delete('type');
-    newParams.delete('category');
-    newParams.delete('provider');
-    newParams.delete('providers');
-    newParams.delete('q');
-    setSearchParams(newParams);
+    patchMarketplaceParams({
+      tab: 'models',
+      type: null,
+      closeModel: true,
+    });
   };
 
   const handleNavType = (t: FilterItem) => {
-    _setSelectedModel(null);
-    const newParams = new URLSearchParams(searchParams);
-    newParams.set('tab', 'models');
-    newParams.set('type', t.name || t.id.toString());
-    newParams.delete('category');
-    newParams.delete('provider');
-    newParams.delete('providers');
-    newParams.delete('q');
-    setSearchParams(newParams);
+    patchMarketplaceParams({
+      tab: 'models',
+      type: selectedType === t.id ? null : t.id,
+      closeModel: true,
+    });
   };
-
-  // Bidirectional URL Params -> State Sync
-  useEffect(() => {
-    const tabParam = searchParams.get('tab') || searchParams.get('view');
-    const typeParam = searchParams.get('type') || searchParams.get('category') || searchParams.get('type_id');
-    const qParam = searchParams.get('q') || searchParams.get('keyword');
-    const providerParam = searchParams.get('provider') || searchParams.get('providers') || searchParams.get('provider_id');
-
-    // 1. activeView
-    if (tabParam === 'trending') {
-      if (activeView !== 'trending') setActiveView('trending');
-    } else if (tabParam === 'models' || typeParam || providerParam || qParam) {
-      if (activeView !== 'models') setActiveView('models');
-    } else {
-      const defaultView = trendingConfig?.enabled !== false ? 'trending' : 'models';
-      if (activeView !== defaultView) setActiveView(defaultView);
-    }
-
-    // 2. selectedType
-    if (typeParam && types.length > 0) {
-      const foundType = types.find(t => 
-        t.id.toString() === typeParam || 
-        t.name.toLowerCase() === typeParam.toLowerCase()
-      );
-      if (foundType) {
-        if (selectedType !== foundType.id) setSelectedType(foundType.id);
-      } else if (!isNaN(Number(typeParam))) {
-        const numId = Number(typeParam);
-        if (selectedType !== numId) setSelectedType(numId);
-      }
-    } else {
-      if (selectedType !== null) setSelectedType(null);
-    }
-
-    // 3. selectedProviders
-    if (providerParam && providers.length > 0) {
-      const pTokens = providerParam.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-      const matchedIds: number[] = [];
-      pTokens.forEach(tok => {
-        const pFound = providers.find(p =>
-          p.id.toString() === tok ||
-          p.name.toLowerCase() === tok ||
-          p.provider_type?.toLowerCase() === tok
-        );
-        if (pFound) {
-          matchedIds.push(pFound.id);
-        } else if (!isNaN(Number(tok))) {
-          matchedIds.push(Number(tok));
-        }
-      });
-      const sortedCurrent = [...selectedProviders].sort().join(',');
-      const sortedMatched = [...matchedIds].sort().join(',');
-      if (sortedCurrent !== sortedMatched) {
-        setSelectedProviders(matchedIds);
-      }
-    } else {
-      if (selectedProviders.length > 0) setSelectedProviders([]);
-    }
-
-    // 4. searchKeyword
-    if (qParam !== null) {
-      if (searchKeyword !== qParam) setSearchKeyword(qParam);
-    } else {
-      if (searchKeyword !== '') setSearchKeyword('');
-    }
-  }, [searchParams, types, providers, trendingConfig]);
 
   useEffect(() => {
     const modelIdInUrl = searchParams.get('model');
@@ -615,6 +856,9 @@ const ModelMarketplace: React.FC = () => {
           provider_name: useEnglish
             ? localizedClassificationName(model.provider_name, model.provider_name_en, tp('unknown_provider', 'Provider'))
             : model.provider_name,
+          api_provider_name: useEnglish && model.api_provider_name
+            ? localizedClassificationName(model.api_provider_name, model.api_provider_name_en, model.api_provider_name)
+            : (model.api_provider_name || ''),
           type_name: useEnglish
             ? localizedClassificationName(model.type_name, model.type_name_en, tp('other_category', 'Other'))
             : model.type_name,
@@ -632,14 +876,8 @@ const ModelMarketplace: React.FC = () => {
         setGroupedModels((res.grouped_models || res.models || []).map(localizeModel));
         setProviders((res.providers || []).map((item: FilterItem) => localizeFilter(item, tp('unknown_provider', 'Provider'))));
         setTypes((res.types || []).map((item: FilterItem) => localizeFilter(item, tp('other_category', 'Other'))));
-        setTotal(res.group_total || res.total || 0);
         if (res.trending_config) {
           setTrendingConfig(res.trending_config);
-          const currentTab = searchParams.get('tab') || searchParams.get('view');
-          const currentType = searchParams.get('type') || searchParams.get('category') || searchParams.get('type_id');
-          if (res.trending_config.enabled && !currentTab && !currentType) {
-            setActiveView('trending');
-          }
         }
       }
     } catch (e: any) {
@@ -650,31 +888,14 @@ const ModelMarketplace: React.FC = () => {
       }
     } finally {
       setLoading(false);
-      setInitialReady(true);
     }
   };
 
-  // 过滤逻辑 - 基于分组后的模型列表
   const filteredModels = useMemo(() => {
-    let result = [...groupedModels];
+    let result = groupedModels.filter((m) =>
+      marketplaceModelMatchesFilters(m, selectedType, selectedProvider),
+    );
 
-    // 类型筛选 - 检查组内任意变体匹配
-    if (selectedType !== null) {
-      result = result.filter(m => {
-        if (m.type_id === selectedType) return true;
-        return m.variants?.some(v => v.type_id === selectedType) || false;
-      });
-    }
-
-    // 官方服务商筛选 - 检查组内任意变体匹配
-    if (selectedProviders.length > 0) {
-      result = result.filter(m => {
-        if (selectedProviders.includes(m.provider_id)) return true;
-        return m.variants?.some(v => selectedProviders.includes(v.provider_id)) || false;
-      });
-    }
-
-    // 搜索
     if (searchKeyword.trim()) {
       const kw = searchKeyword.trim().toLowerCase();
       result = result.filter(m =>
@@ -690,7 +911,6 @@ const ModelMarketplace: React.FC = () => {
       );
     }
 
-    // 排序
     if (sortBy === 'popular') {
       result.sort((a, b) => ((b.sort_order || 0) - (a.sort_order || 0)) || ((b.id || 0) - (a.id || 0)));
     } else if (sortBy === 'name') {
@@ -700,7 +920,7 @@ const ModelMarketplace: React.FC = () => {
     }
 
     return result;
-  }, [groupedModels, selectedType, selectedProviders, searchKeyword, sortBy]);
+  }, [groupedModels, selectedType, selectedProvider, searchKeyword, sortBy]);
 
   const pagedModels = useMemo(() => {
     const startIndex = (currentPage - 1) * pageSize;
@@ -711,6 +931,16 @@ const ModelMarketplace: React.FC = () => {
   const groupedModelsByType = useMemo(() => {
     const modelsToGroup = filteredModels.length <= 100 ? filteredModels : pagedModels;
     if (modelsToGroup.length === 0) return [];
+
+    if (selectedType !== null) {
+      const typeObj = types.find(t => t.id === selectedType);
+      return [{
+        typeId: selectedType,
+        typeName: typeObj?.name || modelsToGroup[0]?.type_name || tp('other_category', '其他分类'),
+        typeNameEn: typeObj?.name_en,
+        models: modelsToGroup,
+      }];
+    }
 
     const typeMap = new Map<number | string, MarketplaceModel[]>();
     const uncategorized: MarketplaceModel[] = [];
@@ -764,11 +994,11 @@ const ModelMarketplace: React.FC = () => {
     }
 
     return sections;
-  }, [filteredModels, pagedModels, types, tp]);
+  }, [filteredModels, pagedModels, types, tp, selectedType]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedType, selectedProviders, searchKeyword, sortBy]);
+  }, [selectedType, selectedProvider, searchKeyword, sortBy]);
 
   // 防御性校准：当过滤结果数或每页展示数变更导致总页数变小，且 currentPage 大于最大页数时，自动修正页码
   useEffect(() => {
@@ -778,82 +1008,60 @@ const ModelMarketplace: React.FC = () => {
     }
   }, [filteredModels.length, pageSize, currentPage]);
 
-  // 统计每个类型的数量（按分组计数）
+  const modelsMatchingProviders = useMemo(
+    () => groupedModels.filter((m) => marketplaceModelMatchesFilters(m, null, selectedProvider)),
+    [groupedModels, selectedProvider],
+  );
+
   const typeCounts = useMemo(() => {
     const counts: Record<number, number> = {};
-    const src = selectedProviders.length > 0
-      ? groupedModels.filter(m => selectedProviders.includes(m.provider_id) || m.variants?.some(v => selectedProviders.includes(v.provider_id)))
-      : groupedModels;
-    src.forEach(m => {
-      if (m.type_id) counts[m.type_id] = (counts[m.type_id] || 0) + 1;
+    types.forEach((t) => {
+      counts[t.id] = groupedModels.filter((m) =>
+        marketplaceModelMatchesFilters(m, t.id, selectedProvider),
+      ).length;
     });
     return counts;
-  }, [groupedModels, selectedProviders]);
+  }, [groupedModels, types, selectedProvider]);
 
-  // 统计每个官方服务商的数量（按分组计数）
   const providerCounts = useMemo(() => {
     const counts: Record<number, number> = {};
-    const src = selectedType !== null
-      ? groupedModels.filter(m => m.type_id === selectedType || m.variants?.some(v => v.type_id === selectedType))
-      : groupedModels;
-    src.forEach(m => {
-      // 统计该分组涉及的所有官方服务商
-      const pids = new Set<number>();
-      if (m.provider_id) pids.add(m.provider_id);
-      m.variants?.forEach(v => { if (v.provider_id) pids.add(v.provider_id); });
-      pids.forEach(pid => { counts[pid] = (counts[pid] || 0) + 1; });
+    providers.forEach((p) => {
+      counts[p.id] = groupedModels.filter((m) =>
+        marketplaceModelMatchesFilters(m, selectedType, p.id),
+      ).length;
     });
     return counts;
-  }, [groupedModels, selectedType]);
+  }, [groupedModels, providers, selectedType]);
 
   const handleProviderToggle = (id: number) => {
-    let next: number[];
-    if (selectedProviders.includes(id)) {
-      next = selectedProviders.filter(p => p !== id);
-    } else {
-      next = [id];
-    }
-    setSelectedProviders(next);
-    setSelectedModel(null);
-
-    const newParams = new URLSearchParams(searchParams);
-    if (next.length > 0) {
-      newParams.set('provider', next.join(','));
-    } else {
-      newParams.delete('provider');
-    }
-
-    if (searchKeyword.trim()) {
-      const kw = searchKeyword.trim().toLowerCase();
-      const isProviderName = providers.some(p => p.name.toLowerCase() === kw || p.provider_type?.toLowerCase() === kw);
-      if (isProviderName) {
-        setSearchKeyword('');
-        newParams.delete('q');
-      }
-    }
-
-    setSearchParams(newParams);
+    const nextProvider = selectedProvider === id ? null : id;
+    const kw = searchKeyword.trim().toLowerCase();
+    const qIsProviderName = kw.length > 0 && providers.some(
+      (p) => p.name.toLowerCase() === kw || p.provider_type?.toLowerCase() === kw,
+    );
+    patchMarketplaceParams({
+      tab: 'models',
+      provider: nextProvider,
+      q: qIsProviderName ? null : undefined,
+      closeModel: true,
+    });
   };
 
-  const activeFilters = (selectedType !== null ? 1 : 0) + (selectedProviders.length > 0 ? 1 : 0);
+  const hasActiveFilters = selectedType !== null || selectedProvider !== null || !!searchKeyword.trim();
 
   const clearFilters = () => {
-    setActiveView('models');
-    setSelectedType(null);
-    setSelectedProviders([]);
-    setSearchKeyword('');
-    const newParams = new URLSearchParams(searchParams);
-    newParams.set('tab', 'models');
-    newParams.delete('type');
-    newParams.delete('provider');
-    newParams.delete('providers');
-    newParams.delete('q');
-    setSearchParams(newParams);
+    patchMarketplaceParams({
+      tab: 'models',
+      type: null,
+      provider: null,
+      q: null,
+      closeModel: true,
+    });
   };
 
   const isLight = themeMode === 'light';
   const c = {
-    bg: isLight ? '#ffffff' : '#000000',
+    bg: isLight ? '#f3f4f6' : '#000000',
     siderBg: isLight ? '#f8f9fa' : '#141414',
     cardBg: isLight ? '#ffffff' : '#121214',
     cardBorder: isLight ? '#eaeaea' : '#222225',
@@ -943,7 +1151,7 @@ const ModelMarketplace: React.FC = () => {
     );
   };
 
-  const renderCardPrice = (model: MarketplaceModel) => {
+  const renderCardPrice = (model: MarketplaceModel, featured = false) => {
     const billing = model.billing || getFallbackBilling(model);
     if (!billing) return null;
     const { billing_type, prompt_rate, completion_rate, fixed_rate, duration_rate, billing_rule, extended_config, pricing_tiers } = billing;
@@ -952,15 +1160,16 @@ const ModelMarketplace: React.FC = () => {
     const tiers = safeParseJson(pricing_tiers, []);
 
     const priceStyle: React.CSSProperties = {
-      fontSize: 12,
-      fontWeight: 500,
-      color: isLight ? '#1f2937' : 'rgba(255,255,255,0.9)',
+      fontSize: 14,
+      fontWeight: 400,
+      color: isLight ? '#1f2937' : 'rgba(255,255,255,0.92)',
       fontFamily: "'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', monospace",
       display: 'inline-flex',
       alignItems: 'center',
       flexWrap: 'wrap',
       justifyContent: 'flex-start',
-      gap: 4
+      gap: 4,
+      lineHeight: 1.5,
     };
 
     const freeBadge = (
@@ -983,7 +1192,8 @@ const ModelMarketplace: React.FC = () => {
     const pushMinPrice = (rates: (number | undefined | null)[], unit: string) => {
       const activeRates = rates.map(r => Number(r)).filter(r => !isNaN(r) && r > 0);
       if (activeRates.length > 0) {
-        priceItems.push(<>{tp('starts_at')}: <span style={{ fontWeight: 600 }}>{formatPrice(Math.min(...activeRates), model)}</span>{unit}</>);
+        const amount = <span style={{ fontWeight: 400 }}>{formatPrice(Math.min(...activeRates), model)}</span>;
+        priceItems.push(featured ? <>{amount}{unit}</> : <>{tp('starts_at')}: {amount}{unit}</>);
       }
     };
 
@@ -993,8 +1203,8 @@ const ModelMarketplace: React.FC = () => {
         const pRate = firstTier.prompt_rate !== undefined && firstTier.prompt_rate !== null ? Number(firstTier.prompt_rate) : 0;
         const cRate = firstTier.completion_rate !== undefined && firstTier.completion_rate !== null ? Number(firstTier.completion_rate) : 0;
         if (pRate === 0 && cRate === 0) isFree = true;
-        if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('input')}: <span style={{ fontWeight: 600 }}>{formatPrice(pRate, model)}</span>/1M</span>);
-        if (cRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('output')}: <span style={{ fontWeight: 600 }}>{formatPrice(cRate, model)}</span>/1M</span>);
+        if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('input')}: <span style={{ fontWeight: 400 }}>{formatPrice(pRate, model)}</span>/1M</span>);
+        if (cRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('output')}: <span style={{ fontWeight: 400 }}>{formatPrice(cRate, model)}</span>/1M</span>);
       }
       else if (billing_rule === 'gpt_billing') {
         const gptConfig = (ext && typeof ext.gpt_config === 'object' && ext.gpt_config !== null) ? ext.gpt_config : {};
@@ -1010,7 +1220,7 @@ const ModelMarketplace: React.FC = () => {
            priceItems.push(<span>{tp('gpt_billing_disabled')}</span>);
         } else {
            enabledItems.forEach(item => {
-             priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{item.label}: <span style={{ fontWeight: 600 }}>{formatPrice(gptConfig[item.key].rate, model)}</span>/1M</span>);
+             priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{item.label}: <span style={{ fontWeight: 400 }}>{formatPrice(gptConfig[item.key].rate, model)}</span>/1M</span>);
            });
         }
       }
@@ -1018,8 +1228,8 @@ const ModelMarketplace: React.FC = () => {
         const pRate = prompt_rate !== undefined && prompt_rate !== null ? Number(prompt_rate) : 0;
         const imgRate = ext.image_prompt_rate !== undefined && ext.image_prompt_rate !== null ? Number(ext.image_prompt_rate) : 0;
         if (pRate === 0 && imgRate === 0) isFree = true;
-        if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('text_prompt_short')}: <span style={{ fontWeight: 600 }}>{formatPrice(pRate, model)}</span>/1M</span>);
-        if (imgRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('image_prompt_short')}: <span style={{ fontWeight: 600 }}>{formatPrice(imgRate, model)}</span>/1M</span>);
+        if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('text_prompt_short')}: <span style={{ fontWeight: 400 }}>{formatPrice(pRate, model)}</span>/1M</span>);
+        if (imgRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('image_prompt_short')}: <span style={{ fontWeight: 400 }}>{formatPrice(imgRate, model)}</span>/1M</span>);
       }
       else if (billing_rule === 'seedance2.0' && ext.resolution_rates) {
         const rates = ext.resolution_rates || {};
@@ -1065,14 +1275,23 @@ const ModelMarketplace: React.FC = () => {
       else if (billing_rule === 'characters') {
         const fRate = fixed_rate !== undefined && fixed_rate !== null ? Number(fixed_rate) : 0;
         if (fRate === 0) isFree = true;
-        else priceItems.push(<><span style={{ fontWeight: 600 }}>{formatPrice(fRate, model)}</span>{tp('unit_per_10k_chars')}</>);
+        else priceItems.push(<><span style={{ fontWeight: 400 }}>{formatPrice(fRate, model)}</span>{tp('unit_per_10k_chars')}</>);
       }
     } else if (billing_type === 'duration') {
       if ((billing_rule === 'video_resolution' || billing_rule === 'minimax_h3') && Array.isArray(tiers) && tiers.length > 0) {
         pushMinPrice(tiers.filter(t => t.enabled !== false).map(t => t.rate), tp('unit_per_second'));
       }
-      else if (billing_rule === 'video_seconds_io' && Array.isArray(tiers) && tiers.length > 0) {
-        pushMinPrice(tiers.filter(t => t.enabled !== false).flatMap(t => [t.input_rate, t.rate]), tp('unit_per_second'));
+      else if ((billing_rule === 'video_seconds_io' || billing_rule === 'video_seconds_ref') && Array.isArray(tiers) && tiers.length > 0) {
+        pushMinPrice(
+          tiers.filter(t => t.enabled !== false).flatMap(t => [
+            t.input_rate,
+            t.rate,
+            t.rate_no_ref,
+            t.rate_ref,
+            t.input_rate_ref,
+          ].filter((p): p is number => typeof p === 'number' && p > 0)),
+          tp('unit_per_second')
+        );
       }
       else if (billing_rule === 'kling_video') {
         const pt = ext.price_table || {};
@@ -1092,7 +1311,7 @@ const ModelMarketplace: React.FC = () => {
       else if (billing_rule === 'fal_ref_video') {
         const dRate = duration_rate !== undefined && duration_rate !== null ? Number(duration_rate) : 0;
         if (dRate > 0) {
-          priceItems.push(<><span style={{ fontWeight: 600 }}>{formatPrice(dRate, model)}</span>{tp('unit_per_second')}</>);
+          priceItems.push(<><span style={{ fontWeight: 400 }}>{formatPrice(dRate, model)}</span>{tp('unit_per_second')}</>);
         }
       }
     }
@@ -1103,8 +1322,8 @@ const ModelMarketplace: React.FC = () => {
         const cRate = completion_rate !== undefined && completion_rate !== null ? Number(completion_rate) : 0;
         if (pRate === 0 && cRate === 0) isFree = true;
         else {
-          if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('input')}: <span style={{ fontWeight: 600 }}>{formatPrice(pRate, model)}</span>/1M</span>);
-          if (cRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('output')}: <span style={{ fontWeight: 600 }}>{formatPrice(cRate, model)}</span>/1M</span>);
+          if (pRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('input')}: <span style={{ fontWeight: 400 }}>{formatPrice(pRate, model)}</span>/1M</span>);
+          if (cRate > 0) priceItems.push(<span style={{ whiteSpace: 'nowrap' }}>{tp('output')}: <span style={{ fontWeight: 400 }}>{formatPrice(cRate, model)}</span>/1M</span>);
         }
       } else if (billing_type === 'requests') {
         const fRate = fixed_rate !== undefined && fixed_rate !== null ? Number(fixed_rate) : 0;
@@ -1113,13 +1332,13 @@ const ModelMarketplace: React.FC = () => {
           const isImageRule = ['per_image', 'vidu_image', 'image_resolution', 'image_size_pixel', 'volc_seedream_pro'].includes(billing_rule || '') ||
             (billing_rule || '').includes('image') || (model.type_name || '').includes('图片') || (model.type_name || '').includes('图像') || (model.type_name || '').includes('Image');
           const unit = isImageRule ? tp('unit_per_image') : tp('unit_per_request');
-          priceItems.push(<><span style={{ fontWeight: 600 }}>{formatPrice(fRate, model)}</span>{unit}</>);
+          priceItems.push(<><span style={{ fontWeight: 400 }}>{formatPrice(fRate, model)}</span>{unit}</>);
         }
       } else if (billing_type === 'duration') {
         const dRate = duration_rate !== undefined && duration_rate !== null ? Number(duration_rate) : 0;
         if (dRate === 0) isFree = true;
         else {
-          priceItems.push(<><span style={{ fontWeight: 600 }}>{formatPrice(dRate, model)}</span>{tp('unit_per_second')}</>);
+          priceItems.push(<><span style={{ fontWeight: 400 }}>{formatPrice(dRate, model)}</span>{tp('unit_per_second')}</>);
         }
       }
     }
@@ -1128,8 +1347,8 @@ const ModelMarketplace: React.FC = () => {
 
     if (priceItems.length > 0) {
       const showMultiplier = ext.enable_time_multipliers && Array.isArray(ext.time_multipliers) && ext.time_multipliers.length > 0;
-      const visibleItems = priceItems.slice(0, 3);
-      const hasMore = priceItems.length > 3;
+      const visibleItems = priceItems.slice(0, featured ? 2 : 3);
+      const hasMore = priceItems.length > visibleItems.length;
       
       return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
@@ -1138,19 +1357,42 @@ const ModelMarketplace: React.FC = () => {
           ))}
           {hasMore && (
              <div style={{ fontSize: 11, color: isLight ? '#6b7280' : '#9ca3af', marginTop: 2 }}>
-               +{priceItems.length - 3} {i18n.language.startsWith('zh') ? '更多' : 'More'}...
+               +{priceItems.length - visibleItems.length} {i18n.language.startsWith('zh') ? '更多' : 'More'}...
              </div>
           )}
           {showMultiplier && (
             <Tooltip title={
-              <div style={{ padding: '4px 2px' }}>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>{tp('time_multiplier_enabled')}:</div>
-                {ext.time_multipliers.map((tm: any, idx: number) => (
-                  <div key={idx} style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', gap: 16 }}>
-                    <span>{tm.start} - {tm.end}</span>
-                    <span style={{ color: Number(tm.multiplier) < 1 ? '#52c41a' : '#faad14', fontWeight: 600 }}>{Number(tm.multiplier).toFixed(2)}{tp('unit_multiplier')}</span>
-                  </div>
-                ))}
+              <div style={{ padding: '6px 4px', minWidth: 220 }}>
+                <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Clock style={{ width: 12, height: 12 }} />
+                  <span>{tp('time_multiplier_enabled')}</span>
+                </div>
+                {ext.invert_time_multipliers ? (
+                  <div style={{ fontSize: 11, marginBottom: 6, opacity: 0.85, lineHeight: 1.4 }}>{tp('time_multiplier_invert_note')}</div>
+                ) : null}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {ext.time_multipliers.map((tm: any, idx: number) => {
+                    const meta = marketplaceMultiplierMeta(tm, !!ext.invert_time_multipliers, i18n.language, Number(ext.invert_remainder_multiplier));
+                    return (
+                      <div key={idx} style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                        <span>{meta.allDay ? tp('all_day') : `${tm.start} ~ ${tm.end}`} {meta.daysText ? `(${meta.daysText})` : ''}</span>
+                        <span style={{ color: meta.selected < 1 ? '#52c41a' : '#faad14', fontWeight: 600 }}>
+                          {meta.selected.toFixed(2)}{tp('unit_multiplier')}
+                          {meta.selected < 1 ? ` (${(meta.selected * 10).toFixed(1).replace(/\.0$/, '')}${tp('discount_suffix', '折')})` : ''}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {Number.isFinite(Number(ext.invert_remainder_multiplier)) && Number(ext.invert_remainder_multiplier) >= 0 && (
+                    <div style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', gap: 12, paddingTop: 3, borderTop: '1px dashed rgba(255,255,255,0.15)' }}>
+                      <span>{tp('unplanned_period', '其它时间段')}</span>
+                      <span style={{ color: Number(ext.invert_remainder_multiplier) < 1 ? '#52c41a' : '#faad14', fontWeight: 600 }}>
+                        {Number(ext.invert_remainder_multiplier).toFixed(2)}{tp('unit_multiplier')}
+                        {Number(ext.invert_remainder_multiplier) < 1 ? ` (${(Number(ext.invert_remainder_multiplier) * 10).toFixed(1).replace(/\.0$/, '')}${tp('discount_suffix', '折')})` : ''}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             }>
               <Tag color="orange" style={{ margin: '2px 0 0 0', padding: '0 4px', fontSize: 10, borderRadius: 4, height: 16, lineHeight: '14px', border: 'none' }}>{tp('offpeak_discount')}</Tag>
@@ -1215,7 +1457,7 @@ const ModelMarketplace: React.FC = () => {
       const items: any[] = [];
       const unit = isDuration ? tp('unit_per_second') : (isRequests ? tp('unit_per_image') : tp('unit_per_request'));
       let freeImageLine: React.ReactNode = null;
-      if ((br === 'volc_seedream_pro' || br === 'minimax_h3' || br === 'video_seconds_io') && Number(billing.prompt_rate) > 0) {
+      if ((br === 'volc_seedream_pro' || br === 'minimax_h3' || br === 'video_seconds_io' || br === 'video_seconds_ref') && Number(billing.prompt_rate) > 0) {
         const freeCount = resolveFreeImageCount(ext.free_image_count, br);
         freeImageLine = (
           <>
@@ -1246,6 +1488,15 @@ const ModelMarketplace: React.FC = () => {
         } else if (br === 'video_seconds_io') {
           items.push({ label: `${label} ${tp('video_input')}`, price: tier.input_rate, unit });
           items.push({ label: `${label} ${tp('video_generation')}`, price: tier.rate, unit });
+        } else if (br === 'video_seconds_ref') {
+          if (ext.enable_video_ref !== false && (tier.rate_no_ref !== undefined || tier.rate_ref !== undefined)) {
+            items.push({ label: `${label} 无参考-生成`, price: tier.rate_no_ref ?? tier.rate, unit });
+            items.push({ label: `${label} 有参考-输入`, price: tier.input_rate_ref ?? tier.input_rate, unit });
+            items.push({ label: `${label} 有参考-生成`, price: tier.rate_ref ?? tier.rate, unit });
+          } else {
+            items.push({ label: `${label} ${tp('video_input')}`, price: tier.input_rate, unit });
+            items.push({ label: `${label} ${tp('video_generation')}`, price: tier.rate, unit });
+          }
         } else {
           items.push({ label, price: tier.rate, unit });
           if (br === 'volc_seedream_pro' && Number(tier.layer_rate) > 0) {
@@ -1415,18 +1666,408 @@ const ModelMarketplace: React.FC = () => {
     );
   };
 
+  const getClockTimeInTz = (tz: string): string => {
+    try {
+      return new Date().toLocaleTimeString('zh-CN', {
+        timeZone: tz,
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    } catch (e) {
+      return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    }
+  };
+
+  const LiveTimeMultiplierFooter: React.FC<{
+    siteTimezone: string;
+    siteTimezoneOffset: string;
+    isLight: boolean;
+    c: any;
+  }> = ({ siteTimezone, siteTimezoneOffset, isLight, c }) => {
+    const [liveClock, setLiveClock] = useState(() => getClockTimeInTz(siteTimezone));
+
+    useEffect(() => {
+      const timer = setInterval(() => {
+        setLiveClock(getClockTimeInTz(siteTimezone));
+      }, 1000);
+      return () => clearInterval(timer);
+    }, [siteTimezone]);
+
+    const isZh = i18n.language.startsWith('zh');
+
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '6px 12px',
+        background: isLight ? '#f9fafb' : '#141416',
+        borderTop: `1px solid ${isLight ? '#f4f4f5' : 'rgba(255,255,255,0.04)'}`,
+        fontSize: 11,
+        color: c.text3,
+        lineHeight: 1.4,
+      }}>
+        <Info style={{ width: 11, height: 11, flexShrink: 0, color: c.text3 }} />
+        <span>
+          {isZh ? (
+            <>
+              计费时间段按站点默认时区（当前时间 <span style={{ fontFamily: "'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace", fontWeight: 600, color: c.text2 }} title={siteTimezone}>{liveClock} {siteTimezoneOffset}</span>）
+            </>
+          ) : (
+            <>
+              Billing periods use site default timezone (current time <span style={{ fontFamily: "'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace", fontWeight: 600, color: c.text2 }} title={siteTimezone}>{liveClock} {siteTimezoneOffset}</span>)
+            </>
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  const renderTimeMultiplierCard = (ext: any) => {
+    const multipliers = Array.isArray(ext?.time_multipliers) ? ext.time_multipliers : [];
+    if (multipliers.length === 0) return null;
+
+    const isInvert = !!ext.invert_time_multipliers;
+    const remOk = ext.invert_remainder_multiplier != null && Number.isFinite(Number(ext.invert_remainder_multiplier)) && Number(ext.invert_remainder_multiplier) >= 0;
+    const remainderRate = remOk ? Number(ext.invert_remainder_multiplier) : null;
+    const hasRemainderRow = remainderRate !== null;
+    const lang = i18n.language;
+    const siteTimezone = settings?.site?.default_timezone?.trim() || 'Asia/Shanghai';
+    const siteTimezoneOffset = (() => {
+      if (!siteTimezone) return 'UTC+8';
+      if (siteTimezone === 'UTC') return 'UTC+0';
+      if (siteTimezone.startsWith('UTC') || siteTimezone.startsWith('GMT')) {
+        return siteTimezone.replace('GMT', 'UTC');
+      }
+      if (siteTimezone.match(/^[+-]\d/)) {
+        return `UTC${siteTimezone}`;
+      }
+      try {
+        const date = new Date();
+        const str = date.toLocaleString('en-US', { timeZone: siteTimezone, timeZoneName: 'shortOffset' });
+        const match = str.match(/(GMT|UTC)([+-]\d{1,2}(:\d{2})?)/);
+        if (match && match[2]) return `UTC${match[2]}`;
+        if (str.includes('GMT') || str.includes('UTC')) return 'UTC+0';
+      } catch (e) {}
+      return 'UTC+8';
+    })();
+
+    const renderRateBadge = (rate: number, isRemainder = false) => {
+      const isDiscount = rate < 1;
+      const isBaseline = Math.abs(rate - 1) < 0.001;
+      const isPeak = rate > 1;
+
+      let discountLabel = '';
+      if (isDiscount) {
+        discountLabel = lang.startsWith('zh')
+          ? `${(rate * 10).toFixed(1).replace(/\.0$/, '')}${tp('discount_suffix', '折')}`
+          : `${Math.round((1 - rate) * 100)}% off`;
+      }
+
+      if (isDiscount) {
+        return (
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            fontSize: 11,
+            fontWeight: 600,
+            padding: '2px 8px',
+            borderRadius: 5,
+            background: isLight ? '#ecfdf5' : 'rgba(16, 185, 129, 0.12)',
+            color: isLight ? '#047857' : '#34d399',
+            border: `1px solid ${isLight ? '#a7f3d0' : 'rgba(16, 185, 129, 0.25)'}`,
+            lineHeight: '16px',
+            whiteSpace: 'nowrap',
+          }}>
+            <span>{rate.toFixed(2)} {tp('unit_multiplier', '倍')}</span>
+            <span style={{
+              fontSize: 10,
+              padding: '0 4px',
+              borderRadius: 3,
+              background: isLight ? 'rgba(4,120,87,0.1)' : 'rgba(52,211,153,0.15)',
+              fontWeight: 700,
+            }}>
+              {discountLabel}
+            </span>
+          </span>
+        );
+      }
+
+      if (isBaseline) {
+        return (
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            padding: '2px 8px',
+            borderRadius: 5,
+            background: isLight ? '#f4f4f5' : '#27272a',
+            color: isLight ? '#52525b' : '#a1a1aa',
+            border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
+            lineHeight: '16px',
+            whiteSpace: 'nowrap',
+          }}>
+            <span>1.00 {tp('unit_multiplier', '倍')}</span>
+            <span style={{ fontSize: 10, opacity: 0.75, fontWeight: 500 }}>
+              {tp('baseline_rate', '基准')}
+            </span>
+          </span>
+        );
+      }
+
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          fontSize: 11,
+          fontWeight: 600,
+          padding: '2px 8px',
+          borderRadius: 5,
+          background: isLight ? '#fffbeb' : 'rgba(245, 158, 11, 0.12)',
+          color: isLight ? '#b45309' : '#fbbf24',
+          border: `1px solid ${isLight ? '#fde68a' : 'rgba(245, 158, 11, 0.25)'}`,
+          lineHeight: '16px',
+          whiteSpace: 'nowrap',
+        }}>
+          <span>{rate.toFixed(2)} {tp('unit_multiplier', '倍')}</span>
+          <span style={{
+            fontSize: 10,
+            padding: '0 4px',
+            borderRadius: 3,
+            background: isLight ? 'rgba(180,83,9,0.1)' : 'rgba(251,191,36,0.15)',
+            fontWeight: 700,
+          }}>
+            {tp('peak_rate', '高峰')}
+          </span>
+        </span>
+      );
+    };
+
+    return (
+      <div style={{
+        marginTop: 8,
+        borderRadius: 8,
+        border: `1px solid ${isLight ? '#e4e4e7' : '#27272a'}`,
+        background: isLight ? '#fafafa' : '#18181b',
+        overflow: 'hidden',
+        boxShadow: isLight ? '0 1px 2px rgba(0,0,0,0.03)' : '0 1px 3px rgba(0,0,0,0.2)',
+        whiteSpace: 'normal',
+        minWidth: 320,
+      }}>
+        {/* 头部标题与公式 */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '8px 12px',
+          background: isLight ? '#f4f4f5' : '#202024',
+          borderBottom: `1px solid ${isLight ? '#e4e4e7' : '#27272a'}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              background: isLight ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.2)',
+              color: isLight ? '#d97706' : '#fbbf24',
+            }}>
+              <Clock style={{ width: 12, height: 12 }} />
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 600, color: c.text1 }}>
+              {tp('time_multiplier_schedule', '时段倍率规划')}
+            </span>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: '1px 6px',
+              borderRadius: 4,
+              background: isLight ? '#ffffff' : '#27272a',
+              color: c.text3,
+              border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
+              fontFamily: "'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace",
+            }}>
+              {tp('time_multiplier_formula', '实际价 = 默认价 × 当时倍率')}
+            </span>
+          </div>
+
+          <span style={{
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '1px 7px',
+            borderRadius: 12,
+            background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
+            color: c.text3,
+            border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
+          }}>
+            {tp('rules_count', `${multipliers.length} 个规则`, { count: multipliers.length })}
+          </span>
+        </div>
+
+        {/* 规则条目列表 */}
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {multipliers.map((tm: any, idx: number) => {
+            const meta = marketplaceMultiplierMeta(tm, isInvert, lang, Number(ext.invert_remainder_multiplier));
+            const isLast = idx === multipliers.length - 1 && !hasRemainderRow;
+
+            return (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '7px 12px',
+                  borderBottom: isLast ? 'none' : `1px solid ${isLight ? '#f4f4f5' : 'rgba(255,255,255,0.04)'}`,
+                  transition: 'background 0.15s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = isLight ? '#f9fafb' : 'rgba(255,255,255,0.03)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                {/* 时间与日期信息 */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+                  {/* 时间窗口 */}
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '2px 7px',
+                    borderRadius: 4,
+                    background: isLight ? '#ffffff' : 'rgba(255,255,255,0.04)',
+                    border: `1px solid ${isLight ? '#e4e4e7' : 'rgba(255,255,255,0.08)'}`,
+                    color: c.text1,
+                    fontSize: 11,
+                    fontFamily: "'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace",
+                    fontWeight: 500,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    <Clock style={{ width: 11, height: 11, color: c.text3, flexShrink: 0 }} />
+                    <span>{meta.allDay ? tp('all_day', '全天') : `${tm.start} ~ ${tm.end}`}</span>
+                  </div>
+
+                  {/* 星期范围 */}
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)',
+                    color: c.text2,
+                    fontSize: 11,
+                    fontWeight: 500,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    <CalendarDays style={{ width: 11, height: 11, color: c.text3, flexShrink: 0 }} />
+                    <span>{meta.daysText || tp('everyday', '每天')}</span>
+                  </div>
+                </div>
+
+                {/* 右侧倍率与折扣标签 */}
+                <div style={{ flexShrink: 0, marginLeft: 'auto' }}>
+                  {renderRateBadge(meta.selected)}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* 其它时间段行（按天规划 / 反向模式） */}
+          {hasRemainderRow && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '7px 12px',
+                background: isLight ? 'rgba(0,0,0,0.015)' : 'rgba(255,255,255,0.015)',
+                borderTop: `1px dashed ${isLight ? '#e4e4e7' : '#27272a'}`,
+                transition: 'background 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = isLight ? '#f9fafb' : 'rgba(255,255,255,0.03)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = isLight ? 'rgba(0,0,0,0.015)' : 'rgba(255,255,255,0.015)';
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '2px 7px',
+                  borderRadius: 4,
+                  background: isLight ? '#f4f4f5' : '#222226',
+                  border: `1px solid ${isLight ? '#e4e4e7' : '#3f3f46'}`,
+                  color: c.text2,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  whiteSpace: 'nowrap',
+                }}>
+                  <span>{tp('unplanned_period', '其它时间段')}</span>
+                </div>
+              </div>
+              <div style={{ flexShrink: 0, marginLeft: 'auto' }}>
+                {renderRateBadge(remainderRate!, true)}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 底部实时时区时钟说明 */}
+        <LiveTimeMultiplierFooter
+          siteTimezone={siteTimezone}
+          siteTimezoneOffset={siteTimezoneOffset}
+          isLight={isLight}
+          c={c}
+        />
+      </div>
+    );
+  };
+
   const renderUniversalPriceDetails = (variant: any) => {
     const node = renderUniversalPriceDetailsInner(variant);
     const hasDiscount = variant.global_discount_enabled === 1 && variant.global_discount !== undefined && variant.global_discount > 0 && variant.global_discount < 1;
     const billing = variant.billing || getFallbackBilling(variant);
     const ext = safeParseJson(billing?.extended_config);
     const showMultipliers = ext?.enable_time_multipliers && Array.isArray(ext.time_multipliers) && ext.time_multipliers.length > 0;
-    const upstreamChannels = (Array.isArray(variant.ha_subchannels) ? variant.ha_subchannels : []).filter((sub: any) => sub.is_ha || Number(sub.rate) !== 1);
+    const upstreamChannels = uniqueSubchannelsByRate(
+      (Array.isArray(variant.ha_subchannels) ? variant.ha_subchannels : []).filter((sub: any) => sub.is_ha || Number(sub.rate) !== 1)
+    );
+
+    const isSingleHaUpstream = Boolean(
+      variant.has_ha && (
+        variant.ha_sub_count === 1 ||
+        (variant.ha_sub_count === undefined && (
+          (upstreamChannels.length === 1 && upstreamChannels[0]?.is_ha) ||
+          (Array.isArray(variant.ha_subchannels) && variant.ha_subchannels.length === 1 && variant.ha_subchannels[0]?.is_ha)
+        ))
+      )
+    );
+
+    const showDefaultPricingHeader = isSingleHaUpstream || upstreamChannels.length > 0;
+    const showUpstreamChannels = !isSingleHaUpstream && upstreamChannels.length > 0;
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {upstreamChannels.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 2 }}>
+        {showDefaultPricingHeader && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
             <span style={{
               fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
               background: isLight ? '#09090b' : '#fafafa',
@@ -1435,6 +2076,26 @@ const ModelMarketplace: React.FC = () => {
             }}>
               {tp('default_pricing', 'Default pricing')}
             </span>
+            {isSingleHaUpstream && (
+              <Tooltip title={tp('high_availability', '高可用')}>
+                <Tag
+                  color="purple"
+                  style={{
+                    margin: 0,
+                    borderRadius: 4,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    border: 'none',
+                    lineHeight: '16px',
+                    height: 18,
+                    padding: '0 6px',
+                    cursor: 'default',
+                  }}
+                >
+                  HA
+                </Tag>
+              </Tooltip>
+            )}
           </div>
         )}
         {node}
@@ -1453,37 +2114,8 @@ const ModelMarketplace: React.FC = () => {
             </span>
           </div>
         )}
-        {showMultipliers && (
-          <div style={{
-            marginTop: 6,
-            padding: '6px 10px',
-            background: isLight ? 'rgba(250,173,20,0.05)' : 'rgba(250,173,20,0.08)',
-            borderRadius: 6,
-            border: `1px dashed ${isLight ? 'rgba(250,173,20,0.3)' : 'rgba(250,173,20,0.4)'}`
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              <span style={{
-                fontSize: 10, fontWeight: 600, padding: '0 6px', borderRadius: 4,
-                background: '#faad14', color: '#fff', display: 'inline-block', lineHeight: '16px'
-              }}>
-                {tp('time_multiplier')}
-              </span>
-              <span style={{ fontSize: 11, color: c.text2, fontWeight: 500 }}>{tp('time_multiplier_rule_enabled')}</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              {ext.time_multipliers.map((tm: any, idx: number) => (
-                <div key={idx} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', color: c.text2 }}>
-                  <span>{tp('time_period')} {idx + 1}: <span style={{ fontFamily: 'monospace', fontWeight: 500 }}>{tm.start} ~ {tm.end}</span></span>
-                  <span style={{ color: Number(tm.multiplier) < 1 ? '#52c41a' : '#faad14', fontWeight: 600 }}>{Number(tm.multiplier).toFixed(2)} {tp('unit_multiplier')}</span>
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 11, color: c.text3, marginTop: 4, fontStyle: 'italic' }}>
-              * {tp('time_multiplier_timezone_note')}
-            </div>
-          </div>
-        )}
-        {upstreamChannels.length > 0 && (
+        {showMultipliers && renderTimeMultiplierCard(ext)}
+        {showUpstreamChannels && (
           <div style={{
             marginTop: showMultipliers ? 8 : 10,
             display: 'flex',
@@ -1593,7 +2225,7 @@ const ModelMarketplace: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: c.text3, fontSize: 12 }}>
                     <ScheduleOutlined />
-                    {formatApiDateTime(item.created_at, 'YYYY-MM-DD HH:mm')}
+                    {formatApiDateTime(getAnnouncementDisplayTime(item), 'YYYY-MM-DD HH:mm')}
                   </div>
                 </div>
 
@@ -1621,22 +2253,7 @@ const ModelMarketplace: React.FC = () => {
     </div>
   );
 
-  // 与 App Suspense fallback 同为全屏居中菊花，首屏只呈现一次加载，避免「全屏 → 侧栏壳+右侧菊花」跳变
-  if (!initialReady) {
-    return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '100vh',
-          background: isLight ? '#ffffff' : '#000000',
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
-  }
+  const showModelsSkeleton = loading && groupedModels.length === 0 && !forbidden;
 
   return (
     <>
@@ -1648,9 +2265,48 @@ const ModelMarketplace: React.FC = () => {
         .mp-search .ant-input-affix-wrapper { background: ${c.searchBg} !important; border: 1px solid ${c.searchBorder} !important; border-radius: 8px !important; height: 40px; font-size: 14px; }
         .mp-search .ant-input-affix-wrapper:hover, .mp-search .ant-input-affix-wrapper:focus-within { border-color: ${c.focusBorder} !important; }
         .mp-search .ant-input { background: transparent !important; color: ${c.text2} !important; }
-        .mp-card { border: 1px solid ${c.cardBorder}; border-radius: 5px; padding: 20px; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); background: ${c.cardBg}; position: relative; }
+        .mp-models-page { width: 100%; max-width: ${MP_GRID_MAX_WIDTH}px; margin-left: auto; margin-right: auto; }
+        .mp-card { border: 1px solid ${c.cardBorder}; border-radius: 5px; padding: 15px; cursor: pointer; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); background: ${c.cardBg}; position: relative; font-size: 14px; font-weight: 400; }
+        .mp-card h3 { font-size: 16px; font-weight: 400; }
         .mp-card:hover { border-color: ${isLight ? '#999999' : '#444448'} !important; background: ${c.cardHoverBg}; transform: translateY(-4px); box-shadow: 0 12px 30px ${c.shadow}; }
-        .mp-card-icon { width: 36px; height: 36px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+        .mp-card-icon { width: 36px; height: 36px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+        .mp-card-logo {
+          width: 48px;
+          height: 48px;
+          border-radius: 5px;
+          background: ${isLight ? '#ffffff' : 'rgba(255, 255, 255, 0.05)'};
+          border: 1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)'};
+          box-shadow: ${isLight ? '0 1px 3px rgba(0, 0, 0, 0.04)' : '0 2px 6px rgba(0, 0, 0, 0.2)'};
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          overflow: hidden;
+          transition: all 0.2s ease;
+        }
+        .mp-new-badge { font-size: 11px; font-weight: 600; line-height: 18px; padding: 0 8px; border-radius: 999px; background: #2563eb; color: #fff; flex-shrink: 0; }
+        @keyframes mp-skel-shimmer {
+          0% { background-position: 100% 0; }
+          100% { background-position: -100% 0; }
+        }
+        .mp-skel {
+          background-image: linear-gradient(90deg, ${isLight ? '#ececef 25%, #f7f7f8 50%, #ececef 75%' : 'rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.05) 75%'});
+          background-size: 200% 100%;
+          animation: mp-skel-shimmer 1.15s ease-in-out infinite;
+        }
+        .mp-card.mp-skel-card:hover {
+          transform: none !important;
+          box-shadow: none !important;
+          border-color: ${c.cardBorder} !important;
+          background: ${c.cardBg} !important;
+        }
+        @keyframes mp-card-reveal {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: none; }
+        }
+        .mp-grid-reveal .mp-card {
+          animation: mp-card-reveal 0.28s ease-out both;
+        }
         .mp-sidebar-content { padding: 8px 0; overflow-y: auto; height: 100%; }
         .mp-sidebar-content::-webkit-scrollbar { width: 4px; }
         .mp-sidebar-content::-webkit-scrollbar-thumb { background: ${c.scrollThumb}; border-radius: 4px; }
@@ -1684,7 +2340,7 @@ const ModelMarketplace: React.FC = () => {
         }
       `}</style>
 
-      <Layout style={{ height: '100vh', overflow: 'hidden', background: isLight ? '#ffffff' : '#000000' }}>
+      <Layout style={{ height: '100vh', overflow: 'hidden', background: c.bg }}>
         <Sider
           trigger={null}
           collapsible
@@ -1695,7 +2351,7 @@ const ModelMarketplace: React.FC = () => {
           style={{
             boxShadow: 'none',
             borderRight: isLight ? '1px solid #e4e4e7' : '1px solid #1f1f23',
-            zIndex: 10,
+            zIndex: screens.xs ? 1050 : 10,
             position: screens.xs ? 'fixed' : 'relative',
             height: '100%',
             left: 0,
@@ -1819,12 +2475,19 @@ const ModelMarketplace: React.FC = () => {
                   {!(collapsed && !screens.xs) && (
                     <>
                       {tp('all_models')}
-                      <span className="mp-sidebar-count">{total}</span>
+                      <span className="mp-sidebar-count">{showModelsSkeleton ? '' : modelsMatchingProviders.length}</span>
                     </>
                   )}
                 </div>
               </Tooltip>
-              {types.map(t => (
+              {showModelsSkeleton
+                ? [0, 1, 2, 3].map(i => (
+                  <div key={`skel-nav-${i}`} className="mp-sidebar-item" style={{ pointerEvents: 'none' }}>
+                    <MpSkel width={16} height={16} radius={6} />
+                    {!(collapsed && !screens.xs) && <MpSkel width={`${52 + (i % 3) * 10}%`} height={12} radius={6} />}
+                  </div>
+                ))
+                : types.map(t => (
                 <Tooltip key={t.id} title={collapsed && !screens.xs ? t.name : ""} placement="right">
                   <div
                     className={`mp-sidebar-item ${activeView === 'models' && selectedType === t.id ? 'active' : ''}`}
@@ -1846,7 +2509,7 @@ const ModelMarketplace: React.FC = () => {
 
         <Layout style={{
           marginLeft: (screens.xs || collapsed) ? 0 : 0,
-          background: isLight ? '#ffffff' : '#000000',
+          background: c.bg,
           position: 'relative',
           overflow: 'hidden',
           display: 'flex',
@@ -1859,7 +2522,7 @@ const ModelMarketplace: React.FC = () => {
               top: 0,
               left: 0,
               right: 0,
-              zIndex: 20,
+              zIndex: 100,
               padding: '0 12px',
               background: themeMode === 'light' ? 'rgba(255, 255, 255, 0.72)' : 'rgba(0, 0, 0, 0.55)',
               backdropFilter: 'blur(16px) saturate(180%)',
@@ -2129,16 +2792,27 @@ const ModelMarketplace: React.FC = () => {
               ? (screens.xs ? 48 : 56)
               : (screens.xs ? 48 + 12 : 56 + 20),
             minHeight: 280,
-            background: isLight ? '#ffffff' : '#000000',
+            background: c.bg,
             borderRadius: 0,
             overflowY: 'auto',
             position: 'relative',
+            zIndex: 1,
             flex: 1,
             height: '100%',
           }}>
-            {loading ? (
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 400 }}>
-                <Spin size="large" />
+            {showModelsSkeleton ? (
+              <div className="mp-models-page" style={{ flex: 1, minWidth: 0 }}>
+                <div className="mp-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
+                  <MpSkel width={screens.xs ? '100%' : 420} height={40} radius={8} />
+                  <MpSkel width={36} height={36} radius={8} />
+                  <MpSkel width={36} height={36} radius={8} />
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }}>
+                  {[88, 72, 96, 64, 80, 70].map((w, i) => (
+                    <MpSkel key={i} width={w} height={30} radius={5} />
+                  ))}
+                </div>
+                <MarketplaceModelsSkeleton isGrid={viewMode === 'grid'} isXs={!!screens.xs} />
               </div>
             ) : forbidden ? (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: 400 }}>
@@ -2177,13 +2851,32 @@ const ModelMarketplace: React.FC = () => {
                   {/* 左侧详情 */}
                   <div style={{ flex: '1 1 500px', background: c.cardBg, border: `1px solid ${c.cardBorder}`, borderRadius: 5, padding: screens.xs ? '14px' : '18px', boxShadow: isLight ? '0 4px 20px rgba(0,0,0,0.02)' : '0 4px 24px rgba(0,0,0,0.3)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
-                      <div style={{ width: 56, height: 56, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, overflow: 'hidden', background: isLight ? '#f4f5f7' : '#18181b', border: `1px solid ${c.cardBorder}` }}>
-                        <img 
-                          src={lobeIconSrc(selectedModel.logo, selectedModel.provider_logo)} 
-                          alt="" 
-                          style={{ width: 42, height: 42, objectFit: 'contain', filter: getLogoFilter(selectedModel.logo || selectedModel.provider_logo || 'default-model', isLight) }} 
-                          onError={handleLobeIconError} 
-                        />
+                      <div className="mp-card-logo">
+                        {(() => {
+                          const iconSrc = lobeIconSrc(
+                            selectedModel.logo,
+                            selectedModel.provider_logo,
+                            isLight,
+                            selectedModel.original_id || selectedModel.name
+                          );
+                          return (
+                            <img
+                              src={iconSrc}
+                              alt=""
+                              style={{
+                                width: 32,
+                                height: 32,
+                                objectFit: 'contain',
+                                filter: getLogoFilter(
+                                  selectedModel.logo || selectedModel.provider_logo || selectedModel.name,
+                                  isLight,
+                                  iconSrc
+                                ),
+                              }}
+                              onError={handleLobeIconError}
+                            />
+                          );
+                        })()}
                       </div>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -2237,11 +2930,23 @@ const ModelMarketplace: React.FC = () => {
                             const uniqueProviders = Array.from(new Set(variants.map(v => v.provider_name).filter(Boolean)));
                             return uniqueProviders.map((pn, i) => {
                               const v = variants.find(vv => vv.provider_name === pn);
+                              const pLogo = v?.provider_logo || (pn?.toLowerCase().includes('kimi') ? 'kimi' : undefined);
+                              const pSrc = pLogo ? lobeIconSrc(pLogo, pn, isLight) : null;
                               return (
                                 <span key={pn} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                   {i > 0 && <span style={{ width: 4, height: 4, borderRadius: '50%', background: c.textMuted, marginRight: 4 }} />}
-                                  {v?.provider_logo && (
-                                    <img src={`/assets/icons/lobe/${v.provider_logo}.svg`} alt="" style={{ width: 16, height: 16, objectFit: 'contain', filter: getLogoFilter(v.provider_logo, isLight) }} onError={handleLobeIconError} />
+                                  {pSrc && (
+                                    <img
+                                      src={pSrc}
+                                      alt=""
+                                      style={{
+                                        width: 16,
+                                        height: 16,
+                                        objectFit: 'contain',
+                                        filter: getLogoFilter(pLogo || pn, isLight, pSrc),
+                                      }}
+                                      onError={handleLobeIconError}
+                                    />
                                   )}
                                   {pn}
                                 </span>
@@ -2286,11 +2991,11 @@ const ModelMarketplace: React.FC = () => {
                       <Descriptions.Item label={tp('category', '能力分类')}>
                         <Tag bordered={false} style={{ margin: 0, borderRadius: 5, padding: '2px 8px', background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.08)', color: c.text2, border: `1px solid ${c.cardBorder}` }}>{selectedModel.type_name}</Tag>
                       </Descriptions.Item>
-                      <Descriptions.Item label={tp('provider', '官方服务商')}>
+                      <Descriptions.Item label={tp('api_provider', '接口服务商')}>
                         {(() => {
                           const variants = selectedModel.variants || [selectedModel];
-                          const uniqueProviders = Array.from(new Set(variants.map(v => v.provider_name).filter(Boolean)));
-                          return uniqueProviders.join(isEnglish ? ', ' : '、') || '-';
+                          const uniqueApiProviders = Array.from(new Set(variants.map(v => v.api_provider_name).filter(Boolean)));
+                          return uniqueApiProviders.join(isEnglish ? ', ' : '、') || '-';
                         })()}
                       </Descriptions.Item>
                       <Descriptions.Item label={tp('pricing_plan', '定价方案')}>
@@ -2376,7 +3081,6 @@ const ModelMarketplace: React.FC = () => {
                                       <span style={{ color: c.text3, fontSize: 12, marginRight: 2 }}>{tp('model_id')}:</span>
                                       {variant.model_id}
                                       <CopyModelIdButton modelId={variant.model_id} isLight={isLight} c={c} />
-                                      {variant.has_ha && <Tag color="purple" style={{ margin: 0, borderRadius: 5, fontSize: 10, border: 'none', lineHeight: '18px', height: 18, padding: '0 4px' }}>{tp('high_availability')}</Tag>}
                                     </div>
                                     {(() => {
                                       const desc = localizedModelDescription(variant);
@@ -2416,69 +3120,46 @@ const ModelMarketplace: React.FC = () => {
                   providers={providers}
                   onSelectModel={setSelectedModel}
                   onSelectProvider={(lab) => {
-                    handleNavAllModels();
                     const labId = lab.id;
                     const matched = providers.find(p =>
                       (labId !== undefined && p.id === labId) ||
                       p.name?.toLowerCase() === (lab.name || lab.key || '').toLowerCase() ||
                       p.provider_type?.toLowerCase() === (lab.key || lab.name || '').toLowerCase()
                     );
-                    const newParams = new URLSearchParams(searchParams);
-                    newParams.set('tab', 'models');
-                    if (matched) {
-                      setSelectedProviders([matched.id]);
-                      setSearchKeyword('');
-                      newParams.set('provider', matched.id.toString());
-                      newParams.delete('q');
-                    } else {
-                      setSelectedProviders([]);
-                      const q = lab.name || lab.key || '';
-                      if (q) {
-                        setSearchKeyword(q);
-                        newParams.set('q', q);
-                        newParams.delete('provider');
-                      }
-                    }
-                    setSearchParams(newParams);
+                    const q = lab.name || lab.key || '';
+                    patchMarketplaceParams({
+                      tab: 'models',
+                      type: null,
+                      provider: matched ? matched.id : null,
+                      q: matched ? null : (q || null),
+                      closeModel: true,
+                    });
                   }}
                   isLight={isLight}
                   c={c}
-                  lobeIconSrc={lobeIconSrc}
+                  lobeIconSrc={(l, p, fallback) => lobeIconSrc(l, p, isLight, fallback)}
                   handleLobeIconError={handleLobeIconError}
-                  getLogoFilter={getLogoFilter}
+                  getLogoFilter={(logo, light, src) => getLogoFilter(logo, light !== undefined ? light : isLight, src)}
                   formatPrice={formatPrice}
                   onViewAllModels={(query) => {
-                    handleNavAllModels();
-                    const newParams = new URLSearchParams(searchParams);
-                    newParams.set('tab', 'models');
-                    if (query) {
-                      const matched = providers.find(p =>
-                        p.name?.toLowerCase() === query.toLowerCase() ||
-                        p.provider_type?.toLowerCase() === query.toLowerCase()
-                      );
-                      if (matched) {
-                        setSelectedProviders([matched.id]);
-                        setSearchKeyword('');
-                        newParams.set('provider', matched.id.toString());
-                        newParams.delete('q');
-                      } else {
-                        setSelectedProviders([]);
-                        setSearchKeyword(query);
-                        newParams.set('q', query);
-                        newParams.delete('provider');
-                      }
-                    } else {
-                      setSelectedProviders([]);
-                      setSearchKeyword('');
-                      newParams.delete('provider');
-                      newParams.delete('q');
-                    }
-                    setSearchParams(newParams);
+                    const matched = query
+                      ? providers.find(p =>
+                          p.name?.toLowerCase() === query.toLowerCase() ||
+                          p.provider_type?.toLowerCase() === query.toLowerCase()
+                        )
+                      : undefined;
+                    patchMarketplaceParams({
+                      tab: 'models',
+                      type: null,
+                      provider: matched ? matched.id : null,
+                      q: matched ? null : (query || null),
+                      closeModel: true,
+                    });
                   }}
                 />
               </div>
             ) : (
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="mp-models-page" style={{ flex: 1, minWidth: 0 }}>
                 <div className="mp-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
                   <div className="mp-search" style={{ flex: 1, minWidth: 200, maxWidth: screens.xs ? '100%' : 420 }}>
                     <Input
@@ -2487,14 +3168,10 @@ const ModelMarketplace: React.FC = () => {
                       value={searchKeyword}
                       onChange={e => {
                         const val = e.target.value;
-                        setSearchKeyword(val);
-                        const newParams = new URLSearchParams(searchParams);
-                        if (val.trim()) {
-                          newParams.set('q', val.trim());
-                        } else {
-                          newParams.delete('q');
-                        }
-                        setSearchParams(newParams);
+                        patchMarketplaceParams({
+                          tab: 'models',
+                          q: val.length > 0 ? val : null,
+                        });
                       }}
                       allowClear
                     />
@@ -2574,7 +3251,7 @@ const ModelMarketplace: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 13, color: c.text3, fontWeight: 500, marginRight: 4, whiteSpace: 'nowrap' }}>{tp('provider')}</span>
                     {providers.map(p => {
-                      const isActive = selectedProviders.includes(p.id);
+                      const isActive = selectedProvider === p.id;
                       return (
                         <button
                           key={p.id}
@@ -2589,22 +3266,36 @@ const ModelMarketplace: React.FC = () => {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {p.logo && (
-                            <img 
-                              src={`/assets/icons/lobe/${p.logo}.svg`} 
-                              alt="" 
-                              style={{ width: 14, height: 14, objectFit: 'contain', filter: getLogoFilter(p.logo, isLight) }} 
-                              onError={handleLobeIconError} 
-                            />
-                          )}
+                          {(() => {
+                            const pLogo = p.logo || (p.name?.toLowerCase().includes('kimi') ? 'kimi' : undefined);
+                            const pSrc = pLogo ? lobeIconSrc(pLogo, p.name, isLight) : null;
+                            if (!pSrc) return null;
+                            return (
+                              <img 
+                                src={pSrc} 
+                                alt="" 
+                                style={{
+                                  width: 14,
+                                  height: 14,
+                                  objectFit: 'contain',
+                                  filter: getLogoFilter(pLogo || p.name, isLight, pSrc),
+                                }} 
+                                onError={handleLobeIconError} 
+                              />
+                            );
+                          })()}
                           {p.name}
                           <span style={{ fontSize: 11, opacity: 0.7 }}>{providerCounts[p.id] || 0}</span>
                         </button>
                       );
                     })}
-                    {selectedProviders.length > 0 && (
+                    {selectedProvider !== null && (
                       <button
-                        onClick={() => { setSelectedProviders([]); setSelectedModel(null); }}
+                        onClick={() => patchMarketplaceParams({
+                          tab: 'models',
+                          provider: null,
+                          closeModel: true,
+                        })}
                         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 20, fontSize: 12, border: 'none', background: 'transparent', color: c.link, cursor: 'pointer' }}
                       >
                         <CloseOutlined style={{ fontSize: 10 }} /> {tp('clear')}
@@ -2614,7 +3305,7 @@ const ModelMarketplace: React.FC = () => {
                 )}
 
                 {filteredModels.length > 0 ? (
-                  <>
+                  <div className="mp-grid-reveal">
                     {groupedModelsByType.map((sec, secIdx) => (
                       <div key={sec.typeId || secIdx} style={{ marginBottom: secIdx === groupedModelsByType.length - 1 ? 0 : 36 }}>
                         {/* 类型分组 Header */}
@@ -2649,12 +3340,189 @@ const ModelMarketplace: React.FC = () => {
                         <div className="mp-grid" style={{
                           display: viewMode === 'grid' ? 'grid' : 'flex',
                           ...(viewMode === 'grid'
-                            ? { gridTemplateColumns: screens.xs ? '1fr' : 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }
+                            ? { gridTemplateColumns: screens.xs ? '1fr' : MP_GRID_TEMPLATE_COLUMNS, gap: MP_GRID_GAP }
                             : { flexDirection: 'column' as const, gap: 12 }
                           ),
                         }}>
-                          {sec.models.map(model => {
+                          {sec.models.map((model, modelIdx) => {
+                        const revealIndex = groupedModelsByType.slice(0, secIdx).reduce((n, s) => n + s.models.length, 0) + modelIdx;
                         const billing = model.billing || getFallbackBilling(model);
+                        const modelTitle = model.original_id || model.name;
+                        const copyId = model.original_id && model.variants?.length ? model.variants[0].model_id : model.model_id;
+                        const validDiscounts = (model.variants || [model])
+                          .filter(v => v.global_discount_enabled === 1 && v.global_discount !== undefined && v.global_discount > 0 && v.global_discount < 1)
+                          .map(v => v.global_discount as number);
+                        const minDiscount = validDiscounts.length > 0 ? Math.min(...validDiscounts) : null;
+                        const billingLabel = billing?.billing_type === 'requests' ? tp('billing_requests')
+                          : billing?.billing_type === 'duration' ? tp('billing_duration')
+                            : billing?.billing_type ? tp('billing_tokens') : null;
+                        const metricLabelStyle: React.CSSProperties = {
+                          fontSize: 14,
+                          fontWeight: 400,
+                          color: c.text3,
+                          marginBottom: 6,
+                        };
+                        const metricValueStyle: React.CSSProperties = {
+                          fontSize: 14,
+                          fontWeight: 400,
+                          color: c.text1,
+                          lineHeight: 1.5,
+                          minHeight: 22,
+                        };
+                        const discountBadge = minDiscount !== null ? (
+                          <span style={{
+                            fontSize: 11, fontWeight: 600, lineHeight: '18px',
+                            padding: '0 8px', borderRadius: 10, flexShrink: 0,
+                            background: 'linear-gradient(135deg, #ff4d4f 0%, #ff7875 100%)',
+                            color: '#fff',
+                            border: 'none',
+                            boxShadow: '0 2px 4px rgba(255,77,79,0.2)'
+                          }}>
+                            {tp('discount_percent_off', { percent: Math.round((1 - minDiscount) * 100), discount: Number((minDiscount * 10).toFixed(2)) })}
+                          </span>
+                        ) : null;
+                        const unavailableBadge = isModelUnavailable(model) ? (
+                          <span style={{
+                            fontSize: 11, fontWeight: 500, lineHeight: '18px',
+                            padding: '0 8px', borderRadius: 10, flexShrink: 0,
+                            background: 'rgba(255,77,79,0.1)',
+                            color: '#ff4d4f',
+                            border: '1px solid rgba(255,77,79,0.3)',
+                          }}>
+                            {tp('unavailable', 'Unavailable')}
+                          </span>
+                        ) : null;
+
+                        if (viewMode === 'grid') {
+                          return (
+                            <div
+                              key={model.id}
+                              className="mp-card"
+                              onClick={() => setSelectedModel(model)}
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                position: 'relative',
+                                padding: 15,
+                                background: c.cardBg,
+                                borderColor: c.cardBorder,
+                                borderRadius: 5,
+                                animationDelay: `${cardRevealDelayMs(revealIndex, model.id)}ms`,
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                                <div className="mp-card-logo">
+                                  {(() => {
+                                    const cardIconSrc = lobeIconSrc(model.logo, model.provider_logo, isLight, modelTitle);
+                                    return (
+                                      <img
+                                        src={cardIconSrc}
+                                        alt=""
+                                        style={{
+                                          width: 32,
+                                          height: 32,
+                                          objectFit: 'contain',
+                                          filter: getLogoFilter(model.logo || model.provider_logo || modelTitle, isLight, cardIconSrc),
+                                        }}
+                                        onError={handleLobeIconError}
+                                      />
+                                    );
+                                  })()}
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, paddingTop: 1 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', flexWrap: 'wrap' }}>
+                                    <Tooltip title={modelTitle} placement="topLeft">
+                                      <h3 style={{
+                                        margin: 0,
+                                        fontSize: 16,
+                                        fontWeight: 400,
+                                        color: c.text1,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                        flex: '1 1 auto',
+                                        minWidth: 0,
+                                        lineHeight: 1.5,
+                                      }}>
+                                        {modelTitle}
+                                      </h3>
+                                    </Tooltip>
+                                    {isNewModel(model) && (
+                                      <span className="mp-new-badge">{tp('new_badge', 'New')}</span>
+                                    )}
+                                    {unavailableBadge}
+                                    {discountBadge}
+                                  </div>
+                                  <div style={{
+                                    marginTop: 6,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    maxWidth: '100%',
+                                  }}>
+                                    {(model.variant_count || 0) > 1 ? (
+                                      <span style={{ color: c.text3, fontSize: 14, fontWeight: 400 }}>
+                                        {tp('model_id_count', { count: model.variant_count })}
+                                      </span>
+                                    ) : (
+                                      <>
+                                        <span style={{
+                                          overflow: 'hidden',
+                                          textOverflow: 'ellipsis',
+                                          whiteSpace: 'nowrap',
+                                          color: c.text3,
+                                          fontSize: 14,
+                                          fontWeight: 400,
+                                          fontFamily: "'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', monospace",
+                                          maxWidth: 'calc(100% - 22px)',
+                                        }}>
+                                          {copyId}
+                                        </span>
+                                        <CopyModelIdButton modelId={copyId} isLight={isLight} c={c} />
+                                      </>
+                                    )}
+                                    {model.sort_order > 900 && (
+                                      <span style={{ color: '#e3b341', flexShrink: 0 }}>⚡</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ flex: 1, minHeight: 10 }} />
+
+                              <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: '1fr 1fr',
+                                gap: 16,
+                                paddingTop: 10,
+                                borderTop: `1px solid ${isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'}`,
+                              }}>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={metricLabelStyle}>{tp('metric_type', 'Type')}</div>
+                                  <div style={{
+                                    ...metricValueStyle,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    minWidth: 0,
+                                  }}>
+                                    <span style={{ display: 'inline-flex', color: c.text2, flexShrink: 0 }}>{getTypeIcon(model.type_name)}</span>
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {model.type_name}{billingLabel ? ` · ${billingLabel}` : ''}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={metricLabelStyle}>{tp('starts_at')}</div>
+                                  <div style={metricValueStyle}>
+                                    {renderCardPrice(model, true) || '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
+
                         return (
                           <div
                             key={model.id}
@@ -2664,96 +3532,72 @@ const ModelMarketplace: React.FC = () => {
                               display: 'flex',
                               flexDirection: 'column',
                               position: 'relative',
-                              padding: viewMode === 'grid' ? '12px 14px' : '16px 20px',
+                              padding: '16px 20px',
                               background: c.cardBg,
                               borderColor: c.cardBorder,
                               borderRadius: 5,
+                              animationDelay: `${cardRevealDelayMs(revealIndex, model.id)}ms`,
                             }}
                           >
-                            <div style={{ display: 'flex', alignItems: viewMode === 'grid' ? 'flex-start' : 'center', gap: 12, marginBottom: viewMode === 'grid' ? 6 : 8 }}>
-                              <div className="mp-card-icon" style={{
-                                overflow: 'hidden',
-                                width: viewMode === 'grid' ? 32 : 20,
-                                height: viewMode === 'grid' ? 32 : 20,
-                                borderRadius: viewMode === 'grid' ? 6 : 4,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                flexShrink: 0
-                              }}>
-                                <img 
-                                  src={lobeIconSrc(model.logo, model.provider_logo)} 
-                                  alt="" 
-                                  style={{ width: viewMode === 'grid' ? 28 : 14, height: viewMode === 'grid' ? 28 : 14, objectFit: 'contain', filter: getLogoFilter(model.logo || model.provider_logo || 'default-model', isLight) }} 
-                                  onError={handleLobeIconError} 
-                                />
-                              </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                              {(() => {
+                                const listIconSrc = lobeIconSrc(model.logo, model.provider_logo, isLight, modelTitle);
+                                return (
+                                  <div className="mp-card-icon" style={{
+                                    overflow: 'hidden',
+                                    width: 20,
+                                    height: 20,
+                                    borderRadius: 5,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0
+                                  }}>
+                                    <img
+                                      src={listIconSrc}
+                                      alt=""
+                                      style={{
+                                        width: 14,
+                                        height: 14,
+                                        objectFit: 'contain',
+                                        filter: getLogoFilter(model.logo || model.provider_logo || modelTitle, isLight, listIconSrc),
+                                      }}
+                                      onError={handleLobeIconError}
+                                    />
+                                  </div>
+                                );
+                              })()}
 
                               <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
-                                  <Tooltip title={model.original_id || model.name} placement="topLeft">
+                                  <Tooltip title={modelTitle} placement="topLeft">
                                     <h3 style={{
                                       margin: 0,
-                                      fontSize: viewMode === 'grid' ? 14 : 16,
-                                      fontWeight: 500,
+                                      fontSize: 16,
+                                      fontWeight: 400,
                                       color: c.text1,
                                       overflow: 'hidden',
                                       textOverflow: 'ellipsis',
                                       whiteSpace: 'nowrap',
                                       flex: 1,
                                       minWidth: 0,
-                                      fontFamily: "'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace",
-                                      letterSpacing: '-0.3px',
-                                      lineHeight: 1.4,
+                                      lineHeight: 1.5,
                                     }}>
-                                      {model.original_id || model.name}
+                                      {modelTitle}
                                     </h3>
                                   </Tooltip>
-                                  {isModelUnavailable(model) && (
-                                    <span style={{
-                                      fontSize: 11, fontWeight: 500, lineHeight: '18px',
-                                      padding: '0 8px', borderRadius: 10, flexShrink: 0,
-                                      background: 'rgba(255,77,79,0.1)',
-                                      color: '#ff4d4f',
-                                      border: '1px solid rgba(255,77,79,0.3)',
-                                    }}>
-                                      {tp('unavailable', 'Unavailable')}
-                                    </span>
+                                  {isNewModel(model) && (
+                                    <span className="mp-new-badge">{tp('new_badge', 'New')}</span>
                                   )}
-                                  {viewMode !== 'grid' && (model.variant_count || 0) > 1 && (
-                                    <span style={{
-                                      fontSize: 11, fontWeight: 500, lineHeight: '18px',
-                                      padding: '0 8px', borderRadius: 10, flexShrink: 0,
-                                      background: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)',
-                                      color: isLight ? '#1f2937' : 'rgba(255,255,255,0.88)',
-                                      border: `1px solid ${isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)'}`,
-                                    }}>
-                                      {tp('pricing_count', { count: model.variant_count })}
-                                    </span>
-                                  )}
-                                  {viewMode !== 'grid' && (() => {
-                                    const validDiscounts = (model.variants || [model])
-                                      .filter(v => v.global_discount_enabled === 1 && v.global_discount !== undefined && v.global_discount > 0 && v.global_discount < 1)
-                                      .map(v => v.global_discount as number);
-                                    if (validDiscounts.length === 0) return null;
-                                    const minDiscount = Math.min(...validDiscounts);
-                                    return (
-                                      <span style={{
-                                        fontSize: 11, fontWeight: 600, lineHeight: '18px',
-                                        padding: '0 8px', borderRadius: 10, flexShrink: 0,
-                                        background: 'linear-gradient(135deg, #ff4d4f 0%, #ff7875 100%)',
-                                        color: '#fff',
-                                        border: 'none',
-                                        boxShadow: '0 2px 4px rgba(255,77,79,0.2)'
-                                      }}>
-                                        {tp('discount_percent_off', { percent: Math.round((1 - minDiscount) * 100), discount: Number((minDiscount * 10).toFixed(2)) })}
-                                      </span>
-                                    );
-                                  })()}
+                                  {unavailableBadge}
+                                  {discountBadge}
                                 </div>
 
-                                {/* 子标题：有original_id时显示变体第一个model_id，否则显示model_id。如果是多定价模型组则不显示。 */}
-                                {(!model.variant_count || model.variant_count <= 1) && (
+                                {(model.variant_count || 0) > 1 ? (
+                                  <div style={{ marginTop: 4, color: c.text3, fontSize: 14, fontWeight: 400 }}>
+                                    {tp('model_id_count', { count: model.variant_count })}
+                                  </div>
+                                ) : (
                                   <div style={{
                                     marginTop: 4,
                                     display: 'flex',
@@ -2762,7 +3606,8 @@ const ModelMarketplace: React.FC = () => {
                                     maxWidth: '100%'
                                   }}>
                                     <span style={{
-                                      fontSize: 11,
+                                      fontSize: 14,
+                                      fontWeight: 400,
                                       color: c.text2,
                                       fontFamily: "'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', monospace",
                                       overflow: 'hidden',
@@ -2770,10 +3615,10 @@ const ModelMarketplace: React.FC = () => {
                                       whiteSpace: 'nowrap',
                                       maxWidth: 'calc(100% - 22px)'
                                     }}>
-                                      {model.original_id && model.variants?.length ? model.variants[0].model_id : model.model_id}
+                                      {copyId}
                                     </span>
                                     <CopyModelIdButton
-                                      modelId={model.original_id && model.variants?.length ? model.variants[0].model_id : model.model_id}
+                                      modelId={copyId}
                                       isLight={isLight}
                                       c={c}
                                     />
@@ -2782,19 +3627,9 @@ const ModelMarketplace: React.FC = () => {
                               </div>
                             </div>
 
-                            {viewMode === 'grid' && model.description && (
-                              <div style={{
-                                fontSize: 12, color: c.text3, lineHeight: 1.5, marginBottom: 6,
-                                overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const,
-                              }}>
-                                {model.description}
-                              </div>
-                            )}
-
-                            {/* 价格展示区 */}
                             {billing && (
                               <div style={{
-                                marginBottom: viewMode === 'grid' ? 16 : 6,
+                                marginBottom: 6,
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'flex-end',
@@ -2804,87 +3639,40 @@ const ModelMarketplace: React.FC = () => {
                             )}
 
                             <div style={{
-                              fontSize: viewMode === 'grid' ? 12 : 13,
+                              fontSize: 14,
+                              fontWeight: 400,
                               color: c.text3,
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'space-between',
                               width: '100%',
                               gap: 12,
-                              ...(viewMode === 'grid' ? { marginTop: 'auto' } : {}),
                             }}>
                               <div style={{
                                 display: 'flex',
                                 alignItems: 'center',
                                 flexWrap: 'wrap',
-                                gap: viewMode === 'grid' ? 6 : 8,
+                                gap: 8,
                               }}>
                                 <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                                   {getTypeIcon(model.type_name)}
                                   {model.type_name}
                                 </span>
-                                {viewMode !== 'grid' && (
-                                  <>
-                                    <span style={{ color: c.textMuted }}>•</span>
-                                    <span>{tp('updated_at', 'Updated')} {formatApiDateTime(model.created_at, 'YYYY-MM-DD')}</span>
-                                  </>
-                                )}
-
+                                <span style={{ color: c.textMuted }}>•</span>
+                                <span>{tp('updated_at', 'Updated')} {formatApiDateTime(model.created_at, 'YYYY-MM-DD')}</span>
                                 {model.sort_order > 900 && (
                                   <>
                                     <span style={{ color: c.textMuted }}>•</span>
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                      <span style={{ color: '#e3b341' }}>⚡</span>
-                                    </span>
+                                    <span style={{ color: '#e3b341' }}>⚡</span>
                                   </>
                                 )}
-
-                                {billing && billing.billing_type && (
+                                {billingLabel && (
                                   <>
                                     <span style={{ color: c.textMuted }}>•</span>
-                                    <span>
-                                      {billing.billing_type === 'tokens' ? tp('billing_tokens') :
-                                        billing.billing_type === 'requests' ? tp('billing_requests') :
-                                          billing.billing_type === 'duration' ? tp('billing_duration') : tp('billing_tokens')}
-                                    </span>
+                                    <span>{billingLabel}</span>
                                   </>
                                 )}
                               </div>
-
-                              {viewMode === 'grid' && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                                  {(model.variant_count || 0) > 1 && (
-                                    <span style={{
-                                      fontSize: 11, fontWeight: 500, lineHeight: '18px',
-                                      padding: '0 8px', borderRadius: 10,
-                                      background: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)',
-                                      color: isLight ? '#1f2937' : 'rgba(255,255,255,0.88)',
-                                      border: `1px solid ${isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)'}`,
-                                    }}>
-                                      {tp('pricing_count', { count: model.variant_count })}
-                                    </span>
-                                  )}
-                                  {(() => {
-                                    const validDiscounts = (model.variants || [model])
-                                      .filter(v => v.global_discount_enabled === 1 && v.global_discount !== undefined && v.global_discount > 0 && v.global_discount < 1)
-                                      .map(v => v.global_discount as number);
-                                    if (validDiscounts.length === 0) return null;
-                                    const minDiscount = Math.min(...validDiscounts);
-                                    return (
-                                      <span style={{
-                                        fontSize: 11, fontWeight: 600, lineHeight: '18px',
-                                        padding: '0 8px', borderRadius: 10,
-                                        background: 'linear-gradient(135deg, #ff4d4f 0%, #ff7875 100%)',
-                                        color: '#fff',
-                                        border: 'none',
-                                        boxShadow: '0 2px 4px rgba(255,77,79,0.2)'
-                                      }}>
-                                        {tp('discount_percent_off', { percent: Math.round((1 - minDiscount) * 100), discount: Number((minDiscount * 10).toFixed(2)) })}
-                                      </span>
-                                    );
-                                  })()}
-                                </div>
-                              )}
                             </div>
                           </div>
                         );
@@ -2907,17 +3695,17 @@ const ModelMarketplace: React.FC = () => {
                         size={screens.xs ? 'small' : undefined}
                       />
                     </div>
-                  </>
+                  </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', color: c.textMuted }}>
                     <ShopOutlined style={{ fontSize: 48, marginBottom: 16, opacity: 0.5 }} />
                     <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 8, color: c.text3 }}>
-                      {searchKeyword || selectedType !== null || selectedProviders.length > 0 ? tp('no_matching_models') : tp('no_models')}
+                      {hasActiveFilters ? tp('no_matching_models') : tp('no_models')}
                     </div>
                     <div style={{ fontSize: 14 }}>
-                      {searchKeyword || selectedType !== null || selectedProviders.length > 0 ? tp('adjust_filters_hint') : tp('no_models_hint')}
+                      {hasActiveFilters ? tp('adjust_filters_hint') : tp('no_models_hint')}
                     </div>
-                    {(searchKeyword || selectedType !== null || selectedProviders.length > 0) && (
+                    {hasActiveFilters && (
                       <button onClick={clearFilters} style={{ marginTop: 16, fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 6, color: c.link, cursor: 'pointer', background: 'transparent', border: 'none' }}>
                         <FilterOutlined /> {tp('clear_all_filters')}
                       </button>
@@ -2936,7 +3724,7 @@ const ModelMarketplace: React.FC = () => {
                 right: 0,
                 bottom: 0,
                 background: 'rgba(0,0,0,0.5)',
-                zIndex: 9,
+                zIndex: 1040,
               }}
               onClick={() => setCollapsed(true)}
             />

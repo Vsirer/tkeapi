@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 模型广场单模型可见性：
@@ -52,6 +52,7 @@ pub fn mp_is_candidate(enabled: bool, level_ids: &[i64]) -> bool {
     enabled || !level_ids.is_empty()
 }
 
+#[allow(dead_code)]
 pub fn mp_conf_is_candidate(conf: &Value, default_enabled: bool) -> bool {
     let enabled = mp_enabled(conf, default_enabled);
     let level_ids = parse_mp_level_ids(conf);

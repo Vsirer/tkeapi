@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
@@ -32,6 +32,8 @@ import request from '../../../utils/request';
 import { formatApiDateTime } from '../../../utils/timedisplay';
 import { useThemeStore } from '../../../store/theme';
 import { copyToClipboard } from '../../../utils/clipboard';
+import PluginLogRetentionCard from '../components/PluginLogRetentionCard';
+import { listPagination, useListPager } from '../../../components/ListPagination';
 
 const { Text } = Typography;
 
@@ -152,8 +154,7 @@ const HaLogs: React.FC = () => {
   const [logs, setLogs] = useState<HaLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(15);
+  const { page, pageSize, setPage, setPageSize } = useListPager();
   const [keyword, setKeyword] = useState('');
   const [dateRange, setDateRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>(() => [
     dayjs().startOf('day'),
@@ -371,6 +372,7 @@ const HaLogs: React.FC = () => {
 
   return (
     <div>
+      <PluginLogRetentionCard pluginName="high_availability_channel" title="高可用日志保留天数" />
       {/* 顶部搜索与操作栏 */}
       <div
         style={{
@@ -623,16 +625,12 @@ const HaLogs: React.FC = () => {
             );
           },
         }}
-        pagination={{
+        pagination={listPagination({
           current: page,
           pageSize,
           total,
-          showSizeChanger: true,
-          showQuickJumper: true,
-          pageSizeOptions: ['15', '30', '50', '100'],
-          showTotal: (t) => `共 ${t} 条`,
           onChange: (p, s) => fetchLogs({ p, size: s }),
-        }}
+        })}
       />
     </div>
   );

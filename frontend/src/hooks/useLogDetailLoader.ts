@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import { useCallback, useEffect, useRef, useState, type Key } from 'react';
@@ -14,6 +14,7 @@ export type LogDetailFields = {
   post_response?: string | null;
   upstream_req_content?: string | null;
   billing_detail?: string | null;
+  upstream_request_id?: string | null;
   plugin_tag?: string | null;
 };
 
@@ -43,6 +44,7 @@ export function useLogDetailLoader(rowIds: number[]) {
         post_response: detail.post_response ?? null,
         upstream_req_content: detail.upstream_req_content ?? null,
         billing_detail: detail.billing_detail ?? null,
+        upstream_request_id: detail.upstream_request_id ?? null,
         plugin_tag: detail.plugin_tag ?? null,
       };
       cacheRef.current = { ...cacheRef.current, [id]: mapped };

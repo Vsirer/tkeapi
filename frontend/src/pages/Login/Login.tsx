@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect } from 'react';
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { WechatOutlined, GoogleOutlined } from '@ant-design/icons';
 import request from '../../utils/request';
+import { apiErrMsg } from '../../utils/apiErr';
 import { buildRegisterPath, resolveInviteParams } from '../../utils/inviteTracking';
 import { useTranslation } from 'react-i18next';
 import useAuthStore from '../../store/auth';
@@ -28,6 +29,8 @@ import type { AuthMethodOption } from '../../layouts/AuthLayout';
 import WechatQR from '../../components/WechatQR';
 import GoogleIcon from '../../components/GoogleIcon';
 import { sanitizeRedirectPath, stripAuthParamsFromUrl } from '../../utils/safeRedirect';
+import { browserTimezone } from '../../utils/timedisplay';
+import AccountPickModal from './AccountPickModal';
 
 const Login: React.FC = () => {
   const { t, i18n } = useTranslation();
@@ -42,13 +45,25 @@ const Login: React.FC = () => {
   
   // 校验错误状态
   const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
+  const [formError, setFormError] = useState('');
   // 用于触发再次抖动的 key 状态
   const [shakeKey, setShakeKey] = useState(0);
+  const [selectOpen, setSelectOpen] = useState(false);
+  const [candidates, setCandidates] = useState<{ uid: string; username: string; nickname?: string | null }[]>([]);
 
   const navigate = useNavigate();
   const { token, user, setToken, setUser } = useAuthStore();
   const { settings, fetchSettings } = useSettingsStore();
   const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const prefill = searchParams.get('identifier') || searchParams.get('email') || searchParams.get('mobile') || '';
+    const type = searchParams.get('type') || '';
+    if (prefill) setUsernameVal(prefill);
+    if (type === 'email' || type === 'mobile' || type === 'username') {
+      setActiveTab(type);
+    }
+  }, [searchParams]);
 
   // 如果用户已登录，直接跳转到对应的控制台页面
   useEffect(() => {
@@ -191,6 +206,14 @@ const Login: React.FC = () => {
   const handleTabChange = (key: string) => {
     setActiveTab(key);
     setErrors({});
+    setFormError('');
+    setSelectOpen(false);
+    setCandidates([]);
+  };
+
+  const toFormError = (error: unknown) => {
+    const msg = apiErrMsg(error, t('common.error'));
+    return msg === 'Account disabled' ? t('login.account_disabled') : msg;
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -207,10 +230,12 @@ const Login: React.FC = () => {
     }
     if (Object.keys(tempErrors).length > 0) {
       setErrors(tempErrors);
+      setFormError('');
       setShakeKey(k => k + 1); // 触发抖动
       return;
     }
     setErrors({});
+    setFormError('');
     setLoading(true);
     message.destroy();
 
@@ -219,13 +244,49 @@ const Login: React.FC = () => {
         username: usernameVal.trim(), 
         password: passwordVal, 
         login_type: activeTab 
-      }) as any);
-      setToken(res.token); 
-      setUser(res.user);
-      message.success(t('login.welcome') + ', ' + (res.user.nickname || res.user.username));
-      navigate('/dashboard');
+      }, { skipErrorHandler: true } as any) as any);
+      if (res?.need_select && Array.isArray(res.candidates) && res.candidates.length > 1) {
+        setCandidates(res.candidates);
+        setSelectOpen(true);
+        setLoading(false);
+        return;
+      }
+      finishLogin(res);
     } catch (error) {
-      console.error(error);
+      setFormError(toFormError(error));
+      setShakeKey(k => k + 1);
+    } finally {
+      setTimeout(() => setLoading(false), 800);
+    }
+  };
+
+  const finishLogin = (res: any) => {
+    setSelectOpen(false);
+    setToken(res.token); 
+    setUser(res.user);
+    message.success(t('login.welcome') + ', ' + (res.user.nickname || res.user.username));
+    if (res.user?.role === 'admin') {
+      const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
+      navigate(`/${adminPath}/dashboard`);
+    } else {
+      navigate('/dashboard');
+    }
+  };
+
+  const handleSelectAccount = async (uid: string) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const res = await (request.post('/auth/login', {
+        username: usernameVal.trim(),
+        password: passwordVal,
+        login_type: activeTab,
+        uid,
+      }, { skipErrorHandler: true } as any) as any);
+      finishLogin(res);
+    } catch (error) {
+      setFormError(toFormError(error));
+      setShakeKey(k => k + 1);
     } finally {
       setTimeout(() => setLoading(false), 800);
     }
@@ -250,6 +311,8 @@ const Login: React.FC = () => {
         const params = new URLSearchParams();
         if (aff) params.set('aff', aff);
         if (team) params.set('team', team);
+        const tz = browserTimezone();
+        if (tz) params.set('timezone', tz);
         const qs = params.toString();
         window.location.href = `/api/v1/auth/oauth/google${qs ? `?${qs}` : ''}`;
       },
@@ -283,6 +346,8 @@ const Login: React.FC = () => {
     const params: Record<string, string> = { provider: 'wechat' };
     if (aff) params.aff = aff;
     if (team) params.team = team;
+    const tz = browserTimezone();
+    if (tz) params.timezone = tz;
     request
       .get('/auth/oauth/state', { params, skipErrorHandler: true } as any)
       .then((res: any) => {
@@ -317,7 +382,21 @@ const Login: React.FC = () => {
       onMethodChange={handleTabChange}
       bottomLinks={bottomLinks}
     >
-      {activeTab === 'wechat' ? (
+      {selectOpen ? (
+        <AccountPickModal
+          title={t('auth.select_account_title')}
+          hint={t('auth.select_account_hint')}
+          loading={loading}
+          error={formError}
+          backLabel={t('common.back')}
+          candidates={candidates}
+          onSelect={handleSelectAccount}
+          onBack={() => {
+            setSelectOpen(false);
+            setFormError('');
+          }}
+        />
+      ) : activeTab === 'wechat' ? (
         <div className="flex flex-col items-center justify-center p-2 bg-background border border-zinc-200 dark:border-zinc-800 rounded-lg shadow-xs">
           {wechatState ? (
             <WechatQR appId={wechatAppId} redirectUri={wechatRedirectUri} state={wechatState} />
@@ -347,6 +426,7 @@ const Login: React.FC = () => {
               onChange={(e) => {
                 setUsernameVal(e.target.value);
                 if (errors.username) setErrors(prev => ({ ...prev, username: undefined }));
+                if (formError) setFormError('');
               }}
               className={`flex h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs transition-all duration-200 placeholder:text-zinc-400/70 dark:placeholder:text-zinc-600/70 focus-visible:outline-none focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50
                 ${errors.username 
@@ -377,6 +457,7 @@ const Login: React.FC = () => {
                 onChange={(e) => {
                   setPasswordVal(e.target.value);
                   if (errors.password) setErrors(prev => ({ ...prev, password: undefined }));
+                  if (formError) setFormError('');
                 }}
                 className={`flex h-9 w-full rounded-md border bg-transparent pl-3 pr-10 py-1 text-sm shadow-xs transition-all duration-200 placeholder:text-zinc-400/70 dark:placeholder:text-zinc-600/70 focus-visible:outline-none focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50
                   ${errors.password 
@@ -396,6 +477,10 @@ const Login: React.FC = () => {
               <p key={`p-${shakeKey}`} className="text-[11px] font-medium text-destructive animate-shake">{errors.password}</p>
             )}
           </div>
+
+          {formError && (
+            <p key={`form-${shakeKey}`} className="text-[12px] font-medium text-destructive text-center animate-shake">{formError}</p>
+          )}
 
           {/* 极致黑白灰反转登录按钮 */}
           <button

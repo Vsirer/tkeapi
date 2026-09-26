@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
@@ -309,6 +309,15 @@ impl VolcClient {
             let source_clone = source.clone();
             let plugin_name_clone = plugin_name.clone();
 
+            // 若 HTTP 成功但业务内容表明失败（如素材状态 Failed/审核未通过），日志状态码修正为 422
+            let log_status = if status.is_success()
+                && (res_payload.contains("\"Failed\"") || res_payload.contains("\"failed\""))
+            {
+                422
+            } else {
+                status_code as i32
+            };
+
             tokio::spawn(async move {
                 let _ = sqlx::query(&db_clone.format_query(
                     "INSERT INTO plugin_api_logs (user_id, plugin_name, api_endpoint, request_payload, response_payload, status_code, source) 
@@ -319,7 +328,7 @@ impl VolcClient {
                 .bind(&action_clone)
                 .bind(&req_payload)
                 .bind(&res_payload)
-                .bind(status_code as i32)
+                .bind(log_status)
                 .bind(&source_clone)
                 .execute(&db_clone.pool)
                 .await;
@@ -341,12 +350,19 @@ impl VolcClient {
             )
         })?;
 
-        // 先尝试直接反序列化整个响应（兼容自带 ResponseMetadata 包装的结构体）
+        // 若返回体中带有 Result 字段，优先尝试从 Result 内部提取并反序列化（防止目标 struct 包含 default 字段误把最外层信封反序列化为空默认值）
+        if let Some(result_val) = raw.get("Result") {
+            if let Ok(parsed) = serde_json::from_value::<R>(result_val.clone()) {
+                return Ok(parsed);
+            }
+        }
+
+        // 兜底尝试直接反序列化整个响应（兼容自带 ResponseMetadata 包装的视觉服务结构体）
         if let Ok(parsed) = serde_json::from_value::<R>(raw.clone()) {
             return Ok(parsed);
         }
 
-        // 再尝试从 "Result" 字段提取（Ark API 的标准响应格式）
+        // 若上述均未命中且有 Result，抛出 Result 解析错误以便详细排查
         if let Some(result_val) = raw.get("Result") {
             return serde_json::from_value(result_val.clone())
                 .map_err(|e| anyhow!("Failed to parse Volcengine Result: {} - Raw: {}", e, text));
@@ -635,6 +651,163 @@ impl VolcClient {
             }
         }
     }
+
+    /// 分页查询方舟云端素材资产列表
+    pub async fn list_assets(
+        &self,
+        req: ListAssetsRequest,
+    ) -> Result<ListAssetsResponse, String> {
+        self.call_api::<_, ListAssetsResponse>(
+            "ark",
+            &self.config.region,
+            "ListAssets",
+            "2024-01-01",
+            req,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// 分页查询方舟素材资产组列表
+    pub async fn list_asset_groups(
+        &self,
+        req: ListAssetGroupsRequest,
+    ) -> Result<ListAssetGroupsResponse, String> {
+        self.call_api::<_, ListAssetGroupsResponse>(
+            "ark",
+            &self.config.region,
+            "ListAssetGroups",
+            "2024-01-01",
+            req,
+        )
+        .await
+        .map_err(|e| e.to_string())
+    }
+}
+
+/// ListAssets 筛选过滤
+#[derive(Serialize, Debug, Clone)]
+pub struct ListAssetsFilter {
+    /// 资产组类别（火山 OpenAPI 必填，默认 "AIGC"）
+    #[serde(rename = "GroupType")]
+    pub group_type: String,
+    #[serde(rename = "Statuses", skip_serializing_if = "Option::is_none")]
+    pub statuses: Option<Vec<String>>,
+    #[serde(rename = "AssetTypes", skip_serializing_if = "Option::is_none")]
+    pub asset_types: Option<Vec<String>>,
+    #[serde(rename = "GroupIds", skip_serializing_if = "Option::is_none")]
+    pub group_ids: Option<Vec<String>>,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl Default for ListAssetsFilter {
+    fn default() -> Self {
+        Self {
+            group_type: "AIGC".to_string(),
+            statuses: None,
+            asset_types: None,
+            group_ids: None,
+            name: None,
+        }
+    }
+}
+
+/// ListAssets 分页查询素材列表
+#[derive(Serialize, Debug, Clone)]
+pub struct ListAssetsRequest {
+    #[serde(rename = "PageNumber")]
+    pub page_number: i32,
+    #[serde(rename = "PageSize")]
+    pub page_size: i32,
+    #[serde(rename = "ProjectName", skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(rename = "Filter")]
+    pub filter: ListAssetsFilter,
+}
+
+#[derive(Deserialize, Debug, Clone, Serialize)]
+pub struct ArkAssetItem {
+    #[serde(alias = "Id", rename = "id")]
+    pub id: String,
+    #[serde(alias = "Name", rename = "name", default)]
+    pub name: Option<String>,
+    #[serde(alias = "AssetType", rename = "asset_type", default)]
+    pub asset_type: Option<String>,
+    #[serde(alias = "Status", rename = "status", default)]
+    pub status: Option<String>,
+    #[serde(alias = "URL", rename = "url", default)]
+    pub url: Option<String>,
+    #[serde(alias = "GroupId", rename = "group_id", default)]
+    pub group_id: Option<String>,
+    #[serde(alias = "CreateTime", rename = "create_time", default)]
+    pub create_time: Option<String>,
+    #[serde(alias = "UpdateTime", rename = "update_time", default)]
+    pub update_time: Option<String>,
+    #[serde(alias = "FailReason", rename = "fail_reason", default)]
+    pub fail_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ListAssetsResponse {
+    #[serde(alias = "Items")]
+    pub items: Vec<ArkAssetItem>,
+    #[serde(alias = "TotalCount")]
+    pub total_count: i64,
+    #[serde(alias = "PageNumber", default)]
+    pub page_number: Option<i32>,
+    #[serde(alias = "PageSize", default)]
+    pub page_size: Option<i32>,
+}
+
+/// ListAssetGroups 过滤
+#[derive(Serialize, Debug, Clone, Default)]
+pub struct ListAssetGroupsFilter {
+    #[serde(rename = "GroupType", skip_serializing_if = "Option::is_none")]
+    pub group_type: Option<String>,
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// ListAssetGroups 分页查询素材组列表
+#[derive(Serialize, Debug, Clone)]
+pub struct ListAssetGroupsRequest {
+    #[serde(rename = "PageNumber")]
+    pub page_number: i32,
+    #[serde(rename = "PageSize")]
+    pub page_size: i32,
+    #[serde(rename = "ProjectName", skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(rename = "Filter", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<ListAssetGroupsFilter>,
+}
+
+#[derive(Deserialize, Debug, Clone, Serialize)]
+pub struct ArkAssetGroupItem {
+    #[serde(rename = "Id")]
+    pub id: String,
+    #[serde(rename = "Name", default)]
+    pub name: Option<String>,
+    #[serde(rename = "Description", default)]
+    pub description: Option<String>,
+    #[serde(rename = "GroupType", default)]
+    pub group_type: Option<String>,
+    #[serde(rename = "CreateTime", default)]
+    pub create_time: Option<String>,
+    #[serde(rename = "UpdateTime", default)]
+    pub update_time: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ListAssetGroupsResponse {
+    #[serde(rename = "Items", default)]
+    pub items: Vec<ArkAssetGroupItem>,
+    #[serde(rename = "TotalCount", default)]
+    pub total_count: i64,
+    #[serde(rename = "PageNumber", default)]
+    pub page_number: Option<i32>,
+    #[serde(rename = "PageSize", default)]
+    pub page_size: Option<i32>,
 }
 
 /// UpdateAssetGroup 更新素材资产组合

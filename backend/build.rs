@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use std::env;
@@ -167,4 +167,8 @@ fn main() {
         // 让 cargo 在文件出现或删除时重新运行 build.rs
         println!("cargo:rerun-if-changed={}", path_str);
     }
+
+    // 注册商业宏 feature 值，保障开源版剥离 Cargo.toml feature 后仍可通过 rustc 1.80+ 审计
+    println!("cargo:rustc-check-cfg=cfg(feature, values(\"commercial_plugins\", \"plugin_comfyui\", \"plugin_volcengine_enhance\", \"plugin_tencent_enhance\", \"plugin_data_sync\", \"plugin_content_security\"))");
 }
+

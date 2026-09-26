@@ -1,6 +1,6 @@
 # 聊天 Chat（OpenAI 兼容）
 
-统一走 `POST /v1/chat/completions`。更换 `model` 即可调用 GPT / Claude / DeepSeek / Gemini 等（需通道支持对应能力）。
+OpenAI 兼容：`POST /v1/chat/completions`。统一接入主流大语言模型。
 
 * **路径**: `https://{{domain}}/v1/chat/completions`
 * **鉴权**: `Authorization: Bearer sk-your_token_here`

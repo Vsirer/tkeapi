@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::error::AppError;
@@ -213,10 +213,10 @@ pub async fn create_channel_config(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateChannelConfigRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // yid 仅展示；业务关联用 id。查重分配，格式 3 + 8 位
+    // yid 仅展示；业务关联用 id。查重分配，格式 3 + 4 位（共 5 位，与 EID/PID 一致）
     let mut yid = String::new();
     for _ in 0..10 {
-        let candidate = format!("3{:08}", rand::thread_rng().gen_range(0u32..100_000_000));
+        let candidate = format!("3{:04}", rand::thread_rng().gen_range(0u32..10_000));
         let exists: i64 = sqlx::query_scalar(
             &state
                 .db
@@ -282,6 +282,8 @@ pub async fn create_channel_config(
     .bind(upstream_currency_rate)
     .execute(&state.db.pool)
     .await?;
+
+    crate::relay::router::invalidate_channel_configs_cache();
 
     Ok(Json(serde_json::json!({"success": true})))
 }
@@ -448,6 +450,8 @@ pub async fn update_channel_config(
         id
     );
 
+    crate::relay::router::invalidate_channel_configs_cache();
+
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -487,6 +491,8 @@ pub async fn delete_channel_config(
     .execute(&state.db.pool)
     .await?;
 
+    crate::relay::router::invalidate_channel_configs_cache();
+
     Ok(Json(serde_json::json!({"success": true})))
 }
 
@@ -505,6 +511,8 @@ pub async fn reset_quota(
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("上游渠道配置不存在".into()));
     }
+
+    crate::relay::router::invalidate_channel_configs_cache();
 
     tracing::info!(
         "[ChannelConfig Quota Reset] 管理员手动清零上游预设 {} 的已用额度",
@@ -615,6 +623,7 @@ pub async fn run_upstream_rate_sync_tick(state: Arc<AppState>) {
                             config.id
                         );
                     } else {
+                        crate::relay::router::invalidate_channel_configs_cache();
                         tracing::info!(
                             "[UpstreamRateSync] 渠道 {} 分组 {} 倍率同步为 {}",
                             config.id,

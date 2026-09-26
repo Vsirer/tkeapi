@@ -1,11 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Modal, Spin, message, Tooltip, Grid } from 'antd';
 import {
   Image as ImageIcon,
@@ -19,6 +20,11 @@ import {
   Cpu,
   Sparkles,
   Maximize2,
+  Minimize2,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  RotateCcw,
   AlertCircle,
   ChevronLeft,
   ChevronRight,
@@ -33,6 +39,8 @@ import { useThemeStore } from '../../../store/theme';
 import useSettingsStore from '../../../store/settings';
 import { formatApiDateTime } from '../../../utils/timedisplay';
 import { copyToClipboard } from '../../../utils/clipboard';
+import request from '../../../utils/request';
+import ArtPlayerPreview from '../../../components/ArtPlayerPreview';
 
 const { useBreakpoint } = Grid;
 
@@ -177,9 +185,8 @@ function parseTaskParams(rawJson?: string | null) {
       negativePrompt = obj.params.negative_prompt;
     }
 
-    // 3. 提取常见生成参数
+    // 3. 提取常见生成参数（分辨率已在上方「媒体基本属性」中展示，此处不重复显示）
     const extractFields = [
-      { keys: ['size', 'image_size', 'resolution'], label: '分辨率' },
       { keys: ['aspect_ratio', 'ratio'], label: '比例' },
       { keys: ['seed'], label: 'Seed' },
       { keys: ['steps', 'num_inference_steps', 'step'], label: 'Steps' },
@@ -220,7 +227,7 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
   urls,
   type,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { themeMode } = useThemeStore();
   const { settings, fetchSettings } = useSettingsStore();
   const currencySymbol = settings?.currency?.currency_symbol || '$';
@@ -240,8 +247,165 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
     }
   }, [open, settings, fetchSettings]);
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const currentUrl = urls[currentIndex] || '';
+
+  // 全屏与图像变换状态
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1);
+  const [rotation, setRotation] = useState(0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  const fullscreenContainerRef = useRef<HTMLDivElement | null>(null);
+  const fullscreenImageRef = useRef<HTMLDivElement | null>(null);
+
+  // 重置缩放、旋转和位移
+  const resetTransform = useCallback(() => {
+    setZoomScale(1);
+    setRotation(0);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  // 切换产物或关闭时重置图形变换
+  useEffect(() => {
+    resetTransform();
+  }, [currentUrl, resetTransform]);
+
+  // 全屏切换处理函数（支持真全屏 API 与平滑降级）
+  const toggleFullscreen = useCallback(() => {
+    if (!isFullscreen) {
+      setIsFullscreen(true);
+      resetTransform();
+      // 尝试调用真全屏 API
+      if (fullscreenContainerRef.current?.requestFullscreen) {
+        fullscreenContainerRef.current.requestFullscreen().catch(() => {});
+      } else if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    } else {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setIsFullscreen(false);
+      resetTransform();
+    }
+  }, [isFullscreen, resetTransform]);
+
+  // 监听原生全屏变化事件
+  useEffect(() => {
+    const handler = () => {
+      if (!document.fullscreenElement && isFullscreen) {
+        setIsFullscreen(false);
+        resetTransform();
+      }
+    };
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, [isFullscreen, resetTransform]);
+
+  // 关闭弹窗时退出全屏
+  useEffect(() => {
+    if (!open) {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+      setIsFullscreen(false);
+      resetTransform();
+    }
+  }, [open, resetTransform]);
+
+  // 键盘快捷键监听 (Esc 退出全屏, F 全屏切换, 方向键切图, +/-/0 缩放, R 旋转)
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tagName = (e.target as HTMLElement)?.tagName;
+      if (['INPUT', 'TEXTAREA'].includes(tagName)) return;
+
+      if (e.key === 'Escape' && isFullscreen) {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === 'ArrowLeft' && urls.length > 1) {
+        e.preventDefault();
+        setCurrentIndex((prev) => Math.max(0, prev - 1));
+      } else if (e.key === 'ArrowRight' && urls.length > 1) {
+        e.preventDefault();
+        setCurrentIndex((prev) => Math.min(urls.length - 1, prev + 1));
+      } else if (isFullscreen && type === '图片') {
+        if (e.key === '+' || e.key === '=') {
+          e.preventDefault();
+          setZoomScale((prev) => Math.min(5, Number((prev + 0.25).toFixed(2))));
+        } else if (e.key === '-' || e.key === '_') {
+          e.preventDefault();
+          setZoomScale((prev) => {
+            const next = Math.max(0.25, Number((prev - 0.25).toFixed(2)));
+            if (next <= 1) setPan({ x: 0, y: 0 });
+            return next;
+          });
+        } else if (e.key === '0') {
+          e.preventDefault();
+          resetTransform();
+        } else if (e.key === 'r' || e.key === 'R') {
+          e.preventDefault();
+          setRotation((prev) => (prev + 90) % 360);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, isFullscreen, urls.length, type, toggleFullscreen, resetTransform]);
+
+  // 全屏图片滚轮缩放监听 (passive: false 以便阻止页面滚动)
+  useEffect(() => {
+    const node = fullscreenImageRef.current;
+    if (!node || !isFullscreen || type !== '图片') return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const delta = e.deltaY < 0 ? 0.2 : -0.2;
+      setZoomScale((prev) => {
+        const next = Math.max(0.25, Math.min(5, Number((prev + delta).toFixed(2))));
+        if (next <= 1) setPan({ x: 0, y: 0 });
+        return next;
+      });
+    };
+
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return () => node.removeEventListener('wheel', onWheel);
+  }, [isFullscreen, type]);
+
+  // 图片拖拽平移事件
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (type !== '图片' || zoomScale <= 1) return;
+    e.preventDefault();
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setPan({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y,
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleDoubleClick = () => {
+    if (type !== '图片') return;
+    if (zoomScale > 1.05) {
+      resetTransform();
+    } else {
+      setZoomScale(2);
+    }
+  };
 
   // 切换产物或重置索引
   useEffect(() => {
@@ -250,15 +414,7 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
     }
   }, [open, urls]);
 
-  // 视频每次打开或切换时默认静音且不自动播放，同时支持用户在控制条上随时开启声音
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.muted = true;
-      videoRef.current.pause();
-    }
-  }, [open, currentUrl]);
-
-  // 当当前 URL 改变时重置媒体属性与加载状态
+  // 当当前 URL 改变时重置媒体属性并多渠道探测文件大小与加载状态
   useEffect(() => {
     if (!currentUrl) return;
     setMediaLoading(true);
@@ -266,27 +422,144 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
     const format = detectFormat(currentUrl, type);
     setMediaAttrs({ format });
 
-    // 尝试异步请求 HEAD 获取 Content-Length (文件大小)
     let isMounted = true;
-    fetch(currentUrl, { method: 'HEAD' })
-      .then((res) => {
-        if (!isMounted) return;
-        const cl = res.headers.get('content-length');
+
+    // 0. 特殊 URL 处理：base64 与 blob
+    if (currentUrl.startsWith('data:')) {
+      const base64Str = currentUrl.split(',')[1] || '';
+      const bytes = Math.round((base64Str.length * 3) / 4);
+      if (bytes > 0) {
+        setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(bytes) }));
+        return;
+      }
+    }
+
+    if (currentUrl.startsWith('blob:')) {
+      fetch(currentUrl)
+        .then((r) => r.blob())
+        .then((b) => {
+          if (isMounted && b.size > 0) {
+            setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(b.size) }));
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // 1. 如果响应详情或产物参数中带有文件大小数据，优先解析使用
+    if (record?.response_content) {
+      try {
+        const obj = JSON.parse(record.response_content);
+        const findSize = (o: any): number | null => {
+          if (!o || typeof o !== 'object') return null;
+          if (typeof o.file_size === 'number' && o.file_size > 0) return o.file_size;
+          if (typeof o.size_bytes === 'number' && o.size_bytes > 0) return o.size_bytes;
+          if (typeof o.filesize === 'number' && o.filesize > 0) return o.filesize;
+          if (typeof o.size === 'number' && o.size > 1024) return o.size;
+          for (const k of Object.keys(o)) {
+            const res = findSize(o[k]);
+            if (res) return res;
+          }
+          return null;
+        };
+        const s = findSize(obj);
+        if (s && isMounted) {
+          setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(s) }));
+        }
+      } catch {}
+    }
+
+    // 2. 异步网络探测（支持 HEAD、Range 1字节、GET Blob 及后端同源中转）
+    const detectSize = async () => {
+      // (a) 检查浏览器 PerformanceResourceTiming 条目
+      try {
+        const entries = performance.getEntriesByName(currentUrl);
+        if (entries && entries.length > 0) {
+          const last = entries[entries.length - 1] as PerformanceResourceTiming;
+          const sz = last.encodedBodySize || last.decodedBodySize || last.transferSize;
+          if (sz && sz > 0) {
+            if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(sz) }));
+            return;
+          }
+        }
+      } catch {}
+
+      // (b) 尝试轻量 HEAD 请求
+      try {
+        const headRes = await fetch(currentUrl, { method: 'HEAD', mode: 'cors' });
+        const cl = headRes.headers.get('content-length');
         if (cl) {
           const bytes = parseInt(cl, 10);
           if (!isNaN(bytes) && bytes > 0) {
-            setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(bytes) }));
+            if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(bytes) }));
+            return;
           }
         }
-      })
-      .catch(() => {
-        // 跨域或安全限制时静默忽略
-      });
+      } catch {}
+
+      // (c) 尝试 Range: bytes=0-0 只请求 1 字节（绝大多数云存储如阿里云OSS、腾讯云COS、S3均支持返回 Content-Range）
+      try {
+        const rangeRes = await fetch(currentUrl, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0' },
+          mode: 'cors',
+        });
+        const cr = rangeRes.headers.get('content-range');
+        if (cr) {
+          const totalStr = cr.split('/')[1];
+          if (totalStr && totalStr !== '*') {
+            const bytes = parseInt(totalStr, 10);
+            if (!isNaN(bytes) && bytes > 0) {
+              if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(bytes) }));
+              return;
+            }
+          }
+        }
+        const cl = rangeRes.headers.get('content-length');
+        if (cl && rangeRes.status === 200) {
+          const bytes = parseInt(cl, 10);
+          if (!isNaN(bytes) && bytes > 0) {
+            if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(bytes) }));
+            return;
+          }
+        }
+      } catch {}
+
+      // (d) 若是图片，尝试直接拉取已在浏览器缓存中的 blob（无需二次从远端传输）
+      if (type === '图片') {
+        try {
+          const getRes = await fetch(currentUrl, { method: 'GET', mode: 'cors' });
+          if (getRes.ok) {
+            const blob = await getRes.blob();
+            if (blob && blob.size > 0) {
+              if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(blob.size) }));
+              return;
+            }
+          }
+        } catch {}
+      }
+
+      // (e) 跨域严格限制时，通过后端中转服务兜底获取真实文件字节数
+      try {
+        const data = await request.get('/playground/download-file', {
+          params: { url: currentUrl },
+          responseType: 'blob',
+          timeout: 10000,
+          ...({ skipErrorHandler: true } as any),
+        });
+        if (data instanceof Blob && data.size > 0 && !data.type?.includes('json')) {
+          if (isMounted) setMediaAttrs((prev) => ({ ...prev, fileSize: formatFileSize(data.size) }));
+          return;
+        }
+      } catch {}
+    };
+
+    detectSize();
 
     return () => {
       isMounted = false;
     };
-  }, [currentUrl, type]);
+  }, [currentUrl, type, record?.response_content]);
 
   // 图片加载完成回调
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -303,18 +576,16 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
   };
 
   // 视频加载元数据回调
-  const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
-    const video = e.currentTarget;
-    const w = video.videoWidth;
-    const h = video.videoHeight;
-    const dur = video.duration;
+  const handleArtVideoMeta = (info: { width: number; height: number; duration?: number }) => {
+    const w = info.width;
+    const h = info.height;
     setMediaLoading(false);
     setMediaAttrs((prev) => ({
       ...prev,
       width: w,
       height: h,
       aspectRatio: calculateAspectRatio(w, h),
-      duration: dur,
+      duration: info.duration,
     }));
   };
 
@@ -330,24 +601,43 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
     }
   };
 
-  // 下载文件辅助函数
+  // 下载文件辅助函数（支持直接 Blob 下载与后端中转兜底）
   const handleDownload = async (url: string) => {
     try {
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      const filename = url.split('/').pop()?.split('?')[0] || (type === '图片' ? 'image_result.png' : 'video_result.mp4');
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-      message.success(t('task_logs.download_started', '已开始下载'));
-    } catch {
-      window.open(url, '_blank');
-    }
+      let blob: Blob | null = null;
+      try {
+        const res = await fetch(url, { mode: 'cors' });
+        if (res.ok) blob = await res.blob();
+      } catch {}
+
+      if (!blob || !blob.size) {
+        const data = await request.get('/playground/download-file', {
+          params: { url },
+          responseType: 'blob',
+          timeout: 60000,
+          ...({ skipErrorHandler: true } as any),
+        });
+        if (data instanceof Blob && data.size > 0 && !data.type?.includes('json')) {
+          blob = data;
+        }
+      }
+
+      if (blob && blob.size > 0) {
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        const filename = url.split('/').pop()?.split('?')[0] || (type === '图片' ? 'image_result.png' : 'video_result.mp4');
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 2500);
+        message.success(t('task_logs.download_started', '已开始下载'));
+        return;
+      }
+    } catch {}
+
+    window.open(url, '_blank');
   };
 
   const parsedParams = useMemo(() => {
@@ -375,7 +665,8 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
   if (!open) return null;
 
   return (
-    <Modal
+    <>
+      <Modal
       title={null}
       open={open}
       onCancel={onClose}
@@ -643,7 +934,49 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
             padding: 16,
           }}
         >
-          {mediaLoading && !mediaError && (
+          {/* 右上角快捷悬浮放大按钮 (shadcn 纯黑白灰胶囊设计) */}
+          <Tooltip title={t('task_logs.fullscreen_hint', '全屏放大观看 (Esc 退出)')}>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleFullscreen();
+              }}
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                zIndex: 15,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 5,
+                padding: '4px 9px',
+                fontSize: 11,
+                fontWeight: 500,
+                borderRadius: 6,
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                background: 'rgba(24, 24, 27, 0.75)',
+                backdropFilter: 'blur(8px)',
+                color: '#fafafa',
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.18)';
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(24, 24, 27, 0.75)';
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.15)';
+              }}
+            >
+              <Maximize2 size={12} />
+              <span>{t('task_logs.zoom_btn', '放大')}</span>
+            </button>
+          </Tooltip>
+
+          {mediaLoading && !mediaError && type !== '视频' && (
             <div style={{ position: 'absolute', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
               <Spin size="default" />
               <span style={{ fontSize: 12, color: '#a1a1aa', letterSpacing: '0.02em' }}>
@@ -701,47 +1034,43 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
               }}
             >
               {type === '图片' ? (
-                <img
-                  src={currentUrl}
-                  alt="preview"
-                  onLoad={handleImageLoad}
-                  onError={() => {
-                    setMediaLoading(false);
-                    setMediaError(true);
-                  }}
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    objectFit: 'contain',
-                    borderRadius: 6,
-                    opacity: mediaLoading ? 0 : 1,
-                    transition: 'opacity 0.2s ease-in-out',
-                    userSelect: 'none',
-                  }}
-                />
-              ) : (
-                <video
-                  ref={videoRef}
-                  src={currentUrl}
-                  controls
-                  preload="metadata"
+                <Tooltip title={t('task_logs.click_to_fullscreen', '点击全屏放大观看')}>
+                  <img
+                    src={currentUrl}
+                    alt="preview"
+                    onClick={toggleFullscreen}
+                    onLoad={handleImageLoad}
+                    onError={() => {
+                      setMediaLoading(false);
+                      setMediaError(true);
+                    }}
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain',
+                      borderRadius: 6,
+                      opacity: mediaLoading ? 0 : 1,
+                      transition: 'opacity 0.2s ease-in-out',
+                      userSelect: 'none',
+                      cursor: 'zoom-in',
+                    }}
+                  />
+                </Tooltip>
+              ) : !isFullscreen ? (
+                <ArtPlayerPreview
+                  url={currentUrl}
+                  autoplay={false}
                   muted
-                  playsInline
-                  onLoadedMetadata={handleVideoLoadedMetadata}
+                  locale={i18n.language}
+                  theme={isLight ? '#18181b' : '#e4e4e7'}
+                  onReady={() => setMediaLoading(false)}
                   onError={() => {
                     setMediaLoading(false);
                     setMediaError(true);
                   }}
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    borderRadius: 6,
-                    opacity: mediaLoading ? 0 : 1,
-                    transition: 'opacity 0.2s ease-in-out',
-                    background: '#000',
-                  }}
+                  onLoadedMetadata={handleArtVideoMeta}
                 />
-              )}
+              ) : null}
             </div>
           )}
 
@@ -929,39 +1258,44 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                 </div>
               </div>
 
-              {/* 时长或大小 */}
-              {type === '视频' ? (
+              {/* 文件大小（图片与视频均清晰展示大小） */}
+              <div
+                style={{
+                  background: colors.cardBg,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: 8,
+                  padding: '8px 12px',
+                }}
+              >
+                <div style={{ fontSize: 11, color: colors.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <HardDrive size={12} />
+                  <span>{t('task_logs.prop_file_size', '文件大小')}</span>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginTop: 3, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
+                  {mediaAttrs.fileSize || '-'}
+                </div>
+              </div>
+
+              {/* 视频时长（仅视频显示，横跨两列） */}
+              {type === '视频' && (
                 <div
                   style={{
+                    gridColumn: 'span 2',
                     background: colors.cardBg,
                     border: `1px solid ${colors.border}`,
                     borderRadius: 8,
                     padding: '8px 12px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
                   }}
                 >
                   <div style={{ fontSize: 11, color: colors.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
                     <Clock size={12} />
                     <span>{t('task_logs.prop_duration', '视频时长')}</span>
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginTop: 3, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
                     {formatDuration(mediaAttrs.duration)}
-                  </div>
-                </div>
-              ) : (
-                <div
-                  style={{
-                    background: colors.cardBg,
-                    border: `1px solid ${colors.border}`,
-                    borderRadius: 8,
-                    padding: '8px 12px',
-                  }}
-                >
-                  <div style={{ fontSize: 11, color: colors.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <HardDrive size={12} />
-                    <span>{t('task_logs.prop_file_size', '文件大小')}</span>
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: colors.textPrimary, marginTop: 3, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
-                    {mediaAttrs.fileSize || '-'}
                   </div>
                 </div>
               )}
@@ -998,6 +1332,33 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                 fontSize: 12,
               }}
             >
+              {/* 用户 UID */}
+              {(record?.user_uid || record?.user_id) && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.borderSubtle}` }}>
+                  <span style={{ color: colors.textSecondary }}>{t('logs.user_uid', '用户 UID')}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', color: colors.textPrimary, fontSize: 11 }}>
+                      {record.user_uid ? `UID: ${record.user_uid}` : record.user_id}
+                    </span>
+                    <button
+                      onClick={() => handleCopy(String(record.user_uid || record.user_id), 'user_uid')}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        padding: 2,
+                        cursor: 'pointer',
+                        color: colors.textMuted,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
+                      title={t('logs.copy', '复制')}
+                    >
+                      {copiedKey === 'user_uid' ? <Check size={12} style={{ color: colors.textPrimary }} /> : <Copy size={12} />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 任务 ID */}
               {record?.task_id && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', borderBottom: `1px solid ${colors.borderSubtle}` }}>
@@ -1068,7 +1429,7 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                     {t('task_logs.cost', '消耗费用')}
                   </span>
                   <span style={{ color: colors.textPrimary, fontWeight: 600, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
-                    {currencySymbol}{record.cost.toFixed(6)}
+                    {currencySymbol}{Number(Number(record.cost).toFixed(6))}
                   </span>
                 </div>
               )}
@@ -1207,7 +1568,503 @@ const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
         </div>
       </div>
     </div>
-  </Modal>
+    </Modal>
+
+    {/* 沉浸式全屏放大视图 (支持真全屏 API 与平滑 Portal 降级) */}
+    {isFullscreen &&
+      createPortal(
+        <div
+          ref={fullscreenContainerRef}
+          className="task-preview-fullscreen-container"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            width: '100vw',
+            height: '100vh',
+            zIndex: 100000,
+            backgroundColor: '#050506',
+            backdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            alignItems: 'center',
+            overflow: 'hidden',
+          }}
+        >
+          {/* 顶部悬浮控制栏 (shadcn 纯黑白灰玻璃胶囊) */}
+          <div
+            style={{
+              position: 'absolute',
+              top: isMobile ? 10 : 16,
+              left: isMobile ? 10 : 20,
+              right: isMobile ? 10 : 20,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              zIndex: 120,
+              pointerEvents: 'none',
+              gap: 8,
+            }}
+          >
+            {/* 左侧：类型标识与序号 */}
+            <div
+              style={{
+                pointerEvents: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '5px 12px',
+                borderRadius: 8,
+                background: 'rgba(24, 24, 27, 0.8)',
+                backdropFilter: 'blur(12px)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                color: '#fafafa',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600 }}>
+                {type === '图片' ? <ImageIcon size={15} /> : <Video size={15} />}
+                <span>{type === '图片' ? t('task_logs.image', '图片') : t('task_logs.video', '视频')}</span>
+              </div>
+              {urls.length > 1 && (
+                <span style={{ fontSize: 12, color: '#a1a1aa', fontFamily: 'monospace' }}>
+                  {currentIndex + 1} / {urls.length}
+                </span>
+              )}
+              {record?.model && !isMobile && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    color: '#e4e4e7',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  {record.model}
+                </span>
+              )}
+            </div>
+
+            {/* 中间：图片缩放控制工具栏 (仅图片显示) */}
+            {type === '图片' && (
+              <div
+                style={{
+                  pointerEvents: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  padding: '4px 8px',
+                  borderRadius: 8,
+                  background: 'rgba(24, 24, 27, 0.8)',
+                  backdropFilter: 'blur(12px)',
+                  border: '1px solid rgba(255, 255, 255, 0.12)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                }}
+              >
+                <Tooltip title={t('task_logs.zoom_out', '缩小 (-)')}>
+                  <button
+                    onClick={() =>
+                      setZoomScale((prev) => {
+                        const next = Math.max(0.25, Number((prev - 0.25).toFixed(2)));
+                        if (next <= 1) setPan({ x: 0, y: 0 });
+                        return next;
+                      })
+                    }
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#fafafa',
+                      cursor: 'pointer',
+                      padding: '4px 6px',
+                      borderRadius: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <ZoomOut size={15} />
+                  </button>
+                </Tooltip>
+
+                <Tooltip title={t('task_logs.reset_zoom', '点击重置为 100% (0)')}>
+                  <button
+                    onClick={resetTransform}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#fafafa',
+                      cursor: 'pointer',
+                      padding: '3px 8px',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 500,
+                      fontFamily: 'monospace',
+                      minWidth: 46,
+                      textAlign: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    {Math.round(zoomScale * 100)}%
+                  </button>
+                </Tooltip>
+
+                <Tooltip title={t('task_logs.zoom_in', '放大 (+)')}>
+                  <button
+                    onClick={() => setZoomScale((prev) => Math.min(5, Number((prev + 0.25).toFixed(2))))}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#fafafa',
+                      cursor: 'pointer',
+                      padding: '4px 6px',
+                      borderRadius: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <ZoomIn size={15} />
+                  </button>
+                </Tooltip>
+
+                <div style={{ width: 1, height: 16, background: 'rgba(255, 255, 255, 0.15)', margin: '0 2px' }} />
+
+                <Tooltip title={t('task_logs.rotate_cw', '顺时针旋转 90° (R)')}>
+                  <button
+                    onClick={() => setRotation((prev) => (prev + 90) % 360)}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#fafafa',
+                      cursor: 'pointer',
+                      padding: '4px 6px',
+                      borderRadius: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <RotateCw size={15} />
+                  </button>
+                </Tooltip>
+
+                <Tooltip title={t('task_logs.reset_all', '复位原始画面')}>
+                  <button
+                    onClick={resetTransform}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#fafafa',
+                      cursor: 'pointer',
+                      padding: '4px 6px',
+                      borderRadius: 4,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <RotateCcw size={15} />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
+
+            {/* 右侧：下载与退出全屏操作 */}
+            <div
+              style={{
+                pointerEvents: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 6px',
+                borderRadius: 8,
+                background: 'rgba(24, 24, 27, 0.8)',
+                backdropFilter: 'blur(12px)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+              }}
+            >
+              <Tooltip title={t('task_logs.copy_url', '复制媒体链接')}>
+                <button
+                  onClick={() => handleCopy(currentUrl, 'fs_url')}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: '#fafafa',
+                    cursor: 'pointer',
+                    padding: '5px 8px',
+                    borderRadius: 6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: 12,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {copiedKey === 'fs_url' ? <Check size={14} /> : <Copy size={14} />}
+                  {!isMobile && <span>{copiedKey === 'fs_url' ? t('common.copied', '已复制') : t('task_logs.copy_link', '复制链接')}</span>}
+                </button>
+              </Tooltip>
+
+              <Tooltip title={t('task_logs.download', '下载媒体')}>
+                <button
+                  onClick={() => handleDownload(currentUrl)}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: '#fafafa',
+                    cursor: 'pointer',
+                    padding: '5px 8px',
+                    borderRadius: 6,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    fontSize: 12,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <Download size={14} />
+                  {!isMobile && <span>{t('task_logs.download_btn', '下载')}</span>}
+                </button>
+              </Tooltip>
+
+              <button
+                onClick={toggleFullscreen}
+                style={{
+                  border: '1px solid rgba(255, 255, 255, 0.2)',
+                  background: 'rgba(255, 255, 255, 0.1)',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                  padding: '5px 10px',
+                  borderRadius: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                }}
+                title={t('task_logs.exit_fullscreen_hint', '退出全屏 (Esc)')}
+              >
+                <Minimize2 size={14} />
+                <span>{t('task_logs.exit_fullscreen', '退出全屏')}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 中心媒体主视口 */}
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              position: 'relative',
+              overflow: 'hidden',
+            }}
+          >
+            {type === '图片' ? (
+              <div
+                ref={fullscreenImageRef}
+                onMouseDown={handleMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onDoubleClick={handleDoubleClick}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  cursor: zoomScale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
+                  userSelect: 'none',
+                  touchAction: 'none',
+                }}
+              >
+                <img
+                  src={currentUrl}
+                  alt="fullscreen-preview"
+                  draggable={false}
+                  style={{
+                    maxWidth: '96vw',
+                    maxHeight: '92vh',
+                    objectFit: 'contain',
+                    borderRadius: 0,
+                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoomScale}) rotate(${rotation}deg)`,
+                    transition: isDragging ? 'none' : 'transform 0.15s cubic-bezier(0.2, 0, 0.2, 1)',
+                    pointerEvents: 'auto',
+                  }}
+                />
+              </div>
+            ) : (
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  padding: isMobile ? 8 : 32,
+                }}
+              >
+                <ArtPlayerPreview
+                  url={currentUrl}
+                  autoplay
+                  muted
+                  locale={i18n.language}
+                  theme={isLight ? '#18181b' : '#e4e4e7'}
+                  onLoadedMetadata={handleArtVideoMeta}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* 左右切页浮动按钮 (多图/多视频时) */}
+          {urls.length > 1 && (
+            <>
+              <button
+                disabled={currentIndex === 0}
+                onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                style={{
+                  position: 'absolute',
+                  left: isMobile ? 8 : 24,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 120,
+                  width: isMobile ? 38 : 46,
+                  height: isMobile ? 38 : 46,
+                  borderRadius: '50%',
+                  background: 'rgba(24, 24, 27, 0.75)',
+                  backdropFilter: 'blur(12px)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#fafafa',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: currentIndex === 0 ? 'not-allowed' : 'pointer',
+                  opacity: currentIndex === 0 ? 0.2 : 0.85,
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => currentIndex > 0 && (e.currentTarget.style.opacity = '1')}
+                onMouseLeave={(e) => currentIndex > 0 && (e.currentTarget.style.opacity = '0.85')}
+                title={t('task_logs.prev', '上一个 (←)')}
+              >
+                <ChevronLeft size={isMobile ? 20 : 24} />
+              </button>
+
+              <button
+                disabled={currentIndex === urls.length - 1}
+                onClick={() => setCurrentIndex((prev) => Math.min(urls.length - 1, prev + 1))}
+                style={{
+                  position: 'absolute',
+                  right: isMobile ? 8 : 24,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 120,
+                  width: isMobile ? 38 : 46,
+                  height: isMobile ? 38 : 46,
+                  borderRadius: '50%',
+                  background: 'rgba(24, 24, 27, 0.75)',
+                  backdropFilter: 'blur(12px)',
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  color: '#fafafa',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: currentIndex === urls.length - 1 ? 'not-allowed' : 'pointer',
+                  opacity: currentIndex === urls.length - 1 ? 0.2 : 0.85,
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => currentIndex < urls.length - 1 && (e.currentTarget.style.opacity = '1')}
+                onMouseLeave={(e) => currentIndex < urls.length - 1 && (e.currentTarget.style.opacity = '0.85')}
+                title={t('task_logs.next', '下一个 (→)')}
+              >
+                <ChevronRight size={isMobile ? 20 : 24} />
+              </button>
+
+              {/* 底部悬浮缩略图栏 */}
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: isMobile ? 12 : 24,
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  zIndex: 120,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px 14px',
+                  background: 'rgba(24, 24, 27, 0.85)',
+                  backdropFilter: 'blur(16px)',
+                  borderRadius: 9999,
+                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.6)',
+                  maxWidth: '85vw',
+                  overflowX: 'auto',
+                }}
+              >
+                {urls.map((u, idx) => {
+                  const isCur = idx === currentIndex;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => setCurrentIndex(idx)}
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        cursor: 'pointer',
+                        border: isCur ? '2px solid #ffffff' : '1px solid rgba(255, 255, 255, 0.2)',
+                        opacity: isCur ? 1 : 0.5,
+                        transition: 'all 0.15s ease',
+                        flexShrink: 0,
+                        background: '#18181b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {type === '图片' ? (
+                        <img src={u} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      ) : (
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#ffffff' }}>#{idx + 1}</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>,
+        document.body
+      )}
+  </>
 );
 };
 

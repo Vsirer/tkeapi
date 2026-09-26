@@ -1,14 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Table, Button, Space, message, Card, Typography, Grid, Tag, Popconfirm, Input } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SafetyCertificateOutlined, SyncOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
 import { fetchActivePlugins } from '../../utils/activePlugins';
@@ -181,7 +181,7 @@ const AdminGroups: React.FC = () => {
         <Space align="center" size={6}>
           <SafetyCertificateOutlined style={{ color: '#1677ff' }} />
           <Text strong style={{ fontSize: 13 }}>{text}</Text>
-          <Tag bordered={false} style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>
+          <Tag variant="filled" style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4, fontSize: 11, lineHeight: '18px', padding: '0 5px' }}>
             ID: {record.id.toString().padStart(4, '0')}
           </Tag>
         </Space>
@@ -235,7 +235,6 @@ const AdminGroups: React.FC = () => {
             onSearch={(val) => setSearchKeyword(val)}
             style={{ width: screens.xs ? '100%' : 220 }}
           />
-          <Button icon={<SyncOutlined />} onClick={fetchGroups}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
             添加管理员等级
           </Button>
@@ -254,7 +253,7 @@ const AdminGroups: React.FC = () => {
                 <Space align="center" size={8} wrap>
                   <SafetyCertificateOutlined style={{ color: '#1677ff' }} />
                   <Text strong>{record.name}</Text>
-                  <Tag bordered={false} style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4 }}>
+                  <Tag variant="filled" style={{ margin: 0, background: 'rgba(22,119,255,0.1)', color: '#1677ff', borderRadius: 4 }}>
                     ID: {record.id.toString().padStart(4, '0')}
                   </Tag>
                 </Space>

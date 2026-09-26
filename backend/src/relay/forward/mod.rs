@@ -1,15 +1,16 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 //! 统一转发规则解析器：规则解析、鉴权、URL、厂商 body 分发。
 //!
 //! ## 目录
-//! - `mod.rs` — `ResolvedForward`、规则解析、鉴权、URL、usage/res_mul、mask_key、Volc enhance 路径
+//! - `mod.rs` — `ResolvedForward`、规则解析、鉴权、URL、usage/res_mul、mask_key
 //! - `transform.rs` — `transform_request_body` 按 target_type 分发
 //! - `media.rs` — 图片/multipart/URL/base64 共享 helper
+//! - `official_client.rs` — 客户端官方路由（如 MiniMax /v2）协议适配与信封封装
 //! - `poll_enrich.rs` — 轮询后处理扩展点（fal 队列等）
 //! - `sse.rs` — SSE 流式转换
 //! - `vendors/` — 各厂商请求体（kling / tencent / jimeng / fal / standard）
@@ -23,19 +24,20 @@
 //! ## 契约
 //! `crate::relay::forward::*` 路径与签名不可破坏。
 
-
 use super::url_utils::join_url;
 use crate::AppState;
 use std::collections::HashMap;
 
 mod media;
+mod official_client;
 mod poll_enrich;
 mod sse;
 mod transform;
 mod vendors;
 
 pub use media::*;
-pub use poll_enrich::{enrich_client_poll_usage, enrich_poll_response};
+pub use official_client::*;
+pub use poll_enrich::{enrich_client_poll, enrich_poll_response, ClientPollCtx};
 pub use sse::*;
 pub use transform::*;
 pub use vendors::*;
@@ -70,8 +72,16 @@ pub struct ResolvedForward {
     pub mid: Option<String>,
     /// 是否为级联转发模型（二阶段级联执行）
     pub is_cascade: bool,
+    /// 级联阶段二引擎：`volc`（缺省）或 `tencent`
+    pub cascade_engine: String,
     /// 级联：目标 720p 且底座为 480p 时，是否 MediaKit 居中裁成标准 480p；缺省 true（兼容现网）；其它分辨率忽略
     pub crop_480p: bool,
+    /// 级联：裁剪时机，"pre" (超分前 480p) 或 "post" (超分后 720p)；缺省 "pre"
+    pub crop_timing: String,
+    /// 级联：480p 裁剪坐标（比例 "16:9" / "9:16" → (tlx, tly, brx, bry)）；缺省为 seedance2.0 标准
+    pub crop_coords_480p: HashMap<String, (i32, i32, i32, i32)>,
+    /// 级联：720p 裁剪坐标（比例 "16:9" / "9:16" → (tlx, tly, brx, bry)）；缺省为 seedance2.5 标准
+    pub crop_coords_720p: HashMap<String, (i32, i32, i32, i32)>,
     /// 是否将 content 字段提取为 prompt（针对火山视频某些上游通道特判兼容）
     pub content_to_prompt: bool,
     /// 级联分辨率倍率表（config_json.res_mul）；阶段二：有 usage 则乘入 token，否则乘费用；空表=1.0
@@ -102,7 +112,11 @@ impl Default for ResolvedForward {
             eid: String::new(),
             mid: None,
             is_cascade: false,
+            cascade_engine: "volc".to_string(),
             crop_480p: true,
+            crop_timing: "pre".to_string(),
+            crop_coords_480p: HashMap::new(),
+            crop_coords_720p: HashMap::new(),
             content_to_prompt: false,
             res_mul: HashMap::new(),
             res_enhance: HashMap::new(),
@@ -117,7 +131,10 @@ impl Default for ResolvedForward {
 fn path_matches(req: &str, candidate: &str) -> bool {
     let req = req.trim_start_matches('/');
     let cand = candidate.trim_start_matches('/');
-    !cand.is_empty() && (req == cand || req.ends_with(cand))
+    if cand.is_empty() {
+        return false;
+    }
+    req == cand || req.ends_with(cand)
 }
 
 /// 路径精确相等（忽略首部 `/`）— 用于 path_passthrough 入口列表
@@ -125,13 +142,37 @@ fn path_eq(a: &str, b: &str) -> bool {
     a.trim_start_matches('/') == b.trim_start_matches('/')
 }
 
-/// Anthropic Messages 入口：官方 `/v1/messages` 或 MiniMax `/anthropic/v1/messages`
+/// Anthropic Messages 入口：官方 `/v1/messages`、MiniMax `/anthropic/v1/messages` 或火山方舟 `/api/compatible/v1/messages`
 #[inline]
 pub(crate) fn is_anthropic_messages_path(path: &str) -> bool {
-    path_eq(path, "/v1/messages") || path_eq(path, "/anthropic/v1/messages")
+    path_eq(path, "/v1/messages")
+        || path_eq(path, "/anthropic/v1/messages")
+        || path_eq(path, "/api/compatible/v1/messages")
 }
 
-/// config_json 字符串数组字段是否包含当前请求路径（精确匹配）
+#[inline]
+fn parse_rewrite_pair(item: &serde_json::Value) -> Option<(&str, &str)> {
+    let o = item.get("old").and_then(|v| v.as_str()).unwrap_or("");
+    let n = item.get("new").and_then(|v| v.as_str()).unwrap_or("");
+    if !o.is_empty() || !n.is_empty() {
+        Some((o, n))
+    } else {
+        None
+    }
+}
+
+/// 提取规则中的路径重写列表（优先读取 `path_rewrites` 数组，回退到单个 `path_rewrite` 对象）
+pub(crate) fn collect_rewrites(config: &serde_json::Value) -> Vec<(&str, &str)> {
+    if let Some(arr) = config.get("path_rewrites").and_then(|v| v.as_array()) {
+        arr.iter().filter_map(parse_rewrite_pair).collect()
+    } else if let Some(pair) = config.get("path_rewrite").and_then(parse_rewrite_pair) {
+        vec![pair]
+    } else {
+        vec![]
+    }
+}
+
+/// config_json 字符串数组字段是否包含当前请求路径（精确相等）
 fn path_list_hit(config: &serde_json::Value, key: &str, request_path: &str) -> bool {
     config
         .get(key)
@@ -235,6 +276,49 @@ fn parse_res_str_map(config: &serde_json::Value, field: &str) -> HashMap<String,
         .collect()
 }
 
+/// 解析裁剪矩形坐标（支持 [x1, y1, x2, y2] 或 "x1, y1, x2, y2"）
+fn parse_rect_coords(val: &serde_json::Value) -> Option<(i32, i32, i32, i32)> {
+    if let Some(arr) = val.as_array() {
+        if arr.len() == 4 {
+            let x1 = arr[0].as_i64()? as i32;
+            let y1 = arr[1].as_i64()? as i32;
+            let x2 = arr[2].as_i64()? as i32;
+            let y2 = arr[3].as_i64()? as i32;
+            if x2 > x1 && y2 > y1 {
+                return Some((x1, y1, x2, y2));
+            }
+        }
+    } else if let Some(s) = val.as_str() {
+        let parts: Vec<i32> = s
+            .split(&[',', ' ', ';'][..])
+            .filter(|p| !p.trim().is_empty())
+            .filter_map(|p| p.trim().parse::<i32>().ok())
+            .collect();
+        if parts.len() == 4 && parts[2] > parts[0] && parts[3] > parts[1] {
+            return Some((parts[0], parts[1], parts[2], parts[3]));
+        }
+    }
+    None
+}
+
+/// 解析级联裁剪坐标映射（crop_coords_480p / crop_coords_720p）
+fn parse_crop_coords(
+    config: &serde_json::Value,
+    field: &str,
+) -> HashMap<String, (i32, i32, i32, i32)> {
+    let mut map = HashMap::new();
+    let Some(obj) = config.get(field).and_then(|v| v.as_object()) else {
+        return map;
+    };
+    for (k, v) in obj {
+        let ratio = k.trim();
+        if let Some(coords) = parse_rect_coords(v) {
+            map.insert(ratio.to_string(), coords);
+        }
+    }
+    map
+}
+
 // ── 转发规则解析 ──────────────────────────────────────────────
 
 /// 根据模型 ID、请求类别、入口路径，从 DB 查找匹配的转发规则。
@@ -335,38 +419,40 @@ pub async fn resolve_forward_rule(
             {
                 3
             } else {
-                let pr = config.get("path_rewrite");
-                let old_path = pr
-                    .and_then(|v| v.get("old"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let new_path = pr
-                    .and_then(|v| v.get("new"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let old_clean = old_path.trim_start_matches('/');
-                let new_clean = new_path.trim_start_matches('/');
+                let rewrites = collect_rewrites(&config);
                 let req_clean = request_path.trim_start_matches('/');
                 let openai_clean = openai_path.trim_start_matches('/');
-
                 let is_openai_req = req_clean == openai_clean || req_clean.ends_with(openai_clean);
-                let rule_supports_openai = old_clean.is_empty()
-                    || old_clean == openai_clean
-                    || openai_clean.ends_with(old_clean);
 
-                let match_new = path_matches(request_path, new_path);
-                let match_old = path_matches(request_path, old_path);
+                let mut max_s = 0u8;
+                for (old_path, new_path) in rewrites {
+                    let old_clean = old_path.trim_start_matches('/');
+                    let new_clean = new_path.trim_start_matches('/');
 
-                if !is_openai_req && (match_new || match_old) {
-                    3
-                } else if is_openai_req && rule_supports_openai && old_clean == new_clean {
-                    2
-                } else if is_openai_req && rule_supports_openai {
-                    1
-                } else {
-                    0
+                    let rule_supports_openai = old_clean.is_empty()
+                        || old_clean == openai_clean
+                        || openai_clean.ends_with(old_clean);
+
+                    let match_new = path_matches(request_path, new_path);
+                    let match_old = path_matches(request_path, old_path);
+
+                    let s = if !is_openai_req && (match_new || match_old) {
+                        3
+                    } else if is_openai_req && rule_supports_openai && old_clean == new_clean {
+                        2
+                    } else if is_openai_req && rule_supports_openai {
+                        1
+                    } else {
+                        0
+                    };
+                    if s > max_s {
+                        max_s = s;
+                        if max_s == 3 {
+                            break;
+                        }
+                    }
                 }
+                max_s
             };
 
             if score > best_score {
@@ -390,23 +476,73 @@ pub async fn resolve_forward_rule(
         &rule.eid,
         Some(model.mid.clone()),
     );
+    let asset_convert_label = if resolved.upstream_asset_convert {
+        format!("上游(绑定#{})", resolved.upstream_asset_binding_id.unwrap_or(0))
+    } else if resolved.asset_convert {
+        format!("true({})", resolved.asset_convert_ns)
+    } else {
+        "false".to_string()
+    };
     crate::relay_debug!(
         "[Forward] 命中规则 名称='{}' EID={}: 目标类型={} 上游路径={} 鉴权类型={} \
-         素材转换={} 素材命名空间={} 轮询路径={:?} 素材审核={} \
-         级联={} 裁剪480={} 提示词转换={} 关联MID='{}'",
+         素材转换={} 轮询路径={:?} 素材审核={} \
+         级联={} 裁剪480={} 裁剪时机={} 提示词转换={} 关联MID='{}'",
         rule.name,
         rule.eid,
         resolved.target_type,
         resolved.upstream_path,
         resolved.auth_type,
-        resolved.asset_convert,
-        resolved.asset_convert_ns,
+        asset_convert_label,
         resolved.poll_path,
         resolved.asset_moderation,
         resolved.is_cascade,
         resolved.crop_480p,
+        resolved.crop_timing,
         resolved.content_to_prompt,
         model.mid
+    );
+    Some(resolved)
+}
+
+/// 按 EID 直接查询转发规则（任务在途轮询快照优先机制）。
+/// 当任务已记录 forward_eid 时优先调用，避免模型/子渠热切换对在途任务造成干扰。
+pub async fn resolve_forward_rule_by_eid(
+    state: &AppState,
+    eid: &str,
+    category: &str,
+    request_path: &str,
+    db_model: Option<&crate::models::Model>,
+) -> Option<ResolvedForward> {
+    let eid_trimmed = eid.trim();
+    if eid_trimmed.is_empty() {
+        return None;
+    }
+    let query_str = state.db.format_query(
+        "SELECT name, eid, config_json FROM forward_rules WHERE eid = ? AND is_active = 1 LIMIT 1",
+    );
+    let (rule_name, rule_eid, config_json): (String, String, String) = sqlx::query_as(&query_str)
+        .bind(eid_trimmed)
+        .fetch_optional(&state.db.pool)
+        .await
+        .ok()??;
+
+    let openai_path = super::proxy::category_endpoint(Some(category));
+    let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_or_default();
+    let resolved = parse_forward_config(
+        &config,
+        &openai_path,
+        request_path,
+        &rule_eid,
+        db_model.map(|m| m.mid.clone()),
+    );
+    crate::relay_debug!(
+        "[ForwardByEID] 命中快照规则 名称='{}' EID={}: 目标类型={} 上游路径={} 鉴权类型={} 级联={}",
+        rule_name,
+        rule_eid,
+        resolved.target_type,
+        resolved.upstream_path,
+        resolved.auth_type,
+        resolved.is_cascade
     );
     Some(resolved)
 }
@@ -417,7 +553,7 @@ pub async fn resolve_forward_rule(
 pub async fn model_has_forward_rules(state: &AppState, model_id: &str) -> bool {
     let ids: Option<String> =
         sqlx::query_scalar(&state.db.format_query(
-            "SELECT forward_rule_ids FROM models WHERE model_id = ? AND is_active = 1",
+            "SELECT forward_rule_ids FROM models WHERE model_id = ? AND is_active = 1 AND is_listed = 1",
         ))
         .bind(model_id)
         .fetch_optional(&state.db.pool)
@@ -431,6 +567,31 @@ pub async fn model_has_forward_rules(state: &AppState, model_id: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// 记录转发规则不支持并返回 400 错误（统一收敛各路由，杜绝重复代码）
+pub async fn record_unsupported_forward_error(
+    state: &std::sync::Arc<AppState>,
+    token: &crate::models::ApiToken,
+    channel: &crate::models::Channel,
+    model: &str,
+    raw_path: &str,
+    category: &str,
+) -> crate::error::AppError {
+    let msg = format!("模型 '{}' 不支持当前接口，请检查模型对应的转发规则", model);
+    super::proxy::record_error_log(
+        state,
+        token,
+        Some(channel.id),
+        model,
+        400,
+        raw_path,
+        category,
+        &msg,
+        Some(&channel.base_url),
+    )
+    .await;
+    crate::error::AppError::BadRequest(msg)
 }
 
 /// 根据渠道 base_url 修正已解析的 target_type。
@@ -521,18 +682,8 @@ pub fn resolve_kling_dynamic_path(
     }
 
     // 旧协议视频动态路由
-    if path.contains("text2video")
-        || path.contains("image2video")
-        || path.contains("multi-image2video")
-    {
-        if upstream_body
-            .get("image_list")
-            .and_then(|v| v.as_array())
-            .map_or(false, |a| !a.is_empty())
-        {
-            resolved.upstream_path = "/v1/videos/multi-image2video".to_string();
-        } else if upstream_body.get("image").is_some() || upstream_body.get("image_tail").is_some()
-        {
+    if path.contains("text2video") || path.contains("image2video") {
+        if upstream_body.get("image").is_some() || upstream_body.get("image_tail").is_some() {
             resolved.upstream_path = "/v1/videos/image2video".to_string();
         } else {
             resolved.upstream_path = "/v1/videos/text2video".to_string();
@@ -719,8 +870,7 @@ pub fn parse_forward_config(
 ) -> ResolvedForward {
     let is_passthrough = path_passthrough_hit(config, request_path);
     // Anthropic Messages 透传（含 MiniMax /anthropic/v1/messages）：统一 anthropic + x-api-key
-    let (default_tt, default_auth) = if is_passthrough && is_anthropic_messages_path(request_path)
-    {
+    let (default_tt, default_auth) = if is_passthrough && is_anthropic_messages_path(request_path) {
         ("anthropic", "x-api-key")
     } else {
         ("openai", "bearer")
@@ -728,18 +878,23 @@ pub fn parse_forward_config(
 
     let upstream_path = if is_passthrough {
         request_path.to_string()
-    } else if let Some(pr) = config.get("path_rewrite") {
-        let old = pr.get("old").and_then(|v| v.as_str()).unwrap_or("");
-        let new = pr.get("new").and_then(|v| v.as_str()).unwrap_or("");
-        if !old.is_empty() && category_path.contains(old) {
+    } else {
+        let rewrites = collect_rewrites(config);
+        if let Some((_, new)) = rewrites
+            .iter()
+            .find(|(old, new)| path_matches(request_path, new) || path_matches(request_path, old))
+        {
+            new.to_string()
+        } else if let Some((old, new)) = rewrites
+            .iter()
+            .find(|(old, _)| !old.is_empty() && category_path.contains(*old))
+        {
             category_path.replace(old, new)
-        } else if !new.is_empty() {
+        } else if let Some((_, new)) = rewrites.iter().find(|(_, new)| !new.is_empty()) {
             new.to_string()
         } else {
             category_path.to_string()
         }
-    } else {
-        category_path.to_string()
     };
 
     ResolvedForward {
@@ -786,10 +941,24 @@ pub fn parse_forward_config(
             .get("is_cascade")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        cascade_engine: config
+            .get("cascade_engine")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| s == "tencent")
+            .unwrap_or_else(|| "volc".to_string()),
         crop_480p: config
             .get("crop_480p")
             .and_then(|v| v.as_bool())
             .unwrap_or(true),
+        crop_timing: config
+            .get("crop_timing")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| s == "post")
+            .unwrap_or_else(|| "pre".to_string()),
+        crop_coords_480p: parse_crop_coords(config, "crop_coords_480p"),
+        crop_coords_720p: parse_crop_coords(config, "crop_coords_720p"),
         content_to_prompt: config
             .get("content_to_prompt")
             .and_then(|v| v.as_bool())
@@ -841,22 +1010,9 @@ pub fn infer_forward_from_base_url(
         };
     }
 
-    // 火山引擎 AI MediaKit 视频画质增强 (mediakit.cn-beijing.volces.com)
     #[cfg(feature = "plugin_volcengine_enhance")]
-    {
-        if url_lower.contains("mediakit") {
-            let mut r = make_forward(
-                "volcengine_media_enhance",
-                "/api/v1/tools/enhance-video",
-                "bearer",
-            );
-            r.poll_path = Some("/api/v1/tasks/${task_id}".to_string());
-            if let Some(m) = db_model {
-                r.mid = Some(m.mid.clone());
-                resolve_volcengine_media_enhance_path(&mut r, &m.model_id);
-            }
-            return r;
-        }
+    if let Some(r) = crate::api::plugins::infer_volc_media_enhance(&url_lower, db_model) {
+        return r;
     }
 
     // 火山豆包语音合成（openspeech.bytedance.com，独立域名）
@@ -937,14 +1093,8 @@ pub fn infer_forward_from_base_url(
     } else if url_lower.contains("queue.fal.run") {
         // 无规则时与内置 MiniMax 参考生视频路径一致
         if category == "视频" {
-            let mut r = make_forward(
-                "fal_video",
-                "/minimax/${model}/reference-to-video",
-                "key",
-            );
-            r.poll_path = Some(
-                "/minimax/${model}/requests/${task_id}/status".to_string(),
-            );
+            let mut r = make_forward("fal_video", "/minimax/${model}/reference-to-video", "key");
+            r.poll_path = Some("/minimax/${model}/requests/${task_id}/status".to_string());
             r
         } else {
             default_openai_forward(super::proxy::category_endpoint(Some(category)))
@@ -971,90 +1121,4 @@ pub fn mask_key_in_string(text: &str, api_key: &str) -> String {
         }
     };
     text.replace(api_key, &masked)
-}
-// ── 火山引擎 AI MediaKit 插件辅助处理 ──
-
-/// MediaKit：共用 `/enhance-video` 端点时的 tool_version（标准/专业）。
-/// 极速(vve-ft)/大模型(vve-gt)走独立路径，不经此映射；字幕擦除同理。
-pub fn volc_enhance_tool_version(mid: &str) -> Option<&'static str> {
-    match mid {
-        "vve-sd" => Some("standard"),
-        "vve-pf" => Some("professional"),
-        _ => None,
-    }
-}
-
-#[cfg(feature = "plugin_volcengine_enhance")]
-pub(super) fn build_volcengine_media_enhance_body(model: &str, body: &serde_json::Value) -> serde_json::Value {
-    let mut req = serde_json::Map::new();
-
-    // 1. video_url：待处理的输入视频直链 URL (必填参数)
-    if let Some(url) = body.get("video_url").and_then(|v| v.as_str()) {
-        req.insert("video_url".to_string(), serde_json::json!(url));
-    }
-
-    // 2. 模式映射：标准版 / 专业版共用端点时带 tool_version
-    if let Some(tv) = volc_enhance_tool_version(model) {
-        req.insert("tool_version".to_string(), serde_json::json!(tv));
-    }
-
-    // 3. 透传画质增强的其它可选参数 (scene/resolution/resolution_limit/fps 等)
-    for key in &[
-        "scene",
-        "resolution",
-        "resolution_limit",
-        "fps",
-        "bitrate_level",
-        "callback_args",
-        "callback_url",
-        "client_token",
-        "queue_id",
-        "mode",
-        "output_encode_mode",
-        "erase_ratio_location",
-    ] {
-        if let Some(v) = body.get(*key) {
-            req.insert(key.to_string(), v.clone());
-        }
-    }
-
-    serde_json::Value::Object(req)
-}
-
-/// 根据模型的 mid（数据库唯一标识）重构火山引擎画质增强与字幕擦除的实际物理端点路径和轮询地址。
-/// 解耦 model_id 频繁变更对网关路由的影响，始终以系统内不可变且唯一的 mid 进行路由映射绑定。
-pub fn resolve_volcengine_media_enhance_path(resolved: &mut ResolvedForward, model: &str) {
-    #[cfg(feature = "plugin_volcengine_enhance")]
-    {
-        // 核心依据数据库中必定存在的系统唯一持久 mid 标识
-        let mid = resolved.mid.as_deref().unwrap_or("");
-        crate::relay_debug!(
-            "[VolcEnhance] 网关路径重写解析: 真实MID='{}' 模型='{}'",
-            mid,
-            model
-        );
-
-        // vve-sd (标准版), vve-pf (专业版), vve-ft (快速版), vve-gt (生成式版), vvs-er (字幕擦除标准版), vvs-ep (字幕擦除专业版)
-        let is_volc_enhance = matches!(
-            mid,
-            "vve-sd" | "vve-pf" | "vve-ft" | "vve-gt" | "vvs-er" | "vvs-ep"
-        );
-        if is_volc_enhance {
-            let path = match mid {
-                "vve-ft" => "/api/v1/tools/enhance-video-fast",
-                "vve-gt" => "/api/v1/tools/enhance-video-generative",
-                "vvs-ep" => "/api/v1/tools/erase-video-subtitle-pro",
-                "vvs-er" => "/api/v1/tools/erase-video-subtitle",
-                _ => "/api/v1/tools/enhance-video",
-            };
-            resolved.upstream_path = path.to_string();
-            resolved.target_type = "volcengine_media_enhance".to_string();
-            resolved.poll_path = Some("/api/v1/tasks/${task_id}".to_string());
-        }
-    }
-    #[cfg(not(feature = "plugin_volcengine_enhance"))]
-    {
-        let _ = resolved;
-        let _ = model;
-    }
 }

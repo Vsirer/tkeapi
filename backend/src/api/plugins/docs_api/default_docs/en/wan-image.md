@@ -1,6 +1,6 @@
 # Alibaba Qwen Image Generation
 
-Qwen image via OpenAI-compatible `POST /v1/images/generations`. All examples use **`qwen-image-3.0-pro`**.
+OpenAI-compatible: `POST /v1/images/generations`. Native: `/api/v1/services/aigc/multimodal-generation/generation`. [Image API](https://help.aliyun.com/zh/model-studio/qwen-image-generation-and-editing-api-reference?spm=a2c4g.11186623.help-menu-2400256.d_2_2_0_0.4ef45598uDMl78)
 
 > Use **`prompt` + `image` / `image_urls`**. Does not support `messages`, `style`, or `quality`.
 

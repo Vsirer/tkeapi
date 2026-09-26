@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 @import "tailwindcss";
@@ -1001,6 +1001,22 @@ tr.ant-table-measure-row .ant-table-cell {
   [data-theme='dark'] .custom-premium-popover {
     background: rgba(30, 30, 32, 0.88) !important;
   }
+}
+
+/* 日志时间段选择器专用 Popover：去除 antd 默认内边距与底色 */
+.custom-datetime-popover {
+  padding: 0 !important;
+}
+.custom-datetime-popover .ant-popover-container,
+.custom-datetime-popover .ant-popover-inner,
+.custom-datetime-popover .ant-popover-inner-content {
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+.custom-datetime-popover .ant-popover-content {
+  background: transparent !important;
 }
 
 /* 绑定提醒弹窗：与右上角头像 Popover 同系毛玻璃 */

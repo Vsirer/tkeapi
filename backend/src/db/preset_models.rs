@@ -1,11 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-//! 系统预设模型：安装时写入官方计费与转发规则已绑定的目录。
+//! 系统预设模型：写入「模型库」目录；上架后才进入 `models`。
+//! 目录更新只改 `model_library`，不覆盖已上架模型。
 
 use sqlx::PgPool;
 
@@ -40,7 +41,7 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
             mid: "310001",
             name: "Doubao Seedance 2.0",
             model_id: "doubao-seedance-2-0-260128",
-            original_id: "doubao-seedance-2-0",
+            original_id: "Doubao Seedance 预设",
             model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
@@ -62,7 +63,7 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
             mid: "310002",
             name: "Doubao Seedance 2.0 Fast",
             model_id: "doubao-seedance-2-0-fast",
-            original_id: "doubao-seedance-2-0-fast",
+            original_id: "Doubao Seedance 预设",
             model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
@@ -84,7 +85,7 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
             mid: "310003",
             name: "Doubao Seedance 2.5",
             model_id: "doubao-seedance-2-5-260628",
-            original_id: "doubao-seedance-2-5",
+            original_id: "Doubao Seedance 预设",
             model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
@@ -106,7 +107,7 @@ pub fn preset_model_catalog() -> &'static [PresetModelDef] {
             mid: "310004",
             name: "Doubao Seedance 2.0 Mini",
             model_id: "doubao-seedance-2-0-mini",
-            original_id: "doubao-seedance-2-0-mini",
+            original_id: "Doubao Seedance 预设",
             model_id_alias: "",
             provider_name: "火山引擎",
             type_name: "视频",
@@ -136,8 +137,72 @@ async fn lookup_id(pool: &PgPool, sql: &str, name: &str) -> Option<i64> {
         .flatten()
 }
 
-/// 幂等写入系统预设模型（已存在 mid 则跳过）。
+async fn model_library_ready(pool: &PgPool) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'model_library')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
+}
+
+async fn resolve_catalog_ids(
+    pool: &PgPool,
+    def: &PresetModelDef,
+) -> Option<(Option<i64>, Option<i64>, i64, i64)> {
+    let provider_id = lookup_id(
+        pool,
+        "SELECT id FROM model_providers WHERE name = $1 LIMIT 1",
+        def.provider_name,
+    )
+    .await;
+    let type_id = lookup_id(
+        pool,
+        "SELECT id FROM model_types WHERE name = $1 LIMIT 1",
+        def.type_name,
+    )
+    .await;
+    let billing_rule_id = lookup_id(
+        pool,
+        "SELECT id FROM billing_rules WHERE name = $1 LIMIT 1",
+        def.billing_rule_name,
+    )
+    .await;
+    let forward_rule_id = lookup_id(
+        pool,
+        "SELECT id FROM forward_rules WHERE name = $1 LIMIT 1",
+        def.forward_rule_name,
+    )
+    .await;
+
+    let Some(billing_rule_id) = billing_rule_id else {
+        tracing::warn!(
+            "系统预设模型 {} 跳过：找不到计费规则 {}",
+            def.mid,
+            def.billing_rule_name
+        );
+        return None;
+    };
+    let Some(forward_rule_id) = forward_rule_id else {
+        tracing::warn!(
+            "系统预设模型 {} 跳过：找不到转发规则 {}",
+            def.mid,
+            def.forward_rule_name
+        );
+        return None;
+    };
+    Some((provider_id, type_id, billing_rule_id, forward_rule_id))
+}
+
+/// 写入系统预置目录。`model_library` 就绪后只更新模型库，绝不改 `models`。
 pub async fn seed_system_preset_models(pool: &PgPool) -> anyhow::Result<u32> {
+    if model_library_ready(pool).await {
+        return upsert_model_library(pool).await;
+    }
+    seed_legacy_models_table(pool).await
+}
+
+async fn seed_legacy_models_table(pool: &PgPool) -> anyhow::Result<u32> {
     let mut inserted = 0u32;
     for def in preset_model_catalog() {
         let exists: Option<i64> =
@@ -148,49 +213,11 @@ pub async fn seed_system_preset_models(pool: &PgPool) -> anyhow::Result<u32> {
         if exists.is_some() {
             continue;
         }
-
-        let provider_id = lookup_id(
-            pool,
-            "SELECT id FROM model_providers WHERE name = $1 LIMIT 1",
-            def.provider_name,
-        )
-        .await;
-        let type_id = lookup_id(
-            pool,
-            "SELECT id FROM model_types WHERE name = $1 LIMIT 1",
-            def.type_name,
-        )
-        .await;
-        let billing_rule_id = lookup_id(
-            pool,
-            "SELECT id FROM billing_rules WHERE name = $1 LIMIT 1",
-            def.billing_rule_name,
-        )
-        .await;
-        let forward_rule_id = lookup_id(
-            pool,
-            "SELECT id FROM forward_rules WHERE name = $1 LIMIT 1",
-            def.forward_rule_name,
-        )
-        .await;
-
-        let Some(billing_rule_id) = billing_rule_id else {
-            tracing::warn!(
-                "系统预设模型 {} 跳过：找不到计费规则 {}",
-                def.mid,
-                def.billing_rule_name
-            );
+        let Some((provider_id, type_id, billing_rule_id, forward_rule_id)) =
+            resolve_catalog_ids(pool, def).await
+        else {
             continue;
         };
-        let Some(forward_rule_id) = forward_rule_id else {
-            tracing::warn!(
-                "系统预设模型 {} 跳过：找不到转发规则 {}",
-                def.mid,
-                def.forward_rule_name
-            );
-            continue;
-        };
-
         let forward_ids = format!("[{forward_rule_id}]");
         let result = sqlx::query(
             r#"INSERT INTO models (
@@ -238,20 +265,184 @@ pub async fn seed_system_preset_models(pool: &PgPool) -> anyhow::Result<u32> {
     Ok(inserted)
 }
 
-/// `source` 查询参数 → SQL 片段（仅允许 system/custom，避免拼接用户输入）。
-pub fn source_filter_sql(source: Option<&str>) -> &'static str {
-    match source {
-        Some("system") => " AND is_system = 1",
-        Some("custom") => " AND is_system = 0",
-        _ => "",
+async fn upsert_model_library(pool: &PgPool) -> anyhow::Result<u32> {
+    let mut written = 0u32;
+    for def in preset_model_catalog() {
+        let Some((provider_id, type_id, billing_rule_id, forward_rule_id)) =
+            resolve_catalog_ids(pool, def).await
+        else {
+            continue;
+        };
+        let forward_ids = format!("[{forward_rule_id}]");
+        let result = sqlx::query(
+            r#"INSERT INTO model_library (
+                    mid, name, model_id, original_id, model_id_alias,
+                    provider_id, type_id, group_ratios, forward_rule_ids, billing_rule_id,
+                    pre_deduction, site_discount, site_discount_enabled,
+                    global_discount, global_discount_enabled,
+                    is_active, enable_log_content, is_system, logo, remark, description,
+                    feature_attributes, created_at, updated_at
+               )
+               VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, '{"default":1.0}', $8, $9,
+                    $10, $11, $12, $13, $14,
+                    $15, $16, 1, $17, $18, $19, $20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+               )
+               ON CONFLICT (mid) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    model_id = EXCLUDED.model_id,
+                    original_id = EXCLUDED.original_id,
+                    model_id_alias = EXCLUDED.model_id_alias,
+                    provider_id = EXCLUDED.provider_id,
+                    type_id = EXCLUDED.type_id,
+                    group_ratios = EXCLUDED.group_ratios,
+                    forward_rule_ids = EXCLUDED.forward_rule_ids,
+                    billing_rule_id = EXCLUDED.billing_rule_id,
+                    pre_deduction = EXCLUDED.pre_deduction,
+                    site_discount = EXCLUDED.site_discount,
+                    site_discount_enabled = EXCLUDED.site_discount_enabled,
+                    global_discount = EXCLUDED.global_discount,
+                    global_discount_enabled = EXCLUDED.global_discount_enabled,
+                    enable_log_content = EXCLUDED.enable_log_content,
+                    logo = EXCLUDED.logo,
+                    remark = EXCLUDED.remark,
+                    description = EXCLUDED.description,
+                    feature_attributes = EXCLUDED.feature_attributes,
+                    updated_at = CURRENT_TIMESTAMP"#,
+        )
+        .bind(def.mid)
+        .bind(def.name)
+        .bind(def.model_id)
+        .bind(def.original_id)
+        .bind(def.model_id_alias)
+        .bind(provider_id)
+        .bind(type_id)
+        .bind(&forward_ids)
+        .bind(billing_rule_id)
+        .bind(def.pre_deduction)
+        .bind(def.site_discount)
+        .bind(def.site_discount_enabled)
+        .bind(def.global_discount)
+        .bind(def.global_discount_enabled)
+        .bind(def.is_active)
+        .bind(def.enable_log_content)
+        .bind(def.logo)
+        .bind(def.remark)
+        .bind(def.description)
+        .bind(def.feature_attributes)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
+/// 把系统预设复制进模型库，并从运营列表拿掉。默认安装后运营列表为空。
+pub async fn split_listed_and_library(pool: &PgPool) -> anyhow::Result<u32> {
+    let copied = sqlx::query(
+        r#"INSERT INTO model_library (
+                mid, name, model_id, original_id, model_id_alias,
+                provider_id, api_provider_id, type_id, group_ratios, billing_rule_id,
+                pre_deduction, is_active, forward_rule_ids, enable_log_content,
+                site_discount, site_discount_enabled, global_discount, global_discount_enabled,
+                logo, remark, description, feature_attributes, is_system, sort_order,
+                created_at, updated_at
+           )
+           SELECT
+                mid, name, model_id, original_id, model_id_alias,
+                provider_id, api_provider_id, type_id, group_ratios, billing_rule_id,
+                pre_deduction, is_active, forward_rule_ids, enable_log_content,
+                site_discount, site_discount_enabled, global_discount, global_discount_enabled,
+                logo, remark, description, feature_attributes, is_system, sort_order,
+                created_at, updated_at
+           FROM models
+           WHERE is_system = 1 AND mid IS NOT NULL AND mid <> ''
+           ON CONFLICT (mid) DO NOTHING"#,
+    )
+    .execute(pool)
+    .await?
+    .rows_affected() as u32;
+
+    sqlx::query(
+        "DELETE FROM models WHERE is_system = 1 AND mid IS NOT NULL AND mid <> ''",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("UPDATE models SET is_system = 0 WHERE is_system = 1")
+        .execute(pool)
+        .await?;
+
+    let seeded = upsert_model_library(pool).await?;
+    tracing::info!(
+        "模型库拆分完成：从已上架复制 {} 条，目录写入/更新 {} 条",
+        copied,
+        seeded
+    );
+    Ok(copied)
+}
+
+/// `source=library|system` 读模型库，其余读上架模型。表名仅允许白名单。
+pub fn is_library_source(source: Option<&str>) -> bool {
+    matches!(source, Some("system") | Some("library"))
+}
+
+#[allow(dead_code)]
+pub fn models_table(source: Option<&str>) -> &'static str {
+    if is_library_source(source) {
+        "model_library"
+    } else {
+        "models"
     }
 }
 
-/// LEFT JOIN ON 条件（无前导 AND）；alias 固定为 `m`。
-pub fn source_join_predicate(source: Option<&str>) -> Option<&'static str> {
-    match source {
-        Some("system") => Some("m.is_system = 1"),
-        Some("custom") => Some("m.is_system = 0"),
-        _ => None,
+/// 分类统计 JOIN 源：模型库只读预置目录。
+pub fn models_join_relation(source: Option<&str>) -> &'static str {
+    if is_library_source(source) {
+        "model_library"
+    } else {
+        "models"
     }
 }
+
+/// 目录里已有副本的 mid 不再重复出现。
+/// MediaKit 八条预置模型例外：已上架副本在运营列表，目录行仍留在模型仓库；只有已下架副本时才改由运营表那一行代表。
+pub const LIBRARY_CATALOG_FREE: &str = "NOT EXISTS (\
+    SELECT 1 FROM models shelf \
+    WHERE shelf.library_mid = m.mid AND shelf.library_mid <> '' \
+      AND (shelf.is_listed = 0 OR m.mid NOT IN (\
+        'vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg'\
+      ))\
+)";
+
+pub fn library_catalog_free_predicate(source: Option<&str>) -> Option<&'static str> {
+    if is_library_source(source) {
+        Some(LIBRARY_CATALOG_FREE)
+    } else {
+        None
+    }
+}
+
+/// 上架列表 JOIN 额外条件；模型库视图不加。
+pub fn listed_join_predicate(source: Option<&str>) -> Option<&'static str> {
+    if is_library_source(source) {
+        None
+    } else {
+        Some("m.is_listed = 1")
+    }
+}
+
+pub const LISTED_ONLY: &str = " AND is_listed = 1";
+#[allow(dead_code)]
+pub const LISTED_ONLY_M: &str = " AND m.is_listed = 1";
+
+/// `model_library` 没有 `library_mid`/`is_listed`，显式列出以免 SELECT * 映射失败。
+pub const LIBRARY_MODEL_COLUMNS: &str = "id, mid, name, model_id, original_id, model_id_alias, \
+    provider_id, api_provider_id, type_id, group_ratios, billing_rule_id, \
+    pre_deduction, is_active, forward_rule_ids, enable_log_content, \
+    site_discount, site_discount_enabled, global_discount, global_discount_enabled, \
+    discount_schedule, logo, remark, description, feature_attributes, is_system, \
+    NULL::text AS library_mid, 0 AS is_listed, sort_order, created_at, updated_at, \
+    NULL::text AS type_name";

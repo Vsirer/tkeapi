@@ -1,18 +1,20 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState, useMemo, startTransition } from 'react';
-import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Progress, Grid, Radio, Tabs, Timeline, Row, Col, Tooltip, DatePicker, Statistic, Spin, Switch, Alert } from 'antd';
+import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Popconfirm, Card, Typography, Select, Progress, Grid, Radio, Tabs, Timeline, Row, Col, Tooltip, DatePicker, Statistic, Spin, Switch, Alert, Checkbox, App, theme } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
+import { listPagination } from '../../components/ListPagination';
 import ModelSelector from '../../components/ModelSelector';
 import WalletBalanceDisplay from '../../components/WalletBalanceDisplay';
 import WalletDetailsView from '../../components/WalletDetailsView';
 import UserKycListManager from '../../components/UserKycListManager';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, SyncOutlined, WalletOutlined, LoginOutlined, ArrowLeftOutlined, CloseOutlined, SearchOutlined, IdcardOutlined } from '@ant-design/icons';
+import { KYC_STATUS_META } from '../../components/UserKycFormFields';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, WalletOutlined, LoginOutlined, ArrowLeftOutlined, CloseOutlined, SearchOutlined, IdcardOutlined, CheckSquareOutlined, CheckCircleOutlined, StopOutlined, CreditCardOutlined, SettingOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
@@ -24,6 +26,7 @@ const TAB_KEY_TO_SLUG: Record<string, string> = {
   '5': 'payment',
   '4': 'discount',
   '6': 'kyc',
+  '7': 'invoices',
 };
 
 const SLUG_TO_TAB_KEY: Record<string, string> = {
@@ -41,6 +44,9 @@ const SLUG_TO_TAB_KEY: Record<string, string> = {
   '4': '4',
   kyc: '6',
   '6': '6',
+  invoices: '7',
+  invoice: '7',
+  '7': '7',
 };
 import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
@@ -115,6 +121,22 @@ const { useBreakpoint } = Grid;
 // Helper: check if email is a real user-bound email (not a placeholder)
 const isRealEmail = (email?: string) => !!email && !email.endsWith('@tokensbyte.local');
 
+type ContactKind = 'email' | 'mobile';
+type ClickFilterKind = ContactKind | 'ip';
+type ContactFilter = { kind: ClickFilterKind; value: string };
+type ContactBindInfo = {
+  kind: ContactKind;
+  value: string;
+  bound_count: number;
+  limit: number;
+  default_limit: number;
+  is_override: boolean;
+};
+
+/** 超级管理员：role=admin 且未绑定管理员等级 */
+const isSuperAdminUser = (user?: Pick<User, 'role' | 'admin_group_id'> | null) =>
+  !!user && user.role === 'admin' && !user.admin_group_id;
+
 /** 模型折扣 Tag：悬停一眼看全模型名与倍率（沿用早期友好布局） */
 function ModelDiscountHoverTag({
   modelDiscounts,
@@ -156,14 +178,52 @@ function ModelDiscountHoverTag({
   );
 }
 
+const KYC_TAG_STYLE: React.CSSProperties = { fontSize: 11, padding: '0 4px', margin: 0, whiteSpace: 'nowrap', cursor: 'pointer' };
+
+function kycListStatus(status?: string | null, approvedFallback?: boolean): UserKycStatus | null {
+  if (status && status !== 'none') return status as UserKycStatus;
+  if (approvedFallback) return 'approved';
+  return null;
+}
+
+function KycStatusTags({ record, onOpen }: { record: User; onOpen: () => void }) {
+  const openKyc = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onOpen();
+  };
+  const items: { key: string; typeLabel: string; status: UserKycStatus }[] = [];
+  const personal = kycListStatus(record.kyc_personal_status, record.kyc_personal);
+  const enterprise = kycListStatus(record.kyc_enterprise_status, record.kyc_enterprise);
+  if (personal) items.push({ key: 'personal', typeLabel: '个人', status: personal });
+  if (enterprise) items.push({ key: 'enterprise', typeLabel: '企业', status: enterprise });
+
+  if (items.length === 0) {
+    return <Tag style={KYC_TAG_STYLE} onClick={openKyc}>未实名</Tag>;
+  }
+  return (
+    <>
+      {items.map((item) => {
+        const meta = KYC_STATUS_META[item.status] || KYC_STATUS_META.none;
+        return (
+          <Tag key={item.key} color={meta.color} style={KYC_TAG_STYLE} onClick={openKyc}>
+            {item.typeLabel}{meta.label}
+          </Tag>
+        );
+      })}
+    </>
+  );
+}
+
 const Users: React.FC = () => {
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
+  const { modal } = App.useApp();
+  const { token } = theme.useToken();
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const { actionId, tab: routeTab } = useParams<{ actionId?: string; tab?: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryTab = searchParams.get('tab');
   const [userLoading, setUserLoading] = useState(false);
   const loadingUserIdRef = React.useRef<string | null>(null);
@@ -175,6 +235,9 @@ const Users: React.FC = () => {
   const { settings } = useSettingsStore();
   const adminPath = settings?.site?.admin_path || 'admin1688';
   const basePath = isAdminPage ? 'admins' : 'users';
+  const isInvoiceEnabled = settings?.invoices?.invoice_enabled !== false;
+  const isChinaInvoiceMode = settings?.invoices?.invoice_mode === 'china';
+  const invoiceBtnTitle = isChinaInvoiceMode ? '增值税开票历史' : '商业发票与付款收据';
 
   const rawTab = routeTab || queryTab;
   const resolvedTabKey = useMemo(() => {
@@ -188,7 +251,6 @@ const Users: React.FC = () => {
   const [adminGroups, setAdminGroups] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalVisible, setIsModalVisible] = useState(false);
-  const [selectedRole, setSelectedRole] = useState<string>('user');
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isRechargeModalVisible, setIsRechargeModalVisible] = useState(false);
   const [rechargingUser, setRechargingUser] = useState<User | null>(null);
@@ -198,6 +260,9 @@ const Users: React.FC = () => {
     return (localStorage.getItem('walletTimeFilter') as 'all' | 'month') || 'month';
   });
   const [monthConsumptionMap, setMonthConsumptionMap] = useState<Record<string, { system_cost: number; gift_cost: number }>>({});
+  const [isBatchEditMode, setIsBatchEditMode] = useState<boolean>(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [batchLoading, setBatchLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (users.length === 0 || walletTimeFilter !== 'month') {
@@ -230,7 +295,45 @@ const Users: React.FC = () => {
     setColumnsWidths((prev) => ({ ...prev, [key]: Math.max(size.width, 80) }));
   };
   const [searchText, setSearchText] = useState('');
-  const [filterGroup, setFilterGroup] = useState<string>('all');
+  const [contactFilter, setContactFilter] = useState<ContactFilter | null>(null);
+  const [contactBind, setContactBind] = useState<ContactBindInfo | null>(null);
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
+  const [limitSaving, setLimitSaving] = useState(false);
+  const [limitDraft, setLimitDraft] = useState(5);
+  const queryGroupParam = searchParams.get('group') || searchParams.get('user_group') || searchParams.get('level');
+  const [filterGroup, setFilterGroup] = useState<string>(() => queryGroupParam || 'all');
+
+  useEffect(() => {
+    const qGroup = searchParams.get('group') || searchParams.get('user_group') || searchParams.get('level');
+    if (qGroup) {
+      if (userLevels.length > 0) {
+        const matched = userLevels.find((l: any) => l.group_key === qGroup || String(l.id) === qGroup);
+        if (matched) {
+          setFilterGroup(matched.group_key);
+          return;
+        }
+      }
+      setFilterGroup(qGroup);
+    } else {
+      setFilterGroup('all');
+    }
+  }, [searchParams, userLevels]);
+
+  const handleFilterGroupChange = (val: string) => {
+    setFilterGroup(val);
+    const newParams = new URLSearchParams(searchParams);
+    if (val && val !== 'all') {
+      newParams.set('group', val);
+      newParams.delete('user_group');
+      newParams.delete('level');
+    } else {
+      newParams.delete('group');
+      newParams.delete('user_group');
+      newParams.delete('level');
+    }
+    setSearchParams(newParams, { replace: true });
+  };
+
   const [filterReferrer, setFilterReferrer] = useState('');
   /** 排序：default / 系统钱包余额 / 赠送钱包余额 / 信控额度 / 消费合计 */
   const [listSort, setListSort] = useState<'default' | 'balance_desc' | 'balance_asc' | 'gift_balance_desc' | 'gift_balance_asc' | 'credit_limit_desc' | 'credit_limit_asc' | 'consumption_desc' | 'consumption_asc'>('default');
@@ -283,6 +386,10 @@ const Users: React.FC = () => {
   };
 
   useEffect(() => {
+    setIsBatchEditMode(false);
+    setSelectedRowKeys([]);
+    setContactFilter(null);
+    setContactBind(null);
     fetchUsers();
     // 加载模型列表用于折扣标识显示模型名称（仅首次）
     if (availableModels.length === 0) {
@@ -314,6 +421,18 @@ const Users: React.FC = () => {
       });
     }
     
+    if (contactFilter) {
+      if (contactFilter.kind === 'email') {
+        const want = contactFilter.value.toLowerCase();
+        result = result.filter(user => isRealEmail(user.email) && user.email!.toLowerCase() === want);
+      } else if (contactFilter.kind === 'mobile') {
+        result = result.filter(user => (user.mobile || '').trim() === contactFilter.value);
+      } else {
+        const want = contactFilter.value.toLowerCase();
+        result = result.filter(user => (user.register_ip || '').trim().toLowerCase() === want);
+      }
+    }
+
     const trimmedSearchText = searchText.trim();
     if (trimmedSearchText) {
       const lower = trimmedSearchText.toLowerCase();
@@ -367,7 +486,121 @@ const Users: React.FC = () => {
     }
     
     return result;
-  }, [users, searchText, filterGroup, filterReferrer, allUsers, listSort, walletTimeFilter, monthConsumptionMap]);
+  }, [users, searchText, contactFilter, filterGroup, filterReferrer, allUsers, listSort, walletTimeFilter, monthConsumptionMap]);
+
+  const applyContactFilter = (kind: ClickFilterKind, value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setSearchText('');
+    setFilterGroup('all');
+    const newParams = new URLSearchParams(searchParams);
+    if (newParams.has('group') || newParams.has('user_group') || newParams.has('level')) {
+      newParams.delete('group');
+      newParams.delete('user_group');
+      newParams.delete('level');
+      setSearchParams(newParams, { replace: true });
+    }
+    setFilterReferrer('');
+    setContactFilter({ kind, value: trimmed });
+  };
+
+  useEffect(() => {
+    if (!contactFilter || contactFilter.kind === 'ip') {
+      setContactBind(null);
+      return;
+    }
+    let cancelled = false;
+    request
+      .get('/users/contact-bind', { params: { kind: contactFilter.kind, value: contactFilter.value } })
+      .then((res: any) => {
+        if (!cancelled && res) setContactBind(res as ContactBindInfo);
+      })
+      .catch(() => {
+        if (!cancelled) setContactBind(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactFilter]);
+
+  useEffect(() => {
+    if (limitModalOpen && contactBind) {
+      setLimitDraft(contactBind.limit);
+    }
+  }, [contactBind, limitModalOpen]);
+
+  const openLimitModal = () => {
+    setLimitDraft(contactBind?.limit ?? 5);
+    setLimitModalOpen(true);
+  };
+
+  const saveContactLimit = async () => {
+    if (!contactFilter || contactFilter.kind === 'ip') return;
+    const maxAccounts = Number(limitDraft);
+    setLimitSaving(true);
+    try {
+      const res: any = await request.put('/users/contact-bind', {
+        kind: contactFilter.kind,
+        value: contactFilter.value,
+        max_accounts: maxAccounts,
+      });
+      if (res) setContactBind(res as ContactBindInfo);
+      setLimitModalOpen(false);
+      message.success('已更新绑定上限');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLimitSaving(false);
+    }
+  };
+
+  const resetContactLimit = async () => {
+    if (!contactFilter || contactFilter.kind === 'ip') return;
+    setLimitSaving(true);
+    try {
+      const res: any = await request.delete('/users/contact-bind', {
+        params: { kind: contactFilter.kind, value: contactFilter.value },
+      });
+      if (res) {
+        setContactBind(res as ContactBindInfo);
+        setLimitDraft(res.limit);
+      } else {
+        setContactBind(null);
+      }
+      setLimitModalOpen(false);
+      message.success('已恢复站点默认上限');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLimitSaving(false);
+    }
+  };
+
+  const renderContactLink = (kind: ClickFilterKind, value: string, opts?: { compact?: boolean }) => {
+    const normalize = (v: string) => (kind === 'mobile' ? v.trim() : v.trim().toLowerCase());
+    const active = contactFilter?.kind === kind && normalize(contactFilter.value) === normalize(value);
+    const label = kind === 'email' ? '邮箱' : kind === 'mobile' ? '手机号' : '注册 IP';
+    return (
+      <Button
+        type="link"
+        size="small"
+        style={{
+          padding: 0,
+          height: 'auto',
+          fontSize: opts?.compact ? 12 : 13,
+          maxWidth: 220,
+          color: active ? '#1677ff' : undefined,
+        }}
+        title={`点击筛选该${label}下的账号`}
+        onClick={(e) => {
+          e.stopPropagation();
+          applyContactFilter(kind, value);
+        }}
+      >
+        {value}
+      </Button>
+    );
+  };
 
   // 查找推荐人用户对象（支持通过 id、uid 或 username 匹配）
   const findReferrerUser = (refVal?: string | null) => {
@@ -453,7 +686,6 @@ const Users: React.FC = () => {
       .then(res => setLevelLogs(res.data || []))
       .catch(() => {})
       .finally(() => setLevelLogsLoading(false));
-    setSelectedRole(record.role);
 
     // 规范化推荐人初始值，避免自推荐或 UUID 无法匹配
     const isSelfReferral = record.referred_by && (
@@ -557,7 +789,6 @@ const Users: React.FC = () => {
     if (actionId === 'new') {
       setIsModalVisible(true);
       setEditingUser(null);
-      setSelectedRole(targetRole);
       form.resetFields();
       form.setFieldsValue({ role: targetRole, is_active: 1, balance: 0, gift_balance: 0, user_group: 'default' });
       setDiscountMap({});
@@ -612,12 +843,101 @@ const Users: React.FC = () => {
 
   const handleDelete = async (target: User | string) => {
     try {
+      if (typeof target !== 'string' && isSuperAdminUser(target)) {
+        message.error('超级管理员不可删除');
+        return;
+      }
       const deleteIdentifier = typeof target === 'string' ? target : (target.uid || target.id);
       await request.delete(`/users/${deleteIdentifier}`);
       message.success(t('common.success'));
       fetchUsers();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleBatchChangeActive = async (active: number) => {
+    if (selectedRowKeys.length === 0) return;
+    const selectedKeySet = new Set(selectedRowKeys.map(String));
+    const targetUsers = displayedUsers.filter(u => selectedKeySet.has(String(u.id)));
+    if (targetUsers.length === 0) return;
+
+    setBatchLoading(true);
+    try {
+      await Promise.all(
+        targetUsers.map(u =>
+          request.put(`/users/${u.uid || u.id}`, { is_active: active })
+        )
+      );
+      message.success(`已成功${active === 1 ? '启用' : '禁用'} ${targetUsers.length} 个用户`);
+      const targetIdSet = new Set(targetUsers.map(u => u.id));
+      setUsers(prev => prev.map(u => targetIdSet.has(u.id) ? { ...u, is_active: (active === 1) as any } : u));
+      setAllUsers(prev => prev.map(u => targetIdSet.has(u.id) ? { ...u, is_active: (active === 1) as any } : u));
+    } catch (e) {
+      console.error(e);
+      message.error(active === 1 ? '批量启用失败' : '批量禁用失败');
+      fetchUsers();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchChangePay = async (payEnabled: number) => {
+    if (selectedRowKeys.length === 0) return;
+    const selectedKeySet = new Set(selectedRowKeys.map(String));
+    const targetUsers = displayedUsers.filter(u => selectedKeySet.has(String(u.id)));
+    if (targetUsers.length === 0) return;
+
+    setBatchLoading(true);
+    try {
+      await Promise.all(
+        targetUsers.map(u =>
+          request.put(`/users/${u.uid || u.id}`, { pay_enabled: payEnabled })
+        )
+      );
+      message.success(`已成功${payEnabled === 1 ? '开启' : '关闭'} ${targetUsers.length} 个用户的在线支付`);
+      const targetIdSet = new Set(targetUsers.map(u => u.id));
+      setUsers(prev => prev.map(u => targetIdSet.has(u.id) ? { ...u, pay_enabled: payEnabled } : u));
+      setAllUsers(prev => prev.map(u => targetIdSet.has(u.id) ? { ...u, pay_enabled: payEnabled } : u));
+    } catch (e) {
+      console.error(e);
+      message.error(payEnabled === 1 ? '批量开启支付失败' : '批量关闭支付失败');
+      fetchUsers();
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) return;
+    const selectedKeySet = new Set(selectedRowKeys.map(String));
+    const candidates = displayedUsers.filter(u => selectedKeySet.has(String(u.id)));
+    const targetUsers = candidates.filter(u => !isSuperAdminUser(u));
+    if (targetUsers.length === 0) {
+      message.warning('选中的用户均为超级管理员，无法删除');
+      return;
+    }
+    if (candidates.length > targetUsers.length) {
+      message.info(`已自动跳过 ${candidates.length - targetUsers.length} 个超级管理员账号`);
+    }
+
+    setBatchLoading(true);
+    try {
+      await Promise.all(
+        targetUsers.map(u => request.delete(`/users/${u.uid || u.id}`))
+      );
+      message.success(`已成功删除 ${targetUsers.length} 个用户`);
+      const targetIdSet = new Set(targetUsers.map(u => u.id));
+      setUsers(prev => prev.filter(u => !targetIdSet.has(u.id)));
+      setAllUsers(prev => prev.filter(u => !targetIdSet.has(u.id)));
+      setSelectedRowKeys([]);
+      fetchUsers();
+    } catch (e) {
+      console.error(e);
+      message.error('批量删除失败');
+      fetchUsers();
+    } finally {
+      setBatchLoading(false);
     }
   };
 
@@ -646,6 +966,8 @@ const Users: React.FC = () => {
         delete payload.gift_balance;
         delete payload.gift_used_quota;
         delete payload.used_quota;
+        // 角色创建后不可改（admin / user）
+        delete payload.role;
         // 实名字段由「保存实名信息」单独提交，勿混入用户更新
         [
           'kyc_type', 'status', 'real_name', 'id_doc_type', 'id_doc_front_url', 'id_doc_back_url',
@@ -696,6 +1018,7 @@ const Users: React.FC = () => {
     setIsRechargeModalVisible(true);
   };
 
+
   const handleRechargeSave = async (values: any) => {
     if (!rechargingUser) return;
     if (rechargeLoading) return;
@@ -721,6 +1044,98 @@ const Users: React.FC = () => {
     } finally {
       setRechargeLoading(false);
     }
+  };
+
+  const confirmRechargeSave = (values: any) => {
+    if (!rechargingUser) return;
+    const walletLabel = values.walletType === 'gift'
+      ? '赠送钱包'
+      : values.walletType === 'credit'
+        ? '信控额度'
+        : '系统钱包';
+        
+    const currentBalance = values.walletType === 'gift'
+      ? (rechargingUser.gift_balance || 0)
+      : values.walletType === 'credit'
+        ? (rechargingUser.credit_limit || 0)
+        : (rechargingUser.balance || 0);
+
+    const isDecrease = values.actionType === 'decrease';
+    const adjustmentAmount = Number(values.amount);
+    const afterBalance = isDecrease ? currentBalance - adjustmentAmount : currentBalance + adjustmentAmount;
+    
+    const amountColor = isDecrease ? token.colorError : token.colorSuccess;
+    const detailRows: { label: string; value: React.ReactNode }[] = [
+      { label: '用户', value: rechargingUser.username },
+      { label: '钱包', value: walletLabel },
+      { label: '操作', value: isDecrease ? '减少金额' : '增加金额' },
+      {
+        label: '金额',
+        value: (
+          <span style={{ color: amountColor, fontSize: 16, fontWeight: 700, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+            {isDecrease ? '-' : '+'}{currencySymbol}{values.amount}
+          </span>
+        ),
+      },
+      {
+        label: '调整后余额',
+        value: (
+          <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+            {currencySymbol}{Number(afterBalance.toFixed(6))}
+          </span>
+        ),
+      },
+    ];
+    modal.confirm({
+      title: <div style={{ textAlign: 'center', marginBottom: 16, fontSize: 18 }}>确认余额调整</div>,
+      icon: null,
+      centered: true,
+      width: 400,
+      content: (
+        <div>
+          <div
+            style={{
+              marginTop: 8,
+              padding: '4px 14px',
+              borderRadius: 8,
+              background: token.colorFillTertiary,
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}
+          >
+            {detailRows.map((row, idx) => (
+              <div
+                key={row.label}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 16,
+                  padding: '10px 0',
+                  borderBottom: idx === detailRows.length - 1 ? 'none' : `1px solid ${token.colorSplit}`,
+                }}
+              >
+                <span style={{ color: token.colorTextSecondary, fontSize: 13, flexShrink: 0 }}>{row.label}</span>
+                <span style={{ color: token.colorText, fontSize: 13, fontWeight: 600, textAlign: 'right' }}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 16, color: token.colorTextTertiary, fontSize: 13, textAlign: 'center' }}>
+            确认后余额将立即变动，请核对无误。
+          </div>
+        </div>
+      ),
+      okText: '确认调整',
+      cancelText: '取消',
+      okButtonProps: { danger: isDecrease, style: { width: '100%' } },
+      cancelButtonProps: { style: { width: '100%' } },
+      footer: (_, { OkBtn, CancelBtn }) => (
+        <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+          <div style={{ flex: 1 }}><CancelBtn /></div>
+          <div style={{ flex: 1 }}><OkBtn /></div>
+        </div>
+      ),
+      onOk: () => handleRechargeSave(values),
+    });
   };
 
   // ── 钱包明细：获取用户充值记录（30秒 TTL 缓存） ──
@@ -771,10 +1186,14 @@ const Users: React.FC = () => {
       title: t('users.uid'),
       dataIndex: 'uid',
       key: 'uid',
-      render: (text: string, record: User) => (
-        <a onClick={() => handleEdit(record)} style={{ color: 'inherit' }}>
-          <Text code style={{ color: '#fff', padding: '2px 6px', whiteSpace: 'nowrap', fontSize: 13, cursor: 'pointer' }}>{text}</Text>
-        </a>
+      render: (text: string) => (
+        <Text
+          code
+          copyable={{ text: String(text || ''), tooltips: [t('common.copy', '复制'), t('common.copy_success', '已复制')] }}
+          style={{ color: '#fff', padding: '2px 6px', whiteSpace: 'nowrap', fontSize: 13 }}
+        >
+          {text}
+        </Text>
       ),
     },
     {
@@ -793,6 +1212,7 @@ const Users: React.FC = () => {
             <Tag color={record.is_active ? 'success' : 'error'} style={{ fontSize: 11, padding: '0 4px', margin: 0, whiteSpace: 'nowrap' }}>
               {record.is_active ? t('common.active') : t('common.disabled')}
             </Tag>
+            {!isAdminPage && <KycStatusTags record={record} onOpen={() => handleEdit(record, '6')} />}
           </Space>
           {record.referred_by && (() => {
             const referrer = allUsers.find(u => u.id === record.referred_by || u.uid === record.referred_by || u.username === record.referred_by);
@@ -835,11 +1255,43 @@ const Users: React.FC = () => {
       key: 'registration_info',
       width: 280,
       render: (_: any, record: User) => (
-        <Space direction="vertical" size={2} style={{ fontSize: '13px' }}>
-          {isRealEmail(record.email) && <div style={{ display: 'flex' }}><Text type="secondary" style={{ whiteSpace: 'nowrap' }}>邮箱: </Text><Text type="secondary" style={{ marginLeft: 4, maxWidth: 220 }} ellipsis={{ tooltip: record.email }}>{record.email}</Text></div>}
-          {record.mobile && <Text type="secondary">手机号: {record.mobile}</Text>}
-          <Text type="secondary">注册 IP: {record.register_ip || '未知'}</Text>
+        <Space vertical size={2} style={{ fontSize: '13px' }}>
+          {isRealEmail(record.email) && (
+            <div style={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+              <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>邮箱: </Text>
+              <span style={{ marginLeft: 4, minWidth: 0 }}>
+                {isAdminPage ? (
+                  <Text type="secondary" style={{ maxWidth: 220 }} ellipsis={{ tooltip: record.email }}>{record.email}</Text>
+                ) : (
+                  renderContactLink('email', record.email!)
+                )}
+              </span>
+            </div>
+          )}
+          {record.mobile && (
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>手机号: </Text>
+              <span style={{ marginLeft: 4 }}>
+                {isAdminPage ? (
+                  <Text type="secondary">{record.mobile}</Text>
+                ) : (
+                  renderContactLink('mobile', record.mobile)
+                )}
+              </span>
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>注册 IP: </Text>
+            <span style={{ marginLeft: 4 }}>
+              {!isAdminPage && record.register_ip ? (
+                renderContactLink('ip', record.register_ip)
+              ) : (
+                <Text type="secondary">{record.register_ip || '未知'}</Text>
+              )}
+            </span>
+          </div>
           <Text type="secondary">加入时间: {formatApiDateTime(record.created_at)}</Text>
+          <Text type="secondary">最后活跃: {record.updated_at ? formatApiDateTime(record.updated_at) : '未知'}</Text>
         </Space>
       ),
     },
@@ -898,13 +1350,14 @@ const Users: React.FC = () => {
             onClick={() => handleRechargeClick(record)} 
             title="充值"
           />
-          {!isAdminPage && (
-            <Button 
-              icon={<IdcardOutlined />} 
-              style={{ color: '#722ed1', borderColor: '#722ed1' }}
-              onClick={() => handleEdit(record, '6')} 
-              title="用户实名认证"
-            />
+          {!isAdminPage && isInvoiceEnabled && (
+            <Tooltip title={invoiceBtnTitle}>
+              <Button 
+                icon={<FileTextOutlined />} 
+                style={{ color: '#fa8c16', borderColor: '#fa8c16' }}
+                onClick={() => navigate(`/${adminPath}/users/${record.uid || record.id}/invoices`)}
+              />
+            </Tooltip>
           )}
           {!isAdminPage && (
             <Button 
@@ -915,9 +1368,15 @@ const Users: React.FC = () => {
             />
           )}
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
-            <Button icon={<DeleteOutlined />} danger disabled={record.role === 'admin'} />
-          </Popconfirm>
+          {isSuperAdminUser(record) ? (
+            <Tooltip title="超级管理员不可删除">
+              <Button icon={<DeleteOutlined />} danger disabled />
+            </Tooltip>
+          ) : (
+            <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+              <Button icon={<DeleteOutlined />} danger />
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -944,7 +1403,7 @@ const Users: React.FC = () => {
           {!isAdminPage && (
             <Select
               value={filterGroup}
-              onChange={setFilterGroup}
+              onChange={handleFilterGroupChange}
               style={{ width: screens.xs ? '100%' : 200, fontSize: 12, height: 32 }}
               styles={{ popup: { root: { fontSize: 12 } } }}
               options={[
@@ -1009,32 +1468,214 @@ const Users: React.FC = () => {
               style={{ width: screens.xs ? '100%' : 220, fontSize: 12, height: 32 }}
             />
           )}
-          {isAdminPage && <Button icon={<SyncOutlined />} onClick={fetchUsers} style={{ height: 32, borderRadius: 6, fontSize: 12 }}>{t('common.refresh')}</Button>}
+          {!isAdminPage && (
+            <Button
+              icon={<CheckSquareOutlined />}
+              type={isBatchEditMode ? 'primary' : 'default'}
+              danger={isBatchEditMode}
+              onClick={() => {
+                setIsBatchEditMode(!isBatchEditMode);
+                if (isBatchEditMode) setSelectedRowKeys([]);
+              }}
+              style={{ height: 32, borderRadius: 6, fontSize: 12 }}
+            >
+              {isBatchEditMode ? '退出选择' : '选择编辑'}
+            </Button>
+          )}
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd} style={{ height: 32, borderRadius: 6, fontSize: 12 }}>{isAdminPage ? '添加管理员' : '添加普通用户'}</Button>
         </Space>
       </div>
+
+      {!isAdminPage && contactFilter && (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          onClose={() => setContactFilter(null)}
+          style={{ marginBottom: 12 }}
+          message={
+            <Space wrap size={8}>
+              <span>
+                {contactFilter.kind === 'ip' ? (
+                  `当前筛选注册 IP ${contactFilter.value}：共 ${displayedUsers.length} 个账号`
+                ) : (
+                  <>
+                    当前筛选{contactFilter.kind === 'email' ? '邮箱' : '手机号'} {contactFilter.value}
+                    {contactBind
+                      ? `：已绑定 ${contactBind.bound_count} 个账号，上限 ${contactBind.limit}${contactBind.is_override ? `（已单独设置，站点默认 ${contactBind.default_limit}）` : '（站点默认）'}`
+                      : ''}
+                  </>
+                )}
+              </span>
+              {contactFilter.kind !== 'ip' && (
+                <Button type="link" size="small" icon={<SettingOutlined />} onClick={openLimitModal}>修改上限</Button>
+              )}
+            </Space>
+          }
+        />
+      )}
+
+      {/* 批量操作工具条 */}
+      {isBatchEditMode && !isAdminPage && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+          padding: '8px 14px',
+          marginBottom: 12,
+          borderRadius: 8,
+          backgroundColor: _isLight ? '#e6f4ff' : '#111b26',
+          border: _isLight ? '1px solid #91caff' : '1px solid #154173',
+          transition: 'all 0.3s ease'
+        }}>
+          <Space wrap size={10} style={{ alignItems: 'center' }}>
+            <Button
+              size="small"
+              onClick={() => {
+                setSelectedRowKeys(displayedUsers.map(u => u.id));
+              }}
+            >
+              全选
+            </Button>
+            <Button
+              size="small"
+              disabled={selectedRowKeys.length === 0}
+              onClick={() => setSelectedRowKeys([])}
+            >
+              取消选择
+            </Button>
+            <Text strong style={{ fontSize: 13, color: _isLight ? '#0958d9' : '#1677ff', marginLeft: 4 }}>
+              已选择 <span style={{ fontSize: 15, fontWeight: 700 }}>{selectedRowKeys.length}</span> 项
+            </Text>
+          </Space>
+
+          <Space wrap size={8}>
+            <Button
+              size="small"
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              loading={batchLoading}
+              onClick={() => handleBatchChangeActive(1)}
+              style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
+            >
+              用户启用
+            </Button>
+            <Button
+              size="small"
+              icon={<StopOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              loading={batchLoading}
+              onClick={() => handleBatchChangeActive(0)}
+            >
+              用户禁用
+            </Button>
+            <Button
+              size="small"
+              icon={<CreditCardOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              loading={batchLoading}
+              onClick={() => handleBatchChangePay(1)}
+            >
+              支付开启
+            </Button>
+            <Button
+              size="small"
+              icon={<StopOutlined />}
+              disabled={selectedRowKeys.length === 0}
+              loading={batchLoading}
+              onClick={() => handleBatchChangePay(0)}
+            >
+              支付关闭
+            </Button>
+            <Popconfirm
+              title="确定要批量删除选中的用户吗？"
+              description={`将一次性删除选中的 ${selectedRowKeys.length} 个用户，此操作不可撤销。`}
+              onConfirm={handleBatchDelete}
+              okText="确认删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true, loading: batchLoading }}
+            >
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                disabled={selectedRowKeys.length === 0}
+                loading={batchLoading}
+              >
+                用户删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        </div>
+      )}
 
       {screens.xs ? (
         <MobileCardList
           dataSource={displayedUsers}
           loading={loading}
           rowKey="id"
-          pagination={{ pageSize: 20, showTotal: (total: number) => `共 ${total} 条` }}
+          pagination={listPagination()}
           renderCard={(record: any) => {
             const level = userLevels.find((l: any) => l.group_key === record.user_group);
             const levelName = level ? level.name : (record.user_group || 'default').toUpperCase();
             return (
               <MobileCard
-                title={<Space><UserOutlined /><Text strong>{record.username}</Text>{record.nickname && <Text type="secondary">({record.nickname})</Text>}</Space>}
-                extra={<Tag color={record.is_active ? 'success' : 'error'}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>}
+                title={
+                  <Space>
+                    {isBatchEditMode && !isAdminPage && (
+                      <Checkbox
+                        checked={selectedRowKeys.includes(record.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedRowKeys(prev => [...prev, record.id]);
+                          } else {
+                            setSelectedRowKeys(prev => prev.filter(k => k !== record.id));
+                          }
+                        }}
+                      />
+                    )}
+                    <UserOutlined />
+                    <Text strong>{record.username}</Text>
+                    {record.nickname && <Text type="secondary">({record.nickname})</Text>}
+                  </Space>
+                }
+                extra={
+                  <Space size={4} wrap>
+                    <Tag color={record.is_active ? 'success' : 'error'}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>
+                    {!isAdminPage && <KycStatusTags record={record} onOpen={() => handleEdit(record, '6')} />}
+                  </Space>
+                }
               >
                 <CardRow label="UID">
-                  <a onClick={() => handleEdit(record)}>
-                    <Text code style={{ color: '#fff', fontSize: 12, cursor: 'pointer' }}>{record.uid}</Text>
-                  </a>
+                  <Text
+                    code
+                    copyable={{ text: String(record.uid || ''), tooltips: [t('common.copy', '复制'), t('common.copy_success', '已复制')] }}
+                    style={{ color: '#fff', fontSize: 12 }}
+                  >
+                    {record.uid}
+                  </Text>
                 </CardRow>
-                {isRealEmail(record.email) && <CardRow label="邮箱"><Text style={{ fontSize: 12 }}>{record.email}</Text></CardRow>}
-                {record.mobile && <CardRow label="手机号"><Text style={{ fontSize: 12 }}>{record.mobile}</Text></CardRow>}
+                {isRealEmail(record.email) && (
+                  <CardRow label="邮箱">
+                    {isAdminPage ? (
+                      <Text style={{ fontSize: 12 }}>{record.email}</Text>
+                    ) : (
+                      renderContactLink('email', record.email!, { compact: true })
+                    )}
+                  </CardRow>
+                )}
+                {record.mobile && (
+                  <CardRow label="手机号">
+                    {isAdminPage ? (
+                      <Text style={{ fontSize: 12 }}>{record.mobile}</Text>
+                    ) : (
+                      renderContactLink('mobile', record.mobile, { compact: true })
+                    )}
+                  </CardRow>
+                )}
                 
                 {/* 推荐人 */}
                 {record.referred_by && (() => {
@@ -1117,20 +1758,35 @@ const Users: React.FC = () => {
                     gap={12}
                   />
                 </div>
-                <CardRow label="注册IP"><Text type="secondary" style={{ fontSize: 12 }}>{record.register_ip || '未知'}</Text></CardRow>
+                <CardRow label="注册IP">
+                  {!isAdminPage && record.register_ip ? (
+                    renderContactLink('ip', record.register_ip, { compact: true })
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 12 }}>{record.register_ip || '未知'}</Text>
+                  )}
+                </CardRow>
                 <CardRow label="加入时间"><Text type="secondary" style={{ fontSize: 12 }}>{formatApiDateTime(record.created_at, 'MM-DD HH:mm')}</Text></CardRow>
+                <CardRow label="最后活跃"><Text type="secondary" style={{ fontSize: 12 }}>{record.updated_at ? formatApiDateTime(record.updated_at, 'MM-DD HH:mm') : '未知'}</Text></CardRow>
                 <CardActions>
                   <Button size="small" icon={<WalletOutlined />} style={{ color: '#52c41a', borderColor: '#52c41a' }} onClick={() => handleRechargeClick(record)} title="充值" />
-                  {!isAdminPage && (
-                    <Button size="small" icon={<IdcardOutlined />} style={{ color: '#722ed1', borderColor: '#722ed1' }} onClick={() => handleEdit(record, '6')} title="实名认证" />
+                  {!isAdminPage && isInvoiceEnabled && (
+                    <Tooltip title={invoiceBtnTitle}>
+                      <Button size="small" icon={<FileTextOutlined />} style={{ color: '#fa8c16', borderColor: '#fa8c16' }} onClick={() => navigate(`/${adminPath}/users/${record.uid || record.id}/invoices`)} />
+                    </Tooltip>
                   )}
                   {!isAdminPage && (
                     <Button size="small" icon={<LoginOutlined />} style={{ color: '#1677ff', borderColor: '#1677ff' }} onClick={() => handleImpersonate(record)} title="登录此用户" />
                   )}
                   <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-                  <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
-                    <Button size="small" icon={<DeleteOutlined />} danger disabled={record.role === 'admin'} />
-                  </Popconfirm>
+                  {isSuperAdminUser(record) ? (
+                    <Tooltip title="超级管理员不可删除">
+                      <Button size="small" icon={<DeleteOutlined />} danger disabled />
+                    </Tooltip>
+                  ) : (
+                    <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                      <Button size="small" icon={<DeleteOutlined />} danger />
+                    </Popconfirm>
+                  )}
                 </CardActions>
               </MobileCard>
             );
@@ -1149,14 +1805,13 @@ const Users: React.FC = () => {
           rowKey="id"
           loading={loading}
           size="small"
-          pagination={{ 
-            pageSize: 50, 
-            pageSizeOptions: ['50', '100', '200'], 
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条数据`
-          }}
+          pagination={listPagination()}
           scroll={{ x: 'max-content' }}
           showSorterTooltip={false}
+          rowSelection={isBatchEditMode && !isAdminPage ? {
+            selectedRowKeys,
+            onChange: (keys: React.Key[]) => setSelectedRowKeys(keys),
+          } : undefined}
         />
       )}
       </>
@@ -1252,10 +1907,10 @@ const Users: React.FC = () => {
               options={referrerOptions}
             />
           </Form.Item>
-          <Form.Item name="mobile" label="手机号">
+          <Form.Item name="mobile" label="手机号" extra="同一手机号默认可绑定多个用户（上限见注册设置）；列表里点击手机号可筛选并单独改这条上限">
             <Input placeholder="输入用户手机号 (可选)" />
           </Form.Item>
-          <Form.Item name="email" label={t('users.email')} rules={[{ required: true, type: 'email' }]}>
+          <Form.Item name="email" label={t('users.email')} rules={[{ required: true, type: 'email' }]} extra="同一邮箱默认可绑定多个用户（上限见注册设置）；列表里点击邮箱可筛选并单独改这条上限">
             <Input placeholder="email@example.com" />
           </Form.Item>
           <Form.Item 
@@ -1270,15 +1925,7 @@ const Users: React.FC = () => {
                 <Input />
              </Form.Item>
           )}
-          {editingUser && isAdminPage && !(editingUser.role === 'admin' && !editingUser.admin_group_id) && (
-            <Form.Item name="role" label={t('users.role')}>
-              <Select onChange={(val) => setSelectedRole(val)}>
-                <Option value="user">User</Option>
-                <Option value="admin">Admin</Option>
-              </Select>
-            </Form.Item>
-          )}
-          {selectedRole === 'admin' && !(editingUser?.role === 'admin' && !editingUser?.admin_group_id) && (
+          {isAdminPage && !isSuperAdminUser(editingUser) && (
             <Form.Item
               name="admin_group_id"
               label="管理员等级"
@@ -1330,17 +1977,25 @@ const Users: React.FC = () => {
                           <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>用户 UID:</Typography.Text>
                           <Typography.Text code copyable={{ text: editingUser.uid }} style={{ fontSize: 13 }}>{editingUser.uid || '未知'}</Typography.Text>
                         </div>
-                        <div>
-                          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>注册时间:</Typography.Text>
-                          <Typography.Text>{editingUser.created_at ? formatApiDateTime(editingUser.created_at) : '未知'}</Typography.Text>
+                        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                          <div>
+                            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>注册时间:</Typography.Text>
+                            <Typography.Text>{editingUser.created_at ? formatApiDateTime(editingUser.created_at) : '未知'}</Typography.Text>
+                          </div>
+                          <div>
+                            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>注册 IP:</Typography.Text>
+                            <Typography.Text>{editingUser.register_ip || '未知'}</Typography.Text>
+                          </div>
                         </div>
-                        <div>
-                          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>最后活跃时间:</Typography.Text>
-                          <Typography.Text>{editingUser.updated_at ? formatApiDateTime(editingUser.updated_at) : '未知'}</Typography.Text>
-                        </div>
-                        <div>
-                          <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>注册 IP:</Typography.Text>
-                          <Typography.Text>{editingUser.register_ip || '未知'}</Typography.Text>
+                        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+                          <div>
+                            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>最后活跃时间:</Typography.Text>
+                            <Typography.Text>{editingUser.updated_at ? formatApiDateTime(editingUser.updated_at) : '未知'}</Typography.Text>
+                          </div>
+                          <div>
+                            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>最后活跃 IP:</Typography.Text>
+                            <Typography.Text>{editingUser.last_active_ip || '未知'}</Typography.Text>
+                          </div>
                         </div>
                         <div>
                           <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>关联记录 (流转记录):</Typography.Text>
@@ -1614,6 +2269,36 @@ const Users: React.FC = () => {
       )}
 
       <Modal
+        title={`修改${contactFilter?.kind === 'email' ? '邮箱' : '手机号'}绑定上限`}
+        open={limitModalOpen}
+        onCancel={() => setLimitModalOpen(false)}
+        onOk={saveContactLimit}
+        confirmLoading={limitSaving}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Space vertical size="middle" className="w-full">
+          <Text type="secondary">
+            {contactFilter?.value}
+            {contactBind ? `，当前已绑定 ${contactBind.bound_count} 个账号` : ''}
+          </Text>
+          <InputNumber
+            min={Math.max(1, contactBind?.bound_count ?? 1)}
+            max={99}
+            precision={0}
+            value={limitDraft}
+            onChange={(v) => setLimitDraft(Number(v) || 1)}
+            style={{ width: 160 }}
+          />
+          {contactBind?.is_override && (
+            <Button onClick={resetContactLimit} loading={limitSaving}>
+              恢复站点默认（{contactBind.default_limit}）
+            </Button>
+          )}
+        </Space>
+      </Modal>
+
+      <Modal
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <WalletOutlined style={{ color: '#1677ff' }} />
@@ -1662,7 +2347,7 @@ const Users: React.FC = () => {
           </div>
         </div>
 
-        <Form form={rechargeForm} layout="vertical" onFinish={handleRechargeSave} initialValues={{ actionType: 'increase', amount: '', walletType: 'system' }}>
+        <Form form={rechargeForm} layout="vertical" onFinish={confirmRechargeSave} initialValues={{ actionType: 'increase', amount: '', walletType: 'system' }}>
           <Form.Item name="walletType" label={<Text strong style={{ fontSize: 13 }}>充值到哪个钱包</Text>} rules={[{ required: true }]} style={{ marginBottom: 10 }}>
             <Radio.Group style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
               <Radio.Button value="system" style={{ textAlign: 'center', borderRadius: 6 }}>系统钱包 (正常充值)</Radio.Button>

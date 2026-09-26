@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::auth;
@@ -566,6 +566,17 @@ pub async fn redeem_code(
     // 单兑换码单用户限制：<=0（-1 约定 / 历史 0）表示不限
     let per_user_limit = redemption.per_user_limit;
     if per_user_limit > 0 {
+        // 单用户并发互斥锁：防止同用户多线程并发突破限领次数双重入账
+        sqlx::query(
+            &state
+                .db
+                .format_query("SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))"),
+        )
+        .bind(format!("redemption_code:{}", redemption.id))
+        .bind(&user_id)
+        .execute(&mut *tx)
+        .await?;
+
         let user_used: i64 = sqlx::query_scalar(&state.db.format_query(
             "SELECT COUNT(*) FROM redemption_logs WHERE redemption_id = ? AND user_id = ?",
         ))

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::models::PaymentStripeSettings;
@@ -15,10 +15,12 @@ pub struct StripeClient {
 
 impl StripeClient {
     pub fn new(settings: PaymentStripeSettings) -> Self {
-        Self {
-            settings,
-            http: reqwest::Client::new(),
-        }
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { settings, http }
     }
 
     /// 创建 Stripe Checkout Session（重定向模式）
@@ -79,11 +81,25 @@ impl StripeClient {
         let body = resp.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            return Err(anyhow!(
-                "Stripe Checkout Session 创建失败 (HTTP {}): {}",
-                status,
-                body
-            ));
+            let error_msg = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                v["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            } else if body.trim_start().starts_with('<') {
+                format!("Stripe 服务响应异常 (HTTP {})", status.as_u16())
+            } else {
+                body.chars().take(200).collect::<String>()
+            };
+
+            let clean_msg = if error_msg.is_empty() {
+                format!("Stripe 接口请求失败 (HTTP {})", status.as_u16())
+            } else {
+                format!("Stripe: {}", error_msg)
+            };
+
+            tracing::warn!("[Stripe支付] Session 创建失败 (HTTP {}): {}", status, body);
+            return Err(anyhow!(clean_msg));
         }
 
         let data: serde_json::Value = serde_json::from_str(&body)
@@ -97,6 +113,18 @@ impl StripeClient {
         let session_id = data["id"].as_str().unwrap_or("").to_string();
 
         Ok((session_url, session_id))
+    }
+
+    /// 查询 Stripe Checkout Session 详情（主动向官方 API 验单）
+    pub async fn get_session(&self, session_id: &str) -> Result<serde_json::Value> {
+        let resp = self
+            .http
+            .get(format!("https://api.stripe.com/v1/checkout/sessions/{}", session_id))
+            .basic_auth(&self.settings.secret_key, None::<&str>)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(resp.json().await?)
     }
 
     /// 验证 Stripe Webhook 签名
@@ -143,7 +171,7 @@ impl StripeClient {
 
     /// 将金额转换为 Stripe 最小单位
     /// 零小数点货币（如 JPY, KRW）不需要乘以 100
-    fn to_minor_units(&self, amount: f64, currency: &str) -> i64 {
+    pub fn to_minor_units(&self, amount: f64, currency: &str) -> i64 {
         let zero_decimal = [
             "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd",
             "vuv", "xaf", "xof", "xpf",

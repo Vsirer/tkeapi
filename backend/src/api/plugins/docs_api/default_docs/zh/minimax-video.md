@@ -1,6 +1,8 @@
 # MiniMax 视频生成接入指南
 
-MiniMax H3（`MiniMax-H3`）支持文生视频、首尾帧图生视频，以及图片/视频/音频多模态参考生视频。现在支持两种调用方式：
+OpenAI 兼容：`POST /v1/video/generations`。原生路径：`/v2/video_generation`。[视频生成 API](https://platform.minimax.cn/docs/api-reference/video-generation-v2-create)
+
+MiniMax H3 支持文生视频、首尾帧图生视频，以及图片/视频/音频多模态参考生视频。现在支持两种调用方式：
 
 - OpenAI 兼容：`POST /v1/video/generations` 提交，`GET /v1/video/generations/{task_id}` 轮询
 - MiniMax 官方原生：`POST /v2/video_generation` 提交，`GET /v2/query/video_generation/{task_id}` 轮询

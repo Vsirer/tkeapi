@@ -1,8 +1,8 @@
 <!--
-  tokensbyte opensource
-  (c) 2026 tokensbyte.ai
+  tkeapi (tokensbyte) opensource
+  © 2026 tkeapi.com
   @copyright      Copyright netbcloud/wstianxia 
-  @license        MIT (https://www.tokensbyte.ai/)
+  @license        MIT (https://www.tkeapi.com/)
 -->
 
 {% extends "base.html" %}
@@ -125,6 +125,60 @@
 }
 .hf-filter-count {
   border-radius: 9999px !important;
+}
+{% elif style and style.current_style == "fai_art" %}
+.hf-card {
+  background: #fff !important;
+  border: 1px solid rgba(18,18,22,0.12) !important;
+  border-radius: 16px !important;
+  box-shadow: none !important;
+}
+.hf-card:hover {
+  border-color: #19191a !important;
+  transform: translateY(-2px) !important;
+  box-shadow: none !important;
+}
+html[data-theme="dark"] .hf-card,
+body.dark .hf-card {
+  background: #161618 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .hf-card:hover,
+body.dark .hf-card:hover {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.5) !important;
+}
+.hf-search input {
+  border-radius: 4px !important;
+  border-color: rgba(18,18,22,0.12) !important;
+}
+.hf-search input:focus {
+  border-color: #19191a !important;
+  box-shadow: none !important;
+}
+html[data-theme="dark"] .hf-search input,
+body.dark .hf-search input {
+  background: #141416 !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: #fafafa !important;
+}
+html[data-theme="dark"] .hf-search input:focus,
+body.dark .hf-search input:focus {
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+.hf-filter-item.active {
+  background: #202022 !important;
+  color: #fafafa !important;
+  border-radius: 4px !important;
+}
+html[data-theme="dark"] .hf-filter-item.active,
+body.dark .hf-filter-item.active {
+  background: #fafafa !important;
+  color: #0c0c0d !important;
+}
+.hf-filter-count {
+  border-radius: 4px !important;
 }
 {% endif %}
 </style>

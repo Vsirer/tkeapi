@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use super::media;
@@ -37,7 +37,7 @@ pub async fn transform_request_body(
             #[cfg(feature = "plugin_volcengine_enhance")]
             {
                 let match_key = resolved.mid.as_deref().unwrap_or("");
-                super::build_volcengine_media_enhance_body(match_key, body)
+                crate::api::plugins::build_volcengine_media_enhance_body(match_key, body)
             }
             #[cfg(not(feature = "plugin_volcengine_enhance"))]
             {
@@ -125,16 +125,7 @@ pub async fn transform_request_body(
 
         // 火山方舟视频（/api/v3/contents/generations/tasks）: prompt → content 格式
         // 参考火山引擎 Seedance 2.0 官方 API：https://www.volcengine.com/docs/82379/1520757
-        "volcengine" => {
-            let mut fwd = vendors::build_volcengine_content_body(model, body);
-            // resolution 归一化为小写（火山 API 接受 720p/1080p/480p 等小写格式）
-            if let Some(res) = fwd.get("resolution").and_then(|v| v.as_str()) {
-                fwd["resolution"] = serde_json::json!(res.to_lowercase());
-            } else {
-                fwd["resolution"] = serde_json::json!("720p");
-            }
-            fwd
-        }
+        "volcengine" => vendors::build_volcengine_content_body(model, body),
 
         // MiniMax 视频生成（/v2/video_generation）
         "minimax_video" => vendors::build_minimax_video_body(model, body),

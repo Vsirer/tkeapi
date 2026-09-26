@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use super::super::media;
@@ -190,55 +190,29 @@ fn tc_content_media_url(item: &serde_json::Value) -> Option<&str> {
     item.get("url")
         .or_else(|| item.get("image_url"))
         .or_else(|| item.get("video_url"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
+        .or_else(|| item.get("audio_url"))
+        .and_then(media::as_media_url)
 }
 
-/// 顶层 prompt/Prompt，或 contents[{type:prompt}].text（仅取文案，不扫媒体）
-fn tc_video_prompt(body: &serde_json::Value) -> Option<&str> {
-    tc_prompt_str(body.get("prompt").or_else(|| body.get("Prompt"))).or_else(|| {
-        body.get("contents")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| {
-                arr.iter().find_map(|item| {
-                    if item.get("type").and_then(|t| t.as_str()) != Some("prompt") {
-                        return None;
-                    }
-                    tc_prompt_str(item.get("text"))
-                })
-            })
-    })
-}
-
-/// 视频输入源：顶层 + 列表字段 + 可灵 contents（contents 单次扫描）
+/// 视频输入源：顶层标准参数 + contents/content 多模态数组
 fn tc_collect_video_src(
     body: &serde_json::Value,
-) -> (Option<&str>, Vec<(String, &'static str)>, Vec<String>) {
+) -> (Option<&str>, Vec<(String, &'static str)>, Vec<String>, Vec<String>) {
     let mut prompt = tc_prompt_str(body.get("prompt").or_else(|| body.get("Prompt")));
     let mut images: Vec<(String, &'static str)> = Vec::new();
     let mut videos: Vec<String> = Vec::new();
+    let mut audios: Vec<String> = Vec::new();
 
-    for field in ["video_url", "videos", "video_list"] {
-        for u in media::collect_image_urls(body, &[field]) {
-            tc_push_unique(&mut videos, &u);
-        }
+    // 1. 视频与音频输入（OpenAI 兼容参数: videos, audios）
+    for u in media::collect_image_urls(body, &["videos"]) {
+        tc_push_unique(&mut videos, &u);
     }
-    if let Some(u) = body
-        .get("image")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        tc_push_image(&mut images, u, "first_frame");
+    for u in media::collect_image_urls(body, &["audios"]) {
+        tc_push_unique(&mut audios, &u);
     }
-    if let Some(u) = body
-        .get("image_tail")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        tc_push_image(&mut images, u, "last_frame");
-    }
-    // 与方舟等一致：未标 role 时按数量推断（1→首帧，2→首尾，3+→参考）
-    let list_images = media::collect_media_values(body, &["image_list", "images", "image_urls"]);
+
+    // 2. 图片输入：OpenAI 兼容列表 (images, image_urls)
+    let list_images = media::collect_media_values(body, &["images", "image_urls"]);
     if !list_images.is_empty() {
         let defaults = media::infer_image_default_roles(list_images.len());
         for (i, item) in list_images.iter().enumerate() {
@@ -250,40 +224,47 @@ fn tc_collect_video_src(
         }
     }
 
-    if let Some(arr) = body.get("contents").and_then(|v| v.as_array()) {
-        for item in arr {
-            match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                "prompt" => {
-                    if prompt.is_none() {
+    // 3. 可灵官方 / OpenAI 多模态 contents/content 数组
+    for key in ["contents", "content"] {
+        if let Some(arr) = body.get(key).and_then(|v| v.as_array()) {
+            for item in arr {
+                match item.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                    "prompt" | "text" if prompt.is_none() => {
                         prompt = tc_prompt_str(item.get("text"));
                     }
-                }
-                "first_frame" => {
-                    if let Some(u) = tc_content_media_url(item) {
-                        tc_push_image(&mut images, u, "first_frame");
+                    "first_frame" => {
+                        if let Some(u) = tc_content_media_url(item) {
+                            tc_push_image(&mut images, u, "first_frame");
+                        }
                     }
-                }
-                "last_frame" => {
-                    if let Some(u) = tc_content_media_url(item) {
-                        tc_push_image(&mut images, u, "last_frame");
+                    "last_frame" => {
+                        if let Some(u) = tc_content_media_url(item) {
+                            tc_push_image(&mut images, u, "last_frame");
+                        }
                     }
-                }
-                "refer_image" => {
-                    if let Some(u) = tc_content_media_url(item) {
-                        tc_push_image(&mut images, u, "reference_image");
+                    "refer_image" | "image_url" => {
+                        if let Some(u) = tc_content_media_url(item) {
+                            let role = item.get("role").and_then(|r| r.as_str()).unwrap_or("reference_image");
+                            tc_push_image(&mut images, u, tc_list_image_role(role));
+                        }
                     }
-                }
-                "base_video" | "feature_video" => {
-                    if let Some(u) = tc_content_media_url(item) {
-                        tc_push_unique(&mut videos, u);
+                    "feature_video" | "base_video" | "video_url" => {
+                        if let Some(u) = tc_content_media_url(item) {
+                            tc_push_unique(&mut videos, u);
+                        }
                     }
+                    "audio_url" => {
+                        if let Some(u) = tc_content_media_url(item) {
+                            tc_push_unique(&mut audios, u);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
 
-    (prompt, images, videos)
+    (prompt, images, videos, audios)
 }
 
 fn tc_video_usage(role: &str, idx: usize, count: usize, has_video: bool) -> &'static str {
@@ -302,6 +283,7 @@ fn tc_video_usage(role: &str, idx: usize, count: usize, has_video: bool) -> &'st
 fn tc_build_video_file_infos(
     images: Vec<(String, &'static str)>,
     videos: &[String],
+    audios: &[String],
 ) -> (Vec<serde_json::Value>, Option<String>) {
     let has_video = !videos.is_empty();
     let count = images.len();
@@ -309,10 +291,16 @@ fn tc_build_video_file_infos(
     let mut last_frame_url = None;
     for (idx, (u, role)) in images.into_iter().enumerate() {
         let usage = tc_video_usage(role, idx, count, has_video);
-        if usage == "LastFrame" {
+        if usage == "LastFrame" && !media::is_b64(&u, 1) {
             last_frame_url = Some(u);
         } else {
-            fi_arr.push(media::tc_file(&u, &[("Usage", serde_json::json!(usage))]));
+            fi_arr.push(media::tc_file(
+                &u,
+                &[
+                    ("Category", serde_json::json!("Image")),
+                    ("Usage", serde_json::json!(usage)),
+                ],
+            ));
         }
     }
     for vu in videos {
@@ -324,12 +312,14 @@ fn tc_build_video_file_infos(
             ],
         ));
     }
-    if let Some(url) = last_frame_url.take() {
-        if media::is_b64(&url, 1) {
-            fi_arr.push(media::tc_file(&url, &[("Usage", serde_json::json!("LastFrame"))]));
-        } else {
-            last_frame_url = Some(url);
-        }
+    for au in audios {
+        fi_arr.push(media::tc_file(
+            au,
+            &[
+                ("Category", serde_json::json!("Audio")),
+                ("Usage", serde_json::json!("Reference")),
+            ],
+        ));
     }
     (fi_arr, last_frame_url)
 }
@@ -414,6 +404,30 @@ fn tc_apply_enhance_prompt(tb: &mut serde_json::Value, body: &serde_json::Value)
     }
 }
 
+/// 提取图片分辨率：OpenAI resolution → size 转大写分辨率（如 1K/2K/4K 等）
+fn tc_extract_resolution(body: &serde_json::Value) -> Option<String> {
+    body.get("resolution")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            body.get("size")
+                .and_then(|v| v.as_str())
+                .and_then(crate::relay::usage_extractor::parse_pixel_resolution)
+                .map(|s| s.to_uppercase())
+        })
+}
+
+/// 提取图片宽高比：OpenAI ratio / aspect_ratio → size 转最近标准宽高比（如 16:9, 1:1 等）
+fn tc_extract_aspect_ratio(body: &serde_json::Value) -> Option<&str> {
+    body.get("ratio")
+        .or_else(|| body.get("aspect_ratio"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| body.get("size").and_then(|v| v.as_str()).and_then(media::size_to_ratio))
+}
+
 // ── 图片请求体构建 ──────────────────────────────────────
 // OpenAI snake_case → 腾讯云 PascalCase
 // AigcImageOutputConfig：Resolution / AspectRatio / OutputImageCount / OutputFormat / LogoAdd
@@ -429,26 +443,18 @@ pub fn build_tencent_vod_image_body(
     }
 
     // Prompt / NegativePrompt
-    if let Some(v) = body
-        .get("prompt")
-        .or_else(|| body.get("Prompt"))
-        .and_then(|v| v.as_str())
-    {
+    if let Some(v) = body.get("prompt").and_then(|v| v.as_str()) {
         tb["Prompt"] = serde_json::json!(v);
     }
-    if let Some(v) = body
-        .get("negative_prompt")
-        .or_else(|| body.get("NegativePrompt"))
-        .and_then(|v| v.as_str())
-    {
+    if let Some(v) = body.get("negative_prompt").and_then(|v| v.as_str()) {
         tb["NegativePrompt"] = serde_json::json!(v);
     }
 
-    // FileInfos：用户已传则原样透传；否则从 images 构建（base64→Type=Base64，否则 Url）
+    // FileInfos：用户已传直接透传；否则从 image / image_urls 构建（图片模型无需 Category，仅视频模型需要）
     if let Some(fi) = body.get("FileInfos") {
         tb["FileInfos"] = fi.clone();
     } else {
-        let urls = media::collect_image_urls(body, &["image", "image_urls", "image_list"]);
+        let urls = media::collect_image_urls(body, &["image", "image_urls"]);
         if !urls.is_empty() {
             let fi: Vec<_> = urls.iter().map(|u| media::tc_file(u, &[])).collect();
             tb["FileInfos"] = serde_json::json!(fi);
@@ -463,18 +469,10 @@ pub fn build_tencent_vod_image_body(
         if let Some(n) = body.get("n").and_then(|v| v.as_i64()) {
             oc.insert("OutputImageCount".into(), serde_json::json!(n));
         }
-        if let Some(r) = body.get("resolution").and_then(|v| v.as_str()) {
-            oc.insert("Resolution".into(), serde_json::json!(r.to_uppercase()));
-        }
-        if let Some(r) = body.get("ratio").and_then(|v| v.as_str()) {
-            oc.insert("AspectRatio".into(), serde_json::json!(r));
-        }
-        if !oc.contains_key("AspectRatio") {
-            if let Some(size) = body.get("size").and_then(|v| v.as_str()) {
-                if let Some(ratio) = media::size_to_ratio(size) {
-                    oc.insert("AspectRatio".into(), serde_json::json!(ratio));
-                }
-            }
+        let resolution = tc_extract_resolution(body).unwrap_or_else(|| "1K".into());
+        oc.insert("Resolution".into(), serde_json::json!(resolution));
+        if let Some(ar) = tc_extract_aspect_ratio(body) {
+            oc.insert("AspectRatio".into(), serde_json::json!(ar));
         }
         // output_format → OutputFormat（勿用 response_format，那是投递方式）
         if let Some(f) = body.get("output_format").and_then(|v| v.as_str()) {
@@ -486,13 +484,10 @@ pub fn build_tencent_vod_image_body(
                 serde_json::json!(tc_en_dis(tc_enabled_flag(wm))),
             );
         }
-        if !oc.contains_key("Resolution") {
-            oc.insert("Resolution".into(), serde_json::json!("1K"));
-        }
         tb["OutputConfig"] = serde_json::Value::Object(oc);
     }
 
-    if let Some(s) = body.get("seed").or_else(|| body.get("Seed")) {
+    if let Some(s) = body.get("seed") {
         tb["Seed"] = s.clone();
     }
     if let Some(v) = body.get("ExtInfo") {
@@ -653,21 +648,15 @@ pub fn build_tencent_mps_create_image_body(
     }
 
     let mut cfg = serde_json::json!({ "Model": model_str });
-    if let Some(p) = tc_prompt_str(body.get("prompt").or_else(|| body.get("Prompt"))) {
+    if let Some(p) = tc_prompt_str(body.get("prompt")) {
         cfg["Prompt"] = serde_json::json!(p);
     }
-    if let Some(r) = body.get("resolution").or_else(|| body.get("Resolution")).and_then(|v| v.as_str()) {
-        cfg["Resolution"] = serde_json::json!(r.trim().to_uppercase());
+    let resolution = tc_extract_resolution(body).unwrap_or_else(|| "1K".into());
+    cfg["Resolution"] = serde_json::json!(resolution);
+    if let Some(ar) = tc_extract_aspect_ratio(body) {
+        cfg["AspectRatio"] = serde_json::json!(ar);
     }
-    if let Some(ar) = body
-        .get("ratio")
-        .or_else(|| body.get("aspect_ratio"))
-        .or_else(|| body.get("AspectRatio"))
-        .and_then(|v| v.as_str())
-    {
-        cfg["AspectRatio"] = serde_json::json!(ar.trim());
-    }
-    if let Some(ap) = body.get("additional_parameters").or_else(|| body.get("AdditionalParameters")) {
+    if let Some(ap) = body.get("additional_parameters") {
         cfg["AdditionalParameters"] = ap.clone();
     }
     tb["ImageTask"] = serde_json::json!({ "CreateImageConfig": cfg });
@@ -697,18 +686,20 @@ pub fn build_tencent_vod_video_body(
         tb["NegativePrompt"] = serde_json::json!(v);
     }
 
+    if let Some(p) = tc_prompt_str(body.get("prompt").or_else(|| body.get("Prompt"))) {
+        tb["Prompt"] = serde_json::json!(p);
+    }
+
     if let Some(fi) = body.get("FileInfos") {
-        // 原生 FileInfos：只补 Prompt，不扫媒体
         tb["FileInfos"] = fi.clone();
-        if let Some(v) = tc_video_prompt(body) {
-            tb["Prompt"] = serde_json::json!(v);
-        }
     } else {
-        let (prompt, images, videos) = tc_collect_video_src(body);
-        if let Some(v) = prompt {
-            tb["Prompt"] = serde_json::json!(v);
+        let (prompt_opt, images, videos, audios) = tc_collect_video_src(body);
+        if tb.get("Prompt").is_none() {
+            if let Some(v) = prompt_opt {
+                tb["Prompt"] = serde_json::json!(v);
+            }
         }
-        let (fi_arr, last_frame_url) = tc_build_video_file_infos(images, &videos);
+        let (fi_arr, last_frame_url) = tc_build_video_file_infos(images, &videos, &audios);
         if let Some(url) = last_frame_url {
             tb["LastFrameUrl"] = serde_json::json!(url);
         }
@@ -734,9 +725,78 @@ pub fn build_tencent_vod_video_body(
     if let Some(v) = body.get("SubjectInfo").or_else(|| body.get("subject_info")) {
         tb["SubjectInfo"] = v.clone();
     }
-    if let Some(v) = body.get("ExtInfo") {
-        tb["ExtInfo"] = v.clone();
+    if let Some(ext) = tc_build_ext_info(body) {
+        tb["ExtInfo"] = serde_json::json!(ext);
     }
     tc_apply_enhance_prompt(&mut tb, body);
     tb
 }
+
+fn tc_parse_sub_map(v: Option<&serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    v.and_then(|v| {
+        v.as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .or_else(|| v.as_object().cloned())
+    })
+    .unwrap_or_default()
+}
+
+fn tc_build_ext_info(body: &serde_json::Value) -> Option<String> {
+    let mut ext_map = tc_parse_sub_map(body.get("ExtInfo"));
+
+    // 1. AdditionalParameters（如 return_last_frame, omni_reference_task_type）
+    let mut add_params = tc_parse_sub_map(
+        ext_map
+            .get("AdditionalParameters")
+            .or_else(|| body.get("AdditionalParameters")),
+    );
+    for key in ["return_last_frame", "omni_reference_task_type"] {
+        if let Some(v) = body.get(key) {
+            add_params.insert(key.to_string(), v.clone());
+        }
+    }
+    if !add_params.is_empty() {
+        if let Ok(s) = serde_json::to_string(&add_params) {
+            ext_map.insert("AdditionalParameters".to_string(), serde_json::json!(s));
+        }
+    }
+
+    // 2. WandVegaParameters（提示词优化：EnhancePromptMode，兼容 OpenAI 参数）
+    let mut wand_params = tc_parse_sub_map(
+        ext_map
+            .get("WandVegaParameters")
+            .or_else(|| body.get("WandVegaParameters")),
+    );
+    if let Some(v) = body.get("EnhancePromptMode") {
+        wand_params.insert("EnhancePromptMode".to_string(), v.clone());
+    } else if let Some(v) = body
+        .get("enhance_prompt")
+        .or_else(|| body.get("prompt_extend"))
+        .or_else(|| body.get("EnhancePrompt"))
+    {
+        let mode = if media::json_truthy(v)
+            || v.as_str().is_some_and(|s| {
+                matches!(
+                    s.to_ascii_lowercase().as_str(),
+                    "enabled" | "enable" | "on"
+                )
+            }) {
+            "enable"
+        } else {
+            "disable"
+        };
+        wand_params.insert("EnhancePromptMode".to_string(), serde_json::json!(mode));
+    }
+    if !wand_params.is_empty() {
+        if let Ok(s) = serde_json::to_string(&wand_params) {
+            ext_map.insert("WandVegaParameters".to_string(), serde_json::json!(s));
+        }
+    }
+
+    if ext_map.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&ext_map).ok()
+    }
+}
+

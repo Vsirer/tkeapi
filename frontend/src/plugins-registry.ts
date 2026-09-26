@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { lazy } from 'react';
@@ -11,7 +11,7 @@ import React, { lazy } from 'react';
 const pluginComponents = import.meta.glob([
   './pages/Plugins/*.tsx',
   './pages/Plugins/*/*.tsx',
-  './pages/Plugins/Playground_2026/components/WorkflowCreateBootstrap.tsx',
+  './pages/Plugins/*/components/*.tsx',
 ]);
 
 const missingModule = () =>
@@ -38,6 +38,7 @@ export const ArkUserDashboard = loadPluginComponent('VolcengineArkMonitor/ArkUse
 export const AdminPresetAssets = loadPluginComponent('AssetManager/AdminPresetAssets.tsx');
 export const RelayConvertAssets = loadPluginComponent('AssetManager/RelayConvertAssets.tsx');
 export const ApiProxyAssets = loadPluginComponent('AssetManager/ApiProxyAssets.tsx');
+export const CloudAssetsTab = loadPluginComponent('AssetManager/CloudAssetsTab.tsx');
 export const ApiAccessConfig = loadPluginComponent('AssetManager/ApiAccessConfig.tsx');
 
 export const TeamConfig = loadPluginComponent('TeamMarketing/TeamConfig.tsx');
@@ -66,3 +67,18 @@ export const WorkflowCreateBootstrap2026 = loadPluginComponent(
 export const ModelMarketplace = loadPluginComponent('ModelMarketplace/ModelMarketplace.tsx');
 export const UserAssets = loadPluginComponent('UserAssets/UserAssets.tsx');
 export const AdvancedMarketing = loadPluginComponent('AdvancedMarketing/AdvancedMarketing.tsx');
+export const PlaygroundSkillConfigTab = loadPluginComponent(
+  'Playground_2026/components/PlaygroundSkillConfigTab.tsx',
+);
+export const PlaygroundChatConfigTab = loadPluginComponent(
+  'Playground_2026/components/PlaygroundChatConfigTab.tsx',
+);
+export const PlaygroundPromptOptimizeConfigTab = loadPluginComponent(
+  'Playground_2026/components/PlaygroundPromptOptimizeConfigTab.tsx',
+);
+export const PlaygroundDemoImageConfig = loadPluginComponent(
+  'Playground_2026/components/PlaygroundDemoImageConfig.tsx',
+);
+export const PlaygroundUserNavConfig = loadPluginComponent(
+  'Playground_2026/components/PlaygroundUserNavConfig.tsx',
+);

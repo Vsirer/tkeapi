@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::auth;
@@ -19,6 +19,51 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn collect_kyc_list_statuses(
+    rows: impl IntoIterator<Item = (String, String, String)>,
+) -> HashMap<String, (Option<String>, Option<String>)> {
+    let mut flags: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    for (user_id, kyc_type, status) in rows {
+        if status == "none" || (kyc_type != "personal" && kyc_type != "enterprise") {
+            continue;
+        }
+        let entry = flags.entry(user_id).or_insert((None, None));
+        if kyc_type == "personal" {
+            entry.0 = Some(status);
+        } else {
+            entry.1 = Some(status);
+        }
+    }
+    flags
+}
+
+async fn attach_kyc_flags(state: &AppState, users: &mut [User]) -> AppResult<()> {
+    if users.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<String> = users.iter().map(|u| u.id.clone()).collect();
+    // 每用户每类型取最新提交（submitted_at / updated_at / id），覆盖待审/通过/驳回/过期
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&state.db.format_query(
+        "SELECT DISTINCT ON (user_id, kyc_type) user_id, kyc_type, status \
+         FROM user_kyc \
+         WHERE kyc_type IN ('personal', 'enterprise') AND status <> 'none' AND user_id = ANY(?) \
+         ORDER BY user_id, kyc_type, COALESCE(submitted_at, updated_at) DESC, id DESC",
+    ))
+    .bind(&ids)
+    .fetch_all(&state.db.pool)
+    .await?;
+    let flags = collect_kyc_list_statuses(rows);
+    for user in users.iter_mut() {
+        if let Some((personal, enterprise)) = flags.get(&user.id) {
+            user.kyc_personal_status = personal.clone();
+            user.kyc_enterprise_status = enterprise.clone();
+            user.kyc_personal = personal.as_deref() == Some("approved");
+            user.kyc_enterprise = enterprise.as_deref() == Some("approved");
+        }
+    }
+    Ok(())
+}
+
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -28,7 +73,7 @@ pub async fn list_users(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let users: Vec<User> = if let Some(kw) = keyword {
+    let mut users: Vec<User> = if let Some(kw) = keyword {
         let like_pattern = format!("%{}%", kw);
         let limit: i64 = query
             .get("limit")
@@ -56,6 +101,8 @@ pub async fn list_users(
         .await?
     };
 
+    attach_kyc_flags(&state, &mut users).await?;
+
     let total = users.len() as i64;
     Ok(Json(UserListResponse { data: users, total }))
 }
@@ -63,9 +110,7 @@ pub async fn list_users(
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::admin_permission::AdminContext,
-    >,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<User>> {
     let operator_name = claims.username.clone();
@@ -80,25 +125,21 @@ pub async fn create_user(
     }
 
     let role = request.role.as_deref().unwrap_or("user");
-    crate::admin_permission::require_edit(
-        &ctx,
-        crate::admin_permission::users_write_perm(role),
-    )?;
+    crate::admin_permission::require_edit(&ctx, crate::admin_permission::users_write_perm(role))?;
     crate::admin_permission::assert_can_assign_admin_group(&state, request.admin_group_id, role)
         .await?;
 
     let exists: bool = sqlx::query_scalar(
         &state
             .db
-            .format_query("SELECT EXISTS(SELECT 1 FROM users WHERE username = ? OR email = ?)"),
+            .format_query("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)"),
     )
     .bind(&request.username)
-    .bind(&actual_email)
     .fetch_one(&state.db.pool)
     .await?;
 
     if exists {
-        return Err(AppError::Conflict("User already exists".to_string()));
+        return Err(AppError::Conflict("请更换用户名尝试".to_string()));
     }
 
     let password_hash = auth::hash_password(&request.password)?;
@@ -149,8 +190,27 @@ pub async fn create_user(
     let balance = request.balance.unwrap_or(0.0);
     let gift_balance = request.gift_balance.unwrap_or(0.0);
     let pay_enabled = request.pay_enabled.unwrap_or(1);
+    let settings = crate::api::settings::load_all_settings(&state).await?;
 
     let mut tx = state.db.pool.begin().await?;
+    crate::auth::contact::assert_email_slot_tx(
+        &mut tx,
+        &state.db,
+        &actual_email,
+        None,
+        crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_email),
+    )
+    .await?;
+    if let Some(ref mobile) = request.mobile {
+        crate::auth::contact::assert_mobile_slot_tx(
+            &mut tx,
+            &state.db,
+            mobile,
+            None,
+            crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_mobile),
+        )
+        .await?;
+    }
 
     sqlx::query(
         &state.db.format_query(r#"INSERT INTO users (id, uid, username, email, mobile, password_hash, role, user_group, admin_group_id, balance, gift_balance, pay_enabled, is_active, referred_by, referral_history)
@@ -186,13 +246,15 @@ pub async fn create_user(
     }
 
     if gift_balance > 0.0 {
+        let gift_order_no = crate::api::plugins::finance::generate_gift_order_no();
         sqlx::query(
-            &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, 'manual', ?, ?, 'gift')")
+            &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type, order_no) VALUES (?, ?, 'manual', ?, ?, 'gift', ?)")
         )
         .bind(&user_id)
         .bind(gift_balance)
         .bind("管理员创建用户-赠送余额")
         .bind(&operator_name)
+        .bind(&gift_order_no)
         .execute(&mut *tx)
         .await?;
     }
@@ -229,9 +291,7 @@ pub async fn update_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::admin_permission::AdminContext,
-    >,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Json(request): Json<UpdateUserRequest>,
 ) -> AppResult<Json<User>> {
     let operator_name = claims.username.clone();
@@ -245,8 +305,7 @@ pub async fn update_user(
     .await?
     .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
-    let was_super_admin =
-        crate::admin_permission::is_super_admin(&user.role, user.admin_group_id);
+    let was_super_admin = crate::admin_permission::is_super_admin(&user.role, user.admin_group_id);
     let old_balance = user.balance;
     let old_gift_balance = user.gift_balance;
     let old_credit_limit = user.credit_limit;
@@ -264,20 +323,16 @@ pub async fn update_user(
     .flatten()
     .unwrap_or_else(|| old_user_group.clone());
 
+    crate::admin_permission::assert_role_immutable(&user.role, request.role.as_deref())?;
     crate::admin_permission::assert_super_admin_immutable(
         &user.role,
         user.admin_group_id,
         request.role.as_deref(),
         request.admin_group_id,
     )?;
-    let write_role = if user.role == "admin" || request.role.as_deref() == Some("admin") {
-        "admin"
-    } else {
-        "user"
-    };
     crate::admin_permission::require_edit(
         &ctx,
-        crate::admin_permission::users_write_perm(write_role),
+        crate::admin_permission::users_write_perm(&user.role),
     )?;
 
     if let Some(username) = request.username.filter(|u| u != &user.username) {
@@ -285,19 +340,15 @@ pub async fn update_user(
         user.username = username;
     }
     if let Some(email) = request.email {
-        // 管理员改邮箱也需保证唯一，避免重复邮箱导致找回密码一次改多个账号
-        if !email.is_empty() && !email.ends_with("@tokensbyte.local") {
-            let exists: bool =
-                sqlx::query_scalar(&state.db.format_query(
-                    "SELECT EXISTS(SELECT 1 FROM users WHERE email = ? AND id != ?)",
-                ))
-                .bind(&email)
-                .bind(&user.id)
-                .fetch_one(&state.db.pool)
-                .await?;
-            if exists {
-                return Err(AppError::Conflict("该邮箱已被其他账号使用".to_string()));
-            }
+        if email != user.email {
+            let settings = crate::api::settings::load_all_settings(&state).await?;
+            crate::auth::contact::assert_email_slot(
+                &state,
+                &email,
+                Some(&user.id),
+                crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_email),
+            )
+            .await?;
         }
         user.email = email;
     }
@@ -313,26 +364,21 @@ pub async fn update_user(
         user.nickname = Some(nickname.clone());
     }
     if let Some(mobile) = request.mobile {
-        if !mobile.is_empty() {
-            let exists: bool =
-                sqlx::query_scalar(&state.db.format_query(
-                    "SELECT EXISTS(SELECT 1 FROM users WHERE mobile = ? AND id != ?)",
-                ))
-                .bind(&mobile)
-                .bind(&user.id)
-                .fetch_one(&state.db.pool)
-                .await?;
-            if exists {
-                return Err(AppError::Conflict("该手机号已被其他账号绑定".to_string()));
-            }
+        let current = user.mobile.clone().unwrap_or_default();
+        if !mobile.is_empty() && mobile != current {
+            let settings = crate::api::settings::load_all_settings(&state).await?;
+            crate::auth::contact::assert_mobile_slot(
+                &state,
+                &mobile,
+                Some(&user.id),
+                crate::auth::contact::normalize_limit(settings.registration.max_accounts_per_mobile),
+            )
+            .await?;
         }
         user.mobile = Some(mobile);
     }
     if let Some(wechat_id) = request.wechat_id {
         user.wechat_id = Some(wechat_id);
-    }
-    if let Some(role) = request.role {
-        user.role = role;
     }
     if let Some(balance) = request.balance {
         user.balance = balance;
@@ -491,13 +537,15 @@ pub async fn update_user(
         } else {
             "管理员调减赠送余额"
         };
+        let gift_order_no = crate::api::plugins::finance::generate_gift_order_no();
         sqlx::query(
-            &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, 'manual', ?, ?, 'gift')")
+            &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type, order_no) VALUES (?, ?, 'manual', ?, ?, 'gift', ?)")
         )
         .bind(&user.id)
         .bind(diff)
         .bind(remark)
         .bind(&operator_name)
+        .bind(&gift_order_no)
         .execute(&mut *tx)
         .await?;
     }
@@ -600,9 +648,7 @@ pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::admin_permission::AdminContext,
-    >,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
 ) -> AppResult<Json<serde_json::Value>> {
     let target: Option<(String, String, Option<i64>)> = sqlx::query_as(
         &state
@@ -613,7 +659,8 @@ pub async fn delete_user(
     .bind(&id)
     .fetch_optional(&state.db.pool)
     .await?;
-    let (target_id, role, gid) = target.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let (target_id, role, gid) =
+        target.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
 
     // 防止管理员删除自己
     if claims.sub == target_id {
@@ -625,10 +672,7 @@ pub async fn delete_user(
     if crate::admin_permission::is_super_admin(&role, gid) {
         return Err(AppError::BadRequest("超级管理员不可删除".to_string()));
     }
-    crate::admin_permission::require_edit(
-        &ctx,
-        crate::admin_permission::users_write_perm(&role),
-    )?;
+    crate::admin_permission::require_edit(&ctx, crate::admin_permission::users_write_perm(&role))?;
 
     // 0. 在事务开启前，先查出该用户在 plugin_assets 与 playground_assets 中上传的全部云端文件，
     //    以进行同步且并发的物理清理，避免云端对象存储产生孤儿垃圾文件。
@@ -868,9 +912,7 @@ pub async fn recharge_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::admin_permission::AdminContext,
-    >,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Json(request): Json<RechargeRequest>,
 ) -> AppResult<Json<User>> {
     if request.amount.is_nan() || request.amount.is_infinite() {
@@ -944,13 +986,19 @@ pub async fn recharge_user(
     } else {
         "system"
     };
-    let recharge_id: i64 = sqlx::query_scalar::<_, i64>(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id"))
+    let order_no = if is_gift {
+        crate::api::plugins::finance::generate_gift_order_no()
+    } else {
+        crate::api::plugins::finance::generate_system_order_no()
+    };
+    let recharge_id: i64 = sqlx::query_scalar::<_, i64>(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, operator, wallet_type, order_no) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"))
         .bind(&user.id)
         .bind(request_amount)
         .bind(recharge_type)
         .bind(&remark)
         .bind(&operator_name)
         .bind(wallet_type)
+        .bind(&order_no)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -991,9 +1039,7 @@ pub async fn recharge_user(
 pub async fn impersonate_user(
     State(state): State<Arc<AppState>>,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
-    axum::extract::Extension(ctx): axum::extract::Extension<
-        crate::admin_permission::AdminContext,
-    >,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Path(id): Path<String>,
 ) -> AppResult<Json<LoginResponse>> {
     // 防御纵深：路由层已有 auth + admin_middleware，handler 再强制校验管理员身份
@@ -1045,7 +1091,9 @@ pub async fn get_user_level_logs(
     Path(id): Path<String>,
 ) -> AppResult<Json<serde_json::Value>> {
     let real_user_id: Option<String> = sqlx::query_scalar(
-        &state.db.format_query("SELECT id FROM users WHERE id = ? OR uid = ? LIMIT 1"),
+        &state
+            .db
+            .format_query("SELECT id FROM users WHERE id = ? OR uid = ? LIMIT 1"),
     )
     .bind(&id)
     .bind(&id)
@@ -1192,4 +1240,132 @@ pub async fn get_consumption_stats_batch(
     )
     .await?;
     Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ContactBindQuery {
+    pub kind: String,
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutContactBindRequest {
+    pub kind: String,
+    pub value: String,
+    pub max_accounts: i32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContactBindResponse {
+    pub kind: String,
+    pub value: String,
+    pub bound_count: i64,
+    pub limit: i32,
+    pub default_limit: i32,
+    pub is_override: bool,
+}
+
+fn normalize_admin_contact(kind: &str, value: &str) -> AppResult<String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(AppError::BadRequest("联系方式不能为空".to_string()));
+    }
+    if kind == "email" && !crate::auth::contact::is_real_email(&value) {
+        return Err(AppError::BadRequest(
+            "占位邮箱不能设置绑定上限".to_string(),
+        ));
+    }
+    Ok(value)
+}
+
+async fn load_contact_bind(
+    state: &Arc<AppState>,
+    kind: &str,
+    value: &str,
+) -> AppResult<ContactBindResponse> {
+    let kind = crate::auth::contact::parse_contact_kind(kind)?;
+    let value = normalize_admin_contact(kind, value)?;
+    let settings = crate::api::settings::load_all_settings(state).await?;
+    let default_limit = crate::auth::contact::normalize_limit(if kind == "email" {
+        settings.registration.max_accounts_per_email
+    } else {
+        settings.registration.max_accounts_per_mobile
+    });
+    let occ = if kind == "email" {
+        crate::auth::contact::email_occupancy(state, &value, None, default_limit).await?
+    } else {
+        crate::auth::contact::mobile_occupancy(state, &value, None, default_limit).await?
+    };
+    let is_override = crate::auth::contact::fetch_override_limit(state, kind, &value)
+        .await?
+        .is_some();
+    Ok(ContactBindResponse {
+        kind: kind.to_string(),
+        value,
+        bound_count: occ.bound_count,
+        limit: occ.limit,
+        default_limit,
+        is_override,
+    })
+}
+
+pub async fn get_contact_bind(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ContactBindQuery>,
+) -> AppResult<Json<ContactBindResponse>> {
+    Ok(Json(load_contact_bind(&state, &query.kind, &query.value).await?))
+}
+
+pub async fn put_contact_bind(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
+    Json(request): Json<PutContactBindRequest>,
+) -> AppResult<Json<ContactBindResponse>> {
+    crate::admin_permission::require_edit(&ctx, crate::admin_permission::users_write_perm("user"))?;
+    let kind = crate::auth::contact::parse_contact_kind(&request.kind)?;
+    let value = normalize_admin_contact(kind, &request.value)?;
+    let snapshot = load_contact_bind(&state, kind, &value).await?;
+    if i64::from(request.max_accounts) < snapshot.bound_count {
+        return Err(AppError::BadRequest(format!(
+            "该联系方式已绑定 {} 个账号，上限不能低于当前绑定数",
+            snapshot.bound_count
+        )));
+    }
+    crate::auth::contact::upsert_override_limit(&state, kind, &value, request.max_accounts).await?;
+    Ok(Json(load_contact_bind(&state, kind, &value).await?))
+}
+
+pub async fn delete_contact_bind(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
+    axum::extract::Query(query): axum::extract::Query<ContactBindQuery>,
+) -> AppResult<Json<ContactBindResponse>> {
+    crate::admin_permission::require_edit(&ctx, crate::admin_permission::users_write_perm("user"))?;
+    let kind = crate::auth::contact::parse_contact_kind(&query.kind)?;
+    let value = normalize_admin_contact(kind, &query.value)?;
+    crate::auth::contact::delete_override_limit(&state, kind, &value).await?;
+    Ok(Json(load_contact_bind(&state, kind, &value).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_kyc_list_statuses;
+
+    #[test]
+    fn collect_kyc_list_statuses_keeps_pending_review() {
+        let map = collect_kyc_list_statuses([
+            ("u1".into(), "personal".into(), "pending".into()),
+            ("u1".into(), "enterprise".into(), "approved".into()),
+            ("u2".into(), "personal".into(), "none".into()),
+            ("u3".into(), "other".into(), "pending".into()),
+            ("u4".into(), "personal".into(), "rejected".into()),
+        ]);
+        assert_eq!(
+            map.get("u1"),
+            Some(&(Some("pending".into()), Some("approved".into())))
+        );
+        assert!(!map.contains_key("u2"));
+        assert!(!map.contains_key("u3"));
+        assert_eq!(map.get("u4"), Some(&(Some("rejected".into()), None)));
+    }
 }

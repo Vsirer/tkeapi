@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
@@ -57,6 +57,9 @@ pub struct User {
     pub updated_at: DbTs,
     #[sqlx(default)]
     pub register_ip: Option<String>,
+    /// 最近一次登录或接口请求看到的客户端 IP
+    #[sqlx(default)]
+    pub last_active_ip: Option<String>,
     #[sqlx(default)]
     pub admin_remark: Option<String>,
     #[sqlx(default)]
@@ -78,6 +81,22 @@ pub struct User {
     pub pay_enabled: i32,
     #[sqlx(default)]
     pub notification_preferences: Option<String>,
+    /// 列表接口填充：是否已通过个人实名
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub kyc_personal: bool,
+    /// 列表接口填充：是否已通过企业实名
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub kyc_enterprise: bool,
+    /// 列表接口填充：个人实名最新审核状态 none|pending|approved|rejected|expired
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kyc_personal_status: Option<String>,
+    /// 列表接口填充：企业实名最新审核状态 none|pending|approved|rejected|expired
+    #[sqlx(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kyc_enterprise_status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +113,9 @@ pub struct CreateUserRequest {
     pub role: Option<String>,
     /// 团队邀请码，注册后自动加入对应团队
     pub team: Option<String>,
+    /// 用户端注册时的浏览器 IANA 时区
+    #[serde(default)]
+    pub timezone: Option<String>,
     pub mobile: Option<String>,
     pub balance: Option<f64>,
     pub gift_balance: Option<f64>,
@@ -163,6 +185,8 @@ pub struct RechargeRecord {
     pub operator: Option<String>,
     #[sqlx(default)]
     pub wallet_type: Option<String>,
+    #[sqlx(default)]
+    pub order_no: Option<String>,
     pub created_at: DbTs,
 }
 
@@ -199,12 +223,38 @@ pub struct LoginRequest {
     pub login_type: Option<String>,
     pub username: String,
     pub password: String,
+    /// 邮箱/手机命中多个账号时，指定要登录的 UID
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
     pub token: String,
     pub user: User,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LoginCandidate {
+    pub uid: String,
+    pub username: String,
+    pub nickname: Option<String>,
+}
+
+impl From<&User> for LoginCandidate {
+    fn from(user: &User) -> Self {
+        Self {
+            uid: user.uid.clone(),
+            username: user.username.clone(),
+            nickname: user.nickname.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoginSelectResponse {
+    pub need_select: bool,
+    pub candidates: Vec<LoginCandidate>,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,6 +286,12 @@ pub struct EmailRegisterRequest {
     pub aff: Option<String>,
     /// 团队邀请码，注册后自动加入对应团队
     pub team: Option<String>,
+    /// 用户端注册时的浏览器 IANA 时区
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// 该邮箱/手机已有账号时，确认继续注册新 UID
+    #[serde(default)]
+    pub confirm_new_account: bool,
 }
 
 /// 手机号注册请求
@@ -247,6 +303,12 @@ pub struct MobileRegisterRequest {
     pub aff: Option<String>,
     /// 团队邀请码，注册后自动加入对应团队
     pub team: Option<String>,
+    /// 用户端注册时的浏览器 IANA 时区
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// 该邮箱/手机已有账号时，确认继续注册新 UID
+    #[serde(default)]
+    pub confirm_new_account: bool,
 }
 
 /// 重置密码请求
@@ -256,6 +318,9 @@ pub struct ResetPasswordRequest {
     pub mobile: Option<String>,
     pub code: String,
     pub new_password: String,
+    /// 同一邮箱/手机绑定多个账号时指定 UID
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 /// 绑定/换绑手机请求

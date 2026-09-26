@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 渠道级 TOS 资源持久化模块
@@ -62,12 +62,11 @@ pub(crate) fn response_format_from_request(request_content: &str) -> Option<Stri
         .map(str::to_string)
 }
 
-/// 渠道已开启转存时上传媒体并替换 URL；未开启或 b64_json 则原样返回。
+/// 渠道已开启转存时上传媒体并替换 URL；未开启则原样返回。
 pub async fn persist_for_channel(
     state: &AppState,
     channel: &crate::models::Channel,
     response_str: &str,
-    request_content: &str,
     category: &str,
 ) -> String {
     let Some((channel_id, days, provider)) = channel.storage_persist() else {
@@ -83,9 +82,9 @@ pub async fn persist_for_channel(
         response_str,
         channel_id,
         days,
-        response_format_from_request(request_content).as_deref(),
         Some(kind),
         provider.as_deref(),
+        channel.tos_storage_b64(),
     )
     .await
 }
@@ -103,9 +102,9 @@ pub async fn persist_url_for_storage(
         &mini,
         channel_id,
         days,
-        None,
         Some(media_kind),
         provider.as_deref(),
+        true,
     )
     .await;
     serde_json::from_str::<serde_json::Value>(&out)
@@ -117,24 +116,19 @@ pub async fn persist_url_for_storage(
         .map(str::to_string)
 }
 
-/// 将响应中的媒体 URL 和 base64 上传到 TOS 并替换为 TOS URL。
-/// - b64_json 模式：不存 TOS，直接返回原始响应
-/// - 非 b64_json / 无 response_format：base64 和 URL 均存 TOS 返回 URL
+/// 将响应中的媒体 URL 和 base64 上传到对象存储并替换为永久 URL。
+/// - URL 数据：只要开启了渠道转存就必须转存
+/// - base64 数据：由 persist_b64 控制（开则转存，关则原样直接返回不受转存影响）
 /// 兼容 OpenAI 标准格式和各厂商原生格式。
 pub(crate) async fn persist_response_resources(
     state: &AppState,
     response_str: &str,
     channel_id: i64,
     storage_days: i32,
-    response_format: Option<&str>,
     fallback_type: Option<&str>,
     storage_provider: Option<&str>,
+    persist_b64: bool,
 ) -> String {
-    // b64_json 模式：不存 TOS，由调用方在 apply_format 后做 URL→base64 转换
-    if response_format == Some("b64_json") {
-        return response_str.to_string();
-    }
-
     let store = match load_object_store(state, storage_provider).await {
         Some(c) => c,
         None => {
@@ -160,6 +154,7 @@ pub(crate) async fn persist_response_resources(
                 channel_id,
                 storage_days,
                 fallback_type,
+                persist_b64,
             )
             .await
             {
@@ -177,6 +172,10 @@ pub(crate) async fn persist_response_resources(
                 std::collections::HashMap::new();
             for found in &urls {
                 if found.starts_with("data:") {
+                    // base64 数据：受 persist_b64 开关控制
+                    if !persist_b64 {
+                        continue;
+                    }
                     // Gemini base64：解码上传 TOS
                     let raw_b64 = super::forward::b64_data(found);
                     let file_data = match base64_decode(found) {
@@ -198,6 +197,7 @@ pub(crate) async fn persist_response_resources(
                         url_map.insert(raw_b64.to_string(), tos_url);
                     }
                 } else if found.starts_with("http://") || found.starts_with("https://") {
+                    // URL 数据：url 就一定要转存因为开启了渠道转存
                     if store.extract_object_key(found).is_some() {
                         continue;
                     }
@@ -238,73 +238,41 @@ pub(crate) async fn persist_response_resources(
     }
 }
 
-/// 双向响应格式对齐：根据用户 response_format 规格将 data[].url 转换为 b64_json，或反向将 b64_json 转换为 Data URL
+/// 仅当客户端显式要求 b64_json 时，将 data[].url 转换为 b64_json。
+/// 未指定（或其它格式）一律原样返回，上游返回什么就是什么。
 pub async fn align_response_format(
     state: &AppState,
     response_str: &str,
     response_format: Option<&str>,
 ) -> String {
+    if !response_format.is_some_and(|rf| rf.trim().eq_ignore_ascii_case("b64_json")) {
+        return response_str.to_string();
+    }
+
     let mut root: serde_json::Value = match serde_json::from_str(response_str) {
         Ok(v) => v,
         Err(_) => return response_str.to_string(),
     };
     let mut changed = false;
-    let is_b64_json = response_format == Some("b64_json");
 
     if let Some(items) = root.get_mut("data").and_then(|d| d.as_array_mut()) {
         for item in items.iter_mut() {
-            let b64 = item
-                .get("b64_json")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let url = item
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let b64 = item.get("b64_json").and_then(|v| v.as_str()).unwrap_or("");
+            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
-            if is_b64_json {
-                if b64.is_empty() && !url.is_empty() {
-                    if url == "base64数据" {
+            if b64.is_empty() && !url.is_empty() && url != "base64数据" {
+                let data = match download_url(&state.http_client, url).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        crate::relay_debug!("[TosPersist] url 转换为 base64 失败: {}", e);
                         continue;
                     }
-                    let data = match download_url(&state.http_client, &url).await {
-                        Ok(d) => d,
-                        Err(e) => {
-                            crate::relay_debug!("[TosPersist] url 转换为 base64 失败: {}", e);
-                            continue;
-                        }
-                    };
-                    use base64::Engine;
-                    item["b64_json"] =
-                        serde_json::json!(base64::engine::general_purpose::STANDARD.encode(&data));
-                    item.as_object_mut().map(|obj| obj.remove("url"));
-                    changed = true;
-                }
-            } else {
-                if url.is_empty() && !b64.is_empty() {
-                    if b64 == "base64数据" {
-                        continue;
-                    }
-                    let data_url = if b64.starts_with("data:") {
-                        b64
-                    } else {
-                        let ext = match base64_decode(&b64) {
-                            Ok(data) => detect_image_ext(&data),
-                            Err(_) => "png".to_string(),
-                        };
-                        let mime = if ext == "jpg" || ext == "jpeg" {
-                            "image/jpeg".to_string()
-                        } else {
-                            format!("image/{}", ext)
-                        };
-                        format!("data:{};base64,{}", mime, b64)
-                    };
-                    item["url"] = serde_json::json!(data_url);
-                    item.as_object_mut().map(|obj| obj.remove("b64_json"));
-                    changed = true;
-                }
+                };
+                use base64::Engine;
+                item["b64_json"] =
+                    serde_json::json!(base64::engine::general_purpose::STANDARD.encode(&data));
+                item.as_object_mut().map(|obj| obj.remove("url"));
+                changed = true;
             }
         }
     }
@@ -324,17 +292,10 @@ async fn persist_openai_item(
     channel_id: i64,
     storage_days: i32,
     fallback_type: Option<&str>,
+    persist_b64: bool,
 ) -> bool {
-    let b64 = item
-        .get("b64_json")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let url = item
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let b64 = item.get("b64_json").and_then(|v| v.as_str()).unwrap_or("");
+    let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
     if b64.is_empty() && url.is_empty() {
         return false;
@@ -342,12 +303,18 @@ async fn persist_openai_item(
     if b64 == "base64数据" {
         return false;
     }
-    if !url.is_empty() && store.extract_object_key(&url).is_some() {
+    if !url.is_empty() && store.extract_object_key(url).is_some() {
+        return false;
+    }
+
+    let is_base64_data = !b64.is_empty() || url.starts_with("data:");
+    // base64 数据且未开启 base64 转存时：直接返回不受开启转存影响
+    if is_base64_data && !persist_b64 {
         return false;
     }
 
     let (file_data, ext) = if !b64.is_empty() {
-        match base64_decode(&b64) {
+        match base64_decode(b64) {
             Ok(data) => {
                 let ext = detect_image_ext(&data);
                 (data, ext)
@@ -358,7 +325,7 @@ async fn persist_openai_item(
             }
         }
     } else if url.starts_with("data:") {
-        match base64_decode(&url) {
+        match base64_decode(url) {
             Ok(data) => {
                 let ext = detect_image_ext(&data);
                 (data, ext)
@@ -369,8 +336,9 @@ async fn persist_openai_item(
             }
         }
     } else {
-        match download_url(&state.http_client, &url).await {
-            Ok(data) => (data, guess_ext(&url, fallback_type.unwrap_or("image"))),
+        // URL 数据：url 就一定要转存因为开启了渠道转存
+        match download_url(&state.http_client, url).await {
+            Ok(data) => (data, guess_ext(url, fallback_type.unwrap_or("image"))),
             Err(e) => {
                 crate::relay_debug!("[TosPersist] 下载失败 url={}: {}", url, e);
                 return false;
@@ -378,12 +346,7 @@ async fn persist_openai_item(
         }
     };
 
-    // 记录原始来源用于日志输出
-    let source = if !url.is_empty() {
-        url.as_str()
-    } else {
-        "base64_data"
-    };
+    let source = if !url.is_empty() { url } else { "base64_data" };
     let tos_url = match upload_and_record(
         state,
         store,
@@ -503,6 +466,7 @@ pub async fn cleanup_expired_files(state: &AppState) {
         }
 
         let batch_size = rows.len();
+        let mut batch_cleaned: usize = 0;
         for (id, object_key, provider) in &rows {
             let store = match StoreKind::parse(provider) {
                 StoreKind::Tos => tos_store.as_ref(),
@@ -538,9 +502,10 @@ pub async fn cleanup_expired_files(state: &AppState) {
                 .execute(&state.db.pool)
                 .await;
             total_cleaned += 1;
+            batch_cleaned += 1;
         }
 
-        if batch_size < 100 {
+        if batch_size < 100 || batch_cleaned == 0 {
             break;
         }
     }
@@ -661,3 +626,4 @@ fn guess_ext(url: &str, fallback_type: &str) -> String {
         _ => "png".to_string(),
     }
 }
+

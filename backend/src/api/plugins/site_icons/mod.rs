@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use axum::{
@@ -59,48 +59,41 @@ fn resolve_asset_path(assets_dir: &str, relative: &str) -> Result<PathBuf, AppEr
     Ok(full)
 }
 
-/// 拒绝可执行脚本的 SVG（管理端仍应配合 CSP；此处为写入侧兜底）。
+/// 拒绝可执行脚本的 SVG（管理端配合写入侧兜底）。
 fn validate_svg_content(svg: &str) -> Result<(), AppError> {
     if svg.len() > 512 * 1024 {
-        return Err(AppError::BadRequest("SVG 内容过大".into()));
+        return Err(AppError::BadRequest("SVG 内容过大 (最大 512KB)".into()));
     }
     let lower = svg.to_lowercase();
     if lower.contains("<script")
         || lower.contains("javascript:")
-        || lower.contains("<foreignobject")
         || lower.contains("data:text/html")
+        || lower.contains("vbscript:")
     {
-        return Err(AppError::BadRequest("SVG 含有不安全内容".into()));
+        return Err(AppError::BadRequest("SVG 含有不安全脚本内容".into()));
     }
-    // on*= 事件处理器
-    if regex_lite_on_attr(&lower) {
-        return Err(AppError::BadRequest("SVG 含有不安全事件属性".into()));
+    // 危险事件处理器检测 (仅在属性赋值形如 ` onload=` 时触发，避免误伤常规文本或 CSS 属性)
+    if has_dangerous_svg_event(&lower) {
+        return Err(AppError::BadRequest("SVG 含有不安全的事件处理器属性".into()));
     }
     Ok(())
 }
 
-fn regex_lite_on_attr(lower_svg: &str) -> bool {
-    // 避免引入额外依赖：简单扫描 ` on` + 字母 + `=`
-    let bytes = lower_svg.as_bytes();
-    let mut i = 0;
-    while i + 3 < bytes.len() {
-        if bytes[i] == b' '
-            && bytes[i + 1] == b'o'
-            && bytes[i + 2] == b'n'
-            && bytes[i + 3].is_ascii_lowercase()
-        {
-            let mut j = i + 3;
-            while j < bytes.len() && bytes[j].is_ascii_lowercase() {
-                j += 1;
-            }
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'=' {
+fn has_dangerous_svg_event(lower_svg: &str) -> bool {
+    let dangerous_events = [
+        "onload", "onerror", "onclick", "onmouseover", "onmouseout", "onmouseenter",
+        "onmouseleave", "onmousedown", "onmouseup", "onmousemove", "onfocus", "onblur",
+        "onchange", "onsubmit", "onreset", "onselect", "onkeydown", "onkeypress",
+        "onkeyup", "onanimationstart", "onanimationend", "onbegin", "onend", "onrepeat",
+    ];
+    for evt in &dangerous_events {
+        if let Some(pos) = lower_svg.find(evt) {
+            let after = &lower_svg[pos + evt.len()..];
+            let trimmed = after.trim_start();
+            if trimmed.starts_with('=') {
                 return true;
             }
         }
-        i += 1;
     }
     false
 }
@@ -210,10 +203,42 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_icons).post(create_icon))
         .route("/public", get(list_icons_public))
+        .route("/storage-status", get(get_storage_status))
         .route("/sync", post(sync_from_github))
         .route("/sync-progress", get(get_sync_progress))
         .route("/sync-logs", get(list_sync_logs))
+        .route("/reset", post(reset_icon_library))
+        .route("/{id}/content", get(get_icon_content))
         .route("/{id}", put(update_icon).delete(delete_icon))
+}
+
+/// 查询当前站点绑定的存储配置状态（管理员）
+pub async fn get_storage_status(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_admin(&state, &claims).await?;
+    if let Some(store) = crate::relay::tos_persist::load_system_object_store(&state).await {
+        Ok(Json(json!({
+            "success": true,
+            "provider": store.provider(),
+            "is_cloud": true,
+            "bucket": store.bucket(),
+            "endpoint": store.endpoint(),
+            "region": store.region(),
+            "path_prefix": store.path_prefix(),
+        })))
+    } else {
+        Ok(Json(json!({
+            "success": true,
+            "provider": "local",
+            "is_cloud": false,
+            "bucket": "",
+            "endpoint": "",
+            "region": "",
+            "path_prefix": "",
+        })))
+    }
 }
 
 /// 列出/搜索图标 (管理员)
@@ -353,7 +378,7 @@ pub async fn create_icon(
     Json(payload): Json<CreateSiteIconReq>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_admin(&state, &claims).await?;
-    if payload.name.is_empty() || payload.svg_content.is_empty() {
+    if payload.name.trim().is_empty() || payload.svg_content.trim().is_empty() {
         return Err(AppError::BadRequest("图标名称和 SVG 内容不能为空".into()));
     }
     validate_svg_content(&payload.svg_content)?;
@@ -361,15 +386,55 @@ pub async fn create_icon(
     let safe_name = sanitize_icon_name(&payload.name)?;
     let file_name = format!("{}.svg", safe_name);
     let assets_dir = &state.config.assets_dir;
-    let dir = format!("{}/icons/custom", assets_dir);
-    tokio::fs::create_dir_all(&dir)
+
+    // 1. 本地落盘：写入 icons/custom/ 目录
+    let custom_dir = format!("{}/icons/custom", assets_dir);
+    tokio::fs::create_dir_all(&custom_dir)
         .await
-        .map_err(|e| AppError::Internal(format!("创建目录失败: {}", e)))?;
-    let file_path = format!("icons/custom/{}", file_name);
-    let full_path = resolve_asset_path(assets_dir, &file_path)?;
+        .map_err(|e| AppError::Internal(format!("创建本地图标目录失败: {}", e)))?;
+    let rel_file_path = format!("icons/custom/{}", file_name);
+    let full_path = resolve_asset_path(assets_dir, &rel_file_path)?;
     tokio::fs::write(&full_path, &payload.svg_content)
         .await
-        .map_err(|e| AppError::Internal(format!("写入 SVG 文件失败: {}", e)))?;
+        .map_err(|e| AppError::Internal(format!("写入本地 SVG 文件失败: {}", e)))?;
+
+    // 2. 本地双写兼容：写入 icons/lobe/ 目录，彻底兼容全站已有代码写死 `/assets/icons/lobe/${logo}.svg` 导致的 404
+    let lobe_dir = format!("{}/icons/lobe", assets_dir);
+    tokio::fs::create_dir_all(&lobe_dir).await.ok();
+    let lobe_path = format!("{}/{}", lobe_dir, file_name);
+    tokio::fs::write(&lobe_path, &payload.svg_content).await.ok();
+
+    // 3. 检查并联动站点绑定的对象存储（TOS / COS）
+    let mut stored_file_path = rel_file_path.clone();
+    if let Some(store) = crate::relay::tos_persist::load_system_object_store(&state).await {
+        let object_key = store.full_key(&format!("icons/custom/{}", file_name));
+        match store
+            .upload_file(
+                &object_key,
+                payload.svg_content.as_bytes().to_vec(),
+                "image/svg+xml",
+                None,
+            )
+            .await
+        {
+            Ok(cloud_url) => {
+                tracing::info!(
+                    "站点图标 [{}] 已成功同步上传至对象存储 ({}): {}",
+                    safe_name,
+                    store.provider(),
+                    cloud_url
+                );
+                stored_file_path = cloud_url;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "站点图标 [{}] 上传至对象存储失败，保持本地相对路径: {}",
+                    safe_name,
+                    e
+                );
+            }
+        }
+    }
 
     let title = payload.title.unwrap_or_else(|| safe_name.clone());
     let category = payload.category.unwrap_or_else(|| "自定义".to_string());
@@ -384,7 +449,7 @@ pub async fn create_icon(
     )
     .bind(&safe_name)
     .bind(&title)
-    .bind(&file_path)
+    .bind(&stored_file_path)
     .bind(&category)
     .bind(&tags_json)
     .bind(&now)
@@ -397,6 +462,53 @@ pub async fn create_icon(
         "message": "图标添加成功",
         "data": icon
     })))
+}
+
+/// 读取图标 SVG 源码，供编辑页加载现有图形。
+pub async fn get_icon_content(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_admin(&state, &claims).await?;
+    let icon: SiteIcon = sqlx::query_as("SELECT * FROM site_icons WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("图标不存在".into()))?;
+    let svg = load_icon_svg(&state, &icon).await?;
+    if !svg.to_lowercase().contains("<svg") {
+        return Err(AppError::BadRequest("图标文件不是有效 SVG".into()));
+    }
+    Ok(Json(json!({
+        "success": true,
+        "data": svg
+    })))
+}
+
+async fn load_icon_svg(state: &AppState, icon: &SiteIcon) -> Result<String, AppError> {
+    if icon.file_path.starts_with("http://") || icon.file_path.starts_with("https://") {
+        let resp = crate::services::http_client::with_download_timeout(
+            state.http_client.get(&icon.file_path),
+        )
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("读取云端图标失败: {}", e)))?;
+        if !resp.status().is_success() {
+            return Err(AppError::Internal(format!(
+                "读取云端图标失败: HTTP {}",
+                resp.status()
+            )));
+        }
+        return resp
+            .text()
+            .await
+            .map_err(|e| AppError::Internal(format!("读取云端图标失败: {}", e)));
+    }
+    let full = resolve_asset_path(&state.config.assets_dir, &icon.file_path)?;
+    tokio::fs::read_to_string(&full)
+        .await
+        .map_err(|_| AppError::NotFound("图标文件不存在".into()))
 }
 
 /// 更新图标
@@ -436,16 +548,43 @@ pub async fn update_icon(
             "icons/lobe"
         };
         let assets_dir = &state.config.assets_dir;
+
+        // 1. 本地落盘
         let dir = format!("{}/{}", assets_dir, sub_dir);
         tokio::fs::create_dir_all(&dir)
             .await
-            .map_err(|e| AppError::Internal(format!("创建目录失败: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("创建本地图标目录失败: {}", e)))?;
         let fp = format!("{}/{}", sub_dir, file_name);
         let full = resolve_asset_path(assets_dir, &fp)?;
         tokio::fs::write(&full, svg)
             .await
-            .map_err(|e| AppError::Internal(format!("写入 SVG 文件失败: {}", e)))?;
-        fp
+            .map_err(|e| AppError::Internal(format!("写入本地 SVG 文件失败: {}", e)))?;
+
+        // 2. 自定义图标本地双写到 icons/lobe/ 保证全站历史硬编码引用正常命中
+        if current.source == "custom" {
+            let lobe_dir = format!("{}/icons/lobe", assets_dir);
+            tokio::fs::create_dir_all(&lobe_dir).await.ok();
+            let lobe_path = format!("{}/{}", lobe_dir, file_name);
+            tokio::fs::write(&lobe_path, svg).await.ok();
+        }
+
+        // 3. 同步至对象存储（若已配置）
+        let mut final_fp = fp;
+        if let Some(store) = crate::relay::tos_persist::load_system_object_store(&state).await {
+            let object_key = store.full_key(&format!("{}/{}", sub_dir, file_name));
+            if let Ok(cloud_url) = store
+                .upload_file(
+                    &object_key,
+                    svg.as_bytes().to_vec(),
+                    "image/svg+xml",
+                    None,
+                )
+                .await
+            {
+                final_fp = cloud_url;
+            }
+        }
+        final_fp
     } else {
         current.file_path
     };
@@ -484,8 +623,27 @@ pub async fn delete_icon(
         .await?;
 
     if let Some(ref icon) = icon {
+        // 1. 本地文件清理
         if let Ok(full) = resolve_asset_path(&state.config.assets_dir, &icon.file_path) {
             tokio::fs::remove_file(&full).await.ok();
+        }
+        // 如果是 custom 图标，也把 lobe 与 custom 目录下的双写备份清理掉
+        if icon.source == "custom" {
+            let lobe_path = format!("{}/icons/lobe/{}.svg", state.config.assets_dir, icon.name);
+            tokio::fs::remove_file(&lobe_path).await.ok();
+            let custom_path = format!("{}/icons/custom/{}.svg", state.config.assets_dir, icon.name);
+            tokio::fs::remove_file(&custom_path).await.ok();
+        }
+        // 2. 对象存储清理
+        if let Some(store) = crate::relay::tos_persist::load_system_object_store(&state).await {
+            let object_key = if icon.file_path.starts_with("http://") || icon.file_path.starts_with("https://") {
+                store.extract_object_key(&icon.file_path).unwrap_or_else(|| {
+                    store.full_key(&format!("icons/custom/{}.svg", icon.name))
+                })
+            } else {
+                store.full_key(&icon.file_path)
+            };
+            store.delete_file(&object_key).await.ok();
         }
     }
 
@@ -498,6 +656,162 @@ pub async fn delete_icon(
         "success": true,
         "message": "图标删除成功"
     })))
+}
+
+/// 清空图标库：数据库记录、本地 SVG、云端对象全部删除，不保留任何图标数据。
+pub async fn reset_icon_library(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_admin(&state, &claims).await?;
+    if state.icon_sync_progress.is_running().await {
+        return Err(AppError::BadRequest(
+            "同步任务正在进行中，请待同步结束后再清空".into(),
+        ));
+    }
+
+    let icons: Vec<SiteIcon> = sqlx::query_as("SELECT * FROM site_icons")
+        .fetch_all(&state.db.pool)
+        .await?;
+
+    let local_failed = remove_local_icon_files(&state.config.assets_dir, &icons).await;
+    let cloud_failed = purge_cloud_icons(&state, &icons).await;
+
+    let deleted = sqlx::query("DELETE FROM site_icons")
+        .execute(&state.db.pool)
+        .await?
+        .rows_affected();
+
+    tracing::info!(
+        "站点图标库已清空: db={} local_failed={} cloud_failed={}",
+        deleted,
+        local_failed,
+        cloud_failed
+    );
+
+    let file_failed = local_failed + cloud_failed;
+    let message = if file_failed == 0 {
+        format!("已清空 {} 个图标", deleted)
+    } else {
+        format!("已清空 {} 个图标，部分文件删除失败", deleted)
+    };
+
+    Ok(Json(json!({
+        "success": true,
+        "message": message,
+        "deleted": deleted,
+        "local_failed": local_failed,
+        "cloud_failed": cloud_failed
+    })))
+}
+
+async fn remove_local_icon_files(assets_dir: &str, icons: &[SiteIcon]) -> usize {
+    for icon in icons {
+        let remote = icon.file_path.starts_with("http://") || icon.file_path.starts_with("https://");
+        if !remote {
+            if let Ok(full) = resolve_asset_path(assets_dir, &icon.file_path) {
+                tokio::fs::remove_file(&full).await.ok();
+            }
+        }
+        for rel in [
+            format!("icons/lobe/{}.svg", icon.name),
+            format!("icons/custom/{}.svg", icon.name),
+        ] {
+            if let Ok(full) = resolve_asset_path(assets_dir, &rel) {
+                tokio::fs::remove_file(&full).await.ok();
+            }
+        }
+    }
+    let mut failed = 0usize;
+    for sub in ["icons/lobe", "icons/custom"] {
+        let Ok(dir) = resolve_asset_path(assets_dir, sub) else {
+            failed += 1;
+            continue;
+        };
+        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failed += 1;
+                tracing::warn!("删除本地图标目录 {} 失败: {}", dir.display(), e);
+            }
+        }
+    }
+    failed
+}
+
+fn push_object_key(keys: &mut std::collections::HashSet<String>, key: &str) {
+    let key = key.trim().trim_start_matches('/');
+    if !key.is_empty() {
+        keys.insert(key.to_string());
+    }
+}
+
+async fn list_icon_prefix(
+    store: &crate::services::object_store::ObjectStore,
+    prefix: &str,
+    keys: &mut std::collections::HashSet<String>,
+) -> bool {
+    match store.list_folder(prefix).await {
+        Ok((objects, _)) => {
+            for obj in objects {
+                push_object_key(keys, &obj.key);
+            }
+            true
+        }
+        Err(e) => {
+            tracing::warn!("列出图标对象存储 {} 失败: {}", prefix, e);
+            false
+        }
+    }
+}
+
+async fn purge_cloud_icons(state: &AppState, icons: &[SiteIcon]) -> usize {
+    let Some(store) = crate::relay::tos_persist::load_system_object_store(state).await else {
+        return 0;
+    };
+    let mut keys = std::collections::HashSet::<String>::new();
+    let lobe_listed = list_icon_prefix(&store, "icons/lobe/", &mut keys).await;
+    let custom_listed = list_icon_prefix(&store, "icons/custom/", &mut keys).await;
+    let mut failed = usize::from(!lobe_listed) + usize::from(!custom_listed);
+
+    for icon in icons {
+        if icon.file_path.starts_with("http://") || icon.file_path.starts_with("https://") {
+            if let Some(key) = store.extract_object_key(&icon.file_path) {
+                push_object_key(&mut keys, &key);
+            }
+        } else {
+            let rel = icon.file_path.trim().trim_start_matches('/');
+            let covered = (lobe_listed && rel.starts_with("icons/lobe/"))
+                || (custom_listed && rel.starts_with("icons/custom/"));
+            if !rel.is_empty() && !covered {
+                push_object_key(&mut keys, &store.full_key(rel));
+            }
+        }
+        if !lobe_listed {
+            push_object_key(
+                &mut keys,
+                &store.full_key(&format!("icons/lobe/{}.svg", icon.name)),
+            );
+        }
+        if !custom_listed {
+            push_object_key(
+                &mut keys,
+                &store.full_key(&format!("icons/custom/{}.svg", icon.name)),
+            );
+        }
+    }
+
+    let key_list: Vec<String> = keys.into_iter().collect();
+    for chunk in key_list.chunks(32) {
+        let results =
+            futures::future::join_all(chunk.iter().map(|key| store.delete_file(key))).await;
+        for (key, res) in chunk.iter().zip(results) {
+            if let Err(e) = res {
+                failed += 1;
+                tracing::warn!("删除图标对象 {} 失败: {}", key, e);
+            }
+        }
+    }
+    failed
 }
 
 /// 查看同步日志

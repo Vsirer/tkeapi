@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
@@ -78,6 +78,38 @@ impl Channel {
         serde_json::from_str(&self.exclude_user_groups).unwrap_or_default()
     }
 
+    #[inline]
+    pub fn has_available_quota(&self, now_day: &str, now_week: &str, now_month: &str) -> bool {
+        super::channel_quota::has_available_quota(
+            self.quota_limit,
+            self.quota_used,
+            self.daily_quota_limit,
+            self.daily_quota_used,
+            &self.last_reset_day,
+            now_day,
+            self.weekly_quota_limit,
+            self.weekly_quota_used,
+            &self.last_reset_week,
+            now_week,
+            self.monthly_quota_limit,
+            self.monthly_quota_used,
+            &self.last_reset_month,
+            now_month,
+        )
+    }
+
+    #[inline]
+    pub fn matches_model(&self, pattern_model: &str, pattern_mids: &[String]) -> bool {
+        let m = self.models.trim();
+        m == "[]" || m.contains(pattern_model) || pattern_mids.iter().any(|p| m.contains(p))
+    }
+
+    #[inline]
+    pub fn matches_user_group(&self, ug_str: &str, level_str: &str) -> bool {
+        let ug = self.user_groups.trim();
+        ug.is_empty() || ug == "[]" || ug.contains(ug_str) || ug.contains(level_str)
+    }
+
     pub fn get_model_mapping(&self) -> std::collections::HashMap<String, String> {
         serde_json::from_str(&self.model_mapping).unwrap_or_default()
     }
@@ -134,23 +166,14 @@ impl Channel {
         Some((self.id, days, self.tos_storage_provider()))
     }
 
-    pub fn has_available_quota(&self, now_day: &str, now_week: &str, now_month: &str) -> bool {
-        crate::models::channel_quota::has_available_quota(
-            self.quota_limit,
-            self.quota_used,
-            self.daily_quota_limit,
-            self.daily_quota_used,
-            &self.last_reset_day,
-            now_day,
-            self.weekly_quota_limit,
-            self.weekly_quota_used,
-            &self.last_reset_week,
-            now_week,
-            self.monthly_quota_limit,
-            self.monthly_quota_used,
-            &self.last_reset_month,
-            now_month,
-        )
+    /// 渠道是否转存 base64 数据（未显式关闭时默认为开 true）
+    pub fn tos_storage_b64(&self) -> bool {
+        let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&self.config) else {
+            return true;
+        };
+        cfg.get("tos_storage_b64_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
     }
 
     pub fn check_quota_limits(

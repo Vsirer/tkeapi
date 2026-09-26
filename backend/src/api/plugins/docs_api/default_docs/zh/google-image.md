@@ -1,6 +1,6 @@
 # 谷歌 gemini-3.1 图像生成接入指南
 
-`gemini-3.1-flash-image-preview` 通过 OpenAI 兼容接口 `POST /v1/images/generations` 调用。请使用下方的 `ratio`（比例）与 `resolution`（分辨率）参数。
+OpenAI 兼容：`POST /v1/images/generations`。原生路径：`/v1beta/models/{model}:generateContent`。[图片生成 API](https://ai.google.dev/gemini-api/docs/image-generation?hl=zh-cn)
 
 ---
 

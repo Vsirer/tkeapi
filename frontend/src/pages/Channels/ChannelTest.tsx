@@ -1,16 +1,19 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Card, Table, Typography, Tag, Button, Space, message, Row, Col, Divider, Select, Tooltip } from 'antd';
-import { SyncOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import { SyncOutlined, ArrowLeftOutlined, CalculatorOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import type { Channel } from '../../types';
+import { ChannelBillingSimulator } from './components/ChannelBillingSimulator';
+import { channelEditPath, channelListPath } from './channelPaths';
 
 const { Title, Text } = Typography;
 
@@ -26,9 +29,15 @@ interface TestResult {
 }
 
 const ChannelTest: React.FC = () => {
-    const { id } = useParams<{ id: string }>();
+    const { t } = useTranslation();
+    const params = useParams<{ id: string }>();
+    const id = params.id;
     const navigate = useNavigate();
+    const location = useLocation();
+    const [searchParams] = useSearchParams();
     const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
+    const fromEdit = searchParams.get('from') === 'edit' || (location.state as { from?: string } | null)?.from === 'edit';
+    const origin = (location.state as { origin?: string } | null)?.origin;
     const [channel, setChannel] = useState<Channel | null>(null);
     const [loading, setLoading] = useState(true);
     const [testStatuses, setTestStatuses] = useState<Record<string, TestResult>>({});
@@ -46,6 +55,10 @@ const ChannelTest: React.FC = () => {
     const [subChannels, setSubChannels] = useState<Channel[]>([]);
     const [isHaMode, setIsHaMode] = useState<boolean>(false);
     const [expandedRowKeys, setExpandedRowKeys] = useState<React.Key[]>([]);
+
+    // 计费全链路仿真状态
+    const [simulatorOpen, setSimulatorOpen] = useState(false);
+    const [simModel, setSimModel] = useState<string | undefined>(undefined);
 
     useEffect(() => {
         const fetchChannelData = async () => {
@@ -118,7 +131,7 @@ const ChannelTest: React.FC = () => {
                     }
                 } else {
                     message.error('渠道并未找到，请检查！');
-                    navigate(`/${adminPath}/channels`);
+                    navigate(channelListPath(adminPath));
                 }
             } catch (e) {
                 console.error(e);
@@ -127,7 +140,7 @@ const ChannelTest: React.FC = () => {
             }
         };
         fetchChannelData();
-    }, [id, navigate]);
+    }, [id, navigate, adminPath]);
 
     const runSingleModelTest = async (channelId: number, model: string, ruleId?: number, autoFocus: boolean = true, statusKey?: string, subChannelId?: number) => {
         const key = statusKey || model;
@@ -215,14 +228,42 @@ const ChannelTest: React.FC = () => {
         }
     }
 
+    const handleBackAction = () => {
+        if (fromEdit && id) {
+            navigate(channelEditPath(adminPath, id), origin ? { state: { from: origin } } : undefined);
+        } else {
+            navigate(channelListPath(adminPath));
+        }
+    };
+
     return (
-        <Card bordered={false}>
-            <div style={{ marginBottom: 24, display: 'flex', alignItems: 'center', gap: 16 }}>
-                <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/${adminPath}/channels`)}>返回列表</Button>
-                <div>
-                    <Title level={3} style={{ margin: 0 }}>渠道日志抓取分析：{channel?.name}</Title>
-                    <Text type="secondary" style={{ marginTop: 4, display: 'block' }}>Base URL: {channel?.base_url}</Text>
+        <Card bordered={false} styles={{ body: { padding: 24 } }}>
+            <div style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <Button icon={<ArrowLeftOutlined />} onClick={handleBackAction}>
+                        {fromEdit ? '返回编辑' : '返回列表'}
+                    </Button>
+                    <div>
+                        <Title level={3} style={{ margin: 0 }}>
+                            {channel?.name ? `渠道日志抓取分析：${channel.name}` : '渠道日志抓取分析'}
+                        </Title>
+                        {channel?.base_url && (
+                            <Text type="secondary" style={{ marginTop: 2, display: 'block', fontSize: 12 }}>
+                                Base URL: {channel.base_url}
+                            </Text>
+                        )}
+                    </div>
                 </div>
+                <Button
+                    type="primary"
+                    icon={<CalculatorOutlined />}
+                    onClick={() => {
+                        setSimModel(activeModelLog ? activeModelLog.split('_')[0] : undefined);
+                        setSimulatorOpen(true);
+                    }}
+                >
+                    {t('channels.simulate_billing', '计费全链路仿真')}
+                </Button>
             </div>
             
             <Row gutter={24}>
@@ -529,6 +570,15 @@ const ChannelTest: React.FC = () => {
                     </Card>
                 </Col>
             </Row>
+
+            <ChannelBillingSimulator
+                open={simulatorOpen}
+                onClose={() => setSimulatorOpen(false)}
+                channelId={channel?.id || Number(id)}
+                channelName={channel?.name}
+                channelData={channel}
+                initialModel={simModel}
+            />
         </Card>
     );
 };

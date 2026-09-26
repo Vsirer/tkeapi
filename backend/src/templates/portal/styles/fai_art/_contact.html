@@ -1,0 +1,508 @@
+<style>
+.arts-ct { color: var(--arts-ink); }
+.arts-ct * { box-sizing: border-box; }
+
+.arts-ct-hero {
+  position: relative;
+  background: #99edff;
+  color: #19191a;
+  padding: calc(var(--nav-height) + 48px) 48px 64px;
+  overflow: hidden;
+}
+.arts-ct-hero-in {
+  position: relative;
+  z-index: 2;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+.arts-ct-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 18px;
+}
+.arts-ct-kicker::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #19191a;
+}
+.arts-ct-hero h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.05em;
+  line-height: 0.92;
+  font-size: clamp(3rem, 6.4vw, 5.4rem);
+  max-width: 12ch;
+  color: #19191a;
+  margin: 0;
+}
+.arts-ct-hero p {
+  margin: 18px 0 0;
+  font-size: 18px;
+  line-height: 1.5;
+  max-width: 34em;
+  color: #19191a;
+  opacity: 0.72;
+}
+.arts-ct-pill {
+  position: absolute;
+  right: 8%;
+  top: 38%;
+  width: 180px;
+  height: 46px;
+  border-radius: 999px;
+  background: #fff200;
+  transform: rotate(-22deg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+  z-index: 1;
+}
+.arts-ct-curve {
+  position: absolute;
+  right: -40px;
+  bottom: -40px;
+  width: min(420px, 42vw);
+  height: 220px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.arts-ct-body {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 56px 48px 96px;
+}
+.arts-ct-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+  gap: 24px;
+  align-items: stretch;
+}
+.arts-ct-grid.is-solo-social,
+.arts-ct-grid.is-solo-channels {
+  grid-template-columns: 1fr;
+}
+.arts-ct-grid:has(.arts-ct-channels > .arts-ct-card:only-child):has(.arts-ct-social) {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+}
+.arts-ct-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+.arts-ct-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1 1 auto;
+  padding: 20px 22px;
+  border: 1px solid var(--arts-line);
+  border-radius: 16px;
+  background: var(--bg-card);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.arts-ct-card:hover {
+  border-color: var(--arts-ink);
+  color: inherit;
+  opacity: 1;
+}
+.arts-ct-ic {
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e6ffd2;
+  color: #19191a;
+}
+.arts-ct-ic svg { width: 20px; height: 20px; display: block; }
+.arts-ct-card:nth-child(2) .arts-ct-ic { background: #ede0ff; }
+.arts-ct-card:nth-child(3) .arts-ct-ic { background: #99edff; }
+.arts-ct-card strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.arts-ct-card p {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.arts-ct-arrow {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: 1px solid var(--arts-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.arts-ct-card:hover .arts-ct-arrow {
+  background: #19191a;
+  border-color: #19191a;
+  color: #fafafa;
+}
+
+.arts-ct-social {
+  background: #fff200;
+  color: #19191a;
+  border-radius: 16px;
+  padding: 28px 24px 18px;
+  min-height: 100%;
+}
+.arts-ct-social .arts-ct-kicker { margin-bottom: 10px; }
+.arts-ct-social h3 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  margin: 0 0 18px;
+  color: #19191a;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.arts-ct-social-heading-ic {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.arts-ct-social-heading-ic svg { width: 22px; height: 22px; display: block; }
+.arts-ct-social a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(25, 25, 26, 0.12);
+  color: #19191a !important;
+  font-weight: 600;
+  font-size: 15px;
+  opacity: 1;
+}
+.arts-ct-social a:hover { opacity: 0.62; color: #19191a !important; }
+.arts-ct-soc-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.arts-ct-soc-ic {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.arts-ct-soc-ic svg { width: 18px; height: 18px; display: block; }
+.arts-ct-social a .arts-ct-soc-go {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 500;
+}
+.arts-ct-grid.is-solo-social .arts-ct-social {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  column-gap: 40px;
+}
+.arts-ct-grid.is-solo-social .arts-ct-social .arts-ct-kicker,
+.arts-ct-grid.is-solo-social .arts-ct-social h3 {
+  grid-column: 1 / -1;
+}
+
+.arts-ct-extra {
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid var(--arts-line);
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+.arts-ct-extra h1, .arts-ct-extra h2, .arts-ct-extra h3 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+}
+
+.arts-ct-toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #19191a;
+  color: #fafafa;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+}
+.arts-ct-toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+}
+
+html[data-theme="dark"] .arts-ct-hero,
+body.dark .arts-ct-hero {
+  background: #99edff;
+  color: #19191a;
+}
+html[data-theme="dark"] .arts-ct-card,
+body.dark .arts-ct-card {
+  background: #161618;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+html[data-theme="dark"] .arts-ct-card:hover,
+body.dark .arts-ct-card:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+html[data-theme="dark"] .arts-ct-arrow,
+body.dark .arts-ct-arrow {
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #fafafa;
+}
+html[data-theme="dark"] .arts-ct-card:hover .arts-ct-arrow,
+body.dark .arts-ct-card:hover .arts-ct-arrow {
+  background: #fafafa;
+  border-color: #fafafa;
+  color: #0c0c0d;
+}
+
+@media (max-width: 900px) {
+  .arts-ct-hero, .arts-ct-body { padding-left: 24px; padding-right: 24px; }
+  .arts-ct-grid,
+  .arts-ct-grid.is-solo-social,
+  .arts-ct-grid.is-solo-channels,
+  .arts-ct-grid:has(.arts-ct-channels > .arts-ct-card:only-child):has(.arts-ct-social) {
+    grid-template-columns: 1fr;
+  }
+  .arts-ct-pill, .arts-ct-curve { display: none; }
+  .arts-ct-hero { padding-top: calc(var(--nav-height) + 36px); padding-bottom: 44px; }
+}
+</style>
+
+<section class="arts-ct">
+  <header class="arts-ct-hero">
+    <div class="arts-ct-pill" aria-hidden="true"></div>
+    <svg class="arts-ct-curve" viewBox="0 0 420 220" fill="none" aria-hidden="true">
+      <path d="M10 150 C 120 40, 240 210, 410 70" stroke="#7c4dff" stroke-width="14" stroke-linecap="round"/>
+    </svg>
+    <div class="arts-ct-hero-in">
+      <div class="arts-ct-kicker">Get in touch</div>
+      <h1 data-i18n-dynamic="{{ columns.contact.title | default(value="") }}" {% if not columns.contact.title %}data-i18n-key="nav_contact"{% endif %}>{{ columns.contact.title | default(value="联系我们") }}</h1>
+      <p data-i18n="contact_subtitle">欢迎联系我们获取技术支持或商务合作</p>
+    </div>
+  </header>
+
+  <div class="arts-ct-body">
+    {% set_global show_contact_channels = false %}
+    {% if columns.contact.content.email and columns.contact.content.email_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if columns.contact.content.phone and columns.contact.content.phone_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if columns.contact.content.address and columns.contact.content.address_enabled != false %}
+      {% set_global show_contact_channels = true %}
+    {% endif %}
+    {% if show_contact_channels == false %}
+      {% if columns.contact.content.email or columns.contact.content.phone or columns.contact.content.address %}
+      {% elif columns.contact.content.items %}
+        {% for item in columns.contact.content.items %}
+          {% if item.value and item.enabled != false %}
+            {% set_global show_contact_channels = true %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+    {% endif %}
+    {% set_global show_contact_social = false %}
+    {% if columns.contact.content.social_links %}
+      {% for link in columns.contact.content.social_links %}
+        {% if link.enabled != false %}
+          {% if link.platform or link.value %}
+            {% set_global show_contact_social = true %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    <div class="arts-ct-grid{% if show_contact_channels == false %} is-solo-social{% endif %}{% if show_contact_social == false %} is-solo-channels{% endif %}">
+      {% if show_contact_channels %}
+      <div class="arts-ct-channels">
+        {% if columns.contact.content.email or columns.contact.content.phone or columns.contact.content.address %}
+          {% if columns.contact.content.channel_order %}
+            {% set_global channel_keys = columns.contact.content.channel_order %}
+          {% else %}
+            {% set_global channel_keys = ["email", "phone", "address"] %}
+          {% endif %}
+          {% for key in channel_keys %}
+          {% if key == "email" and columns.contact.content.email and columns.contact.content.email_enabled != false %}
+          <a href="mailto:{{ columns.contact.content.email }}" class="arts-ct-card">
+            <span class="arts-ct-ic">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+            </span>
+            <div><strong data-i18n="contact_email">邮箱</strong><p>{{ columns.contact.content.email }}</p></div>
+            <span class="arts-ct-arrow" aria-hidden="true">→</span>
+          </a>
+          {% elif key == "phone" and columns.contact.content.phone and columns.contact.content.phone_enabled != false %}
+          <a href="tel:{{ columns.contact.content.phone }}" class="arts-ct-card">
+            <span class="arts-ct-ic">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67a2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            </span>
+            <div><strong data-i18n="contact_phone">电话</strong><p>{{ columns.contact.content.phone }}</p></div>
+            <span class="arts-ct-arrow" aria-hidden="true">→</span>
+          </a>
+          {% elif key == "address" and columns.contact.content.address and columns.contact.content.address_enabled != false %}
+          <div class="arts-ct-card" onclick="copyText('{{ columns.contact.content.address }}', this)" title="点击复制地址">
+            <span class="arts-ct-ic">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            </span>
+            <div><strong data-i18n="contact_address">地址</strong><p>{{ columns.contact.content.address }}</p></div>
+            <span class="arts-ct-arrow" aria-hidden="true">→</span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        {% elif columns.contact.content.items and columns.contact.content.items | length > 0 %}
+          {% for item in columns.contact.content.items %}
+            {% if item.value and item.enabled != false %}
+              {% if "邮箱" in item.title or "@" in item.value %}
+              <a href="mailto:{{ item.value }}" class="arts-ct-card">
+                <span class="arts-ct-ic">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}" data-i18n-key="contact_email">{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <span class="arts-ct-arrow" aria-hidden="true">→</span>
+              </a>
+              {% elif "电话" in item.title or "tel" in item.value %}
+              <a href="tel:{{ item.value }}" class="arts-ct-card">
+                <span class="arts-ct-ic">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}" data-i18n-key="contact_phone">{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <span class="arts-ct-arrow" aria-hidden="true">→</span>
+              </a>
+              {% elif "http" in item.value %}
+              <a href="{{ item.value }}" target="_blank" rel="noopener" class="arts-ct-card">
+                <span class="arts-ct-ic">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}">{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <span class="arts-ct-arrow" aria-hidden="true">→</span>
+              </a>
+              {% else %}
+              <div class="arts-ct-card" onclick="copyText('{{ item.value }}', this)" data-i18n-title="btn_copy" title="点击复制">
+                <span class="arts-ct-ic">{{ item.icon | safe }}</span>
+                <div><strong data-i18n-dynamic="{{ item.title }}">{{ item.title }}</strong><p>{{ item.value }}</p></div>
+                <span class="arts-ct-arrow" aria-hidden="true">→</span>
+              </div>
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if show_contact_social %}
+      <aside class="arts-ct-social">
+        <div class="arts-ct-kicker">Social</div>
+        <h3>
+          <span class="arts-ct-social-heading-ic" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.82 3.98"/></svg>
+          </span>
+          <span data-i18n="contact_social">社交媒体</span>
+        </h3>
+        {% for link in columns.contact.content.social_links %}
+          {% if link.enabled != false %}
+          {% if link.platform or link.value %}
+          <a href="{{ link.value }}" target="_blank" rel="noopener">
+            <span class="arts-ct-soc-name">
+              <span class="arts-ct-soc-ic" aria-hidden="true">
+                {% if "GitHub" in link.platform or "github" in link.platform or "Github" in link.platform %}
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+                {% elif "Telegram" in link.platform or "telegram" in link.platform %}
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                {% elif "Twitter" in link.platform or "twitter" in link.platform or "X" in link.platform %}
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.74l7.726-8.835L1.254 2.25H8.08l4.253 5.622L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                {% else %}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                {% endif %}
+              </span>
+              <span data-i18n-dynamic="{{ link.platform }}">{{ link.platform }}</span>
+            </span>
+            <span class="arts-ct-soc-go" aria-hidden="true">↗</span>
+          </a>
+          {% endif %}
+          {% endif %}
+        {% endfor %}
+      </aside>
+      {% endif %}
+    </div>
+
+    {% if columns.contact.content.custom_content %}
+    <div class="arts-ct-extra">
+      {{ columns.contact.content.custom_content | safe }}
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<div id="toast" class="arts-ct-toast">
+  <span id="toast-msg" data-i18n="copy_success">已成功复制</span>
+</div>
+
+<script>
+  function copyText(text) {
+    if (!text) return;
+    var curLang = localStorage.getItem('lang') || 'zh';
+    var msg = typeof translateText === 'function' ? translateText('copy_success', curLang) : '已成功复制';
+    navigator.clipboard.writeText(text).then(function() {
+      showToast(msg);
+    }).catch(function() {
+      var input = document.createElement('input');
+      input.setAttribute('value', text);
+      document.body.appendChild(input);
+      input.select();
+      var result = document.execCommand('copy');
+      document.body.removeChild(input);
+      if (result) showToast(msg);
+    });
+  }
+  var toastTimer = null;
+  function showToast(message) {
+    var toast = document.getElementById('toast');
+    var toastMsg = document.getElementById('toast-msg');
+    if (!toast || !toastMsg) return;
+    toastMsg.textContent = message;
+    toast.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { toast.classList.remove('show'); }, 2000);
+  }
+</script>

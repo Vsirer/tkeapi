@@ -1,16 +1,113 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 #![allow(dead_code)]
 use crate::error::{AppError, AppResult};
-use crate::models::Channel;
+use crate::models::{Channel, ChannelConfig};
 use crate::AppState;
 use rand::Rng;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
+
+/// 活跃渠道短 TTL 读缓存（5 秒自动过期，写路径主动清空；杜绝数据库全表读写冲撞）
+const ACTIVE_CHANNELS_TTL: Duration = Duration::from_secs(5);
+/// 上游渠道配置短 TTL 读缓存（5 秒自动过期，写路径主动清空；杜绝高可用选子渠道穿透查库）
+const CHANNEL_CONFIGS_TTL: Duration = Duration::from_secs(5);
+
+struct ChannelsTtlCell {
+    channels: Arc<Vec<Channel>>,
+    at: Instant,
+}
+
+struct ChannelConfigsTtlCell {
+    configs: Arc<HashMap<i64, ChannelConfig>>,
+    at: Instant,
+}
+
+static ACTIVE_CHANNELS_CACHE: OnceLock<RwLock<Option<ChannelsTtlCell>>> = OnceLock::new();
+static CHANNEL_CONFIGS_CACHE: OnceLock<RwLock<Option<ChannelConfigsTtlCell>>> = OnceLock::new();
+
+fn get_cache_lock() -> &'static RwLock<Option<ChannelsTtlCell>> {
+    ACTIVE_CHANNELS_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+fn get_configs_cache_lock() -> &'static RwLock<Option<ChannelConfigsTtlCell>> {
+    CHANNEL_CONFIGS_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// 主动使渠道缓存失效（管理端增删改启停时调用）
+pub fn invalidate_channel_cache() {
+    if let Ok(mut guard) = get_cache_lock().write() {
+        *guard = None;
+    }
+}
+
+/// 主动使渠道配置缓存失效（管理端修改上游配置时调用）
+pub fn invalidate_channel_configs_cache() {
+    if let Ok(mut guard) = get_configs_cache_lock().write() {
+        *guard = None;
+    }
+}
+
+pub async fn get_cached_channel_configs(
+    db: &crate::db::Database,
+) -> Result<Arc<HashMap<i64, ChannelConfig>>, sqlx::Error> {
+    if let Ok(guard) = get_configs_cache_lock().read() {
+        if let Some(ref cell) = *guard {
+            if cell.at.elapsed() < CHANNEL_CONFIGS_TTL {
+                return Ok(cell.configs.clone());
+            }
+        }
+    }
+
+    let rows: Vec<ChannelConfig> = sqlx::query_as(
+        &db.format_query("SELECT * FROM channel_configs"),
+    )
+    .fetch_all(&db.pool)
+    .await?;
+
+    let map: HashMap<i64, ChannelConfig> = rows.into_iter().map(|c| (c.id, c)).collect();
+    let arc_configs = Arc::new(map);
+    if let Ok(mut guard) = get_configs_cache_lock().write() {
+        *guard = Some(ChannelConfigsTtlCell {
+            configs: arc_configs.clone(),
+            at: Instant::now(),
+        });
+    }
+    Ok(arc_configs)
+}
+
+pub async fn get_cached_active_channels(
+    db: &crate::db::Database,
+) -> Result<Arc<Vec<Channel>>, sqlx::Error> {
+    if let Ok(guard) = get_cache_lock().read() {
+        if let Some(ref cell) = *guard {
+            if cell.at.elapsed() < ACTIVE_CHANNELS_TTL {
+                return Ok(cell.channels.clone());
+            }
+        }
+    }
+
+    let channels: Vec<Channel> = sqlx::query_as(&db.format_query(
+        "SELECT * FROM channels WHERE status = 1 ORDER BY priority DESC, id DESC",
+    ))
+    .fetch_all(&db.pool)
+    .await?;
+
+    let arc_channels = Arc::new(channels);
+    if let Ok(mut guard) = get_cache_lock().write() {
+        *guard = Some(ChannelsTtlCell {
+            channels: arc_channels.clone(),
+            at: Instant::now(),
+        });
+    }
+    Ok(arc_channels)
+}
 
 /// 同档加权随机：`weight` 越大被选概率越高；负权重按 0 计，合计 ≤0 时取首项。
 fn pick_weighted_by<T, F>(items: &[T], weight_of: F) -> &T
@@ -36,7 +133,6 @@ where
 }
 
 /// Select the best channel for a given model based on priority and load balancing.
-/// `allow_ha`: 是否允许选中高可用虚拟组（插件+令牌，见 `ha::policy`）。
 pub async fn select_channel(
     state: &Arc<AppState>,
     model: &str,
@@ -44,135 +140,111 @@ pub async fn select_channel(
     level_id: &str,
     exclude_aids: &[String],
     mids: Option<&[String]>,
-    allow_ha: bool,
     ha_pool: &mut Option<super::ha::HaPoolSnap>,
 ) -> AppResult<Channel> {
     crate::relay_debug!(
-        "[SelectChannel] 开始 模型={} 分组={} 等级={} 已排除={:?} 允许HA={}",
+        "[SelectChannel] 开始 模型={} 分组={} 等级={} 已排除={:?}",
         model,
         user_group,
         level_id,
-        exclude_aids,
-        allow_ha
+        exclude_aids
     );
 
-    // 1. 查找请求 model_id 对应的所有 mid（若传入了已解析好的 mids 数组，则免于数据库查询）
-    let owned_mids;
+    // 1. 一次查出该 model_id 的 mid / 是否在模型表；调用方已传入 mids 则免查
+    let owned_mids: Vec<String>;
+    let model_in_table;
     let mids_ref = if let Some(m) = mids {
+        model_in_table = true;
         m
     } else {
-        owned_mids = sqlx::query_scalar(
+        let rows: Vec<(String, i32)> = sqlx::query_as(
             &state
                 .db
-                .format_query("SELECT mid FROM models WHERE model_id = ? AND is_active = 1"),
+                .format_query("SELECT mid, is_active FROM models WHERE model_id = ? AND is_listed = 1"),
         )
         .bind(model)
         .fetch_all(&state.db.pool)
         .await
         .unwrap_or_default();
+        model_in_table = !rows.is_empty();
+        owned_mids = rows
+            .into_iter()
+            .filter(|(_, on)| *on == 1)
+            .map(|(mid, _)| mid)
+            .collect();
         &owned_mids
     };
 
-    // 2. 构建匹配条件：匹配 mid 列表中的任意值，同时兼容旧格式（直接存 model_id 的渠道）
-    // 使用参数化绑定防止 SQL 注入（model/mids/exclude_aids 均通过 .bind() 传入）
-    let mut bind_values: Vec<String> = Vec::new();
-
-    // models LIKE 条件：每个 model/mid 生成一个 "models LIKE ?" 占位符
-    // 绑定值使用 %"model"% 格式，匹配 JSON 数组中任意位置的模型名
-    let mut model_conditions = vec!["models LIKE ?".to_string()];
-    bind_values.push(format!("%\"{}\"%", model));
-    for mid in mids_ref {
-        model_conditions.push("models LIKE ?".to_string());
-        bind_values.push(format!("%\"{}\"%", mid));
-    }
-    let model_clause = format!("(({}) OR models = '[]')", model_conditions.join(" OR "));
-
-    // exclude_aids：仅把物理渠 group_aid 推进 SQL；ha_group_* 由内存过滤/子渠逻辑处理
-    let sql_excludes: Vec<&String> = exclude_aids
+    // exclude_aids：仅过滤物理渠 group_aid；ha_group_* 由内存过滤/子渠逻辑处理
+    let sql_excludes: Vec<&str> = exclude_aids
         .iter()
         .filter(|a| !a.starts_with("ha_group_"))
+        .map(|s| s.as_str())
         .collect();
-    let exclude_clause = if sql_excludes.is_empty() {
-        String::new()
-    } else {
-        let placeholders = sql_excludes
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<&str>>()
-            .join(",");
-        format!("AND group_aid NOT IN ({})", placeholders)
-    };
 
-    let sql = format!(
-        r#"SELECT * FROM channels 
-           WHERE status = 1 
-           AND (quota_limit < 0 OR quota_used < quota_limit)
-           AND (daily_quota_limit < 0 OR (CASE WHEN COALESCE(last_reset_day, '') <> ? THEN 0 ELSE daily_quota_used END) < daily_quota_limit)
-           AND (weekly_quota_limit < 0 OR (CASE WHEN COALESCE(last_reset_week, '') <> ? THEN 0 ELSE weekly_quota_used END) < weekly_quota_limit)
-           AND (monthly_quota_limit < 0 OR (CASE WHEN COALESCE(last_reset_month, '') <> ? THEN 0 ELSE monthly_quota_used END) < monthly_quota_limit)
-           AND {}
-           {}
-           AND (user_groups LIKE ? OR user_groups LIKE ? OR user_groups = '[]')
-           ORDER BY priority DESC"#,
-        model_clause, exclude_clause
-    );
-
+    // 2. 从 5 秒短 TTL 内存缓存获取全部活跃渠道与上游配置（避免高并发下每秒数十次全表扫描冲撞 DB）
+    let all_active_channels = get_cached_active_channels(&state.db).await?;
+    let all_channel_configs = get_cached_channel_configs(&state.db).await?;
     let tz_name = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
     let (now_day, now_week, now_month) = crate::models::quota_period_keys(&tz_name);
 
-    let formatted_sql = state.db.format_query(&sql);
-    let mut query = sqlx::query_as(&formatted_sql);
-    // 绑定日/周/月额度懒重置键
-    query = query.bind(&now_day);
-    query = query.bind(&now_week);
-    query = query.bind(&now_month);
-    // 绑定 models LIKE 参数
-    for val in &bind_values {
-        query = query.bind(val);
-    }
-    // 绑定 exclude_aids 参数（仅物理 group_aid）
-    for aid in &sql_excludes {
-        query = query.bind(aid.as_str());
-    }
-    // 绑定 user_groups LIKE 参数
-    query = query.bind(format!("%\"{}\"%", user_group));
-    query = query.bind(format!("%\"{}\"%", level_id));
-    let channels: Vec<Channel> = query.fetch_all(&state.db.pool).await?;
+    let pattern_model = format!("\"{}\"", model);
+    let pattern_mids: Vec<String> = mids_ref.iter().map(|m| format!("\"{}\"", m)).collect();
+    let ug_str = format!("\"{}\"", user_group);
+    let level_str = format!("\"{}\"", level_id);
+
+    // 内存迭代过滤（耗时 < 5 微秒，0 数据库 I/O，保持 priority DESC 顺序）
+    let channels: Vec<Channel> = all_active_channels
+        .iter()
+        .filter(|c| {
+            if let Some(ref aid) = c.group_aid {
+                if sql_excludes.contains(&aid.as_str()) {
+                    return false;
+                }
+            }
+            c.has_available_quota(&now_day, &now_week, &now_month)
+                && c.matches_model(&pattern_model, &pattern_mids)
+                && c.matches_user_group(&ug_str, &level_str)
+        })
+        .cloned()
+        .collect();
 
     crate::relay_debug!(
-        "[SelectChannel] 库候选数={} 渠道id={:?}",
+        "[SelectChannel] 内存候选数={} 渠道id={:?}",
         channels.len(),
         channels.iter().map(|c| c.id).collect::<Vec<i64>>()
     );
 
-    // 预加载非 HA 渠道绑定的上游预设，过滤禁用 / 额度耗尽的预设
-    let preset_ids: Vec<i64> = channels
-        .iter()
-        .filter(|c| c.provider_type != "high_availability_group")
-        .filter_map(|c| c.preset_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    let mut unusable_presets: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    if !preset_ids.is_empty() {
-        let presets: Vec<crate::models::ChannelConfig> = sqlx::query_as(
-            &state
-                .db
-                .format_query("SELECT * FROM channel_configs WHERE id = ANY(?)"),
-        )
-        .bind(&preset_ids)
-        .fetch_all(&state.db.pool)
-        .await
-        .unwrap_or_default();
-        for p in &presets {
-            if p.status != 1 || !p.has_available_quota(&tz_name, &now_week, &now_month) {
-                unusable_presets.insert(p.id);
-            }
+    if channels.is_empty() {
+        crate::relay_debug!(
+            "[SelectChannel] 未命中 模型={} 分组={} 等级={}",
+            model,
+            user_group,
+            level_id
+        );
+        let bound = all_active_channels
+            .iter()
+            .any(|c| c.matches_model(&pattern_model, &pattern_mids));
+        if !bound && !model_in_table {
+            return Err(AppError::NotFound(format!("模型不存在: {}", model)));
         }
-        // 预设记录缺失也视为不可用
-        for pid in &preset_ids {
-            if !presets.iter().any(|p| p.id == *pid) {
-                unusable_presets.insert(*pid);
+        if !bound {
+            return Err(AppError::NotFound(format!("模型未配置渠道: {}", model)));
+        }
+        return Err(no_usable_channels(model));
+    }
+
+    // 预加载非 HA 渠道绑定的上游预设，过滤禁用 / 额度耗尽的预设（直接从内存缓存检索，0 I/O）
+    let mut unusable_presets: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for c in &channels {
+        if c.provider_type != "high_availability_group" {
+            if let Some(pid) = c.preset_id {
+                let unusable = all_channel_configs
+                    .get(&pid)
+                    .map_or(true, |p| p.status != 1 || !p.has_available_quota(&tz_name, &now_week, &now_month));
+                if unusable {
+                    unusable_presets.insert(pid);
+                }
             }
         }
     }
@@ -182,9 +254,6 @@ pub async fn select_channel(
         .into_iter()
         .filter(|c| {
             if c.provider_type == "high_availability_group" {
-                if !allow_ha {
-                    return false;
-                }
                 let group_key = format!("ha_group_{}", c.id);
                 if exclude_aids.iter().any(|a| a == &group_key) {
                     return false;
@@ -217,14 +286,7 @@ pub async fn select_channel(
     );
 
     if channels.is_empty() {
-        let err_msg = format!("No available channels found for model {}", model);
-        crate::relay_debug!(
-            "[SelectChannel] 未命中 模型={} 分组={} 等级={}",
-            model,
-            user_group,
-            level_id
-        );
-        return Err(AppError::NotFound(err_msg));
+        return Err(no_usable_channels(model));
     }
 
     // 物理渠 / HA 子渠：最高 priority 档内按 weight 比例随机分流
@@ -256,14 +318,10 @@ pub async fn select_channel(
             )));
         }
 
-        let rows: Vec<crate::models::ChannelConfig> = sqlx::query_as(
-            &state
-                .db
-                .format_query("SELECT * FROM channel_configs WHERE id = ANY(?)"),
-        )
-        .bind(&sub_channel_ids)
-        .fetch_all(&state.db.pool)
-        .await?;
+        let rows: Vec<crate::models::ChannelConfig> = sub_channel_ids
+            .iter()
+            .filter_map(|id| all_channel_configs.get(id).cloned())
+            .collect();
 
         let group_id = picked.id;
         let (sub_configs, pool) = live_ha_subs(
@@ -282,14 +340,13 @@ pub async fn select_channel(
             // 整组不可用：剔除后重选，避免误报盖住其它可用物理渠
             channels.retain(|c| c.id != group_id);
             if channels.is_empty() {
-                let err_msg = format!("No available channels found for model {}", model);
                 crate::relay_debug!("[SelectChannel] HA组 {} 子渠已耗尽", group_id);
-                return Err(AppError::NotFound(err_msg));
+                return Err(no_usable_channels(model));
             }
             continue;
         }
 
-        // 子渠：最高 priority 档；同档按 weight 比例随机（绑定序仅作 weight≤0 时的兜底顺序）
+        // 统一加权负载均衡：最高 priority 档；同档按 weight 比例随机分流（彻底杜绝普通令牌单点打爆首个子渠道）
         let highest_sub_priority = sub_configs.iter().map(|c| c.priority).max().unwrap_or(0);
         let top_subs: Vec<&_> = sub_channel_ids
             .iter()
@@ -302,10 +359,7 @@ pub async fn select_channel(
         if top_subs.is_empty() {
             channels.retain(|c| c.id != group_id);
             if channels.is_empty() {
-                return Err(AppError::NotFound(format!(
-                    "No available channels found for model {}",
-                    model
-                )));
+                return Err(no_usable_channels(model));
             }
             continue;
         }
@@ -318,15 +372,7 @@ pub async fn select_channel(
 
     // 4. Resolve preset (channel config template)
     if let Some(pid) = ch.preset_id {
-        if let Ok(Some(preset)) = sqlx::query_as::<_, crate::models::ChannelConfig>(
-            &state
-                .db
-                .format_query("SELECT * FROM channel_configs WHERE id = ?"),
-        )
-        .bind(pid)
-        .fetch_optional(&state.db.pool)
-        .await
-        {
+        if let Some(preset) = all_channel_configs.get(&pid) {
             if preset.status != 1 {
                 crate::relay_debug!("[SelectChannel] 预设已禁用 渠道={} 预设id={}", ch.id, pid);
                 return Err(AppError::NotFound(format!(
@@ -342,7 +388,7 @@ pub async fn select_channel(
                 ch.base_url,
                 preset.base_url
             );
-            apply_config_base(&mut ch, &preset);
+            apply_config_base(&mut ch, preset);
         } else {
             crate::relay_debug!(
                 "[SelectChannel] 预设缺失 渠道={} 子渠标识={:?} 预设id={}",
@@ -368,6 +414,10 @@ pub async fn select_channel(
     );
 
     Ok(ch)
+}
+
+fn no_usable_channels(model: &str) -> AppError {
+    AppError::NotFound(format!("模型无可用渠道: {}", model))
 }
 
 fn live_ha_subs(
@@ -687,11 +737,16 @@ pub(crate) async fn apply_volcengine_credential(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                ch.base_url = k
+                let bu = k
                     .get("base_url")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("https://mediakit.cn-beijing.volces.com")
-                    .to_string();
+                    .unwrap_or("")
+                    .trim();
+                ch.base_url = if bu.is_empty() {
+                    "https://mediakit.cn-beijing.volces.com".to_string()
+                } else {
+                    bu.to_string()
+                };
             }
         }
     }

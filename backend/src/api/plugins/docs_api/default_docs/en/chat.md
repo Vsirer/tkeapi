@@ -1,6 +1,6 @@
 # Chat (OpenAI Compatible)
 
-Use `POST /v1/chat/completions`. Swap `model` for GPT / Claude / DeepSeek / Gemini (capabilities depend on the channel).
+OpenAI-compatible: `POST /v1/chat/completions`. Mainstream LLM gateway.
 
 * **Path**: `https://{{domain}}/v1/chat/completions`
 * **Auth**: `Authorization: Bearer sk-your_token_here`

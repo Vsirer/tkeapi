@@ -1,6 +1,6 @@
 # 聊天 Anthropic（原生 Messages）
 
-走 Anthropic 官方兼容路径 `POST /v1/messages`，适合已使用 Anthropic SDK / 原生协议的业务。
+Anthropic 兼容路径：`POST /v1/messages`，适合已接入 Anthropic SDK 或原生协议的业务。[Messages API](https://docs.anthropic.com/en/api/messages)
 
 * **路径**: `https://{{domain}}/v1/messages`
 * **鉴权**: `x-api-key: sk-your_token_here`

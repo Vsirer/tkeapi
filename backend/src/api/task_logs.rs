@@ -1,14 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::api::logs::{
-    deferred_join_page_sql, fetch_logs_count, push_created_at_bound, redact_log_match_ids_for_user,
-    resolve_user_filter, user_allow_view_log_details, SQL_BILLING_SETTLE_FLAGS,
-    SQL_VISION_ACTION_FILTER,
+    deferred_join_page_sql, fetch_logs_count, push_created_at_bound, push_log_search_keyword,
+    push_log_status_filter, redact_log_match_ids_for_user, request_timedisplay,
+    resolve_user_filter, user_allow_view_log_details, LOGS_MODEL_MID_JOIN,
+    SQL_BILLING_SETTLE_FLAGS, SQL_VISION_ACTION_FILTER,
 };
 use crate::auth;
 use crate::error::{AppError, AppResult};
@@ -16,7 +17,7 @@ use crate::models::{TaskLog, TaskLogListResponse, TaskLogQuery};
 use crate::relay::task::sync_single_task;
 use crate::time_system::DbTs;
 use crate::AppState;
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::{
     extract::{Extension, Query, State},
     response::{IntoResponse, Response},
@@ -25,9 +26,17 @@ use axum::{
 use std::sync::Arc;
 
 /// 构建任务日志公共 WHERE（仅 logs 列，COUNT 无需 JOIN）
-fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String, Vec<String>) {
-    let mut where_clause = " WHERE l.status_code = 200".to_string();
+fn build_task_log_where(
+    claims: &auth::Claims,
+    query: &TaskLogQuery,
+    tz: chrono_tz::Tz,
+) -> (String, Vec<String>) {
+    let mut where_clause = " WHERE (l.status_code = 200 OR (l.task_id IS NOT NULL AND l.task_id <> '') OR l.is_completed = 0)".to_string();
     let mut binds: Vec<String> = Vec::new();
+
+    if let Some(ref st) = query.status {
+        push_log_status_filter(&mut where_clause, st);
+    }
 
     if claims.role != "admin" {
         where_clause.push_str(" AND l.user_id = ?");
@@ -40,11 +49,13 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
     if let Some(ref at) = query.action_type {
         match at.as_str() {
             "chat" => where_clause.push_str(" AND l.action_type = '聊天'"),
-            "image" => where_clause.push_str(" AND l.action_type = '图片'"),
+            "image" | "图片" => {
+                where_clause.push_str(" AND l.action_type = ANY(ARRAY['图片','图像增强'])")
+            }
             "video" | "视频" => {
                 where_clause.push_str(" AND l.action_type = ANY(ARRAY['视频','视频增强'])")
             }
-            "vision" | "视觉模型" | "视觉" => where_clause.push_str(SQL_VISION_ACTION_FILTER),
+            "vision" | "视觉" => where_clause.push_str(SQL_VISION_ACTION_FILTER),
             "other" => where_clause.push_str(" AND l.action_type = '其它'"),
             v if !v.is_empty() => {
                 where_clause.push_str(" AND l.action_type = ?");
@@ -61,10 +72,10 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
     }
 
     if let Some(ref s) = query.start_date {
-        push_created_at_bound(&mut where_clause, &mut binds, s, false);
+        push_created_at_bound(&mut where_clause, &mut binds, s, false, tz);
     }
     if let Some(ref e) = query.end_date {
-        push_created_at_bound(&mut where_clause, &mut binds, e, true);
+        push_created_at_bound(&mut where_clause, &mut binds, e, true, tz);
     }
 
     if let Some(ref log_id) = query.log_id {
@@ -91,15 +102,7 @@ fn build_task_log_where(claims: &auth::Claims, query: &TaskLogQuery) -> (String,
     }
 
     if let Some(ref keyword) = query.search_keyword {
-        if !keyword.is_empty() {
-            where_clause.push_str(
-                " AND (l.log_id = ? OR l.task_id = ? OR EXISTS (SELECT 1 FROM channels xc WHERE xc.id = l.channel_id AND xc.group_aid = ?) OR EXISTS (SELECT 1 FROM api_tokens xt WHERE xt.id = l.token_id AND xt.kid = ?))",
-            );
-            binds.push(keyword.clone());
-            binds.push(keyword.clone());
-            binds.push(keyword.clone());
-            binds.push(keyword.clone());
-        }
+        push_log_search_keyword(&mut where_clause, &mut binds, keyword);
     }
 
     (where_clause, binds)
@@ -129,6 +132,7 @@ fn preview_urls_from_response(raw: &str) -> Vec<String> {
 /// 任务日志列表 — 基于 logs 表；仅成功(200)；管理员看全部，普通用户只看自己的
 pub async fn list_task_logs(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(claims): Extension<auth::Claims>,
     Query(query): Query<TaskLogQuery>,
 ) -> AppResult<Json<TaskLogListResponse>> {
@@ -143,7 +147,8 @@ pub async fn list_task_logs(
         }
     }
 
-    let (where_clause, binds) = build_task_log_where(&claims, &q);
+    let tz = request_timedisplay(&state.db, &claims, &headers).await?;
+    let (where_clause, binds) = build_task_log_where(&claims, &q, tz);
 
     // allow_details 仅告知前端可否展开完整详情；媒体预览走下方 preview_urls，不依赖该开关
     let allow_details = if claims.role == "admin" {
@@ -157,15 +162,15 @@ pub async fn list_task_logs(
         &format!(
             "SELECT l.id, l.log_id, l.user_id, l.channel_id, l.model, l.endpoint, \
              l.prompt_tokens, l.completion_tokens, l.cached_tokens, l.cost, l.latency_ms, l.status_code, \
-             l.error_message, \
-             CASE WHEN l.action_type IN ('图片','视频','视频增强') THEN l.response_content ELSE NULL END AS response_content, \
+             l.error_message, l.upstream_request_id, \
+             CASE WHEN l.action_type IN ('图片','视频','视频增强','图像增强') THEN l.response_content ELSE NULL END AS response_content, \
              {SQL_BILLING_SETTLE_FLAGS}, \
              c.name AS channel_name, c.group_aid AS channel_group_aid, \
              COALESCE(u.nickname, u.username) AS user_nickname, u.uid AS user_uid, \
              NULLIF(btrim(COALESCE(u.admin_remark, '')), '') AS user_admin_remark, \
-             l.task_id, l.action_type, cc.yid AS yid, l.billing_pid, l.forward_eid, l.is_completed, l.is_ha, l.created_at"
+             l.task_id, l.action_type, cc.yid AS yid, md.mid AS mid, l.billing_pid, l.forward_eid, l.is_completed, l.is_ha, l.has_video, l.created_at"
         ),
-        TASK_LIST_JOINS,
+        &format!("{TASK_LIST_JOINS}{LOGS_MODEL_MID_JOIN}"),
         &where_clause,
         per_page,
         offset,
@@ -200,6 +205,7 @@ pub async fn list_task_logs(
             log.channel_name = None;
             log.channel_group_aid = None;
             log.user_admin_remark = None;
+            log.upstream_request_id = None;
             redact_log_match_ids_for_user(&mut log.billing_pid, &mut log.forward_eid, &mut log.yid);
         }
     }
@@ -269,6 +275,7 @@ struct ExportRow {
 
 pub async fn export_task_logs(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(claims): Extension<auth::Claims>,
     Query(query): Query<TaskLogQuery>,
 ) -> Result<Response, AppError> {
@@ -281,7 +288,8 @@ pub async fn export_task_logs(
         q.user_id = Some(resolve_user_filter(&state.db, uid).await?);
     }
 
-    let (where_clause, binds) = build_task_log_where(&claims, &q);
+    let tz = request_timedisplay(&state.db, &claims, &headers).await?;
+    let (where_clause, binds) = build_task_log_where(&claims, &q, tz);
     let total = fetch_logs_count(&state.db, &where_clause, &binds).await?;
 
     if total > TASK_EXPORT_LIMIT {
@@ -315,7 +323,7 @@ pub async fn export_task_logs(
     for r in &rows {
         let formatted_time = crate::api::logs::format_db_time(&r.created_at);
         csv.push_str(&format!(
-            "{},{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},{:.6},{},{},\"{}\",\"{}\"\n",
+            "{},{},\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},{},{},{},\"{}\",\"{}\"\n",
             r.id,
             r.user_id,
             r.user_uid.as_deref().unwrap_or("-"),
@@ -326,7 +334,7 @@ pub async fn export_task_logs(
             r.prompt_tokens,
             r.completion_tokens,
             r.cached_tokens,
-            r.cost,
+            crate::money::format_clean_money(r.cost),
             r.latency_ms,
             r.status_code,
             r.billing_detail.as_deref().unwrap_or("").replace('"', "\"\""),
@@ -445,27 +453,29 @@ pub async fn cancel_task_log(
         return Err(AppError::UpstreamError(detail));
     }
 
-    let log_data: Option<(f64, f64, Option<i64>, Option<i64>)> =
+    let log_data: Option<(f64, f64, Option<i64>, Option<i64>, Option<i32>)> =
         sqlx::query_as(&state.db.format_query(
-            "SELECT cost, pre_deduct_gift, token_id, channel_id FROM logs WHERE id = ?",
+            "SELECT cost, pre_deduct_gift, token_id, channel_id, channel_config_id FROM logs WHERE id = ?",
         ))
         .bind(id)
         .fetch_optional(&state.db.pool)
         .await
         .unwrap_or(None);
 
-    let (pre_deduction, pre_deduct_gift, token_id_opt, channel_id_opt) =
-        log_data.unwrap_or((0.0, 0.0, None, None));
+    let (pre_deduction, pre_deduct_gift, token_id_opt, channel_id_opt, channel_config_id_opt) =
+        log_data.unwrap_or((0.0, 0.0, None, None, None));
     crate::relay::task::execute_refund_tx(
         &state,
         id,
         &user_id,
         token_id_opt,
         channel_id_opt,
+        channel_config_id_opt,
         pre_deduction,
         pre_deduct_gift,
         "用户主动取消任务，预扣费已退回",
         499,
+        Some("用户主动取消任务"),
     )
     .await;
     tracing::info!(

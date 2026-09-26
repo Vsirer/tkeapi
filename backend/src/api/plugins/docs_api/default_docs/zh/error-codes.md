@@ -38,7 +38,7 @@
 | **401** | 鉴权失败 | `Missing Authorization Header` / `Invalid Bearer Token Format` / `Invalid API Key` |
 | **402** | **账户可用余额不足** | `账户余额不足…` / `余额不足` |
 | **403** | 令牌/IP/模型白名单等权限不足 | `Token disabled` / `Model xxx not allowed for this token` / `今日额度已耗尽` / `IP x.x.x.x not whitelisted` |
-| **404** | 无可用渠道，或上游资源不存在 | `No available channels found for model xxx`；文案含 `status 404`（如输入图下载失败） |
+| **404** | 模型不存在、未配置渠道、无可用渠道，或上游资源不存在 | `模型不存在: xxx` / `模型未配置渠道: xxx` / `模型无可用渠道: xxx`；文案含 `status 404`（如输入图下载失败） |
 | **429** | **频控或在途任务上限** | `RPS limit exceeded` / `RPM limit exceeded` / `当前余额较低，任务过多，请充值` |
 | **500** | 网关内部异常 | `Internal server error` |
 | **502** | 上游不可用 / 连接失败 | `Upstream request failed` 或上游原文 |
@@ -75,10 +75,10 @@
   - 创作中心专用令牌在非 Playground 环境调用
 * **排查**：检查令牌开关、模型/IP 白名单与额度。内容审核/版权拦截是 **400**，不是 403。
 
-### 404 Not Found（无可用渠道 / 资源不存在）
+### 404 Not Found（模型 / 渠道 / 资源不存在）
 
-* **诱因**：用户分组/等级下该模型没有启用且可用的上游（含 HA 子渠耗尽）；或上游明确返回 `status 404`（如输入图 URL 无法下载）。
-* **排查**：确认模型 ID 与渠道；检查请求里的图片/视频 URL 是否可访问。
+* **诱因**：`模型不存在`（模型表无此 ID）；`模型未配置渠道`（模型已建但渠道未绑定）；`模型无可用渠道`（已绑定但当前分组/额度/状态/HA 均不可用）；或上游明确返回 `status 404`（如输入图 URL 无法下载）。
+* **排查**：先看错误文案是哪一种，再核对模型 ID、渠道绑定与用户分组；检查请求里的图片/视频 URL 是否可访问。
 
 ### 429 Too Many Requests（频控 / 在途限制）
 

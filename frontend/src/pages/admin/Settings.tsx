@@ -1,12 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Card, Form, Input, Button, InputNumber, message, Typography, Space, Switch, Radio, Tabs, Select, Tag, Alert, Table, Spin, Upload, Modal, DatePicker, Divider, Descriptions, Row, Col } from 'antd';
+import { Card, Form, Input, Button, InputNumber, message, Typography, Space, Switch, Radio, Tabs, Select, Tag, Alert, Table, Spin, Upload, Modal, DatePicker, TimePicker, Divider, Descriptions, Row, Col, Popconfirm } from 'antd';
 import { CloudServerOutlined, ApiOutlined, DatabaseOutlined, UploadOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import * as Icons from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -186,6 +186,7 @@ const Settings: React.FC = () => {
   }, [rawTab, rawSubTab, tab]);
   const [syncDates, setSyncDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null]>([null, null]);
   const [syncingStats, setSyncingStats] = useState(false);
+  const [maintaining, setMaintaining] = useState(false);
   const [dbVerifying, setDbVerifying] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetPhrase, setResetPhrase] = useState('');
@@ -218,6 +219,18 @@ const Settings: React.FC = () => {
       console.error(e);
     } finally {
       setSyncingStats(false);
+    }
+  };
+
+  const handleTriggerMaintenance = async () => {
+    try {
+      setMaintaining(true);
+      const res = await (request.post('/settings/cron/trigger-maintenance') as any);
+      message.success(res?.message || '系统日常维护任务已在后台触发执行');
+    } catch (err: any) {
+      message.error(err?.message || '触发系统日常维护任务失败');
+    } finally {
+      setMaintaining(false);
     }
   };
 
@@ -408,10 +421,14 @@ const Settings: React.FC = () => {
       form.setFieldsValue({
         ...site,
         copyright: (site?.copyright !== undefined && site?.copyright !== null && site?.copyright !== '') ? site.copyright : '© 2026 TkeAPI. All rights reserved.',
-        default_timezone: site?.default_timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+        default_timezone: site?.default_timezone || 'Asia/Shanghai',
         admin_path: site?.admin_path || 'admin1688',
         ip_blacklist_enabled: site?.ip_blacklist_enabled === true,
         ip_blacklist_text: (site?.ip_blacklist || []).join('\n'),
+        ip_whitelist_enabled: site?.ip_whitelist_enabled === true || !(site?.ip_whitelist && site.ip_whitelist.length > 0),
+        ip_whitelist_text: (site?.ip_whitelist && site.ip_whitelist.length > 0)
+          ? site.ip_whitelist.join('\n')
+          : '10.0.0.0/24\n192.168.1.0/24\n172.16.0.0/24',
         login_style: site?.login_style || 'split',
         login_quote: site?.login_quote || '',
         show_timezone: site?.show_timezone !== false,
@@ -422,14 +439,32 @@ const Settings: React.FC = () => {
           require_bind_email: registration?.require_bind_email === true,
           bind_enforcement: registration?.bind_enforcement || 'all',
           enable_user_kyc: registration?.enable_user_kyc === true,
+          max_accounts_per_email: registration?.max_accounts_per_email || 5,
+          max_accounts_per_mobile: registration?.max_accounts_per_mobile || 5,
         },
         smtp,
         database: loadedDatabase,
         storage: {
           ...(storage || {}),
-          default_provider: storage?.default_provider || 'tos',
+          default_provider: storage?.default_provider ?? 'tos',
         },
-        log_cleanup: log_cleanup || { log_retention_days: 30, log_row_retention_days: 0 },
+        log_cleanup: {
+          log_retention_days: log_cleanup?.log_retention_days ?? 30,
+          log_row_retention_days: log_cleanup?.log_row_retention_days ?? 0,
+          error_log_retention_days: log_cleanup?.error_log_retention_days ?? 0,
+          daily_stats_hour: log_cleanup?.daily_stats_hour ?? 1,
+          daily_stats_minute: log_cleanup?.daily_stats_minute ?? 0,
+          clean_hour: log_cleanup?.clean_hour ?? 2,
+          clean_minute: log_cleanup?.clean_minute ?? 30,
+          archive_hour: log_cleanup?.archive_hour ?? 3,
+          archive_minute: log_cleanup?.archive_minute ?? 30,
+          error_clean_hour: log_cleanup?.error_clean_hour ?? 4,
+          error_clean_minute: log_cleanup?.error_clean_minute ?? 0,
+          storage_clean_hour: log_cleanup?.storage_clean_hour ?? 4,
+          storage_clean_minute: log_cleanup?.storage_clean_minute ?? 30,
+          maintenance_hour: log_cleanup?.maintenance_hour ?? 3,
+          maintenance_minute: log_cleanup?.maintenance_minute ?? 0,
+        },
         agreement: loadedAgreement,
         relay: {
           manual_poll_upstream: relay?.manual_poll_upstream !== false,
@@ -471,12 +506,17 @@ const Settings: React.FC = () => {
           default_language: values.default_language || 'zh',
           enable_theme_toggle: values.enable_theme_toggle !== false,
           default_theme: values.default_theme || 'dark',
-          default_timezone: values.default_timezone || settings?.site?.default_timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          default_timezone: values.default_timezone || settings?.site?.default_timezone || 'Asia/Shanghai',
           show_timezone: values.show_timezone !== false,
           copyright: values.copyright || '',
           admin_path: values.admin_path || 'admin1688',
           ip_blacklist_enabled: values.ip_blacklist_enabled === true,
           ip_blacklist: (values.ip_blacklist_text || '')
+            .split('\n')
+            .map((s: string) => s.trim())
+            .filter(Boolean),
+          ip_whitelist_enabled: values.ip_whitelist_enabled === true,
+          ip_whitelist: (values.ip_whitelist_text || '')
             .split('\n')
             .map((s: string) => s.trim())
             .filter(Boolean),
@@ -494,6 +534,8 @@ const Settings: React.FC = () => {
             ? values.registration.bind_enforcement
             : 'all',
           enable_user_kyc: values.registration?.enable_user_kyc === true,
+          max_accounts_per_email: Math.min(99, Math.max(1, Number(values.registration?.max_accounts_per_email) || 5)),
+          max_accounts_per_mobile: Math.min(99, Math.max(1, Number(values.registration?.max_accounts_per_mobile) || 5)),
         };
         payload.agreement = {
           ...settings?.agreement,
@@ -760,39 +802,6 @@ const Settings: React.FC = () => {
         <Input placeholder="admin1688" />
       </Form.Item>
 
-      <Divider style={{ margin: '16px 0 12px' }}>注册 IP 黑名单拦截</Divider>
-
-      <Form.Item
-        label="开启注册 IP 黑名单"
-        name="ip_blacklist_enabled"
-        valuePropName="checked"
-        extra={<Text type="secondary">开启后黑名单内的 IP 禁止发送验证码和注册</Text>}
-      >
-        <Switch />
-      </Form.Item>
-
-      <Form.Item
-        noStyle
-        shouldUpdate={(prevValues, currentValues) => prevValues.ip_blacklist_enabled !== currentValues.ip_blacklist_enabled}
-      >
-        {({ getFieldValue }) => {
-          const enabled = getFieldValue('ip_blacklist_enabled');
-          if (!enabled) return null;
-          return (
-            <Form.Item
-              label="黑名单 IP / CIDR 网段列表"
-              name="ip_blacklist_text"
-              extra={<Text type="secondary">每行一个 IP 或 CIDR 网段，例如：192.168.1.100 或 10.0.0.0/8</Text>}
-            >
-              <Input.TextArea
-                rows={4}
-                placeholder={'192.168.1.100\n10.0.0.0/8'}
-              />
-            </Form.Item>
-          );
-        }}
-      </Form.Item>
-
       <Divider style={{ margin: '16px 0 12px' }}>用户实名认证 (KYC)</Divider>
       <Form.Item
         label="开启用户实名"
@@ -856,6 +865,66 @@ const Settings: React.FC = () => {
       </Form.Item>
 
       <Divider style={{ margin: '16px 0 12px' }}>安全策略</Divider>
+
+      <Form.Item
+        label="开启注册 IP 黑名单"
+        name="ip_blacklist_enabled"
+        valuePropName="checked"
+        extra={<Text type="secondary">开启后黑名单内的 IP 禁止发送验证码和注册</Text>}
+      >
+        <Switch />
+      </Form.Item>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => prevValues.ip_blacklist_enabled !== currentValues.ip_blacklist_enabled}
+      >
+        {({ getFieldValue }) => {
+          const enabled = getFieldValue('ip_blacklist_enabled');
+          if (!enabled) return null;
+          return (
+            <Form.Item
+              label="黑名单 IP / CIDR 网段列表"
+              name="ip_blacklist_text"
+              extra={<Text type="secondary">每行一个 IP 或 CIDR 网段，例如：192.168.1.100 或 10.0.0.0/8</Text>}
+            >
+              <Input.TextArea
+                rows={4}
+                placeholder={'192.168.1.100\n10.0.0.0/8'}
+              />
+            </Form.Item>
+          );
+        }}
+      </Form.Item>
+
+      <Form.Item
+        label="开启注册 IP 白名单"
+        name="ip_whitelist_enabled"
+        valuePropName="checked"
+        extra={<Text type="secondary">默认开启。10.0.0.0/24、192.168.1.0/24、172.16.0.0/24 不受注册黑名单和当日注册次数限制。与黑名单同时命中时，以白名单为准</Text>}
+      >
+        <Switch />
+      </Form.Item>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => prevValues.ip_whitelist_enabled !== currentValues.ip_whitelist_enabled}
+      >
+        {({ getFieldValue }) => {
+          const enabled = getFieldValue('ip_whitelist_enabled');
+          if (!enabled) return null;
+          return (
+            <Form.Item
+              label="白名单 IP / CIDR 网段列表"
+              name="ip_whitelist_text"
+              extra={<Text type="secondary">每行一个 IP 或 CIDR 网段。默认是这三段的最后一位：10.0.0.0/24、192.168.1.0/24、172.16.0.0/24</Text>}
+            >
+              <Input.TextArea
+                rows={4}
+                placeholder={'10.0.0.0/24\n192.168.1.0/24\n172.16.0.0/24'}
+              />
+            </Form.Item>
+          );
+        }}
+      </Form.Item>
 
       <Form.Item label={t('settings.ip_rate_limit_enabled')} name={['registration', 'ip_rate_limit_enabled']} valuePropName="checked"
         extra={<Text type="secondary">限制同一 IP 每天注册次数（手机号注册不受此限）</Text>}>
@@ -1058,6 +1127,20 @@ const Settings: React.FC = () => {
         <Switch />
       </Form.Item>
       <Form.Item label={t('settings.enable_password_recovery')} name={['registration', 'enable_password_recovery']} valuePropName="checked"><Switch /></Form.Item>
+      <Form.Item
+        label={t('settings.max_accounts_per_email')}
+        name={['registration', 'max_accounts_per_email']}
+        extra={<Text type="secondary">{t('settings.max_accounts_per_contact_hint')}</Text>}
+      >
+        <InputNumber min={1} max={99} precision={0} style={{ width: 160 }} />
+      </Form.Item>
+      <Form.Item
+        label={t('settings.max_accounts_per_mobile')}
+        name={['registration', 'max_accounts_per_mobile']}
+        extra={<Text type="secondary">{t('settings.max_accounts_per_contact_hint')}</Text>}
+      >
+        <InputNumber min={1} max={99} precision={0} style={{ width: 160 }} />
+      </Form.Item>
     </div>
   );
 
@@ -1403,17 +1486,52 @@ const Settings: React.FC = () => {
     </div>
   );
 
+  const ScheduledTimePicker: React.FC<{
+    hourField: string;
+    minuteField: string;
+  }> = ({ hourField, minuteField }) => {
+    const hour = Form.useWatch(['log_cleanup', hourField], form) ?? 0;
+    const minute = Form.useWatch(['log_cleanup', minuteField], form) ?? 0;
+    const timeVal = dayjs().hour(hour).minute(minute).second(0);
+
+    return (
+      <>
+        <TimePicker
+          format="HH:mm"
+          allowClear={false}
+          style={{ width: 140 }}
+          value={timeVal}
+          onChange={(t) => {
+            if (t) {
+              form.setFieldValue(['log_cleanup', hourField], t.hour());
+              form.setFieldValue(['log_cleanup', minuteField], t.minute());
+            }
+          }}
+        />
+        <Form.Item name={['log_cleanup', hourField]} hidden noStyle />
+        <Form.Item name={['log_cleanup', minuteField]} hidden noStyle />
+      </>
+    );
+  };
+
   const dataCleanupContent = (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 760 }}>
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 14 }}
-        message="日志清理只清空请求/响应大字段；行归档将超期行迁入 logs_archive。转换素材缓存保留天数与清理请在各素材插件页面配置。每日维护在站点时区 03:00 执行（默认北京凌晨 3 点）。"
+        message="日志清理只清空请求/响应大字段；行归档将超期行迁入 logs_archive；错误日志清理彻底删除超期已结案的错误记录（排除进行中 0 与正常 200 记录）。定时任务执行时间与巡检周期可在下方按业务高峰期自定义与错峰调度。"
       />
 
+      <div style={{ marginBottom: 12 }}>
+        <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 4 }}>数据与日志保留策略</Text>
+        <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+          控制日志大字段、归档行以及错误记录的保存期限，0 代表永不清理。
+        </Text>
+      </div>
+
       <Row gutter={16}>
-        <Col span={12}>
+        <Col xs={24} sm={8}>
           <Form.Item
             label="日志详情保留天数"
             name={['log_cleanup', 'log_retention_days']}
@@ -1422,7 +1540,7 @@ const Settings: React.FC = () => {
             <InputNumber min={0} max={3650} style={{ width: '100%' }} addonAfter="天" placeholder="30" />
           </Form.Item>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={8}>
           <Form.Item
             label="日志行归档天数"
             name={['log_cleanup', 'log_row_retention_days']}
@@ -1431,7 +1549,83 @@ const Settings: React.FC = () => {
             <InputNumber min={0} max={3650} style={{ width: '100%' }} addonAfter="天" placeholder="0" />
           </Form.Item>
         </Col>
+        <Col xs={24} sm={8}>
+          <Form.Item
+            label="错误日志保留天数"
+            name={['log_cleanup', 'error_log_retention_days']}
+            extra={<Text type="secondary">0 永不清理，非 200/0 且已结案</Text>}
+          >
+            <InputNumber min={0} max={3650} style={{ width: '100%' }} addonAfter="天" placeholder="0" />
+          </Form.Item>
+        </Col>
       </Row>
+
+      <Divider style={{ margin: '14px 0 16px' }} />
+
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <div>
+            <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 2 }}>定时任务错峰调度与运维</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              支持按业务高峰期自定义任务触发时间与周期，保存后即刻热生效，无需重启服务。
+            </Text>
+          </div>
+          <Popconfirm
+            title="立即执行系统维护？"
+            description="将立即在后台异步执行一次全量定时任务维护（用量统计、日志清理、错误清理、冷行归档及临时存储清理）。"
+            onConfirm={handleTriggerMaintenance}
+            okText="确定执行"
+            cancelText="取消"
+          >
+            <Button size="small" loading={maintaining}>
+              立即执行一次系统维护
+            </Button>
+          </Popconfirm>
+        </div>
+
+        <Row gutter={[16, 16]}>
+          <Col xs={24} sm={12}>
+            <Form.Item
+              label="每日用量增量统计时间"
+              extra={<Text type="secondary">基于系统时区执行，默认 01:00（自动增量同步汇总前3天数据）</Text>}
+            >
+              <ScheduledTimePicker hourField="daily_stats_hour" minuteField="daily_stats_minute" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item
+              label="日志详情大字段清理时间"
+              extra={<Text type="secondary">基于系统时区执行，默认 02:30（清空超期日志请求/响应大字段）</Text>}
+            >
+              <ScheduledTimePicker hourField="clean_hour" minuteField="clean_minute" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item
+              label="历史日志行冷归档时间"
+              extra={<Text type="secondary">基于系统时区执行，建议晚于用量统计（默认 03:30，热表超期旧日志安全迁入冷表）</Text>}
+            >
+              <ScheduledTimePicker hourField="archive_hour" minuteField="archive_minute" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item
+              label="超期错误日志清理时间"
+              extra={<Text type="secondary">基于系统时区执行，默认 04:00（彻底删除已结案超期非200错误）</Text>}
+            >
+              <ScheduledTimePicker hourField="error_clean_hour" minuteField="error_clean_minute" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} sm={12}>
+            <Form.Item
+              label="临时存储与插件日志清理时间"
+              extra={<Text type="secondary">基于系统时区执行，默认 04:30（清理过期对象存储临时文件与插件日志）</Text>}
+            >
+              <ScheduledTimePicker hourField="storage_clean_hour" minuteField="storage_clean_minute" />
+            </Form.Item>
+          </Col>
+        </Row>
+      </div>
 
       <Divider style={{ margin: '14px 0 16px' }} />
 
@@ -1623,8 +1817,8 @@ const Settings: React.FC = () => {
             navigate(`/${adminPath}/settings?tab=database&subtab=${k}`, { replace: true });
           }} items={[
             { key: 'db', label: '数据库设置', children: dbSettingsContent },
-            { key: 'storage', label: '存储设置', children: storageSettingsContent },
-            { key: 'cleanup', label: '数据清理', children: dataCleanupContent },
+            { key: 'storage', label: '对象存储设置', children: storageSettingsContent },
+            { key: 'cleanup', label: '数据清理与定时任务', children: dataCleanupContent },
           ]} />
         )}
 

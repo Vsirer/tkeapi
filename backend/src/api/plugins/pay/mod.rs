@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::error::{AppError, AppResult};
@@ -20,7 +20,6 @@ mod payment;
 
 use payment::alipay::AlipayClient;
 use payment::allinpay::AllinpayClient;
-use payment::bonuspay::BonuspayClient;
 use payment::hyperbc::HyperbcClient;
 use payment::stripe::StripeClient;
 use payment::wechat::WechatClient;
@@ -34,10 +33,6 @@ use uuid::Uuid;
 pub struct CreateOrderReq {
     pub amount: f64,
     pub payment_method: String,
-    /// BonusPay: 币种 USDT / USDC
-    pub asset_code: Option<String>,
-    /// BonusPay: 网络 TRON / ETH / POLYGON
-    pub network: Option<String>,
     /// 是否为移动端支付请求 (用于部分聚合支付通道多端跳转或扫码的自适应)
     #[serde(default)]
     pub is_mobile: Option<bool>,
@@ -57,20 +52,15 @@ pub async fn create_order(
     headers: axum::http::HeaderMap,
     Json(payload): Json<CreateOrderReq>,
 ) -> AppResult<Json<CreateOrderResp>> {
-    if payload.payment_method != "bonuspay" {
-        let min_amount = crate::api::settings::get_currency_settings(&state)
-            .await
-            .min_recharge_amount;
-
-        if min_amount > 0.0 && payload.amount < min_amount {
-            return Err(AppError::BadRequest(format!(
-                "充值金额不能小于 {}",
-                min_amount
-            )));
-        }
-        if payload.amount < 0.01 {
-            return Err(AppError::BadRequest("金额必须大于或等于 0.01".to_string()));
-        }
+    let s = crate::api::settings::get_currency_settings(&state).await;
+    if s.min_recharge_amount > 0.0 && payload.amount < s.min_recharge_amount {
+        return Err(AppError::BadRequest(format!("充值金额不能小于 {}", s.min_recharge_amount)));
+    }
+    if s.max_recharge_amount > 0.0 && payload.amount > s.max_recharge_amount {
+        return Err(AppError::BadRequest(format!("充值金额不能大于 {}", s.max_recharge_amount)));
+    }
+    if payload.amount < 0.01 {
+        return Err(AppError::BadRequest("金额必须大于或等于 0.01".to_string()));
     }
 
     // 检查用户是否被禁止在线支付（pay_enabled 为 0 表示禁止支付，1 表示允许支付）
@@ -97,13 +87,27 @@ pub async fn create_order(
     // 回调基地址推断：优先级 PUBLIC_API_URL env > Origin header > Host header
     let base_notify_url = crate::relay::vendor_callback::infer_base_url(&headers);
 
+    // 前端跳转基地址：优先 PUBLIC_FRONTEND_URL env，自动感知 Origin 头，兜底使用 base_notify_url
+    let frontend_base_url = std::env::var("PUBLIC_FRONTEND_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            headers
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .filter(|s| !s.is_empty() && *s != "null")
+                .map(|s| s.trim_end_matches('/').to_string())
+        })
+        .unwrap_or_else(|| base_notify_url.clone());
+
     tracing::info!(
-        "[支付] 用户 {} 发起充值 {:.2} 元, 方式: {}, 订单号: {}, 回调基地址: {}",
+        "[支付] 用户 {} 发起充值 {:.2} 元, 方式: {}, 订单号: {}, 回调基地址: {}, 前端基地址: {}",
         claims.sub,
         payload.amount,
         payload.payment_method,
         out_trade_no,
-        base_notify_url
+        base_notify_url,
+        frontend_base_url
     );
 
     let payment_url: String;
@@ -150,9 +154,7 @@ pub async fn create_order(
 
         let alipay_client = AlipayClient::new(alipay_config);
         let notify_url = format!("{}/api/v1/finance/pay/notify/alipay", base_notify_url);
-        let return_url =
-            std::env::var("PUBLIC_FRONTEND_URL").unwrap_or_else(|_| base_notify_url.clone());
-        let return_url = format!("{}/wallet", return_url);
+        let return_url = format!("{}/wallet", frontend_base_url);
         tracing::info!("[支付] 支付宝回调地址: {}", notify_url);
         payment_url = alipay_client.generate_page_pay_url(
             &out_trade_no,
@@ -177,10 +179,8 @@ pub async fn create_order(
             return Err(AppError::BadRequest("Stripe 支付暂未开启".to_string()));
         }
 
-        let return_url =
-            std::env::var("PUBLIC_FRONTEND_URL").unwrap_or_else(|_| base_notify_url.clone());
-        let success_url = format!("{}/wallet?payment=success", return_url);
-        let cancel_url = format!("{}/wallet?payment=cancelled", return_url);
+        let success_url = format!("{}/wallet?payment=success", frontend_base_url);
+        let cancel_url = format!("{}/wallet?payment=cancelled", frontend_base_url);
 
         // 从全局货币设置读取货币代码
         let currency = crate::api::settings::get_currency_settings(&state)
@@ -203,57 +203,7 @@ pub async fn create_order(
             .map_err(|e| AppError::UpstreamError(e.to_string()))?;
         tracing::info!("[支付] Stripe session_id: {}", session_id);
         payment_url = session_url;
-    } else if payload.payment_method == "bonuspay" {
-        let bonuspay_setting: Option<String> = sqlx::query_scalar(
-            &state
-                .db
-                .format_query("SELECT value FROM settings WHERE key = 'payment_bonuspay'"),
-        )
-        .fetch_optional(&state.db.pool)
-        .await?;
-        let bonuspay_config: crate::models::PaymentBonuspaySettings =
-            serde_json::from_str(&bonuspay_setting.unwrap_or_default())
-                .map_err(|_| AppError::BadRequest("BonusPay 未配置".to_string()))?;
-
-        if !bonuspay_config.enabled {
-            return Err(AppError::BadRequest("BonusPay 支付暂未开启".to_string()));
-        }
-
-        let bonuspay_client = BonuspayClient::new(bonuspay_config);
-        // Crypto TOPUP: 用户ID作为 customerId，前端选择币种和网络
-        let asset_code = payload.asset_code.as_deref().unwrap_or("USDT");
-        let network = payload.network.as_deref().unwrap_or("TRON");
-        // 校验参数
-        if !matches!(asset_code, "USDT" | "USDC") {
-            return Err(AppError::BadRequest(format!(
-                "不支持的币种: {}",
-                asset_code
-            )));
-        }
-        if !matches!(network, "TRON" | "ETH" | "POLYGON") {
-            return Err(AppError::BadRequest(format!("不支持的网络: {}", network)));
-        }
-        tracing::info!(
-            "[支付] BonusPay TOPUP: user={}, asset={}, network={}",
-            claims.sub,
-            asset_code,
-            network
-        );
-        let wallet = bonuspay_client
-            .get_deposit_address(&claims.sub, asset_code, network)
-            .await
-            .map_err(|e| AppError::UpstreamError(e.to_string()))?;
-        let cashier_url = wallet
-            .cashier_url
-            .ok_or_else(|| AppError::UpstreamError("BonusPay 未返回 cashierUrl".to_string()))?;
-
-        // BonusPay TOPUP 不需要预创建订单，充值由回调驱动，直接返回
-        tracing::info!("[支付] BonusPay 充值地址获取成功, cashierUrl 已返回");
-        return Ok(Json(CreateOrderResp {
-            out_trade_no: String::new(),
-            payment_url: cashier_url,
-            hyperbc_data: None,
-        }));
+        trade_no = Some(session_id);
     } else if payload.payment_method == "hyperbc" {
         let hyperbc_setting: Option<String> = sqlx::query_scalar(
             &state
@@ -271,9 +221,7 @@ pub async fn create_order(
         }
 
         let hyperbc_client = HyperbcClient::new(hyperbc_config);
-        let return_url =
-            std::env::var("PUBLIC_FRONTEND_URL").unwrap_or_else(|_| base_notify_url.clone());
-        let return_url = format!("{}/wallet", return_url);
+        let return_url = format!("{}/wallet", frontend_base_url);
 
         let lang = headers
             .get("accept-language")
@@ -358,9 +306,7 @@ pub async fn create_order(
 
         if client_is_mobile {
             // 手机H5收银台模式
-            let return_url =
-                std::env::var("PUBLIC_FRONTEND_URL").unwrap_or_else(|_| base_notify_url.clone());
-            let return_url = format!("{}/wallet", return_url);
+            let return_url = format!("{}/wallet", frontend_base_url);
             tracing::info!("[支付] 通联 H5 收银台支付创建中, return_url={}", return_url);
             payment_url = allinpay_client
                 .generate_h5_pay_url(&out_trade_no, payload.amount, &notify_url, &return_url)
@@ -471,16 +417,14 @@ async fn complete_recharge_payment_common(
     .await
     .map_err(|e| AppError::Internal(format!("更新用户余额失败: {:?}", e)))?;
 
-    // 3. 写入充值流水明细表 recharge_records
-    // 备注中写入详细中文以方便维护审计
-    let remark = format!("{}充值 订单号:{}", channel_name_zh, out_trade_no);
+    // 3. 写入充值流水明细表 recharge_records，单号独立存入 order_no 方便统计与追溯
     sqlx::query(&state.db.format_query(
-        "INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, ?, ?)",
+        "INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, ?, '', ?)",
     ))
     .bind(user_id)
     .bind(amount)
     .bind(payment_method)
-    .bind(&remark)
+    .bind(out_trade_no)
     .execute(&mut *tx)
     .await
     .map_err(|e| AppError::Internal(format!("插入充值记录失败: {:?}", e)))?;
@@ -571,21 +515,40 @@ pub async fn check_status(
                         serde_json::from_str::<crate::models::PaymentHyperbcSettings>(&setting_str)
                     {
                         if config.enabled {
-                            let hyperbc_client = HyperbcClient::new(config);
+                            let hyperbc_client = HyperbcClient::new(config.clone());
                             // 事务外调用第三方 API，确保不长期锁定数据库连接与行锁
                             match hyperbc_client.query_order(hyperbc_order_no).await {
                                 Ok(query_data) => {
-                                    tracing::info!("[支付状态查询] HyperBC 订单 {} 查询状态为: status={}, check_status={:?}", out_trade_no, query_data.status, query_data.check_status);
-                                    // status=1(已完成) 和 status=5(超额支付) 视为支付成功
-                                    // check_status 默认 0 正常，如果有异常则不自动入账
-                                    let check_ok = query_data.check_status.unwrap_or(0) == 0;
-                                    if (query_data.status == 1 || query_data.status == 5)
-                                        && check_ok
-                                    {
+                                    let check_code = query_data.get_check_code();
+                                    let actual_crypto = query_data.get_actual_crypto_amount();
+                                    tracing::info!(
+                                        "[支付状态查询] HyperBC 订单 {} 查询状态为: status={}, check_code={}, 实际到账代币={}",
+                                        out_trade_no,
+                                        query_data.status,
+                                        check_code,
+                                        actual_crypto
+                                    );
+
+                                    // 入账条件：
+                                    // 1. 标准正常支付 (status=1 且无风控异常 check_code=0)
+                                    // 2. 实报实销差额支付 (status=2 且 check_code=1001 且链上实际收到代币 actual_crypto > 0.0)
+                                    let should_settle = (query_data.status == 1 && check_code == 0)
+                                        || (query_data.status == 2 && check_code == 1001 && actual_crypto > 0.0);
+
+                                    if should_settle {
+                                        // 结算金额严格按照实收代币与汇率折算，且不得超出预设金额（平台零亏损红线）
+                                        let exchange_rate = if config.crypto_exchange_rate > 0.0 { config.crypto_exchange_rate } else { 1.0 };
+                                        let settle_amount = if actual_crypto > 0.0 {
+                                            let converted = actual_crypto * exchange_rate;
+                                            converted.min(order.amount)
+                                        } else {
+                                            order.amount
+                                        };
+
                                         match complete_hyperbc_payment(
                                             &state,
                                             &out_trade_no,
-                                            order.amount,
+                                            settle_amount,
                                             &order.user_id,
                                         )
                                         .await
@@ -853,8 +816,8 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'wechat', ?)"))
-        .bind(&order.user_id).bind(amount).bind(format!("微信支付充值 订单号:{}", out_trade_no))
+    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'wechat', '', ?)"))
+        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
         .execute(&mut *tx).await {
         tracing::warn!("[微信回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
@@ -1008,8 +971,8 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
         return "fail".to_string();
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'alipay', ?)"))
-        .bind(&order.user_id).bind(amount).bind(format!("支付宝充值 订单号:{}", out_trade_no))
+    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'alipay', '', ?)"))
+        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
         .execute(&mut *tx).await {
         tracing::warn!("[支付宝回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
@@ -1073,27 +1036,17 @@ pub async fn stripe_notify(
         }
     };
 
-    // 2. 验证 Webhook 签名
+    // 2. 验证 Webhook 签名（必须携带签名头且校验通过，杜绝伪造）
     let sig_header = headers
         .get("stripe-signature")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    let is_live_key = config.secret_key.starts_with("sk_live_");
     let client = StripeClient::new(config);
 
-    if !sig_header.is_empty() {
-        match client.verify_webhook_signature(&body, sig_header) {
-            Ok(true) => tracing::info!("[Stripe回调] 签名验证通过"),
-            Ok(false) => {
-                tracing::warn!("[Stripe回调] 签名验证失败");
-                return resp_fail;
-            }
-            Err(e) => {
-                tracing::warn!("[Stripe回调] 签名验证异常: {:?}", e);
-                return resp_fail;
-            }
-        }
-    } else {
-        tracing::warn!("[Stripe回调] 缺少 Stripe-Signature 头，跳过签名验证（仅建议测试环境）");
+    if sig_header.is_empty() || !client.verify_webhook_signature(&body, sig_header).unwrap_or(false) {
+        tracing::warn!("[Stripe回调] 缺少签名或签名校验失败");
+        return resp_fail;
     }
 
     // 3. 解析事件
@@ -1152,7 +1105,59 @@ pub async fn stripe_notify(
         return resp_ok;
     }
 
-    // 5. 事务处理
+    // 5. 向 Stripe 官方 API 主动二次验单（双重安全防御：官方必须确认 paid 且订单号一致）
+    if stripe_session_id.is_empty() {
+        tracing::warn!("[Stripe回调] 回调中缺少 session_id");
+        return resp_fail;
+    }
+    if let Some(ref bound_trade_no) = order.trade_no {
+        if bound_trade_no != stripe_session_id {
+            tracing::warn!(
+                "[Stripe回调] 订单绑定的 session_id 不匹配: 原绑定={}, 当前回调={}",
+                bound_trade_no,
+                stripe_session_id
+            );
+            return resp_fail;
+        }
+    }
+    let official = match client.get_session(stripe_session_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[Stripe回调] 官方 API 验单请求失败: id={}, err={:?}", stripe_session_id, e);
+            return resp_fail;
+        }
+    };
+    let official_status = official["payment_status"].as_str().unwrap_or("");
+    let official_ref = official["client_reference_id"].as_str().unwrap_or("");
+    let official_currency = official["currency"].as_str().unwrap_or("").to_lowercase();
+    let official_amount = official["amount_total"].as_i64().unwrap_or(0);
+    let session_livemode = official["livemode"].as_bool().unwrap_or(false);
+
+    let currency_settings = crate::api::settings::get_currency_settings(&state).await;
+    let expected_currency = currency_settings.default_currency.to_lowercase();
+    let expected_minor = client.to_minor_units(order.amount, &expected_currency);
+
+    if official_status != "paid"
+        || official_ref != out_trade_no
+        || (is_live_key && !session_livemode)
+        || official_currency != expected_currency
+        || official_amount != expected_minor
+    {
+        tracing::warn!(
+            "[Stripe回调] 官方验单未通过: id={}, 状态={}, 单号={}, 币种={}(需{}), 金额={}(需{}), livemode={}",
+            stripe_session_id,
+            official_status,
+            official_ref,
+            official_currency,
+            expected_currency,
+            official_amount,
+            expected_minor,
+            session_livemode
+        );
+        return resp_fail;
+    }
+
+    // 6. 事务处理
     let mut tx = match state.db.pool.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -1200,8 +1205,8 @@ pub async fn stripe_notify(
         return resp_fail;
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'stripe', ?)"))
-        .bind(&order.user_id).bind(amount).bind(format!("Stripe 充值 订单号:{}", out_trade_no))
+    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'stripe', '', ?)"))
+        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
         .execute(&mut *tx).await {
         tracing::warn!("[Stripe回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
@@ -1227,267 +1232,13 @@ pub async fn stripe_notify(
     resp_ok
 }
 
-pub async fn bonuspay_notify(
-    State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-    body: String,
-) -> impl IntoResponse {
-    tracing::info!("[BonusPay回调] 收到充值回调, body长度: {}", body.len());
-    tracing::debug!("[BonusPay回调] 原始数据: {}", body);
 
-    // 从 Header 中取签名
-    let sign = headers
-        .get("Sign")
-        .or_else(|| headers.get("sign"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
 
-    let partner_id = headers
-        .get("Partner-Id")
-        .or_else(|| headers.get("partner-id"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    tracing::info!(
-        "[BonusPay回调] Partner-Id: {}, Sign长度: {}",
-        partner_id,
-        sign.len()
-    );
-
-    // 解析 JSON body
-    let data: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("[BonusPay回调] JSON 解析失败: {:?}", e);
-            return "FAIL".to_string();
-        }
-    };
-
-    // Crypto TOPUP 回调格式: body.customerDepositOrder
-    let deposit_order = &data["body"]["customerDepositOrder"];
-    let order_status = deposit_order["status"].as_str().unwrap_or("");
-    let customer_id = deposit_order["customerId"].as_str().unwrap_or("");
-    let order_no = deposit_order["orderNo"].as_str().unwrap_or("");
-    let tx_hash = deposit_order["txHash"].as_str().unwrap_or("");
-    let network = deposit_order["network"].as_str().unwrap_or("");
-
-    // 实际到账金额 (扣除手续费后)
-    let settled_amount = deposit_order["settledAmount"]["amount"]
-        .as_f64()
-        .unwrap_or(0.0);
-    let settled_currency = deposit_order["settledAmount"]["currency"]
-        .as_str()
-        .unwrap_or("USDT");
-    // 充值金额 (用户转入的原始金额)
-    let deposit_amount = deposit_order["depositAmount"]["amount"]
-        .as_f64()
-        .unwrap_or(0.0);
-
-    tracing::info!(
-        "[BonusPay回调] status={}, customerId={}, orderNo={}, depositAmount={}, settledAmount={} {}, txHash={}, network={}",
-        order_status, customer_id, order_no, deposit_amount, settled_amount, settled_currency, tx_hash, network
-    );
-
-    // 只处理 SUCCESS 状态
-    if order_status != "SUCCESS" {
-        tracing::info!("[BonusPay回调] 非成功状态，忽略: {}", order_status);
-        return "SUCCESS".to_string();
-    }
-
-    if customer_id.is_empty() || settled_amount <= 0.0 {
-        tracing::warn!("[BonusPay回调] customerId 或 settledAmount 无效");
-        return "FAIL".to_string();
-    }
-
-    // 读取配置
-    let bonuspay_setting: Option<String> = sqlx::query_scalar(
-        &state
-            .db
-            .format_query("SELECT value FROM settings WHERE key = 'payment_bonuspay'"),
-    )
-    .fetch_optional(&state.db.pool)
-    .await
-    .unwrap_or_default();
-
-    let config = match serde_json::from_str::<crate::models::PaymentBonuspaySettings>(
-        &bonuspay_setting.unwrap_or_default(),
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("[BonusPay回调] 解析配置失败: {:?}", e);
-            return "FAIL".to_string();
-        }
-    };
-
-    // 用 BonusPay 公钥验证签名 (安全加固)
-    if !config.bonuspay_public_key.is_empty() {
-        if sign.is_empty() {
-            tracing::warn!("[BonusPay回调] 签名为空，拒绝请求");
-            return "FAIL".to_string();
-        }
-        match BonuspayClient::verify_signature(&config.bonuspay_public_key, &body, sign) {
-            Ok(true) => {
-                tracing::info!("[BonusPay回调] RSA 签名验证通过");
-            }
-            Ok(false) => {
-                tracing::warn!("[BonusPay回调] RSA 签名验证失败");
-                return "FAIL".to_string();
-            }
-            Err(e) => {
-                tracing::warn!("[BonusPay回调] 签名验证异常: {:?}", e);
-                return "FAIL".to_string();
-            }
-        }
-    } else {
-        tracing::warn!(
-            "[BonusPay回调] ⚠️ 严重警告：未配置 BonusPay 公钥，跳过签名验证，存在极高安全风险！"
-        );
-    }
-
-    // customerId 就是系统内的用户 ID
-    let user_id = customer_id;
-
-    // 检查用户是否存在
-    let user_exists: Option<String> =
-        sqlx::query_scalar(&state.db.format_query("SELECT id FROM users WHERE id = ?"))
-            .bind(user_id)
-            .fetch_optional(&state.db.pool)
-            .await
-            .unwrap_or(None);
-
-    if user_exists.is_none() {
-        tracing::warn!("[BonusPay回调] 用户不存在: {}", user_id);
-        return "FAIL".to_string();
-    }
-
-    // 防止重复处理: 检查 orderNo 是否已经处理过
-    let existing_order: Option<String> = sqlx::query_scalar(
-        &state
-            .db
-            .format_query("SELECT trade_no FROM orders WHERE trade_no = ?"),
-    )
-    .bind(order_no)
-    .fetch_optional(&state.db.pool)
-    .await
-    .unwrap_or(None);
-
-    if existing_order.is_some() {
-        tracing::info!("[BonusPay回调] 订单已处理过, orderNo: {}", order_no);
-        return "SUCCESS".to_string();
-    }
-
-    // 使用实际到账金额充值
-    // 重要修复: BonusPay 回调中的 settledAmount 是 USDT/USDC 数量
-    // 必须乘以汇率 (crypto_exchange_rate) 转换为系统货币 (如 CNY/USD) 后再入账
-    let exchange_rate = config.crypto_exchange_rate;
-    let amount = if exchange_rate > 0.0 {
-        settled_amount * exchange_rate
-    } else {
-        settled_amount // fallback if not set properly
-    };
-
-    let now = DbTs::now();
-
-    tracing::info!(
-        "[BonusPay回调] 货币转换: {} {} * {} (汇率) = {:.6} 系统货币",
-        settled_amount,
-        settled_currency,
-        exchange_rate,
-        amount
-    );
-
-    // 事务处理
-    let mut tx = match state.db.pool.begin().await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!("[BonusPay回调] 开启事务失败: {:?}", e);
-            return "FAIL".to_string();
-        }
-    };
-
-    // 创建订单记录
-    // 数据库写入操作字段说明：
-    // - out_trade_no: 系统内唯一交易流水号，格式 BP前缀加外部订单号
-    // - user_id: 关联充值发起者的用户主键ID
-    // - payment_method: 支付通道类型，此处固定为 'bonuspay'
-    // - amount: 充值金额，折算为系统货币
-    // - status: 订单处理进度状态，初始化为 'paid'
-    // - trade_no: 第三方交易订单号
-    // - created_at / paid_at: TIMESTAMPTZ
-    let out_trade_no = format!("BP{}", order_no);
-    if let Err(e) = sqlx::query(&state.db.format_query(
-        "INSERT INTO orders (out_trade_no, user_id, payment_method, amount, status, trade_no, created_at, paid_at) VALUES (?, ?, 'bonuspay', ?, 'paid', ?, ?, ?)",
-    ))
-    .bind(&out_trade_no)
-    .bind(user_id)
-    .bind(amount)
-    .bind(order_no)
-    .bind(&now)
-    .bind(&now)
-    .execute(&mut *tx)
-    .await
-    {
-        tracing::warn!("[BonusPay回调] 创建订单记录失败: {:?}", e);
-        let _ = tx.rollback().await;
-        return "FAIL".to_string();
-    }
-
-    // 充值余额
-    if let Err(e) = sqlx::query(
-        &state
-            .db
-            .format_query("UPDATE users SET balance = balance + ? WHERE id = ?"),
-    )
-    .bind(amount)
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await
-    {
-        tracing::warn!("[BonusPay回调] 更新余额失败: {:?}", e);
-        let _ = tx.rollback().await;
-        return "FAIL".to_string();
-    }
-
-    // 写充值记录
-    if let Err(e) = sqlx::query(&state.db.format_query(
-        "INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'bonuspay', ?)",
-    ))
-    .bind(user_id)
-    .bind(amount)
-    .bind(format!(
-        "BonusPay 充值 {} {} (txHash: {})",
-        deposit_amount, settled_currency, tx_hash
-    ))
-    .execute(&mut *tx)
-    .await
-    {
-        tracing::warn!("[BonusPay回调] 写充值记录失败: {:?}", e);
-        let _ = tx.rollback().await;
-        return "FAIL".to_string();
-    }
-
-    if let Err(e) = tx.commit().await {
-        tracing::warn!("[BonusPay回调] 事务提交失败: {:?}", e);
-        return "FAIL".to_string();
-    }
-
-    tracing::info!(
-        "[BonusPay回调] ✅ 充值完成: 用户={}, 到账={:.6} {}, txHash={}",
-        user_id,
-        amount,
-        settled_currency,
-        tx_hash
-    );
-    crate::services::notification::spawn_low_balance_check(Arc::clone(&state), user_id.to_string());
-
-    "SUCCESS".to_string()
-}
 
 /// HyperBC 支付异步回调通知处理函数
 /// 收到来自 HyperBC 的 POST 请求，对 body 签名进行平台公钥验签，然后对对应订单状态进行更新，并入账用户余额
 pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) -> impl IntoResponse {
-    tracing::info!("[HyperBC回调] 收到回调通知, body长度: {}", body.len());
-    tracing::debug!("[HyperBC回调] 原始数据: {}", body);
+    tracing::warn!("[HyperBC回调] 原始数据: {}", body);
 
     // 1. 解析回调 JSON 报文
     let body_val: serde_json::Value = match serde_json::from_str(&body) {
@@ -1502,7 +1253,7 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
     let sign = match body_val.get("sign").and_then(|v| v.as_str()) {
         Some(s) => s.to_string(),
         None => {
-            tracing::warn!("[HyperBC回调] 回调报文中缺少签名字段 sign");
+            tracing::warn!("[HyperBC回调] 验签失败 [缺少签名字段]: 回调报文中缺少 sign 参数");
             return "fail".into_response();
         }
     };
@@ -1539,113 +1290,105 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
             }
         };
 
-    if !config.hyperbc_public_key.is_empty() {
-        let client = HyperbcClient::new(config.clone());
-        let sign_content = HyperbcClient::get_sign_content(&flat_body_val);
-        // 打印公钥配置摘要，方便确认配置是否正确
-        let pubkey_preview = config
-            .hyperbc_public_key
-            .trim()
-            .chars()
-            .take(60)
-            .collect::<String>();
-        tracing::debug!("[HyperBC回调] 使用公钥(前60字符): {}...", pubkey_preview);
-        tracing::debug!("[HyperBC回调] 待验证签名: {}", sign);
-        tracing::debug!("[HyperBC回调] 计算生成的待签名串: {}", sign_content);
-
-        match client.verify_signature(&flat_body_val, &sign) {
-            Ok(true) => {
-                tracing::info!("[HyperBC回调] RSA 签名验证通过");
-            }
-            Ok(false) => {
-                tracing::warn!("[HyperBC回调] RSA 签名验证失败，签名不匹配");
-                return "fail".into_response();
-            }
-            Err(e) => {
-                tracing::warn!("[HyperBC回调] 签名验证异常: {:?}", e);
-                return "fail".into_response();
-            }
-        }
-    } else {
-        tracing::warn!("[HyperBC回调] ⚠️ 未配置 HyperBC 公钥，跳过签名验证，存在安全风险！");
+    if config.hyperbc_public_key.trim().is_empty() {
+        tracing::warn!("[HyperBC回调] 验签失败 [未配置平台公钥]: 系统未配置 HyperBC 平台公钥，拒绝处理");
+        return "fail".into_response();
     }
 
-    // 4. 解析业务 data 节点
-    let data = match body_val.get("data") {
+    let client = HyperbcClient::new(config.clone());
+    let sign_content = HyperbcClient::get_sign_content_from_raw(&body)
+        .unwrap_or_else(|_| HyperbcClient::get_sign_content(&flat_body_val));
+
+    match client.verify_signature_str(&sign_content, &sign) {
+        Ok(true) => {
+            tracing::info!("[HyperBC回调] RSA 签名验证通过");
+        }
+        Ok(false) => {
+            tracing::warn!(
+                "[HyperBC回调] 验签失败 [签名不匹配]: RSA 签名校验未通过 (sign={}, sign_content={})",
+                sign,
+                sign_content
+            );
+            return "fail".into_response();
+        }
+        Err(e) => {
+            tracing::warn!("[HyperBC回调] 验签失败 [执行异常]: RSA 验签执行异常: {:?}", e);
+            return "fail".into_response();
+        }
+    }
+
+    // 4. 解析业务 data 节点为强类型 QueryOrderData
+    let data_val = match body_val.get("data") {
         Some(d) => d,
         None => {
-            tracing::warn!("[HyperBC回调] 回调报文中缺少 data 数据节点");
+            tracing::warn!("[HyperBC回调] 报文错误 [缺少业务数据]: 回调报文中缺少 data 节点");
             return "fail".into_response();
         }
     };
 
-    let merchant_order_id = match data.get("merchant_order_id").and_then(|v| v.as_str()) {
-        Some(id) => id,
-        None => {
-            tracing::warn!("[HyperBC回调] data 节点中缺少 merchant_order_id");
-            return "fail".into_response();
-        }
-    };
+    let notify_data: crate::api::plugins::pay::payment::hyperbc::QueryOrderData =
+        match serde_json::from_value(data_val.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("[HyperBC回调] 报文错误 [结构解析失败]: 解析 data 节点失败: {:?}", e);
+                return "fail".into_response();
+            }
+        };
 
-    let status = match data.get("status").and_then(|v| v.as_i64()) {
-        Some(s) => s,
-        None => {
-            tracing::warn!("[HyperBC回调] data 节点中缺少 status 状态");
-            return "fail".into_response();
-        }
-    };
+    let merchant_order_id = &notify_data.merchant_order_id;
+    if merchant_order_id.is_empty() {
+        tracing::warn!("[HyperBC回调] 报文错误 [缺少订单号]: data 节点中缺少有效 merchant_order_id");
+        return "fail".into_response();
+    }
+
+    let status = notify_data.status;
+    let check_code = notify_data.get_check_code();
+    let actual_crypto = notify_data.get_actual_crypto_amount();
 
     tracing::info!(
-        "[HyperBC回调] 订单号: {}, status: {}",
+        "[HyperBC回调] 订单号: {}, status: {}, check_code: {}, 实际到账代币: {}",
         merchant_order_id,
-        status
+        status,
+        check_code,
+        actual_crypto
     );
+
+    let ok_resp = || {
+        (
+            [(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            client.success_response(),
+        )
+            .into_response()
+    };
 
     // status = 10 表示已取消
     if status == 10 {
-        // 数据库更新操作字段说明：
-        // - status: 订单处理状态，更新为 'cancelled' 表示已取消
-        // 限制条件：仅在订单原状态为 'pending' 时才能取消，且订单 out_trade_no 需匹配
         let _ = sqlx::query(&state.db.format_query(
             "UPDATE orders SET status = 'cancelled' WHERE out_trade_no = ? AND status = 'pending'",
         ))
         .bind(merchant_order_id)
         .execute(&state.db.pool)
         .await;
-        return "success".into_response();
+        return ok_resp();
     }
 
-    // status=1(已完成) 和 status=5(超额支付) 视为支付成功
-    if status != 1 && status != 5 {
+    // 判断结算资格：
+    // 1: 正常支付 (status=1 且 check_code=0)
+    // 2: 异常支付差额入账 (status=2 且 check_code=1001 且链上确有代币到账 actual_crypto > 0)
+    let should_settle = (status == 1 && check_code == 0)
+        || (status == 2 && check_code == 1001 && actual_crypto > 0.0);
+
+    if !should_settle {
         tracing::info!(
-            "[HyperBC回调] status 不是成功或超额支付状态 (status={})，忽略",
-            status
+            "[HyperBC回调] 订单 {} status={} check_code={} 不满足自动入账条件，忽略或需人工复核",
+            merchant_order_id,
+            status,
+            check_code
         );
-        return "success".into_response();
+        return ok_resp();
     }
 
-    // 校验 payments 中的异常代码 (check_code: 0 正常，1001 金额不匹配，1002 重复支付)
-    if let Some(payments) = data.get("payments").and_then(|v| v.as_array()) {
-        for payment in payments {
-            let check_code = payment
-                .get("check_code")
-                .and_then(|v| {
-                    v.as_i64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-                })
-                .unwrap_or(0);
-            if check_code != 0 {
-                tracing::warn!(
-                    "[HyperBC回调] 支付异常 check_code={}，不自动入账，需人工复核: {}",
-                    check_code,
-                    merchant_order_id
-                );
-                return "success".into_response();
-            }
-        }
-    }
-
-    // 查询订单信息以提取入账金额和用户ID
+    // 查询订单信息以提取期望金额和用户ID
     let order: Option<Order> = match sqlx::query_as(
         &state
             .db
@@ -1676,12 +1419,21 @@ pub async fn hyperbc_notify(State(state): State<Arc<AppState>>, body: String) ->
             "[HyperBC回调] 订单已是支付状态，幂等跳过, out_trade_no: {}",
             merchant_order_id
         );
-        return "success".into_response();
+        return ok_resp();
     }
 
+    // 计算实际结算金额（零亏损红线：实到金额乘汇率，且不得超过预设金额）：
+    let exchange_rate = if config.crypto_exchange_rate > 0.0 { config.crypto_exchange_rate } else { 1.0 };
+    let settle_amount = if actual_crypto > 0.0 {
+        let converted = actual_crypto * exchange_rate;
+        converted.min(order.amount)
+    } else {
+        order.amount
+    };
+
     // 调用公用入账函数进行状态更新与余额充值，保证业务逻辑的高内聚和 100% 严格防并发防重入
-    match complete_hyperbc_payment(&state, merchant_order_id, order.amount, &order.user_id).await {
-        Ok(_) => "success".into_response(),
+    match complete_hyperbc_payment(&state, merchant_order_id, settle_amount, &order.user_id).await {
+        Ok(_) => ok_resp(),
         Err(e) => {
             tracing::warn!("[HyperBC回调] 处理订单支付更新失败: {:?}", e);
             "fail".into_response()

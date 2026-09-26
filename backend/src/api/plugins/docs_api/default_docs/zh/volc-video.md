@@ -1,6 +1,6 @@
-# 火山方舟视频生成接入指南
+# 火山引擎(方舟)视频生成接入指南
 
-推荐 **Seedance 2.5**（`doubao-seedance-2-5`）。OpenAI 兼容：`POST /v1/video/generations`。官方 `content` 走 `/api/v3/contents/generations/tasks`。[视频生成 API](https://www.volcengine.com/docs/82379/1520757)
+OpenAI 兼容：`POST /v1/video/generations`。原生路径：`/api/v3/contents/generations/tasks`。[视频生成 API](https://www.volcengine.com/docs/82379/1520757)
 
 时长 `4`–`30` 或 `-1`，分辨率 `480p`/`720p`/`1080p`，参考最多 50（图 30 + 视频 10 + 音频 10）。
 

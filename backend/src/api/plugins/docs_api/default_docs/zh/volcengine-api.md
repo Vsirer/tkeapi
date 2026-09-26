@@ -1,19 +1,19 @@
-# 火山方舟 (Volcengine) 原生接口说明
+# 火山引擎(方舟) (Volcengine) 原生接口说明
 
-若客户端已使用火山方舟请求路径，将 Base URL 指向本平台并使用本平台 API 密钥即可，无需改写为 OpenAI 格式。
+若客户端已使用火山引擎(方舟)请求路径，将 Base URL 指向本平台并使用本平台 API 密钥即可，无需改写为 OpenAI 格式。
 
 ### 1. 原生聊天与对话 (Chat & Responses)
 * **对话端点**: `/api/v3/chat/completions`
 * **原生响应端点**: `/api/v3/responses`
 * **请求方式**: `POST`
 
-支持火山方舟 Request Payload。参数规范见 [火山方舟官方文档](https://www.volcengine.com/docs/82379/1298454)。
+支持火山引擎(方舟) Request Payload。参数规范见 [火山引擎(方舟)官方文档](https://www.volcengine.com/docs/82379/1298454)。[聊天与响应 API](https://www.volcengine.com/docs/82379/1298454)
 
 ### 2. 原生生图接口 (Image Generations)
 * **端点**: `/api/v3/images/generations`
 * **请求方式**: `POST`
 
-推荐 `doubao-seedream-5-0-pro-260628`。图层拆分 `layer_decomposition`、透明通道 `background`（`opaque`/`transparent`）。场景 Body 见「doubao-seedream 图像生成」。
+推荐 `doubao-seedream-5-0-pro-260628`（单图高精度）。图层拆分 `layer_decomposition`、透明通道 `background`（`opaque`/`transparent`）。**注意：Pro 仅支持单图，不支持组图与 `sequential_image_generation`（严禁配置，否则报错）**；组图需求请使用 `doubao-seedream-5-0-260128`。场景 Body 见「doubao-seedream 图像生成」。[图片生成 API](https://www.volcengine.com/docs/82379/1541523)
 
 ### 3. 原生视频生成任务 (Video Studio)
 * **提交任务**: `/api/v3/contents/generations/tasks` (`POST`)
@@ -48,6 +48,6 @@
 ### 5. 多模态向量化接口 (Multimodal Embeddings)
 * **端点**: `/api/v3/embeddings/multimodal` (`POST`)
 
-兼容火山方舟原生 Request Payload，支持图文多模态特征向量提取，网关对多模态 token 分布（文本 token 与图片 token）进行高精度独立计费。
+兼容火山引擎(方舟)原生 Request Payload，支持图文多模态特征向量提取，网关对多模态 token 分布（文本 token 与图片 token）进行高精度独立计费。
 
 

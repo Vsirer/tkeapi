@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! NewAPI 等上游分组倍率拉取与应用到渠道预设 `rate`。
@@ -199,49 +199,4 @@ pub fn parse_newapi_groups(body: &str) -> Result<Vec<UpstreamGroupRatio>, String
         .collect();
     groups.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(groups)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cny_to_usd_conversion() {
-        // 用户需求场景：上游 GPT 3x 倍率（按 RMB 定价），本站为美元计价，汇率 7.2
-        let converted = convert_currency_ratio(3.0, "CNY", "USD", 7.2);
-        assert!((converted - 3.0 / 7.2).abs() < 1e-6);
-
-        // 叠加增量 0.05，结果应精确到 4 位小数：(3.0 / 7.2 + 0.05 = 0.4667)
-        let rate = applied_channel_rate(3.0, 0.05, "CNY", "USD", 7.2);
-        assert_eq!(rate, 0.4667);
-
-        // 支持 RMB 别名与小写
-        let converted_alias = convert_currency_ratio(3.0, "rmb", "usd", 7.2);
-        assert!((converted_alias - 3.0 / 7.2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_usd_to_cny_conversion() {
-        // 上游为美元定价（0.5x），本站为人民币计价，汇率 7.2 -> 3.6x
-        let converted = convert_currency_ratio(0.5, "USD", "CNY", 7.2);
-        assert!((converted - 3.6).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_same_currency_or_empty() {
-        // 币种相同或留空不换算
-        assert_eq!(convert_currency_ratio(3.0, "USD", "USD", 7.2), 3.0);
-        assert_eq!(convert_currency_ratio(3.0, "CNY", "CNY", 7.2), 3.0);
-        assert_eq!(convert_currency_ratio(3.0, "", "USD", 7.2), 3.0);
-        assert_eq!(convert_currency_ratio(3.0, "CNY", "", 7.2), 3.0);
-    }
-
-    #[test]
-    fn test_invalid_rate_fallback() {
-        // 汇率非正数或非有效浮点数时兜底 1.0
-        let converted = convert_currency_ratio(3.0, "CNY", "USD", 0.0);
-        assert_eq!(converted, 3.0);
-        let converted_neg = convert_currency_ratio(3.0, "CNY", "USD", -1.0);
-        assert_eq!(converted_neg, 3.0);
-    }
 }

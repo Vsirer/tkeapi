@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 令牌额度累加 / 退款（事务内调用，FOR UPDATE 防并发超用）
@@ -251,3 +251,45 @@ pub async fn apply_delta_with_memory(
         Ok(0.0)
     }
 }
+
+/// 令牌活跃时间更新防抖节流间隔（30 秒）。
+/// 在此窗口内的并发调用直接在内存中去重，避免高频竞争锁定 api_tokens 行级锁。
+const LAST_USED_THROTTLE_SECS: u64 = 30;
+
+/// 异步节流更新令牌活跃时间戳（非阻塞，彻底移出主结算事务）
+pub fn touch_token_last_used(state: &AppState, token_id: i64) {
+    if token_id <= 0 {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let should_update = match state.token_last_used_throttle.get_mut(&token_id) {
+        Some(mut last_time) => {
+            if now.duration_since(*last_time) >= std::time::Duration::from_secs(LAST_USED_THROTTLE_SECS) {
+                *last_time = now;
+                true
+            } else {
+                false
+            }
+        }
+        None => {
+            state.token_last_used_throttle.insert(token_id, now);
+            true
+        }
+    };
+
+    if should_update {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let res = sqlx::query(&db.format_query(
+                "UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            ))
+            .bind(token_id)
+            .execute(&db.pool)
+            .await;
+            if let Err(e) = res {
+                tracing::warn!("[TokenQuota] 异步更新令牌活跃时间失败 (token_id={}): {:?}", token_id, e);
+            }
+        });
+    }
+}
+

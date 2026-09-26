@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 创作中心2026：将内置 `dashscope_video` 对齐万相 3.0 官方请求字段。
@@ -26,7 +26,7 @@ pub fn is_wan3_family_scheme_id(id: &str) -> bool {
     id == WAN3_SCHEME_ID || id == DASHSCOPE_VIDEO_SCHEME_ID
 }
 
-/// 万相 3.0 `input.media` 口：prompt + 图生视频（首帧）/ 尾帧 + 参考图/视频/音频
+/// 万相 3.0 `input.media` 口：prompt + 图生视频（首帧）/ 尾帧 + 参考图/视频/音频；编辑/延长为全能参考子能力开关
 pub fn dashscope_video_wan3_scheme_io() -> Value {
     json!({
         "inputs": [
@@ -101,6 +101,24 @@ pub fn dashscope_video_wan3_scheme_io() -> Value {
                 "max": 5,
                 "expandable": true,
                 "default_count": 1
+            },
+            {
+                "key": "edit_video",
+                "label": "编辑视频",
+                "enabled": true,
+                "modality": "video",
+                "handle_prefix": "Edit Video",
+                "bind_key": "feature:edit_video",
+                "max": 0
+            },
+            {
+                "key": "extend_video",
+                "label": "延长视频",
+                "enabled": true,
+                "modality": "video",
+                "handle_prefix": "Extend Video",
+                "bind_key": "feature:extend_video",
+                "max": 0
             }
         ],
         "outputs": [
@@ -124,7 +142,7 @@ pub fn dashscope_video_wan3_scheme() -> Value {
         "name": "阿里云 (DashScope) 视频生成方案",
         "type": "video",
         "is_system": true,
-        "description": "阿里云百炼万相 3.0（wan3.0-video）All-in-One：文生/图生视频（首帧）/尾帧/全模态参考。parameters 对齐官方 resolution/ratio/duration/prompt_extend/audio。首尾帧与参考素材互斥。",
+        "description": "阿里云百炼万相 3.0（wan3.0-video）All-in-One：文生/图生视频（首帧）/尾帧/全模态参考（图≤10、视频≤5、音频≤5，可任意组合）。编辑与延长是全能参考子能力，默认开启。parameters 对齐官方 resolution/ratio/duration/prompt_extend/audio。首尾帧与参考素材互斥。",
         "max_reference_images": 10,
         "params": [
             {
@@ -272,10 +290,75 @@ fn bump_wan3_reference_max(saved: &mut Value) {
     }
 }
 
-/// 万相 3.0 / DashScope 视频：去掉反向提示词，参考口上限对齐 docs/wan3.md（图10/视5/音5）
+/// 万相 3.0 / DashScope 视频：去掉反向提示词，参考口上限对齐官方（图10/视5/音5）；编辑/延长改为全能参考子能力开关
 pub fn sanitize_wan3_saved_io(saved: &mut Value) {
     strip_negative_prompt_ports(saved);
     bump_wan3_reference_max(saved);
+    ensure_edit_extend_feature_toggles(saved);
+}
+
+fn feature_edit_port() -> Value {
+    json!({
+        "key": "edit_video",
+        "label": "编辑视频",
+        "enabled": true,
+        "modality": "video",
+        "handle_prefix": "Edit Video",
+        "bind_key": "feature:edit_video",
+        "max": 0
+    })
+}
+
+fn feature_extend_port() -> Value {
+    json!({
+        "key": "extend_video",
+        "label": "延长视频",
+        "enabled": true,
+        "modality": "video",
+        "handle_prefix": "Extend Video",
+        "bind_key": "feature:extend_video",
+        "max": 0
+    })
+}
+
+fn coerce_feature_toggle(port: &mut Value, bind_key: &str) {
+    let enabled = port.get("enabled").cloned().unwrap_or(json!(true));
+    if let Some(obj) = port.as_object_mut() {
+        obj.insert("bind_key".into(), json!(bind_key));
+        obj.insert("max".into(), json!(0));
+        obj.insert("enabled".into(), enabled);
+        obj.remove("accepts");
+        obj.remove("accept_asset_kinds");
+        obj.remove("expandable");
+        obj.remove("required");
+    }
+}
+
+fn ensure_edit_extend_feature_toggles(saved: &mut Value) {
+    let Some(inputs) = saved.get_mut("inputs").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut has_edit = false;
+    let mut has_extend = false;
+    for p in inputs.iter_mut() {
+        match port_key(p) {
+            "edit_video" => {
+                has_edit = true;
+                coerce_feature_toggle(p, "feature:edit_video");
+            }
+            "extend_video" => {
+                has_extend = true;
+                coerce_feature_toggle(p, "feature:extend_video");
+            }
+            _ => {}
+        }
+    }
+    if !has_edit {
+        inputs.push(feature_edit_port());
+    }
+    if !has_extend {
+        inputs.push(feature_extend_port());
+    }
 }
 
 /// 创作中心2026：给 `wan3.0` 铺上与官方全模态参考一致的 IO，保留方案参数
@@ -295,7 +378,7 @@ pub fn seed_wan3_scheme(schemes: &mut Vec<Value>) {
             obj.insert("max_reference_images".into(), json!(10));
             obj.insert(
                 "description".into(),
-                json!("阿里云百炼万相 3.0（wan3.0-video）全模态参考：文生/图生（首帧）/首尾帧/参考图≤10、参考视频≤5、参考音频≤5。首尾帧与参考素材互斥。"),
+                json!("阿里云百炼万相 3.0（wan3.0-video）全模态参考：文生/图生（首帧）/首尾帧/参考图≤10、参考视频≤5、参考音频≤5（可任意组合）。编辑与延长是全能参考子能力，默认开启。首尾帧与参考素材互斥。"),
             );
         }
         return;

@@ -1,6 +1,6 @@
 # Anthropic Claude Native API Guide
 
-Anthropic Messages–compatible path. Send Claude request payloads (such as `claude-3-5-sonnet-20241022`).
+Anthropic Messages–compatible path. Send Claude request payloads (such as `claude-3-5-sonnet-20241022`). [Messages API](https://docs.anthropic.com/en/api/messages)
 
 ### 1. Message Generation Dialogue (Messages API)
 * **Request Path**: `/v1/messages`

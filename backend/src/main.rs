@@ -1,11 +1,14 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use std::sync::Arc;
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod admin_permission;
 mod api;
@@ -21,6 +24,7 @@ mod providers;
 mod relay;
 mod services;
 mod time_system;
+pub mod utils;
 
 use config::AppConfig;
 use db::Database;
@@ -48,6 +52,8 @@ pub struct AppState {
     pub quota_memory: relay::quota_memory::MemoryQuotaGuard,
     /// 异步计费事件投递（Worker 批量刷库；停机时 drain）
     pub billing_ingress: relay::billing_pipeline::BillingIngress,
+    /// 令牌最后使用时间节流表（token_id -> 上次写库 Instant，防高并发行锁争夺）
+    pub token_last_used_throttle: dashmap::DashMap<i64, std::time::Instant>,
 }
 
 #[tokio::main]
@@ -120,12 +126,16 @@ async fn main() -> anyhow::Result<()> {
         cascade_s2_inflight: dashmap::DashMap::new(),
         quota_memory: relay::quota_memory::MemoryQuotaGuard::new(),
         billing_ingress,
+        token_last_used_throttle: dashmap::DashMap::new(),
     });
 
     let mut bg_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
-    // 1. 启动时恢复：处理上次中断遗留的"处理中"日志，退还预扣费（直接同步执行）
-    relay::proxy::recover_interrupted_logs(&state).await;
+    // 1. 启动时恢复：处理上次中断遗留的"处理中"日志，退还预扣费（并发异步恢复，不阻塞端口监听）
+    tokio::spawn(relay::proxy::recover_interrupted_logs(state.clone()));
+
+    // 1b. 渠道与预设配额异步聚合批量刷盘任务（每 2 秒一次，消除 channels 单行排他锁争用；停机时 drain）
+    bg_handles.push(relay::channel_quota::start(state.db.clone(), shutdown_rx.clone()));
 
     // 2. 启动后台异步任务轮询器（周期见 RelaySettings.poll_tick_secs，缓存；检查未结算视频/图片任务）
     bg_handles.push(relay::task::start(state.clone(), shutdown_rx.clone()));
@@ -179,28 +189,79 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
-    // 5. 每日维护（站点时区 03:00）：日志大字段清理/归档 + TOS 过期 + 火山素材保留清理
-    bg_handles.push({
-        let state_clone = state.clone();
-        let mut rx = shutdown_rx.clone();
-        tokio::spawn(async move {
-            loop {
-                let tz_name =
-                    relay::relay_settings::get_cached_site_timezone(&state_clone.db).await;
-                let wait = time_system::duration_until_next_local_hms(&tz_name, 3, 0, 0);
-                tokio::select! {
-                    _ = tokio::time::sleep(wait) => {
-                        cleanup_log_content(&state_clone).await;
-                        archive_old_logs(&state_clone).await;
-                        relay::tos_persist::cleanup_expired_files(&state_clone).await;
-                        #[cfg(feature = "commercial_plugins")]
-                        api::plugins::assets::cleanup_expired_volc_assets(&state_clone).await;
-                    }
-                    _ = rx.changed() => return,
-                }
+    // 4b. 营销通知置顶/弹窗/上架到期自动关闭（每 60 秒）
+    bg_handles.push(spawn_cron_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        60,
+        "AnnouncementExpiry",
+        |s| async move {
+            if let Err(e) = api::announcements::apply_announcement_expiries(&s).await {
+                tracing::warn!("❌ [CronAnnouncementExpiry] 通知有效期处理失败: {:?}", e);
             }
-        })
-    });
+        },
+    ));
+
+    // 5a. 每日用量增量统计任务（错峰执行，默认 01:00）
+    bg_handles.push(spawn_daily_scheduled_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        "DailyStatsSync",
+        |s| s.safe_daily_stats_hm(),
+        |s| async move {
+            let _ = relay::usage_stats::sync_daily_stats(&s).await;
+        },
+    ));
+
+    // 5b. 日志大字段清理定时任务（错峰执行，默认 02:30）
+    bg_handles.push(spawn_daily_scheduled_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        "LogContentCleanup",
+        |s| s.safe_clean_hm(),
+        |s| async move {
+            let cleanup_settings = fetch_log_cleanup_settings(&s).await;
+            cleanup_log_content(&s, cleanup_settings.log_retention_days).await;
+        },
+    ));
+
+    // 5c. 日志行冷归档定时任务（错峰执行，默认 03:30）
+    bg_handles.push(spawn_daily_scheduled_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        "LogRowArchive",
+        |s| s.safe_archive_hm(),
+        |s| async move {
+            let cleanup_settings = fetch_log_cleanup_settings(&s).await;
+            archive_old_logs(&s, cleanup_settings.log_row_retention_days).await;
+        },
+    ));
+
+    // 5d. 超期错误日志清理定时任务（错峰执行，默认 04:00）
+    bg_handles.push(spawn_daily_scheduled_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        "ErrorLogsCleanup",
+        |s| s.safe_error_clean_hm(),
+        |s| async move {
+            let cleanup_settings = fetch_log_cleanup_settings(&s).await;
+            cleanup_error_logs(&s, cleanup_settings.error_log_retention_days).await;
+        },
+    ));
+
+    // 5e. 临时存储与插件日志清理定时任务（错峰执行，默认 04:30）
+    bg_handles.push(spawn_daily_scheduled_task(
+        state.clone(),
+        shutdown_rx.clone(),
+        "StorageAndPluginCleanup",
+        |s| s.safe_storage_clean_hm(),
+        |s| async move {
+            relay::tos_persist::cleanup_expired_files(&s).await;
+            api::plugins::manager::cleanup_expired_plugin_logs(&s).await;
+            #[cfg(feature = "commercial_plugins")]
+            api::plugins::assets::cleanup_expired_volc_assets(&s).await;
+        },
+    ));
 
     // 6. 创作中心画布中断节点自动恢复与 3 分钟过期失败记录清理（每 60 秒）
     #[cfg(feature = "commercial_plugins")]
@@ -213,8 +274,18 @@ async fn main() -> anyhow::Result<()> {
             api::plugins::playground::cleanup_stale_playground_nodes(&s).await;
             api::plugins::playground_2026::cleanup_stale_playground_2026_nodes(&s).await;
             api::plugins::playground_2026::cleanup_failed_playground_2026_assets(&s).await;
+            api::plugins::playground_2026::cleanup_expired_playground_2026_scratch(&s).await;
         },
     ));
+
+    // 6b. 创作中心2026示例图：启动时若存储里还没有，用项目内置图写入固定路径
+    #[cfg(feature = "commercial_plugins")]
+    bg_handles.push({
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            api::plugins::playground_2026::ensure_demo_image_on_startup(state_clone).await;
+        })
+    });
 
     // 7. 启动时检查站点图标文件完整性，缺失则自动恢复（一次性任务）
     #[cfg(feature = "plugin_site_icons")]
@@ -225,11 +296,11 @@ async fn main() -> anyhow::Result<()> {
         })
     });
 
-    // 8. 启动时在后台静默执行历史数据回填落地（一次性任务）
+    // 8. 启动时在后台静默执行历史数据回填与自检（一次性任务）
     bg_handles.push({
         let state_clone = state.clone();
         tokio::spawn(async move {
-            // 稍稍休眠几秒，给应用服务器充分启动的时间，再开始历史回填
+            // 稍稍休眠几秒，给应用服务器充分启动的时间，再开始历史回填与自检
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             if let Err(e) =
                 relay::usage_stats::backfill_usage_daily_stats_on_startup(&state_clone).await
@@ -239,14 +310,10 @@ async fn main() -> anyhow::Result<()> {
                     e
                 );
             }
+            // 启动自检：清理已过期的对象存储临时文件与记录
+            relay::tos_persist::cleanup_expired_files(&state_clone).await;
         })
     });
-
-    // 9. 每日日志增量统计（睡到站点时区次日 00:00，避免每 5 分钟空转）
-    bg_handles.push(tokio::spawn(relay::usage_stats::run_daily_stats_loop(
-        state.clone(),
-        shutdown_rx.clone(),
-    )));
 
     // 10. 火山方舟视频监控：同步视频列表 + 分账账单 + 超额熔断（每 1 分钟）
     #[cfg(feature = "commercial_plugins")]
@@ -270,6 +337,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&portal_pro_dir).ok();
     // 确保 assets 目录存在
     std::fs::create_dir_all(&assets_dir).ok();
+    api::plugins::site_portal::ensure_portal_assets(&portal_dir, &assets_dir).await;
     let app = api::build_router(state.clone())
         .nest_service("/portal", tower_http::services::ServeDir::new(&portal_dir))
         .nest_service(
@@ -359,6 +427,41 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+static MAINTENANCE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 执行日常全量系统维护任务（用量增量统计、日志大字段清理、错误日志清理、日志归档、临时存储清理等）
+/// 严格遵循安全执行顺序：先聚合统计用量，再进行冷行删除归档。
+pub async fn run_daily_maintenance_job(state: &AppState) {
+    if MAINTENANCE_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        tracing::warn!("⚠️ 当前已有系统维护任务正在后台执行中，跳过本次触发");
+        return;
+    }
+
+    // 1. 每日用量增量统计（必须最优先执行！在日志行归档从 logs 表移走物理删除前，先将近 3 天数据增量聚合入库）
+    if let Err(e) = relay::usage_stats::sync_daily_stats_force(state).await {
+        tracing::warn!("系统维护: 每日用量增量统计执行失败: {:?}", e);
+    }
+
+    let cleanup_settings = fetch_log_cleanup_settings(state).await;
+
+    // 2. 清理超期日志的大字段内容（仅置 NULL，保留日志记录，统计数据不受影响）
+    cleanup_log_content(state, cleanup_settings.log_retention_days).await;
+
+    // 3. 彻底删除超期已结案错误记录
+    cleanup_error_logs(state, cleanup_settings.error_log_retention_days).await;
+
+    // 4. 将超期日志行迁入 logs_archive 并从热表删除
+    archive_old_logs(state, cleanup_settings.log_row_retention_days).await;
+
+    // 5. 清理已过期的对象存储临时文件与插件日志
+    relay::tos_persist::cleanup_expired_files(state).await;
+    api::plugins::manager::cleanup_expired_plugin_logs(state).await;
+    #[cfg(feature = "commercial_plugins")]
+    api::plugins::assets::cleanup_expired_volc_assets(state).await;
+
+    MAINTENANCE_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
 async fn fetch_log_cleanup_settings(state: &AppState) -> models::LogCleanupSettings {
     crate::api::settings::load_log_cleanup_settings(state)
         .await
@@ -367,8 +470,7 @@ async fn fetch_log_cleanup_settings(state: &AppState) -> models::LogCleanupSetti
 
 /// 清理超期日志的大字段内容（request_content / response_content / upstream_req_content）
 /// 仅置 NULL，不删除日志记录，统计数据不受影响
-async fn cleanup_log_content(state: &AppState) {
-    let retention_days = fetch_log_cleanup_settings(state).await.log_retention_days;
+async fn cleanup_log_content(state: &AppState, retention_days: i32) {
     if retention_days <= 0 {
         return;
     }
@@ -403,6 +505,7 @@ async fn cleanup_log_content(state: &AppState) {
                 if affected < 10000 {
                     break;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             Err(e) => {
                 tracing::warn!("日志清理失败: {}", e);
@@ -414,10 +517,14 @@ async fn cleanup_log_content(state: &AppState) {
 
 /// 将超期日志行迁入 logs_archive 并从热表删除（分批；`log_row_retention_days<=0` 时跳过）。
 /// jsonb 按列名填充，热表加列后无需再给 archive 做列序体操。
-async fn archive_old_logs(state: &AppState) {
-    let row_days = fetch_log_cleanup_settings(state).await.log_row_retention_days;
+async fn archive_old_logs(state: &AppState, row_days: i32) {
     if row_days <= 0 {
         return;
+    }
+
+    // 关键防序倒置保护：执行日志行归档前，必须确保当天的每日用量增量统计已先落地，杜绝漏算
+    if let Err(e) = relay::usage_stats::sync_daily_stats(state).await {
+        tracing::warn!("归档前预先执行用量统计失败: {:?}", e);
     }
 
     // 配置天数 +2 缓冲，降低「今日统计未落档就被迁走」的风险
@@ -428,13 +535,21 @@ async fn archive_old_logs(state: &AppState) {
             WHERE created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day') \
             ORDER BY created_at ASC LIMIT 5000\
          ), inserted AS (\
-            INSERT INTO logs_archive \
-            SELECT p.* FROM logs l \
+            INSERT INTO logs_archive (\
+                id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, \
+                cost, latency_ms, status_code, endpoint, error_message, upstream_url, request_content, response_content, \
+                upstream_req_content, is_stream, billing_detail, billing_pid, forward_eid, created_at, log_id, task_id, \
+                is_completed, pre_deduct_gift, action_type, channel_config_id, post_response, plugin_tag, is_ha, \
+                upstream_request_id, billing_features, archived_at\
+            ) \
+            SELECT \
+                l.id, l.user_id, l.channel_id, l.token_id, l.model, l.prompt_tokens, l.completion_tokens, l.cached_tokens, \
+                l.cost, l.latency_ms, l.status_code, l.endpoint, l.error_message, l.upstream_url, l.request_content, l.response_content, \
+                l.upstream_req_content, l.is_stream, l.billing_detail, l.billing_pid, l.forward_eid, l.created_at, l.log_id, l.task_id, \
+                l.is_completed, l.pre_deduct_gift, l.action_type, l.channel_config_id, l.post_response, l.plugin_tag, l.is_ha, \
+                l.upstream_request_id, l.billing_features, NOW() \
+            FROM logs l \
             JOIN candidates c ON c.id = l.id \
-            CROSS JOIN LATERAL jsonb_populate_record(\
-                NULL::logs_archive,\
-                to_jsonb(l) || jsonb_build_object('archived_at', NOW())\
-            ) AS p \
             ON CONFLICT (id) DO NOTHING \
             RETURNING id\
          ) \
@@ -460,6 +575,7 @@ async fn archive_old_logs(state: &AppState) {
                 if affected < 5000 {
                     break;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
             Err(e) => {
                 tracing::warn!("日志归档失败: {}", e);
@@ -473,6 +589,55 @@ async fn archive_old_logs(state: &AppState) {
             "📦 日志归档: 已迁入 logs_archive {} 条（保留热表 {}+2 天）",
             total,
             row_days
+        );
+    }
+}
+
+/// 分批删除指定表中非 200 且非 0（排除 pending 状态）已结案的超期错误记录
+async fn delete_expired_error_logs(db: &crate::db::Database, table: &str, days: i32) -> u64 {
+    let sql = db.format_query(&format!(
+        "DELETE FROM {table} WHERE id IN (\
+            SELECT id FROM {table} \
+            WHERE created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day') \
+              AND status_code NOT IN (200, 0) \
+              AND is_completed = 1 \
+            LIMIT 5000\
+         )"
+    ));
+    let mut total: u64 = 0;
+    loop {
+        match sqlx::query(&sql).bind(days as f64).execute(&db.pool).await {
+            Ok(r) => {
+                let affected = r.rows_affected();
+                total += affected;
+                if affected < 5000 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(e) => {
+                tracing::warn!("错误日志清理失败 ({table}): {}", e);
+                break;
+            }
+        }
+    }
+    total
+}
+
+/// 定期删除日志表 logs 与 logs_archive 中的超期错误记录（`error_log_retention_days <= 0` 时跳过）
+async fn cleanup_error_logs(state: &AppState, days: i32) {
+    if days <= 0 {
+        return;
+    }
+    let total_logs = delete_expired_error_logs(&state.db, "logs", days).await;
+    let total_archive = delete_expired_error_logs(&state.db, "logs_archive", days).await;
+
+    if total_logs > 0 || total_archive > 0 {
+        tracing::info!(
+            "🧹 错误日志清理: 已彻底删除超过 {} 天的已结案错误记录 (status_code NOT IN (200, 0))，logs: {} 条, logs_archive: {} 条",
+            days,
+            total_logs,
+            total_archive
         );
     }
 }
@@ -547,6 +712,58 @@ where
                 }
                 _ = rx.changed() => {
                     tracing::info!("[CronTask] {} 定时任务已优雅关闭退出", task_name);
+                    return;
+                }
+            }
+        }
+    })
+}
+
+static DAILY_SCHEDULE_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 抽象的高可用每日错峰定时任务派发器，支持基于站点时区精准唤醒、配置变更热对齐以及优雅退出
+fn spawn_daily_scheduled_task<F, Fut>(
+    state: Arc<AppState>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    task_name: &'static str,
+    get_hm: impl Fn(&models::LogCleanupSettings) -> (u32, u32) + Send + Sync + 'static,
+    job: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(Arc<AppState>) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut rx = shutdown_rx;
+        let mut schedule_rx = api::settings::subscribe_schedule_changed();
+        loop {
+            let tz_name = relay::relay_settings::get_cached_site_timezone(&state.db).await;
+            let cleanup_settings = fetch_log_cleanup_settings(&state).await;
+            let (hour, min) = get_hm(&cleanup_settings);
+            let wait = time_system::duration_until_next_local_hms(&tz_name, hour, min, 0);
+            tokio::select! {
+                _ = tokio::time::sleep(wait) => {
+                    tracing::info!(
+                        "⏰ [DailySchedule] 开始执行错峰任务: {} (目标 {:02}:{:02}, tz={})",
+                        task_name,
+                        hour,
+                        min,
+                        tz_name
+                    );
+                    let _guard = DAILY_SCHEDULE_MUTEX.lock().await;
+                    job(state.clone()).await;
+                    drop(_guard);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                res = schedule_rx.changed() => {
+                    if res.is_err() {
+                        return;
+                    }
+                    // 运维配置或时区变更，重新对齐休眠时间
+                    continue;
+                }
+                _ = rx.changed() => {
+                    tracing::info!("[DailySchedule] {} 定时任务已优雅关闭退出", task_name);
                     return;
                 }
             }

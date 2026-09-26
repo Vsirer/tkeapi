@@ -1,14 +1,17 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Navigate } from 'react-router-dom';
 import { Table, Tag, Button, Space, Typography, Input, Select, Row, Col, Form, message, Grid, Descriptions, Card, Tooltip, theme, Radio, Popconfirm, Modal, Image, Carousel, Spin } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
-import { RefreshCw, Search, Download, Image as ImageIcon, MessageSquare, Video, Wrench, LayoutGrid, CheckCircle2, XCircle, Cuboid, ListOrdered, Mic, MoreHorizontal } from 'lucide-react';
+import { listPagination, useListPager } from '../../components/ListPagination';
+import { RefreshCw, Search, Download, Image as ImageIcon, MessageSquare, Video, Wrench, XCircle, Cuboid, ListOrdered, Mic, MoreHorizontal } from 'lucide-react';
 import request from '../../utils/request';
 import { QueryGuard, isRequestAborted } from '../../utils/queryGuard';
 import dayjs from 'dayjs';
@@ -20,12 +23,12 @@ import { useLogDetailLoader } from '../../hooks/useLogDetailLoader';
 import { useDragScroll } from '../../hooks/useDragScroll';
 import { parsePluginTagMeta } from '../../utils/pluginTagMeta';
 import MediaPreviewModal from './components/MediaPreviewModal';
-dayjs.extend(utc);
-import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import useAuthStore from '../../store/auth';
-import useSettingsStore from '../../store/settings';
 import { useThemeStore } from '../../store/theme';
+import { useLogTypeRoute } from './logTypeRoutes';
+import { LogTypeTabs, buildLogTypeTabOptions } from './LogTypeTabs';
+dayjs.extend(utc);
 
 const { Text } = Typography;
 const { useBreakpoint } = Grid;
@@ -58,8 +61,11 @@ interface TaskLog {
   user_nickname: string | null;
   user_admin_remark?: string | null;
   task_id: string | null;
+  upstream_request_id?: string | null;
   action_type: string | null;
+  has_video?: number;
   yid?: string | null;
+  mid?: string | null;
   billing_pid?: string | null;
   forward_eid?: string | null;
   /** 列表直接返回的产物媒体地址（预览用，不受详情权限限制） */
@@ -75,6 +81,7 @@ const getTaskType = (r: TaskLog) => {
   if (r.action_type === '图片') return { label: '图片', color: 'purple', icon: <ImageIcon size={14} /> };
   if (r.action_type === '视频') return { label: '视频', color: 'orange', icon: <Video size={14} /> };
   if (r.action_type === '视频增强') return { label: '视频增强', color: 'volcano', icon: <Video size={14} /> };
+  if (r.action_type === '图像增强') return { label: '图像增强', color: 'purple', icon: <ImageIcon size={14} /> };
   if (r.action_type === '音频') return { label: '音频', color: 'green', icon: <Mic size={14} /> };
   if (r.action_type === '向量') return { label: '向量', color: 'cyan', icon: <Cuboid size={14} /> };
   if (r.action_type === '排序') return { label: '排序', color: 'geekblue', icon: <ListOrdered size={14} /> };
@@ -86,7 +93,11 @@ const isAsyncPost = (r: TaskLog) => !!r.task_id;
 
 // ── 工具函数：获取异步任务终态 ─────────────────────────
 const getAsyncFinalStatus = (r: TaskLog): 'pending' | 'succeeded' | 'failed' => {
-  if (!isAsyncPost(r)) return 'succeeded';
+  if (!isAsyncPost(r)) {
+    if (r.status_code === 0) return 'pending';
+    if (r.status_code >= 200 && r.status_code < 400) return 'succeeded';
+    return 'failed';
+  }
   
   // 1. 优先从最新的响应结果中解析状态
   if (r.response_content) {
@@ -108,8 +119,8 @@ const getAsyncFinalStatus = (r: TaskLog): 'pending' | 'succeeded' | 'failed' => 
   }
 
   // 2. 列表标记优先；billing_detail 仅兼容旧缓存/展开合并
-  if (r.billing_failed) return 'failed';
-  if (r.billing_frozen) return 'pending';
+  if (r.billing_failed || r.status_code >= 400) return 'failed';
+  if (r.billing_frozen || r.status_code === 0) return 'pending';
   if (r.billing_present) return 'succeeded';
   if (r.billing_detail) {
     if (r.billing_detail.includes('失败')) return 'failed';
@@ -162,55 +173,9 @@ const extractUrls = (content: string | null): string[] => {
   }
 };
 
-const ShadcnTabs = ({ value, onChange, options, isLight, themeToken }: any) => {
-  return (
-    <div style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: '8px',
-      background: themeToken?.colorFillAlter || (isLight ? '#fafafa' : '#1d1d1d'),
-      padding: '4px',
-      height: '32px',
-    }}>
-      {options.map((opt: any) => {
-        const isActive = value === opt.value;
-        return (
-          <div
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              whiteSpace: 'nowrap',
-              borderRadius: '6px',
-              padding: '0 16px',
-              height: '100%',
-              fontSize: '14px',
-              fontWeight: 500,
-              transition: 'all 0.2s',
-              cursor: 'pointer',
-              background: isActive ? 'rgb(72, 72, 72)' : 'transparent',
-              color: isActive ? '#fff' : (themeToken?.colorTextSecondary || (isLight ? '#71717a' : '#a1a1aa')),
-              boxShadow: isActive ? '0 1px 2px 0 rgba(0, 0, 0, 0.05)' : 'none',
-              gap: '6px'
-            }}
-          >
-            {opt.icon}
-            {opt.label}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
 const TaskLogs: React.FC = () => {
   const { t } = useTranslation();
   const { user } = useAuthStore();
-  const { settings } = useSettingsStore();
-  const adminPath = settings?.admin_path || 'admin';
   const isSuperAdmin = user?.role === 'admin' && !user?.admin_group_id;
   const isAdmin = user?.role === 'admin';
   const { themeMode } = useThemeStore();
@@ -224,14 +189,15 @@ const TaskLogs: React.FC = () => {
   const [data, setData] = useState<TaskLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const { page, pageSize, setPage, setPageSize, onChange } = useListPager();
   const [allowDetails, setAllowDetails] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [form] = Form.useForm();
   const screens = useBreakpoint();
-  const [actionTypeFilter, setActionTypeFilter] = useState<string>(localStorage.getItem('default_log_type') || '视觉');
+  const { actionTypeFilter, redirectTo, goLogType, defaultLogType, setDefaultLogType } = useLogTypeRoute('task-logs');
+  const logTypeOptions = useMemo(() => buildLogTypeTabOptions(t), [t]);
   const [subTypeFilter, setSubTypeFilter] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false);
   const [tempDefaultType, setTempDefaultType] = useState<string>('视觉');
   const [userLevels, setUserLevels] = useState<any[]>([]);
@@ -261,9 +227,9 @@ const TaskLogs: React.FC = () => {
 
   useEffect(() => {
     if (isSettingsModalVisible) {
-      setTempDefaultType(localStorage.getItem('default_log_type') || '视觉');
+      setTempDefaultType(defaultLogType);
     }
-  }, [isSettingsModalVisible]);
+  }, [isSettingsModalVisible, defaultLogType]);
 
   // 预览相关状态
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -297,11 +263,11 @@ const TaskLogs: React.FC = () => {
 
     setPreviewRecord(currentRecord);
     setPreviewUrls(urls);
-    setPreviewType(record.action_type === '图片' ? '图片' : '视频');
+    setPreviewType((record.action_type === '图片' || record.action_type === '图像增强') ? '图片' : '视频');
     setPreviewOpen(true);
   };
 
-  const fetchLogs = useCallback(async (current = 1, size = 20) => {
+  const fetchLogs = useCallback(async (current = 1, size = pageSize) => {
     const signal = queryGuardRef.current.begin();
     setLoading(true);
     try {
@@ -323,6 +289,7 @@ const TaskLogs: React.FC = () => {
       if (v.search_keyword && v.search_keyword.trim()) params.search_keyword = v.search_keyword.trim();
       if (v.user_id && v.user_id.trim()) params.user_id = v.user_id.trim();
       if (v.user_group) params.user_group = v.user_group;
+      if (statusFilter) params.status = statusFilter;
       Object.assign(params, toDateRangeParams(v.dateRange));
 
       const res = await (request.get('/task_logs', { params, signal }) as any);
@@ -347,7 +314,7 @@ const TaskLogs: React.FC = () => {
         setLoading(false);
       }
     }
-  }, [form, actionTypeFilter, subTypeFilter, t, page, pageSize, resetDetailCache]);
+  }, [form, actionTypeFilter, subTypeFilter, statusFilter, t, page, pageSize, resetDetailCache]);
 
 
   const handleSyncTask = async (log_id: string) => {
@@ -369,24 +336,37 @@ const TaskLogs: React.FC = () => {
   };
 
   useEffect(() => {
+    if (redirectTo) return;
     if (skipNextEffectFetchRef.current) {
       skipNextEffectFetchRef.current = false;
       return;
     }
     fetchLogs(page, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, actionTypeFilter, subTypeFilter]);
+  }, [page, pageSize, actionTypeFilter, subTypeFilter, statusFilter, redirectTo]);
 
   const handleExport = async () => {
     setExporting(true);
     try {
       const v = form.getFieldsValue();
       const params: any = {};
-      if (v.action_type) params.action_type = v.action_type;
+      if (subTypeFilter) {
+        if (subTypeFilter === '图片') params.action_type = 'image';
+        else if (subTypeFilter === '视频') params.action_type = 'video';
+        else if (subTypeFilter === '聊天') params.action_type = 'chat';
+        else if (subTypeFilter === '其它') params.action_type = 'other';
+        else params.action_type = subTypeFilter;
+      } else if (actionTypeFilter && actionTypeFilter !== '全部') {
+        if (actionTypeFilter === '视觉') params.action_type = 'vision';
+        else if (actionTypeFilter === '聊天') params.action_type = 'chat';
+        else if (actionTypeFilter === '其它') params.action_type = 'other';
+        else params.action_type = actionTypeFilter;
+      }
       if (v.model && v.model.trim()) params.model = v.model.trim();
       if (v.search_keyword && v.search_keyword.trim()) params.search_keyword = v.search_keyword.trim();
       if (v.user_id && v.user_id.trim()) params.user_id = v.user_id.trim();
       if (v.user_group) params.user_group = v.user_group;
+      if (statusFilter) params.status = statusFilter;
       Object.assign(params, toDateRangeParams(v.dateRange));
       const resp = await request.get('/task_logs/export', {
         params,
@@ -438,23 +418,44 @@ const TaskLogs: React.FC = () => {
       <div style={{ padding: '8px 0' }}>
         <Descriptions size="small" column={1} bordered
           styles={{
-            label: { width: 120, color: labelColor, background: labelBg },
+            label: { width: 120, whiteSpace: 'nowrap', color: labelColor, background: labelBg },
             content: { background: contentBg, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace', fontSize: 12, maxHeight: 300, overflow: 'auto' }
           }}
         >
+          {merged.upstream_request_id && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.upstream_request_id', '厂商排查ID')}
+                <Tooltip title={t('logs.upstream_request_id_tip', '上游响应追踪凭据，用于找厂商排障')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: labelColor, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Text copyable={{ text: merged.upstream_request_id }} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                {merged.upstream_request_id}
+              </Text>
+            </Descriptions.Item>
+          )}
           {isSuperAdmin && (() => {
             const s1 = parsePluginTagMeta(merged.plugin_tag).cascadeS1TaskId;
             return s1 ? (
-              <Descriptions.Item label={t('logs.cascade_s1_task_id', '上游任务ID')}>
+              <Descriptions.Item label={
+                <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  {t('logs.cascade_s1_task_id', '底座任务ID')}
+                  <Tooltip title={t('logs.cascade_s1_task_id_tip', '级联底座原始任务号，用于上游控制台查单')}>
+                    <QuestionCircleOutlined style={{ marginLeft: 4, color: labelColor, cursor: 'help' }} />
+                  </Tooltip>
+                </span>
+              }>
                 <Text copyable={{ text: s1 }} style={{ fontFamily: 'monospace', fontSize: 12 }}>{s1}</Text>
               </Descriptions.Item>
             ) : null;
           })()}
           <Descriptions.Item label={t('task_logs.token_usage', 'Token 用量')}>
-            {t('logs.input', '输入')} {record.prompt_tokens} / {t('logs.output', '输出')} {record.completion_tokens}{(record.cached_tokens ?? 0) > 0 ? ` / ${t('logs.cache_read', '缓存读取')} ${record.cached_tokens}` : ''}
+            {t('logs.input', '输入')} {record.prompt_tokens} / {t('logs.output', '输出')} {record.completion_tokens}{record.action_type === '视频' && (record.has_video === 1 ? ` ${t('logs.with_video_short', '含视')}` : ` ${t('logs.without_video_short', '无视')}`)}{(record.cached_tokens ?? 0) > 0 ? ` / ${t('logs.cache_read', '缓存读取')} ${record.cached_tokens}` : ''}
           </Descriptions.Item>
           <Descriptions.Item label={t('task_logs.cost', '费用')}>
-            {record.cost > 0 ? record.cost.toFixed(6) : '0'}
+            {record.cost > 0 ? Number(Number(record.cost).toFixed(6)) : '0'}
           </Descriptions.Item>
           {merged.billing_detail && (
             <Descriptions.Item label={t('logs.billing_detail', '计费明细')}>{fmtJson(merged.billing_detail)}</Descriptions.Item>
@@ -487,7 +488,7 @@ const TaskLogs: React.FC = () => {
       width: 190,
       render: (v: string, r: TaskLog) => {
         return (
-          <Space direction="vertical" size={0}>
+          <Space vertical size={0}>
             <Text style={{ fontSize: 13 }}>{formatApiDateTime(v)}</Text>
             {r.log_id && (
               <Text 
@@ -570,11 +571,11 @@ const TaskLogs: React.FC = () => {
       width: 180,
       ellipsis: true,
       render: (v: string, record: TaskLog) => (
-        <Space direction="vertical" size={0}>
+        <Space vertical size={0}>
           <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{v || '-'}</Text>
-          {user?.role === 'admin' && (record.yid || record.billing_pid || record.forward_eid) && (
+          {user?.role === 'admin' && (record.mid || record.billing_pid || record.forward_eid) && (
             <Space size={4}>
-              {record.yid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>YID:{record.yid}</Text>}
+              {record.mid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>MID:{record.mid}</Text>}
               {record.billing_pid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>PID:{record.billing_pid}</Text>}
               {record.forward_eid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>EID:{record.forward_eid}</Text>}
             </Space>
@@ -597,6 +598,13 @@ const TaskLogs: React.FC = () => {
       key: 'status',
       width: 140,
       fixed: 'right' as const,
+      filters: [
+        { text: t('task_logs.success', '成功'), value: 'success' },
+        { text: t('task_logs.status_processing', '处理中'), value: 'processing' },
+        { text: t('task_logs.fail', '失败'), value: 'fail' },
+      ],
+      filterMultiple: false,
+      filteredValue: statusFilter ? [statusFilter] : null,
       render: (_: any, r: TaskLog) => {
         const status = getAsyncFinalStatus(r);
         if (status === 'pending') {
@@ -641,7 +649,7 @@ const TaskLogs: React.FC = () => {
           statusTag = <Tag color="success">{t('task_logs.success', '成功')}</Tag>;
         }
 
-        const canPreview = (r.action_type === '图片' || r.action_type === '视频' || r.action_type === '视频增强') && status === 'succeeded';
+        const canPreview = (r.action_type === '图片' || r.action_type === '视频' || r.action_type === '视频增强' || r.action_type === '图像增强') && status === 'succeeded';
 
         return (
           <Space>
@@ -668,21 +676,19 @@ const TaskLogs: React.FC = () => {
         const remark = r.user_admin_remark?.trim();
         const displayUid = r.user_uid || r.user_id;
         return (
-          <Space direction="vertical" size={0}>
+          <Space vertical size={0}>
             <Text style={{ fontSize: 12 }}>
-              {r.user_uid ? (
-                <Link to={`/${adminPath}/users/${r.user_uid}/basic`} style={{ fontWeight: 500 }}>
-                  {name}
-                </Link>
-              ) : (
-                name
-              )}
+              {name}
               {remark ? <Text type="secondary" style={{ fontSize: 12 }}> {remark}</Text> : null}
             </Text>
             {r.user_uid ? (
-              <Link to={`/${adminPath}/users/${r.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+              <Text 
+                type="secondary" 
+                style={{ fontSize: 10, fontFamily: 'monospace' }}
+                copyable={{ text: String(r.user_uid), tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+              >
                 UID: {r.user_uid}
-              </Link>
+              </Text>
             ) : (
               <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: displayUid, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}>
                 {displayUid}
@@ -718,7 +724,7 @@ const TaskLogs: React.FC = () => {
             </>
           )}
           <Form.Item name="search_keyword" noStyle>
-            <Input placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID')} prefix={<Search size={16} />} allowClear style={{ width: 270, fontSize: 12, height: 32 }} />
+            <Input placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID/上游YID')} prefix={<Search size={16} />} allowClear style={{ width: 320, fontSize: 12, height: 32 }} />
           </Form.Item>
           <Form.Item name="model" noStyle>
             <Input placeholder={t('logs.model_name', '模型名称')} prefix={<Search size={16} />} allowClear style={{ width: 180, fontSize: 12, height: 32 }} />
@@ -753,14 +759,14 @@ const TaskLogs: React.FC = () => {
         compact={true}
         style={{ background: isLight ? '#fff' : '#141414', border: 'none' }}
         title={
-          <Space direction="vertical" size={2}>
+          <Space vertical size={2}>
             <Space>
               <Tag color={tp.color}>{tp.icon} {tp.label}</Tag>
               <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{record.model}</Text>
             </Space>
-            {user?.role === 'admin' && (record.yid || record.billing_pid || record.forward_eid) && (
+            {user?.role === 'admin' && (record.mid || record.billing_pid || record.forward_eid) && (
               <Space size={4} style={{ display: 'flex', flexWrap: 'wrap' }}>
-                {record.yid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>YID:{record.yid}</Text>}
+                {record.mid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>MID:{record.mid}</Text>}
                 {record.billing_pid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>PID:{record.billing_pid}</Text>}
                 {record.forward_eid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>EID:{record.forward_eid}</Text>}
               </Space>
@@ -789,7 +795,7 @@ const TaskLogs: React.FC = () => {
           ) : (
             <Space>
               <Tag color="success">{t('task_logs.success', '成功')}</Tag>
-              {(record.action_type === '图片' || record.action_type === '视频' || record.action_type === '视频增强') && (
+              {(record.action_type === '图片' || record.action_type === '视频' || record.action_type === '视频增强' || record.action_type === '图像增强') && (
                 <Button type="link" size="small" style={{ padding: 0 }} onClick={(e) => { e.stopPropagation(); handlePreview(record); }}>
                   {t('task_logs.preview', '预览')}
                 </Button>
@@ -799,7 +805,7 @@ const TaskLogs: React.FC = () => {
         }
       >
         <CardRow label={t('task_logs.submit_time', '提交')}>
-          <Space direction="vertical" size={0} align="end">
+          <Space vertical size={0} align="end">
             <Text type="secondary" style={{ fontSize: 12 }}>{formatApiDateTime(record.created_at)}</Text>
             {record.log_id && (
               <Text 
@@ -823,21 +829,19 @@ const TaskLogs: React.FC = () => {
         )}
         {isAdmin && (
           <CardRow label={t('logs.user', '用户')}>
-            <Space direction="vertical" size={0} align="end">
+            <Space vertical size={0} align="end">
               <Text style={{ fontSize: 12 }}>
-                {record.user_uid ? (
-                  <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
-                    {record.user_nickname || record.user_uid || record.user_id}
-                  </Link>
-                ) : (
-                  record.user_nickname || record.user_uid || record.user_id
-                )}
+                {record.user_nickname || record.user_uid || record.user_id}
                 {record.user_admin_remark?.trim() ? <Text type="secondary" style={{ fontSize: 12 }}> {record.user_admin_remark.trim()}</Text> : null}
               </Text>
               {record.user_uid ? (
-                <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                <Text 
+                  type="secondary" 
+                  style={{ fontSize: 10, fontFamily: 'monospace' }}
+                  copyable={{ text: String(record.user_uid), tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+                >
                   UID: {record.user_uid}
-                </Link>
+                </Text>
               ) : (
                 <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }} copyable={{ text: record.user_id }}>
                   {record.user_id}
@@ -852,10 +856,14 @@ const TaskLogs: React.FC = () => {
           return sec >= 60 ? `${(sec / 60).toFixed(1)}m` : `${sec.toFixed(1)}s`;
         })()}</Text></CardRow>
         {tid !== '-' && <CardRow label={t('task_logs.task_id', '任务ID')}><Text style={{ fontSize: 11, fontFamily: 'monospace' }}>{tid}</Text></CardRow>}
-        {record.cost > 0 && <CardRow label={t('task_logs.cost', '费用')}><Text style={{ fontSize: 12 }}>{record.cost.toFixed(6)}</Text></CardRow>}
+        {record.cost > 0 && <CardRow label={t('task_logs.cost', '费用')}><Text style={{ fontSize: 12 }}>{Number(Number(record.cost).toFixed(6))}</Text></CardRow>}
       </MobileCard>
     );
   };
+
+  if (redirectTo) {
+    return <Navigate to={redirectTo} replace />;
+  }
 
   return (
     <Card 
@@ -876,24 +884,17 @@ const TaskLogs: React.FC = () => {
             {t('menu.task_logs', '任务日志')}
           </Typography.Title>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ShadcnTabs 
+            <LogTypeTabs
               value={actionTypeFilter}
+              defaultFirst={defaultLogType}
               isLight={isLight}
               themeToken={themeToken}
+              options={logTypeOptions}
               onChange={(v: string) => {
-                setActionTypeFilter(v);
                 setSubTypeFilter(null);
                 setPage(1);
+                goLogType(v);
               }}
-              options={[
-                { value: '视觉', label: t('logs.type_vision', '视觉'), icon: <ImageIcon size={14} /> },
-                { value: '聊天', label: t('logs.type_chat', '聊天'), icon: <MessageSquare size={14} /> },
-                { value: '音频', label: t('logs.type_audio', '音频'), icon: <Mic size={14} /> },
-                { value: '向量', label: t('logs.type_embedding', '向量'), icon: <Cuboid size={14} /> },
-                { value: '排序', label: t('logs.type_rerank', '排序'), icon: <ListOrdered size={14} /> },
-                { value: '其它', label: t('logs.type_other', '其它'), icon: <Wrench size={14} /> },
-                { value: '全部', label: t('logs.type_all', '全部'), icon: <LayoutGrid size={14} /> },
-              ]}
             />
             <Tooltip title={t('logs.configure_default_type', '配置默认视图')}>
               <Button
@@ -929,11 +930,11 @@ const TaskLogs: React.FC = () => {
           rowKey="id"
           compact={true}
           gap={4}
-          pagination={{ current: page, pageSize, total, onChange: (p: number, s: number) => fetchLogs(p, s), showQuickJumper: true }}
+          pagination={listPagination({ current: page, pageSize, total, onChange })}
           renderCard={renderMobileCard}
         />
       ) : (
-        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%' }}>
           <Table
             columns={columns.map((c: any) => c ? { ...c, align: 'center' } : null).filter(Boolean) as any}
             dataSource={data}
@@ -944,32 +945,30 @@ const TaskLogs: React.FC = () => {
                 ? { expandedRowKeys, expandedRowRender, onExpand: handleExpand, expandRowByClick: false } 
                 : undefined
             }
-            pagination={{
+            pagination={listPagination({
               current: page,
               pageSize,
               total,
-              showSizeChanger: true,
-              showQuickJumper: true,
-              showTotal: (totalCount) => t('task_logs.total_records', '共 {{total}} 条', { total: totalCount }),
-            }}
-            onChange={(pagination, filters) => {
+              onChange,
+            })}
+            onChange={(_pagination, filters) => {
+              let shouldResetPage = false;
               const typeFilter = filters?.type;
               const newSubFilter = (typeFilter && typeFilter.length > 0) ? (typeFilter[0] as string) : null;
-              
-              let shouldResetPage = false;
               if (newSubFilter !== subTypeFilter) {
                 setSubTypeFilter(newSubFilter);
                 shouldResetPage = true;
               }
+              const stFilter = (filters?.status && filters.status.length > 0) ? (filters.status[0] as string) : undefined;
+              if (stFilter !== statusFilter) {
+                setStatusFilter(stFilter);
+                shouldResetPage = true;
+              }
               if (shouldResetPage) {
                 setPage(1);
-              } else if (pagination.current !== page || pagination.pageSize !== pageSize) {
-                setPage(pagination.current || 1);
-                setPageSize(pagination.pageSize || 20);
               }
             }}
             scroll={{ x: 1200 }}
-            sticky={{ offsetHeader: 0 }}
             size="middle"
           />
         </div>
@@ -1019,15 +1018,7 @@ const TaskLogs: React.FC = () => {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 24 }}>
-          {[
-            { value: '视觉', label: t('logs.type_vision', '视觉'), icon: <ImageIcon size={14} /> },
-            { value: '聊天', label: t('logs.type_chat', '聊天'), icon: <MessageSquare size={14} /> },
-            { value: '音频', label: t('logs.type_audio', '音频'), icon: <Mic size={14} /> },
-            { value: '向量', label: t('logs.type_embedding', '向量'), icon: <Cuboid size={14} /> },
-            { value: '排序', label: t('logs.type_rerank', '排序'), icon: <ListOrdered size={14} /> },
-            { value: '其它', label: t('logs.type_other', '其它'), icon: <Wrench size={14} /> },
-            { value: '全部', label: t('logs.type_all', '全部'), icon: <LayoutGrid size={14} /> },
-          ].map((opt) => {
+          {logTypeOptions.map((opt) => {
             const isSelected = tempDefaultType === opt.value;
             return (
               <div
@@ -1084,9 +1075,10 @@ const TaskLogs: React.FC = () => {
           </Button>
           <Button
             onClick={() => {
-              localStorage.setItem('default_log_type', tempDefaultType);
-              setActionTypeFilter(tempDefaultType);
+              setDefaultLogType(tempDefaultType);
+              setSubTypeFilter(null);
               setPage(1);
+              goLogType(tempDefaultType);
               message.success(t('logs.default_type_saved', '默认日志类型配置已保存'));
               setIsSettingsModalVisible(false);
             }}

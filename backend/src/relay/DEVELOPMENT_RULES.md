@@ -88,7 +88,7 @@ proxy::pre_deduct_or_intercept(..., category).await
 |-----|------|
 | `record_zero_cost_fail` | **只记账**；HA 终态 / 业务侧停切；调用方自行 `upstream_fail` / `BadRequest` / `PaymentRequired` |
 | `HaAttempt::park` + `FailBill::transport|http|biz` | 上游失败暂存（不写 logs）→ 外环 `ha.fail`；中间失败不记账 |
-| `spawn_protected` + `join_protected` | 连接保护：独立 task 跑完上游/预扣/落库；拼 Response 在 task 外 |
+| `spawn_protected` + `join_protected` | 连接保护：独立 task 跑完素材转换/上游/预扣/落库；拼 Response 在 task 外 |
 
 `pre_deducted`/`pre_deduct_gift`：尚未预扣传 `0.0`；预扣后失败退费传已扣金额。  
 成功计费、异步冻结、流结束结算：**不要**走上述 API。
@@ -114,7 +114,7 @@ Err(ha.finish(&HaBillCtx::new(&state, &token, model, entry_path).category("聊�
 ```
 
 - `FailBill::transport` / `http` / `biz`：三类上游失败账单；可选 `.stream` / `.detail` / `.pre` / `.content` / `.client`
-- `spawn_protected(fut)` + `join_protected`：连接保护（上游/预扣/落库，oneshot 回传）；拼 Response 在 Ok 分支；流泵仍用普通 `tokio::spawn`
+- `spawn_protected(fut)` + `join_protected`：连接保护（素材转换/上游/预扣/落库，oneshot 回传）；拼 Response 在 Ok 分支；流泵仍用普通 `tokio::spawn`
 - `park`：spawn 暂存 `FailBill` + 对外错误（不写 logs）
 - `fail`：记 snap / 首败；续试则退预扣并清零首败预扣；末次强制停切后 `settle_first`+`save`
 - `settle_first`：首败渠 + 首败 `endpoint` + `FailBill`；category 用当前 `HaBillCtx`
@@ -156,10 +156,10 @@ POST 冻结（`billing_detail` 含「冻结」）→ GET 成功结算 / 失败�
 - Usage：`usage_extractor::parse_usage`（OpenAI / Gemini / 火山 / SSE）
 - 转发：`forward.rs`（`ResolvedForward`、`target_type`、白名单透传）
 - 素材：`asset_convert.rs`（仅 `asset_convert==true`；失败不阻塞主请求）
-- 异步任务：`poll_task_result` → `PollOutcome`（`Succeeded` / `Failed{timed_out}`）+ `PollTaskOpts`（查询前 5→1s，可重试达 `POLL_FAIL_LIMIT=15`，不可重试立即失败并保留上游文案）；级联裁剪/抽帧经内部 `CascadeMk`→`cascade_mk_url`；增强状态仍由 GET/TaskPoller；后台周期见 `RelaySettings.poll_tick_secs`（缓存）
+- 异步任务：`poll_task_result` → `PollOutcome`（`Succeeded` / `Failed{timed_out}`）+ `PollTaskOpts`（查询前 5→1s，可重试达 `POLL_FAIL_LIMIT=15`，不可重试立即失败并保留上游文案）；级联裁剪/抽帧经插件 `crop_volc_cascade_video` / `extract_volc_last_frame`（腾讯为 `crop_tencent_cascade_video` / `extract_tencent_last_frame`）；增强状态仍由 GET/TaskPoller；后台周期见 `RelaySettings.poll_tick_secs`（缓存）
 - 级联增强：S2 成功走 `cascade_on_s2_succeeded`（usage×res_mul + 按需抽帧写 stage2）；对外/用户端经 `cascade_s1_with_s2_url` 叠尾帧；落库 stage1 保持原尾帧
 - 级联出片不变量：S2 完成前禁止展示 S1 成片（剥 content/data/video_url 等）；失败勿回退空 URL；logs 短路先 status 再级联；处理中无 `{id,status}` 空壳兜底
-- 结算：`cascade_stage2_submit` 只落库错误态，退费由 task `settle_failure` / `try_cascade_stage2_submit` 统一结案
+- 结算：`cascade_stage2_submit` 立刻返回、失败只落库；退费由下次 `prepare_poll` / task `settle_failure` 结案
 - 级联裁剪：`crop_480p`（缺省 true）控制 720p←480 是否 MediaKit 裁剪；其它分辨率忽略
 - 宽日志查询（>16 列）：用 `TaskRelayLogRow` + `FromRow` 一次查出，禁止拆成二次 query / 超长元组；轮询 SELECT 列与结构体字段对齐（`action_type AS category`，不查无用 `endpoint`）
 

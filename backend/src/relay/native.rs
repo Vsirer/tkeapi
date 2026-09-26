@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! Relay: Native protocol passthrough (Gemini / Volcengine / DashScope).
@@ -114,6 +114,7 @@ pub async fn gemini_proxy(
 
     // access 前用入口推断；access 后日志/计费用 resolved_cat
     let entry_cat = gemini_native_entry_category(model, body_json.as_ref());
+    let log_id = upstream_headers::resolve_request_log_id(Some(entry_cat));
     let entry_ep = format!("/v1beta/models/{}:{}", model, action);
 
     // 1. Token 模型权限校验（渠道选择前快速拦截）
@@ -239,7 +240,7 @@ pub async fn gemini_proxy(
                     category: Some(resolved_cat.as_str()),
                     db_model: db_model.as_ref(),
                     forward_eid: None,
-                    requested_log_id: None,
+                    requested_log_id: Some(&log_id),
                 })
                 .await,
             );
@@ -287,10 +288,9 @@ pub async fn gemini_proxy(
                     is_stream == 0,
                     timeout_ctx.resolve(),
                 );
-                let resp = match native_builder.send().await {
+                let resp = match timeout_ctx.send(native_builder, is_stream == 1).await {
                     Ok(r) => r,
-                    Err(e) => {
-                        let err_msg = e.to_string();
+                    Err(err_msg) => {
                         let bill = crate::relay::ha::FailBill::transport(
                             start_time.elapsed().as_millis() as u32,
                             err_msg.clone(),
@@ -371,7 +371,7 @@ pub async fn gemini_proxy(
                 let headers = resp.headers().clone();
                 let body_str = resp.text().await.unwrap_or_default();
                 let usage = crate::relay::usage_extractor::parse_usage(&body_str);
-                let features = crate::relay::usage_extractor::features_from_values(
+                let mut features = crate::relay::usage_extractor::features_from_values(
                     body_json.as_ref(),
                     None,
                     Some(&body_str),
@@ -400,7 +400,7 @@ pub async fn gemini_proxy(
                     &channel,
                     &ctx,
                     &usage,
-                    &features,
+                    &mut features,
                     mapping_source.as_deref(),
                     &model,
                     &resolved_model,
@@ -435,6 +435,7 @@ pub async fn gemini_proxy(
                     features: Some(features),
                     time_multiplier: db_rule.as_ref().map(|r| r.applied_multiplier),
                     plugin_tag: None,
+                    upstream_request_id: upstream_headers::extract_upstream_request_id(&headers),
                 })
                 .await;
                 Ok(super::ProtectOut::Raw(super::UpstreamRaw::new(
@@ -447,15 +448,18 @@ pub async fn gemini_proxy(
             super::ProtectJoin::Ok(super::ProtectOut::Raw(raw)) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &url, ms).await;
-                return Ok(upstream_headers::json_with_upstream_headers(
-                    &raw.headers,
-                    raw.body,
+                return Ok(upstream_headers::with_request_id(
+                    upstream_headers::json_with_upstream_headers(
+                        &raw.headers,
+                        raw.body,
+                    ),
+                    &log_id,
                 ));
             }
             super::ProtectJoin::Ok(super::ProtectOut::Live(resp)) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &url, ms).await;
-                return Ok(resp);
+                return Ok(upstream_headers::with_request_id(resp, &log_id));
             }
             super::ProtectJoin::Retry => {
                 ha.bump();
@@ -1066,27 +1070,29 @@ pub async fn volcengine_task_cancel(
         .map_or(false, |d| d.contains("冻结"));
     if is_frozen {
         // 任务仍在冻结（pending）状态，执行预扣费退还
-        let log_data: Option<(f64, f64, Option<i64>, Option<i64>)> =
+        let log_data: Option<(f64, f64, Option<i64>, Option<i64>, Option<i32>)> =
             sqlx::query_as(&state.db.format_query(
-                "SELECT cost, pre_deduct_gift, token_id, channel_id FROM logs WHERE id = ?",
+                "SELECT cost, pre_deduct_gift, token_id, channel_id, channel_config_id FROM logs WHERE id = ?",
             ))
             .bind(log_id)
             .fetch_optional(&state.db.pool)
             .await
             .unwrap_or(None);
 
-        let (pre_deduction, pre_deduct_gift, token_id_opt, channel_id_opt) =
-            log_data.unwrap_or((0.0, 0.0, None, None));
+        let (pre_deduction, pre_deduct_gift, token_id_opt, channel_id_opt, channel_config_id_opt) =
+            log_data.unwrap_or((0.0, 0.0, None, None, None));
         super::task::execute_refund_tx(
             &state,
             log_id,
             &token.user_id,
             token_id_opt,
             channel_id_opt,
+            channel_config_id_opt,
             pre_deduction,
             pre_deduct_gift,
             "用户主动取消任务，预扣费已退回",
             499,
+            Some("用户主动取消任务"),
         )
         .await;
         crate::relay_debug!(
@@ -1221,8 +1227,9 @@ pub async fn volcengine_task_list(
     }
 
     let body = resp.bytes().await.unwrap_or_default();
-    Ok(upstream_headers::json_with_upstream_headers(
-        &upstream_hdrs,
-        body,
+    let log_id = upstream_headers::resolve_request_log_id(Some("任务"));
+    Ok(upstream_headers::with_request_id(
+        upstream_headers::json_with_upstream_headers(&upstream_hdrs, body),
+        &log_id,
     ))
 }

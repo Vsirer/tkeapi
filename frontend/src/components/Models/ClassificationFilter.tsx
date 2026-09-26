@@ -1,15 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React from 'react';
-import { Space, Tag, Typography, Button, Tooltip } from 'antd';
+import { Typography, Button, Tooltip } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { type ModelProvider, type ModelType, type ClassificationCount } from '../../types';
+import { type ClassificationCount } from '../../types';
 import { useThemeStore } from '../../store/theme';
 import { Image as ImageIcon, Video, AudioLines, MessageSquare, Cuboid, LayoutGrid, ListOrdered, Sparkles } from 'lucide-react';
 import SmartSvgIcon from '../SmartSvgIcon';
@@ -53,7 +53,8 @@ const ClassificationFilter: React.FC<ClassificationFilterProps> = ({
   const renderSystemIcon = (name: string, isLight: boolean, isSelected: boolean) => {
     const lowerName = name.toLowerCase();
     const style = { color: isSelected ? '#fff' : (isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)') };
-    if (lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={14} style={style} />;
+    if (lowerName.includes('画质增强') || lowerName.includes('quality enhancement') || lowerName.includes('视频增强') || lowerName.includes('videoenhance') || lowerName.includes('video-enhance') || lowerName.includes('video_enhance')) return <Sparkles size={14} style={style} />;
+    if (lowerName.includes('图像增强') || lowerName.includes('image enhancement') || lowerName.includes('image-enhance') || lowerName.includes('imageenhance') || lowerName.includes('image_enhance')) return <Sparkles size={14} style={style} />;
     if (lowerName.includes('图片') || lowerName.includes('image')) return <ImageIcon size={14} style={style} />;
     if (lowerName.includes('视频') || lowerName.includes('video')) return <Video size={14} style={style} />;
     if (lowerName.includes('音频') || lowerName.includes('audio')) return <AudioLines size={14} style={style} />;

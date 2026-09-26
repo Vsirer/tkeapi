@@ -1,6 +1,6 @@
 # 万相 视频生成
 
-万相视频通过 OpenAI 兼容接口调用，示例统一使用 **`wan3.0-video`**：
+OpenAI 兼容：`POST /v1/video/generations`。原生路径：`/api/v1/services/aigc/video-generation/video-synthesis`。[视频生成 API](https://help.aliyun.com/zh/model-studio/wan3-video-generation-api-reference?spm=a2c4g.11186623.help-menu-2400256.d_2_3_1_0.204b56c3vDOeBa&scm=20140722.H_3049634._.OR_help-T_cn~zh-V_1)
 
 - 提交：`POST /v1/video/generations`
 - 轮询：`GET /v1/video/generations/{task_id}` 或 `GET /v1/tasks/{task_id}`

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState } from 'react';
@@ -14,7 +14,8 @@ import request from '../utils/request';
 import type { Dayjs } from 'dayjs';
 import { formatApiDateTime, parseApiTimeAsUtc } from '../utils/timedisplay';
 import { timedisplayNow, toDateRangeParams } from '../utils/dateRangeParams';
-import { rechargeTypeLabel } from '../utils/rechargeType';
+import { rechargeTypeLabel, extractOrderNo, cleanRemark } from '../utils/rechargeType';
+import { listPagination } from './ListPagination';
 
 const { Text } = Typography;
 
@@ -215,15 +216,20 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
   const rechargeColumns = [
     { title: t('recharge_id', 'ID'), dataIndex: 'id', key: 'id', width: 60 },
     {
-      title: t('amount', '金额'),
-      dataIndex: 'amount',
-      key: 'amount',
-      width: 140,
-      render: (amount: number) => (
-        <Text style={{ color: amount > 0 ? '#52c41a' : amount < 0 ? '#ff4d4f' : undefined, fontWeight: 500, whiteSpace: 'nowrap' }}>
-          {amount > 0 ? '+' : (amount < 0 ? '-' : '')}{Math.abs(amount).toFixed(6)}
-        </Text>
-      ),
+      title: t('order_no', '订单号'),
+      key: 'order_no',
+      width: 200,
+      render: (_: unknown, record: any) => {
+        const orderNo = extractOrderNo(record);
+        if (orderNo) {
+          return (
+            <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {orderNo}
+            </Text>
+          );
+        }
+        return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+      },
     },
     {
       title: t('recharge_type', '类型'),
@@ -237,19 +243,15 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
       ),
     },
     {
-      title: t('remark', '备注'),
-      dataIndex: 'remark',
-      key: 'remark',
-      width: 200,
-      ellipsis: true,
-      render: (text: string) => <span title={text}>{text || '-'}</span>,
-    },
-    {
-      title: t('operator', '操作人'),
-      dataIndex: 'operator',
-      key: 'operator',
-      width: 100,
-      render: (text: string) => <Text style={{ whiteSpace: 'nowrap' }}>{text || '-'}</Text>,
+      title: t('amount', '金额'),
+      dataIndex: 'amount',
+      key: 'amount',
+      width: 140,
+      render: (amount: number) => (
+        <Text style={{ color: amount > 0 ? '#52c41a' : amount < 0 ? '#ff4d4f' : undefined, fontWeight: 500, whiteSpace: 'nowrap' }}>
+          {amount > 0 ? '+' : (amount < 0 ? '-' : '')}{Math.abs(amount).toFixed(6)}
+        </Text>
+      ),
     },
     {
       title: t('time', '时间'),
@@ -257,6 +259,24 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
       key: 'created_at',
       width: 160,
       render: (tVal: string) => <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatApiDateTime(tVal, 'YYYY/MM/DD HH:mm:ss')}</Text>,
+    },
+    {
+      title: t('remark', '备注'),
+      dataIndex: 'remark',
+      key: 'remark',
+      width: 180,
+      ellipsis: true,
+      render: (_: unknown, record: any) => {
+        const cleaned = cleanRemark(record.remark, record.order_no);
+        return <span title={cleaned}>{cleaned || '-'}</span>;
+      },
+    },
+    {
+      title: t('operator', '操作人'),
+      dataIndex: 'operator',
+      key: 'operator',
+      width: 100,
+      render: (text: string) => <Text style={{ whiteSpace: 'nowrap' }}>{text || '-'}</Text>,
     },
   ];
 
@@ -331,7 +351,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={systemRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={{ pageSize: 20 }}
+                pagination={listPagination()}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: t('no_system_recharges', '该期间暂无系统钱包明细') }}
@@ -370,7 +390,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={giftRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={{ pageSize: 20 }}
+                pagination={listPagination()}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: t('no_gift_recharges', '该期间暂无赠送钱包明细') }}
@@ -399,7 +419,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={creditRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={{ pageSize: 20 }}
+                pagination={listPagination()}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: '该期间暂无信控额度变更记录' }}

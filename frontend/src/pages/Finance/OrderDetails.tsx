@@ -1,23 +1,23 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Table, Card, Typography, Space, Input, Button, Tag, Select, DatePicker, Grid, List } from 'antd';
+import { Table, Card, Typography, Space, Input, Button, Tag, Select, Grid, List } from 'antd';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import { SyncOutlined, SearchOutlined, BarChartOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
-import dayjs from 'dayjs';
 import { formatApiDateTime } from '../../utils/timedisplay';
-import { toTimeRangeParams } from '../../utils/dateRangeParams';
+import { defaultMonthRange, toTimeRangeParams } from '../../utils/dateRangeParams';
+import LogDateTimeRangePicker from '../../components/LogDateTimeRangePicker';
+import type { Dayjs } from 'dayjs';
 
 const { Title, Text } = Typography;
-const { RangePicker } = DatePicker;
 
 interface OrderRecord {
   id: number;
@@ -66,21 +66,16 @@ const OrderDetails: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
-  const adminPath = settings?.admin_path || 'admin';
   const currencySymbol = settings?.currency?.currency_symbol || '¥';
   const [data, setData] = useState<OrderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [totalAmount, setTotalAmount] = useState<number>(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const { page, pageSize, onChange } = useListPager();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [methodFilter, setMethodFilter] = useState<string | undefined>();
-  const [dateRange, setDateRange] = useState<[string, string] | undefined>([
-    dayjs().startOf('month').format('YYYY-MM-DD'),
-    dayjs().endOf('month').format('YYYY-MM-DD')
-  ]);
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(() => defaultMonthRange());
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -111,7 +106,7 @@ const OrderDetails: React.FC = () => {
 
   const columns = [
     {
-      title: '订单号',
+      title: t('finance.order_no', { defaultValue: '订单号' }),
       dataIndex: 'out_trade_no',
       key: 'out_trade_no',
       width: 220,
@@ -122,21 +117,11 @@ const OrderDetails: React.FC = () => {
       key: 'user',
       width: 150,
       render: (_: unknown, record: OrderRecord) => (
-        <Space direction="vertical" size={0}>
-          {record.uid ? (
-            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
-              {record.username}
-            </Link>
-          ) : (
-            <Text strong>{record.username}</Text>
-          )}
-          {record.uid ? (
-            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
-              UID: {record.uid}
-            </Link>
-          ) : (
-            <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
-          )}
+        <Space vertical size={0}>
+          <Text strong>{record.username || '-'}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {record.uid ? `UID: ${record.uid}` : '-'}
+          </Text>
         </Space>
       ),
     },
@@ -201,16 +186,11 @@ const OrderDetails: React.FC = () => {
           </Text>
         </Space>
         <Space wrap style={{ width: screens.xs ? '100%' : 'auto' }}>
-          <RangePicker 
-            defaultValue={[dayjs().startOf('month'), dayjs().endOf('month')]}
-            onChange={(dates) => {
-              if (dates && dates[0] && dates[1]) {
-                 setDateRange([dates[0].format('YYYY-MM-DD'), dates[1].format('YYYY-MM-DD')]);
-              } else {
-                 setDateRange(undefined);
-              }
-            }} 
-            style={{ width: 240 }}
+          <LogDateTimeRangePicker
+            value={dateRange}
+            onChange={setDateRange}
+            isAdmin
+            className="font-size-12"
           />
           <Select
             placeholder="支付状态"
@@ -256,18 +236,13 @@ const OrderDetails: React.FC = () => {
         <List
           dataSource={data}
           loading={loading}
-          pagination={{
+          pagination={listPagination({
             total,
             current: page,
             pageSize,
-            onChange: (p, s) => {
-              setPage(p);
-              setPageSize(s);
-            },
-            showSizeChanger: true,
+            onChange,
             size: "small",
-            showTotal: (t) => `共 ${t} 条`
-          }}
+          })}
           renderItem={(record) => {
             const statusInfo = statusMap[record.status] || { color: 'default', label: record.status };
             const methodInfo = methodMap[record.payment_method] || { color: 'default', label: record.payment_method };
@@ -276,15 +251,7 @@ const OrderDetails: React.FC = () => {
                 <Card 
                   size="small" 
                   style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-                  title={
-                    record.uid ? (
-                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
-                        {record.username}
-                      </Link>
-                    ) : (
-                      <Text strong>{record.username}</Text>
-                    )
-                  }
+                  title={<Text strong>{record.username || '-'}</Text>}
                   extra={<Tag color={statusInfo.color}>{statusInfo.label}</Tag>}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -293,13 +260,7 @@ const OrderDetails: React.FC = () => {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
-                    {record.uid ? (
-                      <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12 }}>
-                        {record.uid}
-                      </Link>
-                    ) : (
-                      <Text style={{ fontSize: 12 }}>-</Text>
-                    )}
+                    <Text style={{ fontSize: 12 }}>{record.uid || '-'}</Text>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>支付方式</Text>
@@ -337,17 +298,12 @@ const OrderDetails: React.FC = () => {
         rowKey="id"
         className="compact-table"
         loading={loading}
-        pagination={{
+        pagination={listPagination({
           total,
           current: page,
           pageSize,
-          onChange: (p, s) => {
-            setPage(p);
-            setPageSize(s);
-          },
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-        }}
+          onChange,
+        })}
         size="small"
         scroll={{ x: 'max-content' }}
       />

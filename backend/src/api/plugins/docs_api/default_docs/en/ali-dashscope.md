@@ -1,6 +1,6 @@
 # Alibaba Bailian (DashScope) Native API Guide
 
-Alibaba Bailian compatible paths. For **OpenAI-compatible** examples see articles **`wan-image`** (Qwen image) and **`wan-video`** (Wan video). This page lists native paths and other capabilities only.
+Alibaba Bailian compatible paths. For **OpenAI-compatible** examples see articles **`wan-image`** (Qwen image) and **`wan-video`** (Wan video). [Image API](https://help.aliyun.com/zh/model-studio/developer-reference/text-to-image-api-reference) | [Video API](https://help.aliyun.com/zh/model-studio/developer-reference/text-to-video-api-reference). This page lists native paths and other capabilities only.
 
 ### 1. Image / Video Native Paths
 | Capability | Path |

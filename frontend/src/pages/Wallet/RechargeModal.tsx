@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -131,10 +131,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
   const [paymentChannels, setPaymentChannels] = useState<PaymentChannelUiItem[]>([]);
   const [fetchingSettings, setFetchingSettings] = useState(true);
 
-  // BonusPay TOPUP 参数
-  const [assetCode, setAssetCode] = useState<'USDT' | 'USDC'>('USDT');
-  const [depositNetwork, setDepositNetwork] = useState<'TRON' | 'ETH' | 'POLYGON'>('TRON');
-
   const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
   const [outTradeNo, setOutTradeNo] = useState<string>('');
   const [payStatus, setPayStatus] = useState<'idle' | 'paying' | 'success'>('idle');
@@ -260,7 +256,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
             : [],
         },
         { id: 'stripe', enabled: !!payment?.stripe_enabled, sort_order: 30 },
-        { id: 'bonuspay', enabled: !!payment?.bonuspay_enabled, sort_order: 20 },
         { id: 'hyperbc', enabled: !!payment?.hyperbc_enabled, sort_order: 10 },
       ];
       const list = (channels.length ? channels : fallback)
@@ -334,38 +329,38 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
       }
     }
 
-    if (paymentMethod !== 'bonuspay') {
-      if (minRechargeLimit > 0 && finalAmount < minRechargeLimit) {
-        setErrorMessage(t('recharge.min_amount_error', { 
-          defaultValue: `充值金额不能小于 ${minRechargeLimit} ${currencyUnit}`, 
-          unit: currencyUnit, 
-          limit: minRechargeLimit 
-        }));
-        return;
-      }
-      if (finalAmount < 0.01) {
-        setErrorMessage(t('recharge.min_amount_error', { 
-          defaultValue: `充值金额不能小于 0.01 ${currencyUnit}`, 
-          unit: currencyUnit, 
-          limit: 0.01 
-        }));
-        return;
-      }
+    if (minRechargeLimit > 0 && finalAmount < minRechargeLimit) {
+      setErrorMessage(t('recharge.min_amount_error', { 
+        defaultValue: `充值金额不能小于 ${minRechargeLimit} ${currencyUnit}`, 
+        unit: currencyUnit, 
+        limit: minRechargeLimit 
+      }));
+      return;
+    }
+    if (finalAmount < 0.01) {
+      setErrorMessage(t('recharge.min_amount_error', { 
+        defaultValue: `充值金额不能小于 0.01 ${currencyUnit}`, 
+        unit: currencyUnit, 
+        limit: 0.01 
+      }));
+      return;
+    }
+    if (paymentMethod === 'stripe' && currencyUnit.toUpperCase() === 'USD' && finalAmount < 0.5) {
+      setErrorMessage(t('recharge.stripe_min_amount_error', {
+        defaultValue: 'Stripe 支付单笔金额不能小于 0.50 USD',
+      }));
+      return;
     }
     setErrorMessage(null);
     clearTimer();
     setLoading(true);
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isMobile = /Android|webOS|iPhone|iPad|IEMobile|Opera Mini/i.test(navigator.userAgent);
     try {
       const reqBody: any = {
-        amount: paymentMethod === 'bonuspay' ? 1 : finalAmount,
+        amount: finalAmount,
         payment_method: paymentMethod,
         is_mobile: isMobile,
       };
-      if (paymentMethod === 'bonuspay') {
-        reqBody.asset_code = assetCode;
-        reqBody.network = depositNetwork;
-      }
       const res = await (request.post('/finance/pay/create', reqBody, { skipErrorHandler: true } as any) as any);
       
       setOutTradeNo(res.out_trade_no);
@@ -386,9 +381,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
           setQrCodeUrl(res.payment_url);
           startPolling(res.out_trade_no);
         }
-      } else if (paymentMethod === 'bonuspay') {
-        // BonusPay TOPUP: 打开收银台，不轮询（无预创建订单，余额由回调驱动）
-        window.open(res.payment_url, '_blank');
       } else if (paymentMethod === 'hyperbc') {
         // HyperBC: 不再跳转收银台，而是记录返回的地址列表，展示在弹窗中并启动轮询
         if (res.hyperbc_data) {
@@ -402,8 +394,16 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
         startPolling(res.out_trade_no);
       }
     } catch (err: any) {
-      const errMsg = err.response?.data?.error?.message || err.response?.data?.error || err.message || t('recharge.pay_info_fail', '获取支付信息失败');
-      const errMsgStr = typeof errMsg === 'object' ? JSON.stringify(errMsg) : String(errMsg);
+      let rawMsg = err.response?.data?.error?.message || err.response?.data?.error || err.message || t('recharge.pay_info_fail', '获取支付信息失败');
+      let errMsgStr = typeof rawMsg === 'object' ? JSON.stringify(rawMsg) : String(rawMsg);
+      if (errMsgStr.includes('<html') || errMsgStr.includes('<!DOCTYPE') || errMsgStr.includes('<body')) {
+        errMsgStr = t('recharge.gateway_error', '支付网关响应异常，请稍后重试');
+      } else if (errMsgStr.startsWith('{') && errMsgStr.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(errMsgStr);
+          errMsgStr = parsed?.error?.message || parsed?.message || errMsgStr;
+        } catch (_) {}
+      }
       if (
         errMsgStr.includes('充值金额不能小于') ||
         errMsgStr.includes('金额必须大于') ||
@@ -490,7 +490,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
     if (id === 'wechat' || id === 'allinpay_wechat') return <WechatOutlined style={{ fontSize: 22, color }} />;
     if (id === 'allinpay') return <ThunderboltOutlined style={{ fontSize: 22, color }} />;
     if (id === 'stripe') return <CreditCardOutlined style={{ fontSize: 22, color }} />;
-    if (id === 'bonuspay') return <ThunderboltOutlined style={{ fontSize: 22, color }} />;
     if (id === 'hyperbc') return <span style={{ fontSize: 20, fontWeight: 'bold', color, display: 'inline-block', lineHeight: 1 }}>₿</span>;
     return <WalletOutlined style={{ fontSize: 22, color }} />;
   };
@@ -535,8 +534,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
         return 'linear-gradient(135deg, #07c160, #059669)';
       case 'stripe':
         return 'linear-gradient(135deg, #635bff, #4b45c6)';
-      case 'bonuspay':
-        return 'linear-gradient(135deg, #ff6a00, #ee0979)';
       case 'hyperbc':
         return 'linear-gradient(135deg, #8b5cf6, #6d28d9)';
       default:
@@ -554,8 +551,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
         return '0 4px 16px rgba(7, 193, 96, 0.35)';
       case 'stripe':
         return '0 4px 16px rgba(99, 91, 255, 0.35)';
-      case 'bonuspay':
-        return '0 4px 16px rgba(255, 106, 0, 0.35)';
       case 'hyperbc':
         return '0 4px 16px rgba(139, 92, 246, 0.35)';
       default:
@@ -936,32 +931,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
             })()}
           </div>
         )
-      ) : payStatus === 'paying' && paymentMethod === 'bonuspay' ? (
-        <div style={{ textAlign: 'center', padding: '10px 0' }}>
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: 64, height: 64, borderRadius: 16,
-            background: 'linear-gradient(135deg, #ff6a00, #ee0979)',
-            marginBottom: 20, boxShadow: '0 8px 24px rgba(255, 106, 0, 0.3)',
-          }}>
-            <ThunderboltOutlined style={{ fontSize: 32, color: '#fff' }} />
-          </div>
-          <Title level={4} style={{ color: titleColor, margin: '0 0 8px 0' }}>{t('recharge.bonuspay_opened', '充值页面已打开')}</Title>
-          <Text type="secondary" style={{ display: 'block', marginBottom: 8, lineHeight: 1.8 }}>
-            {t('recharge.bonuspay_desc', '请在新打开的 BonusPay 收银台页面完成转账。\n链上确认后余额将自动更新，您可以关闭此弹窗。')
-              .split('\n')
-              .map((line, i) => (
-                <React.Fragment key={i}>
-                  {i > 0 ? <br /> : null}
-                  {line}
-                </React.Fragment>
-              ))}
-          </Text>
-          <Space style={{ marginTop: 24 }}>
-            <Button style={{ borderRadius: 10 }} onClick={resetState}>{t('recharge.recharge_again', '再次充值')}</Button>
-            <Button type="primary" style={{ borderRadius: 10, background: 'linear-gradient(135deg, #ff6a00, #ee0979)', border: 'none' }} onClick={onCancel}>{t('recharge.close', '关闭')}</Button>
-          </Space>
-        </div>
       ) : (
         /* 主选择界面：横版双列 (Left: 金额选择，Right: 支付方式) */
         <Row gutter={isMobile ? [0, 12] : [24, 20]} style={{ margin: 0 }}>
@@ -976,8 +945,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
               gap: isMobile ? 10 : 16,
             }}
           >
-            {paymentMethod !== 'bonuspay' ? (
-              <>
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isMobile ? 8 : 10 }}>
                     <Text strong style={{ fontSize: isMobile ? 13 : 14, color: labelColor }}>
@@ -1080,75 +1047,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
                     </div>
                   </div>
                 </div>
-              </>
-            ) : (
-              /* BonusPay 加密货币面板 */
-              <div style={{
-                padding: isMobile ? '12px' : '16px',
-                borderRadius: 14,
-                background: bgIdle,
-                border: `1px solid ${borderIdle}`,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: isMobile ? 10 : 14,
-                height: isMobile ? 'auto' : '100%',
-              }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    width: 40, height: 40, borderRadius: 10,
-                    background: 'linear-gradient(135deg, #ff6a00, #ee0979)',
-                    marginBottom: 6,
-                  }}>
-                    <ThunderboltOutlined style={{ fontSize: 20, color: '#fff' }} />
-                  </div>
-                  <Title level={5} style={{ color: labelColor, margin: 0 }}>{t('recharge.crypto_recharge', '加密货币充值')}</Title>
-                  <Text type="secondary" style={{ fontSize: 11 }}>{t('recharge.crypto_desc', '充值金额以实际链上到账金额为准')}</Text>
-                </div>
-
-                <div>
-                  <Text strong style={{ display: 'block', marginBottom: 6, color: labelColor, fontSize: 12 }}>{t('recharge.recharge_currency', '充值币种')}</Text>
-                  <Row gutter={8}>
-                    {(['USDT', 'USDC'] as const).map(code => (
-                      <Col span={12} key={code}>
-                        <div
-                          onClick={() => setAssetCode(code)}
-                          style={{
-                            textAlign: 'center', padding: '8px 0', borderRadius: 8, cursor: 'pointer',
-                            border: `2px solid ${assetCode === code ? '#ff6a00' : borderIdle}`,
-                            background: assetCode === code ? 'rgba(255, 106, 0, 0.1)' : 'transparent',
-                            transition: 'all 0.2s ease',
-                          }}
-                        >
-                          <Text strong style={{ color: assetCode === code ? '#ff6a00' : labelColor, fontSize: 14 }}>{code}</Text>
-                        </div>
-                      </Col>
-                    ))}
-                  </Row>
-                </div>
-
-                <div>
-                  <Text strong style={{ display: 'block', marginBottom: 6, color: labelColor, fontSize: 12 }}>{t('recharge.recharge_network', '充值网络')}</Text>
-                  <Row gutter={8}>
-                    {(['TRON', 'ETH', 'POLYGON'] as const).map(net => (
-                      <Col span={8} key={net}>
-                        <div
-                          onClick={() => setDepositNetwork(net)}
-                          style={{
-                            textAlign: 'center', padding: '8px 0', borderRadius: 8, cursor: 'pointer',
-                            border: `2px solid ${depositNetwork === net ? '#ff6a00' : borderIdle}`,
-                            background: depositNetwork === net ? 'rgba(255, 106, 0, 0.1)' : 'transparent',
-                            transition: 'all 0.2s ease',
-                          }}
-                        >
-                          <Text strong style={{ color: depositNetwork === net ? '#ff6a00' : labelColor, fontSize: 12 }}>{net}</Text>
-                        </div>
-                      </Col>
-                    ))}
-                  </Row>
-                </div>
-              </div>
-            )}
           </Col>
 
           {/* 右侧 Column：选择支付方式 */}
@@ -1318,7 +1216,7 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
               size="large"
               loading={loading}
               onClick={handleCreateOrder}
-              disabled={paymentMethod !== 'bonuspay' && finalAmount < 0.01}
+              disabled={finalAmount < 0.01}
               className="recharge-pay-btn"
               style={{
                 marginTop: isMobile ? 4 : 'auto',
@@ -1335,9 +1233,6 @@ const RechargeModal: React.FC<RechargeModalProps> = ({ visible, onCancel, onSucc
             >
               {(() => {
                 const btnFg = { color: '#ffffff' };
-                if (paymentMethod === 'bonuspay') {
-                  return <Space style={btnFg}><ThunderboltOutlined style={btnFg} />{t('recharge.get_address', '获取充值地址')}</Space>;
-                }
                 if (paymentMethod === 'hyperbc') {
                   return <Space style={btnFg}><span style={btnFg}>₿</span>{t('recharge.go_hyperbc', '去 HyperBC 支付')}</Space>;
                 }

@@ -1,12 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAnnouncementLabel } from '../../../utils/announcement';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../../../utils/announcement';
 import { applyDocsContentVars, buildDocHref } from '../../../utils/docsContentVars';
 import {
   parseNotificationPreferences,
@@ -52,6 +52,8 @@ interface Announcement {
   is_pinned: number;
   sort_order?: number;
   created_at: string;
+  updated_at?: string;
+  display_time_mode?: string;
 }
 
 interface DocTreeNode {
@@ -736,7 +738,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: c.text3, fontSize: 12 }}>
                     <Terminal className="w-3.5 h-3.5" />
-                    {formatApiDateTime(item.created_at, 'YYYY-MM-DD HH:mm')}
+                    {formatApiDateTime(getAnnouncementDisplayTime(item), 'YYYY-MM-DD HH:mm')}
                   </div>
                 </div>
                 <div dangerouslySetInnerHTML={{ __html: getAnnouncementLabel(item.content) }} style={{ color: c.text2, fontSize: 13, lineHeight: 1.6 }} />
@@ -1446,7 +1448,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
           style={{
             boxShadow: 'none',
             borderRight: isLight ? '1px solid #e4e4e7' : '1px solid #1f1f23',
-            zIndex: 10,
+            zIndex: screens.xs ? 1050 : 10,
             position: screens.xs ? 'fixed' : 'relative',
             height: '100%',
             left: 0,
@@ -1557,7 +1559,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
               top: 0,
               left: 0,
               right: 0,
-              zIndex: 20,
+              zIndex: 100,
               padding: '0 12px',
               background: themeMode === 'light' ? 'rgba(255, 255, 255, 0.72)' : 'rgba(0, 0, 0, 0.55)',
               backdropFilter: 'blur(16px) saturate(180%)',
@@ -1879,6 +1881,8 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
           </Header>
 
           <Content style={{
+            position: 'relative',
+            zIndex: 1,
             margin: 0,
             padding: 0,
             flex: 1,
@@ -1954,7 +1958,7 @@ const RelayAPI: React.FC<RelayAPIProps> = ({ apiPrefix, baseRoute }) => {
                 right: 0,
                 bottom: 0,
                 background: 'rgba(0,0,0,0.5)',
-                zIndex: 9,
+                zIndex: 1040,
               }}
               onClick={() => handleCollapsedChange(true)}
             />

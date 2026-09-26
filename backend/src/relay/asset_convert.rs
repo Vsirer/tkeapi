@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 火山方舟视频素材 URL/base64→素材ID 自动转换模块
@@ -29,21 +29,12 @@ const URL_TYPE_MAP: &[(&str, &str, &str)] = &[
     ("audio_url", "audio_url", "Audio"),
 ];
 
-/// 日志用短 URL：data URI / 纯 base64 标注为 base64；过长则按字符边界截断。
+/// 日志用 URL：data URI / 纯 base64 标注为 base64 数据避免日志膨胀；网络 URL 完整保留不截断，方便追查排查
 fn shorten_url_for_log(url: &str) -> String {
     if is_base64_media(url) {
         return "base64数据".to_string();
     }
-    if url.len() > 80 {
-        let pos = url
-            .char_indices()
-            .nth(80)
-            .map(|(i, _)| i)
-            .unwrap_or(url.len());
-        format!("{}...", &url[..pos])
-    } else {
-        url.to_string()
-    }
+    url.to_string()
 }
 
 #[inline]
@@ -98,62 +89,89 @@ fn derive_create_asset_name(url: &str, asset_type: &str) -> String {
     crate::services::volcengine::clamp_create_asset_name(&name)
 }
 
-/// 收集 content[] 中待转换项：(索引, url_key, asset_type, url, 日志短串)；跳过 asset://
-fn collect_content_convert_tasks(
-    content_arr: &[serde_json::Value],
-) -> Vec<(usize, String, String, String, String)> {
+/// 收集待转换项：(json_pointer, asset_type, url, url_short)；兼容 content[]、腾讯云 FileInfos[] 与 LastFrameUrl
+fn collect_media_convert_tasks(
+    body: &serde_json::Value,
+) -> Vec<(String, String, String, String)> {
     let mut tasks = Vec::new();
-    for (idx, item) in content_arr.iter().enumerate() {
-        let item_type = match item.get("type").and_then(|t| t.as_str()) {
-            Some(t) => t,
-            None => continue,
-        };
-        let (url_key, asset_type) = match URL_TYPE_MAP.iter().find(|(t, _, _)| *t == item_type) {
-            Some((_, uk, at)) => (*uk, *at),
-            None => continue,
-        };
-        let url_val = match item
-            .get(url_key)
-            .and_then(|u| u.get("url"))
-            .and_then(|u| u.as_str())
-        {
-            Some(u) => u,
-            None => continue,
-        };
-        if url_val.starts_with("asset://") {
-            continue;
+
+    // 1. 火山方舟/百度云/Portrait 协议的 content 数组
+    if let Some(content_arr) = body.get("content").and_then(|c| c.as_array()) {
+        for (idx, item) in content_arr.iter().enumerate() {
+            let item_type = match item.get("type").and_then(|t| t.as_str()) {
+                Some(t) => t,
+                None => continue,
+            };
+            let (url_key, asset_type) = match URL_TYPE_MAP.iter().find(|(t, _, _)| *t == item_type) {
+                Some((_, uk, at)) => (*uk, *at),
+                None => continue,
+            };
+            let url_val = match item.get(url_key).and_then(|u| u.get("url")).and_then(|u| u.as_str()) {
+                Some(u) => u,
+                None => continue,
+            };
+            if url_val.starts_with("asset://") {
+                continue;
+            }
+            tasks.push((
+                format!("/content/{}/{}/url", idx, url_key),
+                asset_type.to_string(),
+                url_val.to_string(),
+                shorten_url_for_log(url_val),
+            ));
         }
-        tasks.push((
-            idx,
-            url_key.to_string(),
-            asset_type.to_string(),
-            url_val.to_string(),
-            shorten_url_for_log(url_val),
-        ));
     }
+
+    // 2. 腾讯云 VOD 协议的 FileInfos 数组
+    if let Some(fi_arr) = body.get("FileInfos").and_then(|c| c.as_array()) {
+        for (idx, item) in fi_arr.iter().enumerate() {
+            let url_val = item.get("Url").or_else(|| item.get("Base64")).and_then(|u| u.as_str()).unwrap_or("");
+            if url_val.is_empty() || url_val.starts_with("asset://") {
+                continue;
+            }
+            let asset_type = item.get("Category").and_then(|c| c.as_str()).unwrap_or("Image");
+            tasks.push((
+                format!("/FileInfos/{}/Url", idx),
+                asset_type.to_string(),
+                url_val.to_string(),
+                shorten_url_for_log(url_val),
+            ));
+        }
+    }
+
+    // 3. 腾讯云 VOD 协议的 LastFrameUrl
+    if let Some(last_frame) = body.get("LastFrameUrl").and_then(|u| u.as_str()) {
+        if !last_frame.is_empty() && !last_frame.starts_with("asset://") {
+            tasks.push((
+                "/LastFrameUrl".to_string(),
+                "Image".to_string(),
+                last_frame.to_string(),
+                shorten_url_for_log(last_frame),
+            ));
+        }
+    }
+
     tasks
 }
 
 /// 写入 asset:// 并追加成功日志（含缓存标记）
 fn push_convert_ok(
-    content_arr: &mut [serde_json::Value],
+    body: &mut serde_json::Value,
     logs: &mut Vec<String>,
-    idx: usize,
-    url_key: &str,
+    ptr: &str,
     asset_type: &str,
     url_short: &str,
     asset_id: &str,
     cached: bool,
 ) {
-    if let Some(url_obj) = content_arr
-        .get_mut(idx)
-        .and_then(|item| item.get_mut(url_key))
-        .and_then(|u| u.as_object_mut())
-    {
-        url_obj.insert(
-            "url".to_string(),
-            serde_json::Value::String(format!("asset://{}", asset_id)),
-        );
+    if let Some(target) = body.pointer_mut(ptr) {
+        *target = serde_json::Value::String(format!("asset://{}", asset_id));
+    }
+    if let Some(fi_idx) = ptr.strip_prefix("/FileInfos/").and_then(|s| s.strip_suffix("/Url")) {
+        if let Some(item) = body.pointer_mut(&format!("/FileInfos/{}", fi_idx)).and_then(|v| v.as_object_mut()) {
+            item.insert("Type".to_string(), serde_json::json!("Url"));
+            item.remove("Base64");
+        }
     }
     let tag = if cached { " [命中缓存]" } else { "" };
     logs.push(format!(
@@ -215,12 +233,6 @@ pub async fn convert_content_urls(
         }
     };
 
-    // 获取 content 数组（可变引用）
-    let content_arr = match body.get_mut("content").and_then(|c| c.as_array_mut()) {
-        Some(arr) => arr,
-        None => return (logs, errors),
-    };
-
     let client = crate::services::volcengine::VolcClient::new(volc_config.clone())
         .with_logger(state.db.clone(), user_id.to_string())
         .with_source("relay_convert")
@@ -236,14 +248,14 @@ pub async fn convert_content_urls(
     // 预加载 TOS 配置（base64 场景需要）
     let tos_config = crate::api::plugins::get_object_store(state, plugin_ns).await;
 
-    let tasks = collect_content_convert_tasks(content_arr);
+    let tasks = collect_media_convert_tasks(body);
     if tasks.is_empty() {
         return (logs, errors);
     }
 
     // 并发处理所有素材转换任务，大幅缩短多资源场景总耗时
     let mut futures = Vec::new();
-    for (idx, url_key, asset_type, url_val, url_short) in tasks {
+    for (target, asset_type, url_val, url_short) in tasks {
         let state_clone = state;
         let client_clone = client.clone();
         let mut volc_config_clone = volc_config.clone();
@@ -298,7 +310,7 @@ pub async fn convert_content_urls(
                 Err("不支持的格式".to_string())
             };
             match asset_result {
-                Ok((aid, cached)) => Ok((idx, url_key, asset_type, url_short, aid, cached)),
+                Ok((aid, cached)) => Ok((target, asset_type, url_short, aid, cached)),
                 Err(reason) => Err((asset_type, url_short, reason)),
             }
         };
@@ -308,12 +320,11 @@ pub async fn convert_content_urls(
     // Fail-Fast: 任一素材转换失败立即短路退出并取消其余未完成任务，避免浪费配额与带宽
     match futures::future::try_join_all(futures).await {
         Ok(results) => {
-            for (idx, url_key, asset_type, url_short, aid, cached) in results {
+            for (ptr, asset_type, url_short, aid, cached) in results {
                 push_convert_ok(
-                    content_arr,
+                    body,
                     &mut logs,
-                    idx,
-                    &url_key,
+                    &ptr,
                     &asset_type,
                     &url_short,
                     &aid,
@@ -512,6 +523,9 @@ fn content_range_total(cr: &str) -> Option<&str> {
 /// 整文件长度优先取 Content-Range 总长；源站忽略 Range 回 200 时回退 Content-Length。
 /// 超时 10 秒，失败返回 None（调用方降级到 URL 字符串匹配）。
 async fn fetch_meta_fingerprint(http_client: &reqwest::Client, url: &str) -> Option<String> {
+    if !crate::services::http_client::is_safe_outbound_url(url).await {
+        return None;
+    }
     let url_short = shorten_url_for_log(url);
 
     let resp = match http_client
@@ -584,8 +598,9 @@ async fn fetch_meta_fingerprint(http_client: &reqwest::Client, url: &str) -> Opt
         })
         .unwrap_or_default();
 
-    // 丢弃最多 1 字节 body，避免占用连接
-    let _ = resp.bytes().await;
+    // 读取首个数据分片释放连接，避免源站返回 200 时无上限读取整个大文件导致 OOM
+    let mut resp = resp;
+    let _ = resp.chunk().await;
 
     if full_len.is_empty() && etag.is_empty() && last_modified.is_empty() {
         crate::relay_debug!(
@@ -913,7 +928,7 @@ async fn create_asset(
         "Audio" => 120,
         _ => 180,
     };
-    const POLL_INTERVAL_SECS: u64 = 3;
+    const POLL_INTERVAL_SECS: u64 = 5;
     let max_attempts = max_wait_secs / POLL_INTERVAL_SECS;
     let mut last_poll_error: Option<String> = None;
 
@@ -963,8 +978,8 @@ async fn create_asset(
                             (true, true) => "审核未通过".to_string(),
                         }
                     };
-                    crate::relay_debug!("[AssetConvert] 素材处理失败: {} - {}", asset_id, reason);
-                    return Err(format!("素材处理失败({}): {}", asset_id, reason));
+                    crate::relay_debug!("[AssetConvert] 素材处理失败: {} - {}", url, reason);
+                    return Err(format!("素材处理失败({}): {}", url, reason));
                 }
                 status => {
                     crate::relay_debug!(
@@ -992,10 +1007,10 @@ async fn create_asset(
     let timeout_msg = if let Some(ref poll_err) = last_poll_error {
         format!(
             "素材处理超时({}s): {}, 错误: {}",
-            max_wait_secs, asset_id, poll_err
+            max_wait_secs, url, poll_err
         )
     } else {
-        format!("素材处理超时({}s): {}", max_wait_secs, asset_id)
+        format!("素材处理超时({}s): {}", max_wait_secs, url)
     };
     Err(timeout_msg)
 }
@@ -1155,11 +1170,12 @@ pub async fn convert_content_urls_via_upstream(
     let mut group_id_opt = row.group_id.take();
     let protocol = uac::normalize_asset_protocol(row.asset_protocol.as_deref().unwrap_or(""));
     let is_portrait = protocol == uac::PROTOCOL_PORTRAIT_REST;
+    let is_tencent = protocol == uac::PROTOCOL_TENCENT_VOD;
 
-    let content_arr = match body.get_mut("content").and_then(|c| c.as_array_mut()) {
-        Some(arr) => arr,
-        None => return (logs, errors),
-    };
+    let tasks = collect_media_convert_tasks(body);
+    if tasks.is_empty() {
+        return (logs, errors);
+    }
 
     let plugin_ns = uac::binding_ns(binding_id);
     let endpoint = uac::build_asset_endpoint(&base_url, &asset_base_path);
@@ -1172,7 +1188,7 @@ pub async fn convert_content_urls_via_upstream(
         api_key: &api_key,
     };
 
-    // 确保 GroupId / REST 素材库 id
+    // 确保 GroupId / REST 素材库 id（腾讯云无需建组，留空自动使用 default）
     if is_portrait {
         match ensure_portrait_library_id(state, &call_ctx, binding_id, group_id_opt.as_deref())
             .await
@@ -1183,11 +1199,7 @@ pub async fn convert_content_urls_via_upstream(
                 return (logs, errors);
             }
         }
-    } else if group_id_opt
-        .as_ref()
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true)
-    {
+    } else if !is_tencent && group_id_opt.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
         match ensure_upstream_group_id(state, &call_ctx, binding_id).await {
             Ok(gid) => group_id_opt = Some(gid),
             Err(e) => {
@@ -1197,71 +1209,63 @@ pub async fn convert_content_urls_via_upstream(
         }
     }
 
-    let tasks = collect_content_convert_tasks(content_arr);
-    if tasks.is_empty() {
-        return (logs, errors);
-    }
-
     // base64 与插件路径相同：依赖系统/插件 TOS（upstream_asset_relay 无独立 TOS 时回退系统配置）
     let tos_config = crate::api::plugins::get_object_store(state, uac::PLUGIN_NAME).await;
     let group_id = group_id_opt.unwrap_or_default();
 
-    for (idx, url_key, asset_type, url_val, url_short) in tasks {
-        let asset_result = if is_http_media_url(&url_val) {
-            convert_url_via_binding(
-                state,
-                &call_ctx,
-                &group_id,
-                &url_val,
-                &asset_type,
-                is_portrait,
-            )
-            .await
-        } else if is_base64_media(&url_val) {
-            convert_base64_with_create(
-                state,
-                &tos_config,
-                user_id,
-                &plugin_ns,
-                uac::LOG_SOURCE,
-                &url_val,
-                &asset_type,
-                |tmp_url| {
-                    let ctx = &call_ctx;
-                    let gid = group_id.as_str();
-                    let at = asset_type.as_str();
-                    async move {
-                        if is_portrait {
-                            create_asset_via_portrait(ctx, gid, &tmp_url, at).await
-                        } else {
-                            create_asset_via_upstream(ctx, gid, &tmp_url, at).await
-                        }
-                    }
-                },
-            )
-            .await
-        } else {
-            Err("不支持的格式".to_string())
-        };
-
-        match asset_result {
-            Ok((aid, cached)) => {
-                push_convert_ok(
-                    content_arr,
-                    &mut logs,
-                    idx,
-                    &url_key,
+    // 并发处理所有素材转换任务，大幅缩短多资源场景总耗时
+    let futs = tasks.into_iter().map(|(target, asset_type, url_val, url_short)| {
+        let gid = &group_id;
+        let pns = &plugin_ns;
+        let tos = &tos_config;
+        async move {
+            let res = if is_http_media_url(&url_val) {
+                convert_url_via_binding(state, &call_ctx, gid, &url_val, &asset_type, protocol).await
+            } else if is_base64_media(&url_val) {
+                convert_base64_with_create(
+                    state,
+                    tos,
+                    user_id,
+                    pns,
+                    uac::LOG_SOURCE,
+                    &url_val,
                     &asset_type,
-                    &url_short,
-                    &aid,
-                    cached,
-                );
+                    |tmp_url| {
+                        let at = asset_type.clone();
+                        async move {
+                            match protocol {
+                                uac::PROTOCOL_PORTRAIT_REST => {
+                                    create_asset_via_portrait(&call_ctx, gid, &tmp_url, &at).await
+                                }
+                                uac::PROTOCOL_TENCENT_VOD => {
+                                    create_asset_via_tencent_vod(&call_ctx, gid, &tmp_url, &at).await
+                                }
+                                _ => create_asset_via_upstream(&call_ctx, gid, &tmp_url, &at).await,
+                            }
+                        }
+                    },
+                )
+                .await
+            } else {
+                Err("不支持的格式".to_string())
+            };
+            match res {
+                Ok((aid, cached)) => Ok((target, asset_type, url_short, aid, cached)),
+                Err(err) => Err((asset_type, url_short, err)),
             }
-            Err(reason) => {
-                logs.push(format!("[{}] {} ✗ {}", asset_type, url_short, reason));
-                errors.push(reason);
-                break;
+        }
+    });
+
+    // Fail-Fast: 任一素材转换失败立即短路退出并取消其余未完成任务
+    match futures::future::try_join_all(futs).await {
+        Ok(results) => {
+            for (ptr, asset_type, url_short, aid, cached) in results {
+                push_convert_ok(body, &mut logs, &ptr, &asset_type, &url_short, &aid, cached);
             }
+        }
+        Err((asset_type, url_short, reason)) => {
+            logs.push(format!("[{}] {} ✗ {}", asset_type, url_short, reason));
+            errors.push(reason);
         }
     }
 
@@ -1309,7 +1313,7 @@ async fn convert_url_via_binding(
     group_id: &str,
     url: &str,
     asset_type: &str,
-    is_portrait: bool,
+    protocol: &str,
 ) -> Result<(String, bool), String> {
     let meta_fp = fetch_meta_fingerprint(ctx.http, url).await;
     if let Some(aid) = lookup_cached_converted_asset(
@@ -1325,10 +1329,10 @@ async fn convert_url_via_binding(
         return Ok((aid, true));
     }
 
-    let asset_id = if is_portrait {
-        create_asset_via_portrait(ctx, group_id, url, asset_type).await?
-    } else {
-        create_asset_via_upstream(ctx, group_id, url, asset_type).await?
+    let asset_id = match protocol {
+        uac::PROTOCOL_PORTRAIT_REST => create_asset_via_portrait(ctx, group_id, url, asset_type).await?,
+        uac::PROTOCOL_TENCENT_VOD => create_asset_via_tencent_vod(ctx, group_id, url, asset_type).await?,
+        _ => create_asset_via_upstream(ctx, group_id, url, asset_type).await?,
     };
 
     insert_asset_record_with_source(
@@ -1355,8 +1359,18 @@ async fn create_asset_via_portrait(
 ) -> Result<String, String> {
     let name = derive_create_asset_name(url, asset_type);
     let asset_id = uac::portrait_create_asset(ctx, library_id, url, asset_type, &name).await?;
-    uac::portrait_poll_asset_active(ctx, library_id, &asset_id, asset_type).await?;
+    uac::portrait_poll_asset_active(ctx, library_id, &asset_id, asset_type, url).await?;
     Ok(asset_id)
+}
+
+async fn create_asset_via_tencent_vod(
+    ctx: &uac::UpstreamCallCtx<'_>,
+    group_id: &str,
+    url: &str,
+    asset_type: &str,
+) -> Result<String, String> {
+    let name = derive_create_asset_name(url, asset_type);
+    uac::tencent_vod_create_material(ctx, group_id, url, asset_type, &name).await
 }
 
 async fn ensure_upstream_group_id(
@@ -1407,13 +1421,13 @@ async fn create_asset_via_upstream(
 
     let create_res = uac::call_action_logged(ctx, "CreateAsset", &body)
         .await
-        .map_err(|e| format!("素材注册失败: {}", e))?;
+        .map_err(|e| e.to_string())?;
 
     let asset_id = uac::extract_result_field(&create_res, "Id")
-        .ok_or_else(|| "素材注册失败: 响应缺少 Id".to_string())?
+        .ok_or_else(|| "上游素材接口响应缺少 Id".to_string())?
         .to_string();
 
-    poll_upstream_asset_active(ctx, &asset_id, asset_type).await?;
+    poll_upstream_asset_active(ctx, &asset_id, asset_type, url).await?;
     Ok(asset_id)
 }
 
@@ -1421,9 +1435,10 @@ async fn poll_upstream_asset_active(
     ctx: &uac::UpstreamCallCtx<'_>,
     asset_id: &str,
     asset_type: &str,
+    url: &str,
 ) -> Result<(), String> {
     let max_wait_secs = uac::asset_type_timeout_secs(asset_type);
-    const POLL_INTERVAL_SECS: u64 = 3;
+    const POLL_INTERVAL_SECS: u64 = 5;
     let max_attempts = max_wait_secs / POLL_INTERVAL_SECS;
     let mut last_err: Option<String> = None;
 
@@ -1444,7 +1459,7 @@ async fn poll_upstream_asset_active(
                 if status.eq_ignore_ascii_case("Failed") {
                     return Err(format!(
                         "素材处理失败({}): {}",
-                        asset_id,
+                        url,
                         uac::asset_fail_reason(&res)
                     ));
                 }
@@ -1458,9 +1473,9 @@ async fn poll_upstream_asset_active(
     Err(if let Some(e) = last_err {
         format!(
             "素材处理超时({}s): {}, 错误: {}",
-            max_wait_secs, asset_id, e
+            max_wait_secs, url, e
         )
     } else {
-        format!("素材处理超时({}s): {}", max_wait_secs, asset_id)
+        format!("素材处理超时({}s): {}", max_wait_secs, url)
     })
 }

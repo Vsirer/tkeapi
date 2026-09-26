@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import type { Plugin } from '../types';
@@ -43,7 +43,7 @@ export function selectAdminSidebarPlugins(
   canSee: (name: string) => boolean,
 ): Plugin[] {
   return plugins
-    .filter((p) => p.show_in_admin_menu === 1 && canSee(p.name))
+    .filter((p) => p.is_enabled === 1 && p.show_in_admin_menu === 1 && canSee(p.name))
     .sort((a, b) => {
       const byWeight = (b.admin_menu_sort ?? 0) - (a.admin_menu_sort ?? 0);
       if (byWeight !== 0) return byWeight;

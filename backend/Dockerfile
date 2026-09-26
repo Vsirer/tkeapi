@@ -18,15 +18,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/app
 COPY backend ./backend
-# site_portal.rs / site_portal_pro.rs include_str! 编译期绑定的前端资源（缺一即构建失败）
+# site_portal.rs / site_portal_pro.rs / playground_2026 include_str! / include_bytes! 编译期绑定的前端资源（缺一即构建失败）
 COPY frontend/src/pages/Plugins/SitePortal/locales/portal \
      ./frontend/src/pages/Plugins/SitePortal/locales/portal
 COPY frontend/src/pages/Plugins/SitePortal/whats-token-homepage.html \
      ./frontend/src/pages/Plugins/SitePortal/whats-token-homepage.html
-COPY frontend/src/pages/Plugins/SitePortalPro/locales/portal \
-     ./frontend/src/pages/Plugins/SitePortalPro/locales/portal
-COPY frontend/src/pages/Plugins/SitePortalPro/whats-token-homepage.html \
-     ./frontend/src/pages/Plugins/SitePortalPro/whats-token-homepage.html
 WORKDIR /usr/src/app/backend
 
 # 无 cache：交叉架构（QEMU）更稳，避免 mount + qemu segfault

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -18,10 +18,12 @@ import {
   KeyRound 
 } from 'lucide-react';
 import request from '../../utils/request';
+import { apiErrMsg } from '../../utils/apiErr';
 import { useTranslation } from 'react-i18next';
 import useSettingsStore from '../../store/settings';
 import AuthLayout from '../../layouts/AuthLayout';
 import type { AuthMethodOption } from '../../layouts/AuthLayout';
+import AccountPickModal from './AccountPickModal';
 
 /** 发送成功后的倒计时（秒） */
 const CODE_COOLDOWN_SUCCESS = 60;
@@ -54,7 +56,11 @@ const ForgotPassword: React.FC = () => {
 
   // 错误提示
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState('');
   const [shakeKey, setShakeKey] = useState(0);
+  const [selectOpen, setSelectOpen] = useState(false);
+  const [candidates, setCandidates] = useState<{ uid: string; username: string; nickname?: string | null }[]>([]);
+  const [selectedUid, setSelectedUid] = useState<string>('');
 
   const login = settings?.login;
   
@@ -91,8 +97,12 @@ const ForgotPassword: React.FC = () => {
     setCodeVal('');
     setPasswordVal('');
     setConfirmVal('');
+    setSelectedUid('');
+    setSelectOpen(false);
+    setCandidates([]);
     // 不重置 countdown：切换找回方式不能绕过冷却
     setErrors({});
+    setFormError('');
   }, [activeTab]);
 
   useEffect(() => {
@@ -128,6 +138,7 @@ const ForgotPassword: React.FC = () => {
     sendingCodeRef.current = true;
     setSendingCode(true);
     setErrors(prev => ({ ...prev, target: '' }));
+    setFormError('');
     try {
       if (currentTab.key === 'email') {
         await request.post('/auth/send-code', { email: targetVal.trim(), purpose: 'reset_password' }, { skipErrorHandler: true } as any);
@@ -137,7 +148,8 @@ const ForgotPassword: React.FC = () => {
       message.success(t('auth.code_sent'));
       startCooldown(CODE_COOLDOWN_SUCCESS);
     } catch (error: any) {
-      message.error(error.response?.data?.error?.message || t('common.error'));
+      setFormError(apiErrMsg(error, t('common.error')));
+      setShakeKey(k => k + 1);
       startCooldown(CODE_COOLDOWN_ERROR);
     } finally {
       sendingCodeRef.current = false;
@@ -175,12 +187,17 @@ const ForgotPassword: React.FC = () => {
 
     if (Object.keys(tempErrors).length > 0) {
       setErrors(tempErrors);
+      setFormError('');
       setShakeKey(k => k + 1); // 触发抖动
       return;
     }
     setErrors({});
+    setFormError('');
     setLoading(true);
+    await postReset(selectedUid);
+  };
 
+  const postReset = async (uid?: string) => {
     try {
       const payload: any = {
         code: codeVal.trim(),
@@ -191,14 +208,30 @@ const ForgotPassword: React.FC = () => {
       } else {
         payload.mobile = targetVal.trim();
       }
+      if (uid) payload.uid = uid;
       await request.post('/auth/reset-password', payload, { skipErrorHandler: true } as any);
+      setSelectOpen(false);
       message.success(t('auth.reset_password_success'));
       navigate('/login');
     } catch (error: any) {
-      message.error(error.response?.data?.error?.message || t('common.error'));
+      const err = error.response?.data?.error;
+      if (err?.error_code === 'ACCOUNT_SELECT_REQUIRED' && Array.isArray(err.candidates)) {
+        setCandidates(err.candidates);
+        setSelectOpen(true);
+        setLoading(false);
+        return;
+      }
+      setFormError(apiErrMsg(error, t('common.error')));
+      setShakeKey(k => k + 1);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSelectAccount = async (uid: string) => {
+    setSelectedUid(uid);
+    setLoading(true);
+    await postReset(uid);
   };
 
   const layoutMethods: AuthMethodOption[] = recoveryTabs.map(tab => ({ key: tab.key, label: tab.label, icon: tab.icon }));
@@ -222,7 +255,21 @@ const ForgotPassword: React.FC = () => {
       onMethodChange={handleTabChange}
       bottomLinks={bottomLinks}
     >
-      {activeTab && (
+      {selectOpen ? (
+        <AccountPickModal
+          title={t('auth.select_account_title')}
+          hint={t('auth.select_reset_hint')}
+          loading={loading}
+          error={formError}
+          backLabel={t('common.back')}
+          candidates={candidates}
+          onSelect={handleSelectAccount}
+          onBack={() => {
+            setSelectOpen(false);
+            setFormError('');
+          }}
+        />
+      ) : activeTab && (
         <form onSubmit={handleSubmit} className="space-y-4">
           
           {/* 选项切换（在有多个找回方式时） */}
@@ -370,6 +417,10 @@ const ForgotPassword: React.FC = () => {
               <p key={`fp-cp-${shakeKey}`} className="text-[11px] font-medium text-destructive animate-shake">{errors.confirm}</p>
             )}
           </div>
+
+          {formError && (
+            <p key={`form-${shakeKey}`} className="text-[12px] font-medium text-destructive text-center animate-shake">{formError}</p>
+          )}
 
           {/* 极致黑白灰反转重置密码按钮 */}
           <button

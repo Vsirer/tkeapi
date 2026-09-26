@@ -1,6 +1,6 @@
 # Chat Anthropic (Native Messages)
 
-Use Anthropic-compatible `POST /v1/messages` when you already integrate via Anthropic SDK / native protocol.
+Anthropic-compatible: `POST /v1/messages`. Suitable for Anthropic SDK or native protocol integration. [Messages API](https://docs.anthropic.com/en/api/messages)
 
 * **Path**: `https://{{domain}}/v1/messages`
 * **Auth**: `x-api-key: sk-your_token_here`

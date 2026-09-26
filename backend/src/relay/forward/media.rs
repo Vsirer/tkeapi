@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 pub(crate) fn parse_image_data(trimmed_url: &str) -> Option<(Vec<u8>, &str)> {
@@ -383,15 +383,18 @@ pub(crate) fn remove_openai_compat_fields(obj: &mut serde_json::Map<String, serd
 }
 
 /// OpenAI `size`（`16:9` 或 `1024x1024`）→ 最近标准宽高比（腾讯云 / MiniMax 等共用）。
+/// 分辨率等级（如 1k/2k/4k）或无法解析的格式安全返回 None。
 pub(crate) fn size_to_ratio(size: &str) -> Option<&str> {
     let s = size.trim();
     if s.is_empty() {
         return None;
     }
-    if s.contains(':') {
+    // 显式比例（如 "16:9"、"1:1"）或自适应 "auto" / "adaptive" 直接识别
+    if s.contains(':') || s.eq_ignore_ascii_case("auto") || s.eq_ignore_ascii_case("adaptive") {
         return Some(s);
     }
-    let Some((w, h)) = s
+    // 像素尺寸（如 "1024x1024"）→ 计算宽高比并匹配最近标准比例
+    let (w, h) = s
         .split_once('x')
         .or_else(|| s.split_once('X'))
         .or_else(|| s.split_once('*'))
@@ -400,10 +403,7 @@ pub(crate) fn size_to_ratio(size: &str) -> Option<&str> {
             let w = a.trim().parse::<f64>().ok()?;
             let h = b.trim().parse::<f64>().ok()?;
             (w > 0.0 && h > 0.0).then_some((w, h))
-        })
-    else {
-        return Some(s);
-    };
+        })?;
     let r = w / h;
     const CANDIDATES: &[(&str, f64)] = &[
         ("1:1", 1.0),

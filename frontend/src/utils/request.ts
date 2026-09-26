@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import axios from 'axios';
@@ -47,7 +47,7 @@ request.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
     try {
-      // timedisplay：优先用户个人时区，供统计/任务列表按自然日过滤
+      // timedisplay：管理后台站点时区，用户端个人时区
       config.headers['x-timezone'] = resolveTimedisplay();
     } catch (e) {}
     return config;
@@ -84,20 +84,26 @@ request.interceptors.response.use(
     if (response) {
       const { status, data } = response;
 
-      // 开发环境下，处理后端正在重启/编译的 502/503/504 错误
-      if (status === 502 || status === 503 || status === 504) {
-        if (import.meta.env.DEV) {
-          message.destroy('dev-backend-down');
-          message.warning({
-            content: bilingualNotice('后端服务正在编译或重启中...', 'Backend is compiling or restarting...'),
-            key: 'dev-backend-down',
-            duration: 3,
-          });
-          return Promise.reject(error);
-        }
-      }
+      let serverMsg =
+        data?.error?.message ||
+        data?.message ||
+        (typeof data?.error === 'string' ? data.error : undefined) ||
+        (typeof data === 'string' && !data.trimStart().startsWith('<') ? data : undefined);
 
-      let serverMsg = data?.error?.message || data?.message || (typeof data?.error === 'string' ? data.error : undefined) || (typeof data === 'string' ? data : undefined);
+      // 开发环境：代理无正文的 502/503/504 才当编译重启；有业务错误原文则照常展示
+      if (
+        import.meta.env.DEV &&
+        !serverMsg &&
+        (status === 502 || status === 503 || status === 504)
+      ) {
+        message.destroy('dev-backend-down');
+        message.warning({
+          content: bilingualNotice('后端服务正在编译或重启中...', 'Backend is compiling or restarting...'),
+          key: 'dev-backend-down',
+          duration: 3,
+        });
+        return Promise.reject(error);
+      }
       
       // Translate specific backend error messages
       if (serverMsg === 'Account disabled') {
@@ -110,6 +116,17 @@ request.interceptors.response.use(
         serverMsg = i18n.language?.startsWith('zh')
           ? '兑换码无效或已被使用'
           : 'Invalid or already used redemption code';
+      }
+
+      // 🎯 拦截 429 频控：替换为亲和黄色提示，避免红叉报错与刷屏
+      if (status === 429) {
+        message.destroy('global-rate-limit-warning');
+        message.warning({
+          content: serverMsg || '操作过于频繁，请稍后再试',
+          key: 'global-rate-limit-warning',
+          duration: 3,
+        });
+        return Promise.reject(error);
       }
 
       if (status === 401) {

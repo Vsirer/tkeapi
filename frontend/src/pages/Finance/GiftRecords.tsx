@@ -1,24 +1,24 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Table, Card, Typography, Space, Input, Button, Tag, DatePicker, Grid, List } from 'antd';
+import { Table, Card, Typography, Space, Input, Button, Tag, Grid, List } from 'antd';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import { SyncOutlined, SearchOutlined, GiftOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import { formatApiDateTime } from '../../utils/timedisplay';
-import { toTimeRangeParams } from '../../utils/dateRangeParams';
-import { rechargeTypeLabel } from '../../utils/rechargeType';
-import dayjs from 'dayjs';
+import { defaultMonthRange, toTimeRangeParams } from '../../utils/dateRangeParams';
+import LogDateTimeRangePicker from '../../components/LogDateTimeRangePicker';
+import { rechargeTypeLabel, extractOrderNo, cleanRemark } from '../../utils/rechargeType';
+import type { Dayjs } from 'dayjs';
 
 const { Title, Text } = Typography;
-const { RangePicker } = DatePicker;
 
 interface GiftRecord {
   id: number;
@@ -27,6 +27,7 @@ interface GiftRecord {
   uid: string;
   amount: number;
   recharge_type: string;
+  order_no?: string | null;
   remark: string | null;
   operator: string | null;
   created_at: string;
@@ -38,20 +39,15 @@ const GiftRecords: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
-  const adminPath = settings?.admin_path || 'admin';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [data, setData] = useState<GiftRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const { page, pageSize, onChange } = useListPager();
   const [search, setSearch] = useState('');
   const [referrerSearch, setReferrerSearch] = useState('');
   const [totalAmount, setTotalAmount] = useState<number>(0);
-  const [dateRange, setDateRange] = useState<[string, string] | undefined>([
-    dayjs().startOf('month').format('YYYY-MM-DD'),
-    dayjs().endOf('month').format('YYYY-MM-DD')
-  ]);
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(() => defaultMonthRange());
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -82,32 +78,39 @@ const GiftRecords: React.FC = () => {
 
   const columns = [
     {
-      title: t('logs.time'),
-      dataIndex: 'created_at',
-      key: 'created_at',
-      width: 180,
-      render: (text: string) => formatApiDateTime(text),
+      title: t('finance.order_no', { defaultValue: '订单号' }),
+      key: 'order_no',
+      width: 220,
+      render: (_: unknown, record: GiftRecord) => {
+        const orderNo = extractOrderNo(record);
+        if (orderNo) {
+          return (
+            <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {orderNo}
+            </Text>
+          );
+        }
+        return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+      },
     },
     {
       title: t('finance.user_info'),
       key: 'user',
       render: (record: GiftRecord) => (
-        <Space direction="vertical" size={0}>
-          {record.uid ? (
-            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
-              {record.username}
-            </Link>
-          ) : (
-            <Text strong>{record.username}</Text>
-          )}
-          {record.uid ? (
-            <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.45)' }}>
-              UID: {record.uid}
-            </Link>
-          ) : (
-            <Text type="secondary" style={{ fontSize: '12px' }}>-</Text>
-          )}
+        <Space vertical size={0}>
+          <Text strong>{record.username || '-'}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {record.uid ? `UID: ${record.uid}` : '-'}
+          </Text>
         </Space>
+      ),
+    },
+    {
+      title: t('finance.recharge_type', { defaultValue: '类型' }),
+      dataIndex: 'recharge_type',
+      key: 'recharge_type',
+      render: (type: string) => (
+        <Tag color="gold">🎁 {rechargeTypeLabel(type)}</Tag>
       ),
     },
     {
@@ -121,12 +124,11 @@ const GiftRecords: React.FC = () => {
       ),
     },
     {
-      title: '类型',
-      dataIndex: 'recharge_type',
-      key: 'recharge_type',
-      render: (type: string) => (
-        <Tag color="gold">🎁 {rechargeTypeLabel(type)}</Tag>
-      ),
+      title: t('logs.time'),
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (text: string) => formatApiDateTime(text),
     },
     {
       title: '用户推荐人',
@@ -134,22 +136,23 @@ const GiftRecords: React.FC = () => {
       render: (record: GiftRecord) => {
         if (!record.referrer_uid) return '-';
         return (
-          <Space direction="vertical" size={0}>
-            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontWeight: 600 }}>
-              {record.referrer_username}
-            </Link>
-            <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: '12px', color: 'rgba(0, 0, 0, 0.45)' }}>
+          <Space vertical size={0}>
+            <Text strong>{record.referrer_username || '-'}</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
               UID: {record.referrer_uid}
-            </Link>
+            </Text>
           </Space>
         );
       },
     },
     {
-      title: t('finance.remark'),
+      title: t('finance.remark', { defaultValue: '备注' }),
       dataIndex: 'remark',
       key: 'remark',
-      render: (text: string) => text || '-',
+      render: (_: unknown, record: GiftRecord) => {
+        const cleaned = cleanRemark(record.remark, record.order_no);
+        return <Text style={{ fontSize: 12 }}>{cleaned || '-'}</Text>;
+      },
     },
     {
       title: t('finance.operator'),
@@ -170,24 +173,19 @@ const GiftRecords: React.FC = () => {
           </Text>
         </Space>
         <Space wrap style={{ width: screens.xs ? '100%' : 'auto' }}>
-          <RangePicker
-            defaultValue={[dayjs().startOf('month'), dayjs().endOf('month')]}
-            onChange={(dates) => {
-              if (dates && dates[0] && dates[1]) {
-                setDateRange([dates[0].format('YYYY-MM-DD'), dates[1].format('YYYY-MM-DD')]);
-              } else {
-                setDateRange(undefined);
-              }
-            }}
-            style={{ width: 240 }}
+          <LogDateTimeRangePicker
+            value={dateRange}
+            onChange={setDateRange}
+            isAdmin
+            className="font-size-12"
           />
           <Input
-            placeholder="搜索 用户名 / UID"
+            placeholder="搜索 用户名 / UID / 订单号"
             prefix={<SearchOutlined />}
             value={search}
             onChange={e => setSearch(e.target.value)}
             onPressEnter={fetchData}
-            style={{ width: 180 }}
+            style={{ width: 200 }}
           />
           <Input
             placeholder="搜索推荐人 用户名/UID"
@@ -205,44 +203,33 @@ const GiftRecords: React.FC = () => {
         <List
           dataSource={data}
           loading={loading}
-          pagination={{
+          pagination={listPagination({
             total,
             current: page,
             pageSize,
-            pageSizeOptions: ['50', '100', '200'],
-            onChange: (p, s) => {
-              setPage(p);
-              setPageSize(s);
-            },
-            showSizeChanger: true,
+            onChange,
             size: 'small'
-          }}
+          })}
           renderItem={(record) => (
             <List.Item style={{ padding: '0 0 8px 0', border: 'none' }}>
               <Card
                 size="small"
                 style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
-                title={
-                  record.uid ? (
-                    <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontWeight: 600 }}>
-                      {record.username}
-                    </Link>
-                  ) : (
-                    <Text strong>{record.username}</Text>
-                  )
-                }
+                title={<Text strong>{record.username || '-'}</Text>}
                 extra={<Tag color="gold">🎁 {rechargeTypeLabel(record.recharge_type)}</Tag>}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
-                  {record.uid ? (
-                    <Link to={`/${adminPath}/users/${record.uid}/basic`} style={{ fontSize: 12 }}>
-                      {record.uid}
-                    </Link>
-                  ) : (
-                    <Text style={{ fontSize: 12 }}>-</Text>
-                  )}
+                  <Text style={{ fontSize: 12 }}>{record.uid || '-'}</Text>
                 </div>
+                {extractOrderNo(record) && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{t('finance.order_no', { defaultValue: '订单号' })}</Text>
+                    <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>
+                      {extractOrderNo(record)}
+                    </Text>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>金额</Text>
                   <Text strong style={{ color: record.amount >= 0 ? '#faad14' : '#ff4d4f' }}>
@@ -256,20 +243,20 @@ const GiftRecords: React.FC = () => {
                 {record.referrer_uid && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>用户推荐人</Text>
-                  <Space direction="vertical" size={0} align="end">
-                    <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 12, fontWeight: 600 }}>
-                      {record.referrer_username}
-                    </Link>
-                    <Link to={`/${adminPath}/users/${record.referrer_uid}/basic`} style={{ fontSize: 10, color: 'rgba(0, 0, 0, 0.45)' }}>
-                      UID: {record.referrer_uid}
-                    </Link>
+                  <Space vertical size={0} align="end">
+                    <Text strong style={{ fontSize: 12 }}>{record.referrer_username || '-'}</Text>
+                    <Text type="secondary" style={{ fontSize: 10 }}>UID: {record.referrer_uid}</Text>
                   </Space>
                 </div>
                 )}
+                {cleanRemark(record.remark, record.order_no) && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>备注</Text>
-                  <Text style={{ fontSize: 12, wordBreak: 'break-all', maxWidth: '60%', textAlign: 'right' }}>{record.remark || '-'}</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('finance.remark', { defaultValue: '备注' })}</Text>
+                  <Text style={{ fontSize: 12, wordBreak: 'break-all', maxWidth: '60%', textAlign: 'right' }}>
+                    {cleanRemark(record.remark, record.order_no)}
+                  </Text>
                 </div>
+                )}
                 {record.operator && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 0 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>操作人</Text>
@@ -287,17 +274,12 @@ const GiftRecords: React.FC = () => {
           rowKey="id"
           className="compact-table"
           loading={loading}
-          pagination={{
+          pagination={listPagination({
             total,
             current: page,
             pageSize,
-            pageSizeOptions: ['50', '100', '200'],
-            onChange: (p, s) => {
-              setPage(p);
-              setPageSize(s);
-            },
-            showSizeChanger: true,
-          }}
+            onChange,
+          })}
           size="small"
           scroll={{ x: 'max-content' }}
         />

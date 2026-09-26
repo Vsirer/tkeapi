@@ -5,7 +5,6 @@ Kling AI được sử dụng rộng rãi nhờ chất lượng hình ảnh vide
 ### 1. Giao diện mô hình video
 * **Chuyển văn bản thành video (Text-to-Video)**: `/v1/videos/text2video` (`POST`)
 * **Chuyển hình ảnh thành video (Image-to-Video)**: `/v1/videos/image2video` (`POST`)
-* **Chuyển nhiều hình ảnh thành video (Multi-Image-to-Video)**: `/v1/videos/multi-image2video` (`POST`)
 * **Omni video tham chiếu tạo video**: `/v1/videos/omni-video` (`POST`)
 * **Truy vấn trạng thái tác vụ**: `/v1/videos/{endpoint}/{task_id}` (`GET`)
 

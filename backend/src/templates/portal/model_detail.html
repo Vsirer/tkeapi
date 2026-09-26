@@ -1,8 +1,8 @@
 <!--
-  tokensbyte opensource
-  (c) 2026 tokensbyte.ai
+  tkeapi (tokensbyte) opensource
+  © 2026 tkeapi.com
   @copyright      Copyright netbcloud/wstianxia 
-  @license        MIT (https://www.tokensbyte.ai/)
+  @license        MIT (https://www.tkeapi.com/)
 -->
 
 {% extends "base.html" %}
@@ -200,7 +200,7 @@ body.dark .md-not-found h2 { color: rgba(255,255,255,0.85); }
         {% if not found and model_target_id == current_mid %}
             {% set_global found = true %}
                  <div class="ant-breadcrumb">
-                <a href="/home/models" data-i18n-dynamic="模型广场">模型广场</a>
+                <a href="{{ nav.marketplace_path | default(value="/home/models") | safe }}" data-i18n-dynamic="模型广场" data-i18n-key="nav_models">模型广场</a>
                 <span class="breadcrumb-separator">/</span>
                 <span class="breadcrumb-current">{% if model.original_id and model.original_id | length > 0 %}{{ model.original_id }}{% else %}{{ model.model_name }}{% endif %}</span>
             </div>
@@ -387,9 +387,9 @@ body.dark .md-not-found h2 { color: rgba(255,255,255,0.85); }
  
     {% if not found %}
     <div class="md-not-found">
-        <h2 data-i18n-dynamic="未找到该模型">未找到该模型</h2>
-        <p style="color: rgba(0,0,0,0.45); font-size: 15px; margin-bottom: 24px;" data-i18n-dynamic="模型可能已下线或不存在。请返回模型列表重新选择。">模型可能已下线或不存在。请返回模型列表重新选择。</p>
-        <a href="/home/models" style="display: inline-block; padding: 8px 16px; background: #1677ff; color: #fff; border-radius: 6px; text-decoration: none;" data-i18n-dynamic="返回模型列表">返回模型列表</a>
+        <h2 data-i18n-dynamic="未找到该模型" data-i18n-key="model_not_found">未找到该模型</h2>
+        <p style="color: rgba(0,0,0,0.45); font-size: 15px; margin-bottom: 24px;" data-i18n-dynamic="模型可能已下线或不存在。请返回模型列表重新选择。" data-i18n-key="model_not_found_desc">模型可能已下线或不存在。请返回模型列表重新选择。</p>
+        <a href="{{ nav.marketplace_path | default(value="/home/models") | safe }}" style="display: inline-block; padding: 8px 16px; background: #1677ff; color: #fff; border-radius: 6px; text-decoration: none;" data-i18n-dynamic="返回模型列表" data-i18n-key="return_model_list">返回模型列表</a>
     </div>
     {% endif %}
 

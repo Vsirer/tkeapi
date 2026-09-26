@@ -38,7 +38,7 @@ Valid upstream JSON may be returned **as-is** (vendor `type` / `code`); HTTP sta
 | **401** | Auth failure | `Missing Authorization Header` / `Invalid API Key` |
 | **402** | **Insufficient balance** | `账户余额不足…` / `余额不足` |
 | **403** | Token / IP / model allow-list / token quota | `Token disabled` / `Model xxx not allowed` / quota exhausted |
-| **404** | No upstream channel, or resource missing | `No available channels found for model xxx`; message contains `status 404` |
+| **404** | Model missing, unbound, or no usable channel; or upstream resource missing | `模型不存在: xxx` / `模型未配置渠道: xxx` / `模型无可用渠道: xxx`; message contains `status 404` |
 | **429** | **Rate limit or in-flight cap** | `RPS limit exceeded` / `RPM limit exceeded` / low-balance in-flight message |
 | **500** | Internal platform error | `Internal server error` |
 | **502** | Upstream unavailable / connection failure | upstream text |
@@ -56,7 +56,7 @@ See sections 400–504 in the Chinese doc for the same mapping. Key fixes:
 - **400**: bad request **or** upstream content/copyright filter — not a token permission issue (that's 403).
 - **403**: token settings, IP whitelist, model allow-list — not account balance (402), not content policy (400).
 - **429**: backoff retry; reduce concurrent async jobs or raise RPS/RPM limits.
-- **404**: model ID and channel/HA availability; or input URL returning 404.
+- **404**: `模型不存在` / `模型未配置渠道` / `模型无可用渠道`; or input URL returning 404.
 - **502/504**: retry; HA failover may retry on another channel transparently.
 
 ---

@@ -1,13 +1,15 @@
 # Kling AI Native Protocol Guide
 
-Kling-compatible paths on this platform. Use your platform API Key.
+Kling-compatible paths on this platform. Use your platform API Key. [Image API](https://klingai.com/document-api/apiReference/model/OmniImage) | [Video API](https://klingai.com/document-api/apiReference/model/OmniVideo)
 
 ### 1. Video Model API
-* **Text-to-Video**: `/v1/videos/text2video` (`POST`)
-* **Image-to-Video**: `/v1/videos/image2video` (`POST`)
-* **Multi-Image-to-Video**: `/v1/videos/multi-image2video` (`POST`)
-* **Omni Video Reference-to-Video**: `/v1/videos/omni-video` (`POST`)
-* **Query Task Status**: `/v1/videos/{endpoint}/{task_id}` (`GET`)
+* **Official 3.0 Text-to-Video**: `/text-to-video/${model_id}` (`POST`)
+* **Official 3.0 Image-to-Video**: `/image-to-video/${model_id}` (`POST`)
+* **Official Omni Video**: `/omni-video/${model_id}` (`POST`)
+* **Legacy Text-to-Video**: `/v1/videos/text2video` (`POST`)
+* **Legacy Image-to-Video**: `/v1/videos/image2video` (`POST`)
+* **Official 3.0 Query Task Status**: `/tasks?task_ids=${task_id}` (`GET`)
+* **Compatible Query Task Status**: `/v1/video/generations/{task_id}` or `/v1/tasks/{task_id}` (`GET`)
 
 *Note: In the query interface, `{endpoint}` corresponds to the service type used when submitting the task (such as `text2video`, `image2video`, etc.).*
 
@@ -21,3 +23,4 @@ Kling-compatible paths on this platform. Use your platform API Key.
 For detailed request payload structures (such as `camera_control` camera control, `aspect_ratio` ratio control, start/end frame images, etc.), please refer to the official standard. You can jump to the official documentation here:
 * [Kling OmniVideo Official Specification](https://klingai.com/document-api/apiReference/model/OmniVideo)
 * [Kling OmniImage Official Specification](https://klingai.com/document-api/apiReference/model/OmniImage)
+

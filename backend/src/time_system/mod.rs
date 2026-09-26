@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! timesystem / timedisplay 解耦层
@@ -15,8 +15,8 @@ pub mod db_ts;
 pub mod period;
 
 pub use core::{
-    enforce_process_utc, parse_timedisplay, resolve_timedisplay, try_iana_timezone_name,
-    utc_naive_string, DEFAULT_TIMEDISPLAY, TIMESYSTEM_TZ,
+    enforce_process_utc, parse_timedisplay, resolve_timedisplay, resolve_user_end_timedisplay,
+    try_iana_timezone_name, utc_naive_string, DEFAULT_TIMEDISPLAY, TIMESYSTEM_TZ,
 };
 pub use db_ts::DbTs;
 pub use period::{

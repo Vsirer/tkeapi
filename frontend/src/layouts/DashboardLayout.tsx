@@ -1,12 +1,12 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { getAnnouncementLabel } from '../utils/announcement';
+import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../utils/announcement';
 import {
   parseNotificationPreferences,
   shouldShowWebNotifications,
@@ -25,6 +25,7 @@ import generateUUID from '../utils/uuid';
 import { persistUserLanguagePreference, LANG_NAME_MAP, toDisplayLocale } from '../utils/language';
 import useSettingsStore from '../store/settings';
 import { hasAdminChildMenuPermission } from '../constants/adminMenuPermissions';
+import ErrorBoundary from '../components/ErrorBoundary';
 import { Layout, Menu, Button, Space, Typography, ConfigProvider, theme, Grid } from 'antd';
 import {
   DashboardOutlined,
@@ -1055,7 +1056,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: timeColor, fontSize: 12 }}>
                     <ScheduleOutlined />
-                    {new Date(item.created_at).toLocaleString(toDisplayLocale(i18n.language), {
+                    {new Date(getAnnouncementDisplayTime(item)).toLocaleString(toDisplayLocale(i18n.language), {
                       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
                     })}
                   </div>
@@ -1113,7 +1114,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           style={{
             boxShadow: 'none',
             borderRight: themeMode === 'light' ? '1px solid #e4e4e7' : '1px solid #1f1f23',
-            zIndex: 10,
+            zIndex: screens.xs ? 1050 : 10,
             position: screens.xs ? 'fixed' : 'relative',
             height: '100%',
             left: 0,
@@ -1294,7 +1295,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
               top: 0,
               left: 0,
               right: 0,
-              zIndex: 20,
+              zIndex: 100,
               padding: '0 12px',
               background: isLight ? 'rgba(255, 255, 255, 0.62)' : 'rgba(0, 0, 0, 0.48)',
               backdropFilter: 'blur(18px) saturate(180%)',
@@ -1561,6 +1562,8 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           <Content
             ref={contentRef}
             style={{
+            position: 'relative',
+            zIndex: 1,
             margin: screens.xs ? '0 8px 8px' : '0 12px 12px',
             // 顶栏浮层 + 10px 间距，滚动时内容穿过毛玻璃
             padding: screens.xs ? 12 : 16,
@@ -1575,7 +1578,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
             flexDirection: 'column',
           }}>
             <div style={{ flex: '1 0 auto', width: '100%', minWidth: 0 }}>
-              <Outlet context={outletContextValue} />
+              <ErrorBoundary>
+                <Outlet context={outletContextValue} />
+              </ErrorBoundary>
             </div>
             {site?.copyright && (
               <div
@@ -1603,7 +1608,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                 right: 0,
                 bottom: 0,
                 background: 'rgba(0,0,0,0.5)',
-                zIndex: 9,
+                zIndex: 1040,
               }}
               onClick={() => setCollapsed(true)}
             />

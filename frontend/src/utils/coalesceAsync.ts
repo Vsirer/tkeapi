@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)\r\n */
+ * @license        MIT (https://www.tkeapi.com/)\r\n */
 
 /**
  * 合并进行中的相同异步任务（如 React StrictMode 双挂载、并发调用）。

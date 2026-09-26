@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 对象存储门面：TOS / COS 共用上传、删除、预签名、列举，调用方不绑厂商签名。
@@ -86,6 +86,10 @@ impl ObjectStore {
     }
 
     pub fn from_settings(s: &StorageSettings) -> Option<Self> {
+        let p = s.default_provider.trim();
+        if p.is_empty() || p.eq_ignore_ascii_case("none") {
+            return None;
+        }
         Self::from_settings_for(s, StoreKind::parse(&s.default_provider))
     }
 

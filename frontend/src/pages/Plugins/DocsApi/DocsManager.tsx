@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -374,10 +374,6 @@ const DocsManager: React.FC<DocsManagerProps> = ({ apiPrefix = '/plugins/docs-ap
         };
         traverse(res.tree);
         setFlatDocs(flat);
-
-        if (expandedKeys.length === 0) {
-          setExpandedKeys(res.tree.map((n: any) => String(n.id)));
-        }
       }
     } catch (error) {
       console.error(error);

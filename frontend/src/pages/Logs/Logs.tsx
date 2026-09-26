@@ -1,15 +1,17 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { Table, Tag, Card, Typography, Space, Input, Button, Row, Col, Descriptions, theme, Grid, Tooltip, message, Modal, Spin, Select, Checkbox } from 'antd';
+import { Navigate, useSearchParams } from 'react-router-dom';
+import { Table, Tag, Card, Typography, Space, Input, Button, Row, Col, Descriptions, theme, Grid, Tooltip, message, Modal, Spin, Select, Checkbox, Segmented } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
-import { RefreshCw, Search, Download, Image as ImageIcon, MessageSquare, Wrench, LayoutGrid, Copy, Cuboid, ListOrdered, Mic, MoreHorizontal } from 'lucide-react';
+import { listPagination, useListPager } from '../../components/ListPagination';
+import { RefreshCw, Search, Download, Copy, MoreHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import { QueryGuard, isRequestAborted } from '../../utils/queryGuard';
@@ -27,6 +29,8 @@ import { useDragScroll } from '../../hooks/useDragScroll';
 import { parsePluginTagMeta } from '../../utils/pluginTagMeta';
 import { copyToClipboard } from '../../utils/clipboard';
 import { LOG_ERROR_STATUS_CODES } from '../../constants/relayStatusCodes';
+import { useLogTypeRoute } from './logTypeRoutes';
+import { LogTypeTabs, buildLogTypeTabOptions } from './LogTypeTabs';
 dayjs.extend(utc);
 
 const { Text } = Typography;
@@ -41,6 +45,7 @@ const LOG_EXPORT_FIELDS: { key: string; label: string }[] = [
   { key: 'created_at', label: '时间' },
   { key: 'log_id', label: '日志ID' },
   { key: 'task_id', label: '任务ID' },
+  { key: 'upstream_request_id', label: '厂商排查ID' },
   { key: 'id', label: 'ID' },
   { key: 'channel_group_aid', label: '渠道AID' },
   { key: 'is_ha', label: '渠道HA' },
@@ -53,6 +58,7 @@ const LOG_EXPORT_FIELDS: { key: string; label: string }[] = [
   { key: 'token_name', label: '令牌' },
   { key: 'token_kid', label: '密钥KID' },
   { key: 'token_ha', label: '令牌HA' },
+  { key: 'token_pg', label: '令牌PG' },
   { key: 'status_code', label: '状态码' },
   { key: 'model', label: '模型' },
   { key: 'billing_pid', label: '计费PID' },
@@ -75,6 +81,30 @@ const LOG_EXPORT_ALL_KEYS = LOG_EXPORT_FIELDS.map((f) => f.key);
 function parseStatusCodeFilter(raw?: string): number | undefined {
   const s = raw?.trim() ?? '';
   return /^\d+$/.test(s) ? Number(s) : undefined;
+}
+
+/** 精简金额格式化（最多 6 位小数，去除末尾无效的 0 与小数点） */
+function formatCleanCost(cost: number | undefined | null): string {
+  if (cost === undefined || cost === null || isNaN(Number(cost))) return '0';
+  return String(Number(Number(cost).toFixed(6)));
+}
+
+type TokenUnit = 'k' | 'm' | 'yi';
+const TOKEN_UNIT_STORAGE_KEY = 'logs_token_unit';
+const TOKEN_UNIT_DIVISOR: Record<TokenUnit, number> = { k: 1_000, m: 1_000_000, yi: 100_000_000 };
+
+function readTokenUnit(): TokenUnit {
+  try {
+    const v = localStorage.getItem(TOKEN_UNIT_STORAGE_KEY);
+    if (v === 'k' || v === 'm' || v === 'yi') return v;
+  } catch { /* ignore */ }
+  return 'k';
+}
+
+function formatTokenTotal(n: number | undefined | null, unit: TokenUnit): string {
+  const v = Number(n) / TOKEN_UNIT_DIVISOR[unit];
+  if (!Number.isFinite(v)) return '0';
+  return String(Number(v.toFixed(3)));
 }
 
 type LogListFilters = {
@@ -144,50 +174,6 @@ const CopyButton: React.FC<{ text: string, color?: string }> = ({ text, color })
   );
 };
 
-const ShadcnTabs = ({ value, onChange, options, isLight, themeToken }: any) => {
-  return (
-    <div style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: '8px',
-      background: themeToken?.colorFillAlter || (isLight ? '#fafafa' : '#1d1d1d'),
-      padding: '4px',
-      height: '32px',
-    }}>
-      {options.map((opt: any) => {
-        const isActive = value === opt.value;
-        return (
-          <div
-            key={opt.value}
-            onClick={() => onChange(opt.value)}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              whiteSpace: 'nowrap',
-              borderRadius: '6px',
-              padding: '0 16px',
-              height: '100%',
-              fontSize: '14px',
-              fontWeight: 500,
-              transition: 'all 0.2s',
-              cursor: 'pointer',
-              background: isActive ? 'rgb(72, 72, 72)' : 'transparent',
-              color: isActive ? '#fff' : (themeToken?.colorTextSecondary || (isLight ? '#71717a' : '#a1a1aa')),
-              boxShadow: isActive ? '0 1px 2px 0 rgba(0, 0, 0, 0.05)' : 'none',
-              gap: '6px'
-            }}
-          >
-            {opt.icon}
-            {opt.label}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
-
 
 /** 列表用量：轻量计费字段（不依赖 billing_detail 全文） */
 function billingUsageMetrics(record: RequestLog) {
@@ -214,7 +200,6 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   const { t } = useTranslation();
   const { token: themeToken } = theme.useToken();
   const { settings } = useSettingsStore();
-  const adminPath = settings?.admin_path || 'admin';
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
@@ -225,11 +210,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const { page, pageSize, setPage, onChange } = useListPager();
   const [modelFilter, setModelFilter] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searchParams] = useSearchParams();
+  const { actionTypeFilter, redirectTo, goLogType, defaultLogType, setDefaultLogType } = useLogTypeRoute('logs');
+  const logTypeOptions = useMemo(() => buildLogTypeTabOptions(t), [t]);
   const [userFilter, setUserFilter] = useState<string | undefined>(searchParams.get('user_id') || undefined);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
   const [statusCodeFilter, setStatusCodeFilter] = useState<string | undefined>(undefined);
@@ -240,12 +226,26 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   const [exporting, setExporting] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFieldKeys, setExportFieldKeys] = useState<string[]>(LOG_EXPORT_ALL_KEYS);
-  const [stats, setStats] = useState<{ total_cost: number; success_count: number; fail_count: number }>({ total_cost: 0, success_count: 0, fail_count: 0 });
+  const [stats, setStats] = useState<{
+    total_cost: number;
+    success_count: number;
+    fail_count: number;
+    total_prompt_tokens: number;
+    total_completion_tokens: number;
+    total_with_video_tokens?: number;
+  }>({
+    total_cost: 0,
+    success_count: 0,
+    fail_count: 0,
+    total_prompt_tokens: 0,
+    total_completion_tokens: 0,
+    total_with_video_tokens: 0,
+  });
+  const [tokenUnit, setTokenUnit] = useState<TokenUnit>(readTokenUnit);
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   const isSuperAdmin = isAdmin && !user?.admin_group_id;
   const screens = useBreakpoint();
-  const [actionTypeFilter, setActionTypeFilter] = useState<string>(localStorage.getItem('default_log_type') || '视觉');
   const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false);
   const [tempDefaultType, setTempDefaultType] = useState<string>('视觉');
   const queryGuardRef = useRef(new QueryGuard());
@@ -267,9 +267,9 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
 
   useEffect(() => {
     if (isSettingsModalVisible) {
-      setTempDefaultType(localStorage.getItem('default_log_type') || '视觉');
+      setTempDefaultType(defaultLogType);
     }
-  }, [isSettingsModalVisible]);
+  }, [isSettingsModalVisible, defaultLogType]);
 
   useEffect(() => {
     if (user?.role !== 'admin') return;
@@ -307,9 +307,13 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
     setLoading(true);
     try {
       const o = overrides as object | undefined;
+      const targetPage = overrides?.page ?? page;
+      const targetPageSize = overrides?.pageSize ?? pageSize;
+      const isPaging = targetPage > 1;
+
       const params: Record<string, unknown> = {
-        page: overrides?.page ?? page,
-        per_page: overrides?.pageSize ?? pageSize,
+        page: targetPage,
+        per_page: targetPageSize,
         ...buildLogListParams({
           modelFilter: pickFilter(o, 'modelFilter', modelFilter),
           searchKeyword: pickFilter(o, 'searchKeyword', searchKeyword),
@@ -323,19 +327,41 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         }),
       };
 
-      const resp = await (request.get('/logs', { params, signal }) as unknown as Promise<{ data: RequestLog[]; total: number; allow_details?: boolean }>);
+      if (isPaging && total > 0) {
+        params.known_total = total;
+      }
+
+      const resp = await (request.get('/logs', { params, signal }) as unknown as Promise<{
+        data: RequestLog[];
+        total: number;
+        allow_details?: boolean;
+        total_cost?: number;
+        success_count?: number;
+        fail_count?: number;
+        total_prompt_tokens?: number;
+        total_completion_tokens?: number;
+        total_with_video_tokens?: number;
+      }>);
       if (!queryGuardRef.current.isCurrent(signal)) return;
       setLogs(resp.data);
-      setTotal(resp.total);
+      if (typeof resp.total === 'number' && resp.total >= 0) {
+        setTotal(resp.total);
+      }
       resetDetailCache();
       if (resp.allow_details !== undefined) {
         setAllowDetails(resp.allow_details);
       }
-      setStats({
-        total_cost: (resp as any).total_cost || 0,
-        success_count: (resp as any).success_count || 0,
-        fail_count: (resp as any).fail_count || 0,
-      });
+      // 仅在非翻页（首屏/重新搜索/条件切换）时更新全局统计指标，避免翻页时清空或闪烁
+      if (!isPaging) {
+        setStats({
+          total_cost: resp.total_cost || 0,
+          success_count: resp.success_count || 0,
+          fail_count: resp.fail_count || 0,
+          total_prompt_tokens: resp.total_prompt_tokens || 0,
+          total_completion_tokens: resp.total_completion_tokens || 0,
+          total_with_video_tokens: resp.total_with_video_tokens || 0,
+        });
+      }
     } catch (e) {
       if (isRequestAborted(e)) return;
       console.error(e);
@@ -344,9 +370,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         setLoading(false);
       }
     }
-  }, [page, pageSize, modelFilter, searchKeyword, userFilter, statusFilter, statusCodeFilter, dateRange, routerEp, actionTypeFilter, userGroupFilter, resetDetailCache]);
-
-
+  }, [page, pageSize, total, modelFilter, searchKeyword, userFilter, statusFilter, statusCodeFilter, dateRange, routerEp, actionTypeFilter, userGroupFilter, resetDetailCache]);
 
   const openExportModal = () => {
     setExportFieldKeys(LOG_EXPORT_ALL_KEYS);
@@ -403,22 +427,24 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
   };
 
   useEffect(() => {
+    if (redirectTo) return;
     if (skipNextEffectFetchRef.current) {
       skipNextEffectFetchRef.current = false;
       return;
     }
     fetchLogs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, actionTypeFilter, statusFilter, userGroupFilter]);
+  }, [page, pageSize, actionTypeFilter, statusFilter, userGroupFilter, redirectTo]);
 
   const columns = ([
     {
       title: t('logs.time'),
       dataIndex: 'created_at',
       key: 'created_at',
+      align: 'left' as const,
       width: 190,
       render: (text: string, record: RequestLog) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={0} style={{ width: '100%', alignItems: 'flex-start' }}>
           <Text style={{ fontSize: 12 }}>{formatApiDateTime(text)}</Text>
           {record.log_id && (
             <Text 
@@ -447,25 +473,28 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       title: t('logs.channel_aid', '渠道信息'),
       dataIndex: 'channel_group_aid',
       key: 'channel_group_aid',
-      width: 140,
+      align: 'left' as const,
+      width: 160,
       render: (text: string, record: RequestLog) => (
-        <Space size={2} direction="vertical" style={{ alignItems: 'flex-start' }}>
-          <Space size={4}>
+        <Space size={2} direction="vertical" style={{ width: '100%', alignItems: 'flex-start' }}>
+          <Space size={4} style={{ maxWidth: '100%' }}>
             <Text type="secondary" style={{ fontSize: 12 }}>{text ? `AID: ${text}` : '-'}</Text>
             {record.is_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
           </Space>
           {record.sub_channel_name && (
             <Text
-              style={{ fontSize: 12, maxWidth: 130 }}
+              style={{ fontSize: 12, maxWidth: 150, display: 'inline-block' }}
               ellipsis={{ tooltip: `${t('logs.sub_channel_name', '实际调用上游')}: ${record.sub_channel_name}` }}
             >
               {record.sub_channel_name}
             </Text>
           )}
           {record.yid && (
-            <Tag color="cyan" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+            <Text
+              style={{ fontSize: 12, color: '#13c2c2', display: 'inline-block' }}
+            >
               {t('logs.sub_channel', '上游')}: {record.yid}
-            </Tag>
+            </Text>
           )}
         </Space>
       ),
@@ -473,26 +502,25 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
     user?.role === 'admin' ? {
       title: t('logs.user', '用户'),
       key: 'user',
+      align: 'left' as const,
       width: 180,
       render: (_: any, record: RequestLog) => {
         const name = record.user_nickname || record.user_uid || record.user_id?.slice(0, 8) || '-';
         const remark = record.user_admin_remark?.trim();
         return (
-          <Space direction="vertical" size={0}>
-            <Text style={{ fontSize: 12 }}>
-              {record.user_uid ? (
-                <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
-                  {name}
-                </Link>
-              ) : (
-                name
-              )}
+          <Space direction="vertical" size={0} style={{ width: '100%', alignItems: 'flex-start' }}>
+            <Text style={{ fontSize: 12, maxWidth: 170 }} ellipsis={{ tooltip: name }}>
+              {name}
               {remark ? <Text type="secondary" style={{ fontSize: 12 }}> {remark}</Text> : null}
             </Text>
             {record.user_uid && (
-              <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+              <Text 
+                type="secondary" 
+                style={{ fontSize: 10, fontFamily: 'monospace' }}
+                copyable={{ text: String(record.user_uid), tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+              >
                 UID: {record.user_uid}
-              </Link>
+              </Text>
             )}
           </Space>
         );
@@ -501,11 +529,13 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
     {
       title: t('logs.token', '令牌'),
       key: 'token_name',
-      width: 120,
+      align: 'left' as const,
+      width: 148,
       render: (_: any, record: RequestLog) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={0} style={{ width: '100%', alignItems: 'flex-start' }}>
           <Space size={4}>
             <Text style={{ fontSize: 12 }}>{record.token_name || '-'}</Text>
+            {record.token_pg === 1 && <Tag color="orange" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>PG</Tag>}
             {record.token_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
           </Space>
           {record.token_kid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>KID: {record.token_kid}</Text>}
@@ -520,6 +550,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       width: 100,
       filters: [
         { text: t('logs.success', '成功'), value: 'success' },
+        { text: t('logs.status_processing', '处理中'), value: 'processing' },
         { text: t('logs.fail', '失败'), value: 'fail' },
       ],
       filterMultiple: false,
@@ -535,14 +566,15 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       title: t('logs.model'),
       dataIndex: 'model',
       key: 'model',
+      align: 'left' as const,
       width: 180,
       ellipsis: true,
       render: (text: string, record: RequestLog) => (
-        <Space direction="vertical" size={0}>
+        <Space direction="vertical" size={0} style={{ width: '100%', alignItems: 'flex-start' }}>
           <Text style={{ fontSize: 12 }}>{text}</Text>
-          {user?.role === 'admin' && (record.yid || record.billing_pid || record.forward_eid) && (
+          {user?.role === 'admin' && (record.mid || record.billing_pid || record.forward_eid) && (
             <Space size={4}>
-              {record.yid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>YID:{record.yid}</Text>}
+              {record.mid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>MID:{record.mid}</Text>}
               {record.billing_pid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>PID:{record.billing_pid}</Text>}
               {record.forward_eid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>EID:{record.forward_eid}</Text>}
             </Space>
@@ -573,7 +605,10 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         return (
           <Space direction="vertical" size={0}>
             <Text type="secondary" style={{ fontSize: 11 }}>{t('logs.input', '输入')}: {record.prompt_tokens}</Text>
-            <Text type="secondary" style={{ fontSize: 11 }}>{t('logs.output', '输出')}: {record.completion_tokens}</Text>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {t('logs.output', '输出')}: {record.completion_tokens}
+              {record.action_type === '视频' && (record.has_video === 1 ? ` ${t('logs.with_video_short', '含视')}` : ` ${t('logs.without_video_short', '无视')}`)}
+            </Text>
             {isClaude ? (
               <>
                 {cacheCreation > 0 && <Text type="secondary" style={{ fontSize: 11, color: '#faad14' }}>{t('logs.cache_creation', '缓存创建')}: {cacheCreation}</Text>}
@@ -597,7 +632,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         <Space direction="vertical" size={0}>
           {val === 0 || record.billing_refunded || record.billing_failed
             ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
-            : <Text strong style={{ fontSize: 12, color: themeToken.colorError }}>{currencySymbol}{val.toFixed(6)}</Text>
+            : <Text strong style={{ fontSize: 12, color: themeToken.colorError }}>{currencySymbol}{formatCleanCost(val)}</Text>
           }
           {record.billing_refunded && (
             <Tag color="orange" style={{ margin: 0, fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>{t('logs.refunded', '已退费')}</Tag>
@@ -605,7 +640,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         </Space>
       ),
     },
-  ].map((c: any) => c ? { ...c, align: 'center' } : null).filter(Boolean)) as any[];
+  ].map((c: any) => c ? { align: 'center', ...c } : null).filter(Boolean)) as any[];
 
   const expandedRowRender = (record: RequestLog) => {
     const merged = { ...record, ...detailCache[record.id] };
@@ -630,23 +665,13 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         maxWidth: screens.xs ? 'calc(100vw - 64px)' : 'calc(100vw - 320px)',
         overflowX: 'auto', boxSizing: 'border-box'
       }}>
-        <Descriptions size="small" column={1} styles={{ label: { width: '100px', color: themeToken.colorTextSecondary }, content: { wordBreak: 'break-all', whiteSpace: 'pre-wrap' } }}>
+        <Descriptions size="small" column={1} styles={{ label: { width: 110, whiteSpace: 'nowrap', color: themeToken.colorTextSecondary }, content: { wordBreak: 'break-all', whiteSpace: 'pre-wrap' } }}>
           <Descriptions.Item label={t('logs.system_endpoint', '系统请求路径')}>
             {record.endpoint.startsWith('http') ? record.endpoint : `${window.location.origin}${record.endpoint.startsWith('/') ? '' : '/'}${record.endpoint}`}
           </Descriptions.Item>
           {clientCt && (
             <Descriptions.Item label={t('logs.client_ct', '请求提交类型')}>
               <Tag color={clientCtColor(clientCt)}>{clientCt}</Tag>
-            </Descriptions.Item>
-          )}
-          {isSuperAdmin && cascadeS1TaskId && (
-            <Descriptions.Item label={t('logs.cascade_s1_task_id', '上游任务ID')}>
-              <Typography.Text
-                copyable={{ text: cascadeS1TaskId, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
-                style={{ fontSize: 12, fontFamily: 'monospace' }}
-              >
-                {cascadeS1TaskId}
-              </Typography.Text>
             </Descriptions.Item>
           )}
           {record.upstream_url && (
@@ -665,6 +690,40 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
           {user?.role === 'admin' && record.sub_channel_name && (
             <Descriptions.Item label={t('logs.sub_channel_name', '实际调用上游')}>
               <Tag color="cyan">{record.sub_channel_name}</Tag>
+            </Descriptions.Item>
+          )}
+          {merged.upstream_request_id && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.upstream_request_id', '厂商排查ID')}
+                <Tooltip title={t('logs.upstream_request_id_tip', '上游响应追踪凭据，用于找厂商排障')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: themeToken.colorTextTertiary, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Typography.Text
+                copyable={{ text: merged.upstream_request_id, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+                style={{ fontSize: 12, fontFamily: 'monospace' }}
+              >
+                {merged.upstream_request_id}
+              </Typography.Text>
+            </Descriptions.Item>
+          )}
+          {isSuperAdmin && cascadeS1TaskId && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.cascade_s1_task_id', '底座任务ID')}
+                <Tooltip title={t('logs.cascade_s1_task_id_tip', '级联底座原始任务号，用于上游控制台查单')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: themeToken.colorTextTertiary, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Typography.Text
+                copyable={{ text: cascadeS1TaskId, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+                style={{ fontSize: 12, fontFamily: 'monospace' }}
+              >
+                {cascadeS1TaskId}
+              </Typography.Text>
             </Descriptions.Item>
           )}
           <Descriptions.Item label={t('logs.error_msg', '错误信息')}>
@@ -712,7 +771,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
               )}
               <br />
               <Text strong style={{ fontSize: 13, textDecoration: record.billing_refunded ? 'line-through' : 'none' }}>
-                {record.billing_refunded ? t('logs.pre_deduct', '预扣费') : t('logs.actual_deduct', '实际扣费')}: {currencySymbol}{record.cost.toFixed(6)}
+                {record.billing_refunded ? t('logs.pre_deduct', '预扣费') : t('logs.actual_deduct', '实际扣费')}: {currencySymbol}{formatCleanCost(record.cost)}
               </Text>
               {record.billing_refunded && <Text type="danger" style={{ fontSize: 13, marginLeft: 8 }}>{t('logs.fully_refunded', '已全额退回')}</Text>}
               <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>{t('logs.cost_priority', '（优先扣令牌配额，不足扣用户余额）')}</Text>
@@ -794,6 +853,10 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
     );
   };
 
+  if (redirectTo) {
+    return <Navigate to={redirectTo} replace />;
+  }
+
   return (
     <Card 
       variant="borderless" 
@@ -814,23 +877,16 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
               {t('menu.usage_logs', '使用日志')}
             </Typography.Title>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <ShadcnTabs 
+              <LogTypeTabs
                 value={actionTypeFilter}
+                defaultFirst={defaultLogType}
                 isLight={_isLight}
                 themeToken={themeToken}
+                options={logTypeOptions}
                 onChange={(v: string) => {
-                  setActionTypeFilter(v);
                   setPage(1);
+                  goLogType(v);
                 }}
-                options={[
-                  { value: '视觉', label: t('logs.type_vision', '视觉'), icon: <ImageIcon size={14} /> },
-                  { value: '聊天', label: t('logs.type_chat', '聊天'), icon: <MessageSquare size={14} /> },
-                  { value: '音频', label: t('logs.type_audio', '音频'), icon: <Mic size={14} /> },
-                  { value: '向量', label: t('logs.type_embedding', '向量'), icon: <Cuboid size={14} /> },
-                  { value: '排序', label: t('logs.type_rerank', '排序'), icon: <ListOrdered size={14} /> },
-                  { value: '其它', label: t('logs.type_other', '其它'), icon: <Wrench size={14} /> },
-                  { value: '全部', label: t('logs.type_all', '全部'), icon: <LayoutGrid size={14} /> },
-                ]}
               />
               <Tooltip title={t('logs.configure_default_type', '配置默认视图')}>
                 <Button
@@ -861,7 +917,54 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
               <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.success', '成功')} <strong style={{ color: themeToken.colorText }}>{stats.success_count}</strong></Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.fail', '失败')} <strong style={{ color: themeToken.colorText }}>{stats.fail_count}</strong></Text>
               <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.success_rate', '成功率')} <strong style={{ color: themeToken.colorText }}>{total > 0 ? ((stats.success_count / total) * 100).toFixed(1) : '0.0'}%</strong></Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.total_cost', '成本合计')} <strong style={{ color: themeToken.colorText }}>{currencySymbol}{stats.total_cost.toFixed(6)}</strong></Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>{t('logs.total_cost', '成本合计')} <strong style={{ color: themeToken.colorText }}>{currencySymbol}{formatCleanCost(stats.total_cost)}</strong></Text>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: themeToken.colorTextSecondary }}>
+                <Tooltip title={`${Number(stats.total_prompt_tokens || 0).toLocaleString()} Token`}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('logs.total_prompt_tokens', '输入 Token')}{' '}
+                    <strong style={{ color: themeToken.colorText }}>{formatTokenTotal(stats.total_prompt_tokens, tokenUnit)}</strong>
+                  </Text>
+                </Tooltip>
+                <span style={{ color: themeToken.colorBorder }}>|</span>
+                <Tooltip title={`${Number(stats.total_completion_tokens || 0).toLocaleString()} Token`}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('logs.total_completion_tokens', '输出 Token')}{' '}
+                    <strong style={{ color: themeToken.colorText }}>{formatTokenTotal(stats.total_completion_tokens, tokenUnit)}</strong>
+                  </Text>
+                </Tooltip>
+                {(stats.total_with_video_tokens || 0) > 0 && (
+                  <>
+                    <span style={{ color: themeToken.colorBorder }}>|</span>
+                    <Tooltip title={`${Number(stats.total_with_video_tokens || 0).toLocaleString()} Token`}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {t('logs.with_video_short', '含视')}{' '}
+                        <strong style={{ color: themeToken.colorText }}>{formatTokenTotal(stats.total_with_video_tokens, tokenUnit)}</strong>
+                      </Text>
+                    </Tooltip>
+                    <span style={{ color: themeToken.colorBorder }}>|</span>
+                    <Tooltip title={`${Number(Math.max(0, (stats.total_completion_tokens || 0) - (stats.total_with_video_tokens || 0))).toLocaleString()} Token`}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {t('logs.without_video_short', '无视')}{' '}
+                        <strong style={{ color: themeToken.colorText }}>{formatTokenTotal(Math.max(0, (stats.total_completion_tokens || 0) - (stats.total_with_video_tokens || 0)), tokenUnit)}</strong>
+                      </Text>
+                    </Tooltip>
+                  </>
+                )}
+                <Segmented
+                  size="small"
+                  value={tokenUnit}
+                  onChange={(val) => {
+                    const next = val as TokenUnit;
+                    setTokenUnit(next);
+                    try { localStorage.setItem(TOKEN_UNIT_STORAGE_KEY, next); } catch { /* ignore */ }
+                  }}
+                  options={[
+                    { label: t('logs.token_unit_k', '千'), value: 'k' },
+                    { label: t('logs.token_unit_m', '百万'), value: 'm' },
+                    { label: t('logs.token_unit_yi', '亿'), value: 'yi' },
+                  ]}
+                />
+              </span>
             </Space>
           </div>
         )}
@@ -900,12 +1003,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             />
           )}
           <Input
-            placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID')}
+            placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID/上游YID')}
             prefix={<Search size={16} />}
             value={searchKeyword}
             onChange={e => setSearchKeyword(e.target.value)}
             onPressEnter={() => fetchLogs()}
-            style={{ width: screens.xs ? '100%' : 270, fontSize: 12, height: 32 }}
+            style={{ width: screens.xs ? '100%' : 320, fontSize: 12, height: 32 }}
             allowClear
           />
           <Input
@@ -955,13 +1058,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
           rowKey="id"
           compact={true}
           gap={4}
-          pagination={{
+          pagination={listPagination({
             total,
             current: page,
             pageSize,
-            onChange: (p: number, s: number) => { setPage(p); setPageSize(s); },
-            showQuickJumper: true,
-          }}
+            onChange,
+          })}
           renderCard={(record: any) => {
             const userName = record.user_nickname || record.user_uid || record.user_id?.slice(0, 8) || '-';
             return (
@@ -993,19 +1095,17 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                   <CardRow label={t('logs.user', '用户')}>
                     <Space direction="vertical" size={0}>
                       <Text style={{ fontSize: 12 }}>
-                        {record.user_uid ? (
-                          <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontWeight: 500 }}>
-                            {userName}
-                          </Link>
-                        ) : (
-                          userName
-                        )}
+                        {userName}
                         {record.user_admin_remark?.trim() ? <Text type="secondary" style={{ fontSize: 12 }}> {record.user_admin_remark.trim()}</Text> : null}
                       </Text>
                       {record.user_uid && (
-                        <Link to={`/${adminPath}/users/${record.user_uid}/basic`} style={{ fontSize: 10, fontFamily: 'monospace', color: 'rgba(0, 0, 0, 0.45)' }}>
+                        <Text 
+                          type="secondary" 
+                          style={{ fontSize: 10, fontFamily: 'monospace' }}
+                          copyable={{ text: String(record.user_uid), tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+                        >
                           UID: {record.user_uid}
-                        </Link>
+                        </Text>
                       )}
                     </Space>
                   </CardRow>
@@ -1024,10 +1124,10 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                     </Space>
                   </CardRow>
                 )}
-                {user?.role === 'admin' && (record.yid || record.billing_pid || record.forward_eid) && (
+                {user?.role === 'admin' && (record.mid || record.billing_pid || record.forward_eid) && (
                   <CardRow label={t('logs.match_rule', '匹配规则')}>
                     <Space size={8}>
-                      {record.yid && <Text type="secondary" style={{ fontSize: 11 }}>YID:<Typography.Text keyboard style={{ fontSize: 10 }}>{record.yid}</Typography.Text></Text>}
+                      {record.mid && <Text type="secondary" style={{ fontSize: 11 }}>MID:<Typography.Text keyboard style={{ fontSize: 10 }}>{record.mid}</Typography.Text></Text>}
                       {record.billing_pid && <Text type="secondary" style={{ fontSize: 11 }}>PID:<Typography.Text keyboard style={{ fontSize: 10 }}>{record.billing_pid}</Typography.Text></Text>}
                       {record.forward_eid && <Text type="secondary" style={{ fontSize: 11 }}>EID:<Typography.Text keyboard style={{ fontSize: 10 }}>{record.forward_eid}</Typography.Text></Text>}
                     </Space>
@@ -1036,6 +1136,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 <CardRow label={t('logs.token', '令牌')}>
                   <Space size={6} align="center" style={{ justifyContent: 'flex-end', width: '100%' }}>
                     <Tag color="cyan" style={{ fontSize: 11, margin: 0 }}>{record.token_name || '-'}</Tag>
+                    {record.token_pg === 1 && <Tag color="orange" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>PG</Tag>}
                     {record.token_ha === 1 && <Tag color="blue" style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px' }}>HA</Tag>}
                     {record.token_kid && <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>KID: {record.token_kid}</Text>}
                   </Space>
@@ -1044,7 +1145,10 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 <CardRow label={t('logs.type', '类型')}><Tag color={record.is_stream === 1 ? 'geekblue' : 'default'}>{record.is_stream === 1 ? t('logs.stream', '流') : t('logs.non_stream', '非流')}</Tag></CardRow>
                 <CardRow label={t('logs.usage', '用量')}>
                   <Space direction="vertical" size={0} align="end">
-                    <Text type="secondary" style={{ fontSize: 12 }}>输入:{record.prompt_tokens} / 输出:{record.completion_tokens}</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      输入:{record.prompt_tokens} / 输出:{record.completion_tokens}
+                      {record.action_type === '视频' && (record.has_video === 1 ? ` ${t('logs.with_video_short', '含视')}` : ` ${t('logs.without_video_short', '无视')}`)}
+                    </Text>
                     {(() => {
                       const { cacheCreation: cc, cacheRead: cr } = billingUsageMetrics(record);
                       if (cc > 0 || cr > 0) {
@@ -1063,7 +1167,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                   <Space direction="vertical" size={0} align="end">
                     {record.cost === 0 || record.billing_refunded || record.billing_failed
                       ? <Text type="secondary" style={{ fontSize: 12 }}>-</Text>
-                      : <Text strong style={{ fontSize: 12, color: themeToken.colorError }}>{currencySymbol}{record.cost.toFixed(6)}</Text>
+                      : <Text strong style={{ fontSize: 12, color: themeToken.colorError }}>{currencySymbol}{formatCleanCost(record.cost)}</Text>
                     }
                     {record.billing_refunded && (
                       <Tag color="orange" style={{ margin: 0, fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>{t('logs.refunded', '已退费')}</Tag>
@@ -1075,7 +1179,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
           }}
         />
       ) : (
-        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%', overflowX: 'auto' }}>
+        <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%' }}>
           <Table
             dataSource={logs}
             columns={columns}
@@ -1089,14 +1193,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 expandRowByClick: false
               } : undefined
             }
-            pagination={{
+            pagination={listPagination({
               total,
               current: page,
               pageSize,
-              onChange: (p, s) => { setPage(p); setPageSize(s); },
-              showSizeChanger: true,
-              showQuickJumper: true,
-            }}
+              onChange,
+            })}
             onChange={(pagination, filters: any) => {
               let shouldResetPage = false;
               
@@ -1113,7 +1215,6 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             size="middle"
             locale={{ emptyText: t('dashboard.no_data') }}
             scroll={{ x: 1200 }}
-            sticky={{ offsetHeader: 0 }}
           />
         </div>
       )}
@@ -1149,15 +1250,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 24 }}>
-          {[
-            { value: '视觉', label: t('logs.type_vision', '视觉'), icon: <ImageIcon size={14} /> },
-            { value: '聊天', label: t('logs.type_chat', '聊天'), icon: <MessageSquare size={14} /> },
-            { value: '音频', label: t('logs.type_audio', '音频'), icon: <Mic size={14} /> },
-            { value: '向量', label: t('logs.type_embedding', '向量'), icon: <Cuboid size={14} /> },
-            { value: '排序', label: t('logs.type_rerank', '排序'), icon: <ListOrdered size={14} /> },
-            { value: '其它', label: t('logs.type_other', '其它'), icon: <Wrench size={14} /> },
-            { value: '全部', label: t('logs.type_all', '全部'), icon: <LayoutGrid size={14} /> },
-          ].map((opt) => {
+          {logTypeOptions.map((opt) => {
             const isSelected = tempDefaultType === opt.value;
             return (
               <div
@@ -1214,9 +1307,9 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
           </Button>
           <Button
             onClick={() => {
-              localStorage.setItem('default_log_type', tempDefaultType);
-              setActionTypeFilter(tempDefaultType);
+              setDefaultLogType(tempDefaultType);
               setPage(1);
+              goLogType(tempDefaultType);
               message.success(t('logs.default_type_saved', '默认日志类型配置已保存'));
               setIsSettingsModalVisible(false);
             }}

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useEffect, useState } from 'react';
@@ -31,6 +31,7 @@ import Tokens from './pages/Tokens/Tokens';
 import Upstreams from './pages/Upstreams/Upstreams';
 
 import Users from './pages/Users/Users';
+import UserInvoices from './pages/Users/UserInvoices';
 import UserLevels from './pages/Users/UserLevels';
 import UserLevelEdit from './pages/Users/UserLevelEdit';
 import AdminGroups from './pages/Users/AdminGroups';
@@ -88,6 +89,14 @@ const PrivateRoute = ({ children, adminOnly = false, userOnly = false }: { child
 /** 兼容旧画布路径 /playground-2026/:projectId → 工作流列表（项目画布已下线） */
 const Playground2026LegacyRedirect = () => {
   return <Navigate to="/playground-2026/workflows" replace />;
+};
+
+/** 兼容旧地址 /channels/test/:id → /channels/:id/analysis */
+const ChannelAnalysisLegacyRedirect = () => {
+  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
+  return <Navigate to={`/${adminPath}/channels/${id}/analysis${location.search}`} replace state={location.state} />;
 };
 
 const Playground2026WorksAlbumRedirect = () => {
@@ -618,6 +627,76 @@ const App: React.FC = () => {
           }
         />
         <Route
+          path="/playground-2026/audios"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/audio"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <Navigate to="/playground-2026/audios" replace />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/audios/generate"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <Navigate to="/playground-2026/audios" replace />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/chats"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/chats/:conversationId"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/skills"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
+          path="/playground-2026/skills/:skillId"
+          element={
+            <PrivateRoute>
+              <PluginRoute pluginName="playground_2026">
+                <PlaygroundHome2026 />
+              </PluginRoute>
+            </PrivateRoute>
+          }
+        />
+        <Route
           path="/playground-2026/workflows"
           element={
             <PrivateRoute>
@@ -770,7 +849,9 @@ const App: React.FC = () => {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="tokens" element={<Tokens />} />
           <Route path="logs" element={<Logs />} />
+          <Route path="logs/:logType" element={<Logs />} />
           <Route path="task-logs" element={<TaskLogs />} />
+          <Route path="task-logs/:logType" element={<TaskLogs />} />
 
           <Route path="wallet" element={<Wallet />} />
           <Route path="assets" element={<PluginRoute pluginName="asset_manager"><UserAssets key="asset_manager" pluginNs="asset_manager" /></PluginRoute>} />
@@ -801,20 +882,33 @@ const App: React.FC = () => {
             <Route path="upstreams" element={<Upstreams />} />
             <Route path="channel-configs" element={<ChannelConfigs />} />
             <Route path="channels" element={<Channels />} />
+            <Route path="channels/new" element={<Channels />} />
+            <Route path="channels/edit/:id" element={<Channels />} />
             <Route path="channels/model-display" element={<ModelChannelsDisplay />} />
-            <Route path="channels/test/:id" element={<ChannelTest />} />
+            <Route path="channels/:id/analysis" element={<ChannelTest />} />
+            <Route path="channels/test/:id" element={<ChannelAnalysisLegacyRedirect />} />
             <Route path="models" element={<Models />} />
+            <Route path="models/new" element={<Models />} />
+            <Route path="models/edit/:id" element={<Models />} />
+            <Route path="models/library/edit/:id" element={<Models />} />
             <Route path="forward-rules" element={<ForwardRules />} />
+            <Route path="forward-rules/new" element={<ForwardRules />} />
+            <Route path="forward-rules/edit/:id" element={<ForwardRules />} />
             <Route path="billing-rules" element={<BillingRules />} />
+            <Route path="billing-rules/new" element={<BillingRules />} />
+            <Route path="billing-rules/edit/:id" element={<BillingRules />} />
             <Route path="tokens" element={<Tokens />} />
 
             <Route path="logs" element={<Logs />} />
+            <Route path="logs/:logType" element={<Logs />} />
             <Route path="task-logs" element={<TaskLogs />} />
+            <Route path="task-logs/:logType" element={<TaskLogs />} />
             <Route path="plugins" element={<PluginsList />} />
             <Route path="plugins/:name/config" element={<PluginConfig />} />
 
             <Route path="redemptions" element={<Redemptions />} />
             <Route path="users" element={<Users />} />
+            <Route path="users/:userId/invoices" element={<UserInvoices />} />
             <Route path="users/:actionId" element={<Users />} />
             <Route path="users/:actionId/:tab" element={<Users />} />
             <Route path="users/edit/:actionId" element={<Users />} />

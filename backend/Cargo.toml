@@ -12,6 +12,9 @@ plugin_site_portal = []      # 站点门户插件
 cross_compile = ["dep:openssl"]
 
 [dependencies]
+# Memory Allocator（多核高并发极致防碎片与物理内存主动回收）
+mimalloc = { version = "0.1", default-features = false }
+
 # Web framework（multipart：图片编辑上传；无 WebSocket / debug_handler 故不开 ws、macros）
 axum = { version = "0.8", features = ["multipart"] }
 # tower 由 axum / tower-http 传递引入；勿再 features=["full"]
@@ -83,7 +86,6 @@ md-5 = "0.10"
 # Template engine (portal static HTML generation)
 tera = "1"
 chrono-tz = "0.10.4"
-iana-time-zone = "0.1.65"
 
 # 系统运行时指标（关于页：CPU/内存/磁盘/主机）
 sysinfo = { version = "0.33", default-features = false, features = ["system", "disk"] }
@@ -101,12 +103,12 @@ incremental = true
 codegen-units = 256
 
 [profile.release]
-# opt-level = 's' 大幅压缩二进制与中间 AST，配合 --no-keep-memory 防止链接器 OOM
-opt-level = 's'
+# opt-level = 'z' 极限优化二进制体积，配合 lto = "thin" 跨 crate 深度剔除死代码
+opt-level = 'z'
 codegen-units = 1
 panic = 'abort'
 strip = true
-lto = false
+lto = "thin"
 debug = false
 
 [profile.dev.package."*"]
@@ -127,3 +129,21 @@ opt-level = 0
 
 [profile.dev.package.rustls]
 opt-level = 0
+
+# 解决 macOS dyld (Darwin 24+) 对过程宏 dylib 报 "mis-aligned LINKEDIT string pool" 问题
+[profile.dev.build-override]
+debug = 2
+strip = "none"
+
+[profile.dev.package.sqlx-macros]
+debug = 2
+strip = "none"
+
+[profile.release.build-override]
+debug = 2
+strip = "none"
+
+[profile.release.package.sqlx-macros]
+debug = 2
+strip = "none"
+

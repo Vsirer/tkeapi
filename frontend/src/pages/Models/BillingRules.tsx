@@ -1,20 +1,37 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Card, Table, Button, Space, Form, Input, Switch, message, Popconfirm, Tag, Radio, InputNumber, Row, Col, Typography, Grid, Tooltip, Select, Modal, TimePicker, Alert } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
-import { PlusOutlined, EditOutlined, DeleteOutlined, DeleteTwoTone } from '@ant-design/icons';
+import { listPagination, useListPager } from '../../components/ListPagination';
+import { PlusOutlined, EditOutlined, DeleteOutlined, DeleteTwoTone, CopyOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import RateDisplay from './RateDisplay';
+import TimeMultiplierChart from './TimeMultiplierChart';
 import { useThemeStore } from '../../store/theme';
 import { formDefaultFreeImageCount, resolveFreeImageCount } from '../../utils/billingFreeImages';
+import {
+  ALL_WEEKDAYS,
+  expandTimeMultiplierIntervals,
+  findOverlappingAllDayDays,
+  findOverlappingTimeMultipliers,
+  formatWeekdayRange,
+  hasExplicitRemainder,
+  invertRemainderFromExt,
+  isAllDayMultiplier,
+  isAllWeekdays,
+  migrateLegacyInvertItems,
+  normalizeWeekdays,
+  resolveTimeMultiplierAt,
+} from '../../utils/timeMultipliers';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -23,7 +40,9 @@ dayjs.extend(utc);
 dayjs.extend(timezone);
 import { type ModelProvider, type ModelType } from '../../types';
 import ClassificationFilter from '../../components/Models/ClassificationFilter';
+import { unclassifiedChip } from '../../utils/classificationParams';
 import { fetchActivePlugins } from '../../utils/activePlugins';
+import { billingRulesEditPath, billingRulesListPath, billingRulesNewPath } from './modelPaths';
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 
@@ -47,6 +66,7 @@ const RULES_WITH_PRICING_TIERS = new Set([
   'volc_seedream_pro',
   'minimax_h3',
   'video_seconds_io',
+  'video_seconds_ref',
 ]);
 
 interface RuleContainerProps {
@@ -217,7 +237,64 @@ interface BillingRuleData {
   updated_at: string;
 }
 
-const RealTimeClock: React.FC<{ defaultTz: string }> = ({ defaultTz }) => {
+const WEEKDAY_CHIPS = [
+  { v: 1, l: '一' },
+  { v: 2, l: '二' },
+  { v: 3, l: '三' },
+  { v: 4, l: '四' },
+  { v: 5, l: '五' },
+  { v: 6, l: '六' },
+  { v: 7, l: '日' },
+];
+const WEEKDAY_FULL = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+const WeekdayPicker: React.FC<{
+  value?: number[];
+  onChange?: (v: number[]) => void;
+}> = ({ value, onChange }) => {
+  const selected = normalizeWeekdays(value);
+  const toggle = (day: number) => {
+    const next = selected.includes(day)
+      ? selected.filter((d) => d !== day)
+      : [...selected, day].sort((a, b) => a - b);
+    if (next.length === 0) return;
+    onChange?.(next);
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      {WEEKDAY_CHIPS.map((chip) => {
+        const checked = selected.includes(chip.v);
+        return (
+          <Tag.CheckableTag
+            key={chip.v}
+            checked={checked}
+            onChange={() => toggle(chip.v)}
+            style={{
+              border: '1px solid',
+              borderColor: checked ? 'transparent' : 'var(--border-color, rgba(128,128,128,0.2))',
+              padding: '0 8px',
+              fontSize: 12,
+              lineHeight: '22px',
+              marginInlineEnd: 0,
+            }}
+          >
+            {chip.l}
+          </Tag.CheckableTag>
+        );
+      })}
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([...ALL_WEEKDAYS])}>每天</Button>
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([1, 2, 3, 4, 5])}>工作日</Button>
+      <Button type="link" size="small" style={{ padding: '0 4px' }} onClick={() => onChange?.([6, 7])}>周末</Button>
+    </div>
+  );
+};
+
+const RealTimeClock: React.FC<{
+  defaultTz: string;
+  enabled?: boolean;
+  items?: any[];
+  remainder?: number;
+}> = ({ defaultTz, enabled, items, remainder }) => {
   const [time, setTime] = useState(dayjs());
 
   useEffect(() => {
@@ -244,9 +321,16 @@ const RealTimeClock: React.FC<{ defaultTz: string }> = ({ defaultTz }) => {
     // Ignore invalid timezone
   }
 
+  const weekday = displayTime.day() === 0 ? 7 : displayTime.day();
+  const minutes = displayTime.hour() * 60 + displayTime.minute();
+  const currentRate = enabled
+    ? resolveTimeMultiplierAt(items, true, weekday, minutes, remainder)
+    : 1;
+
   return (
     <Text type="secondary" style={{ fontSize: 12 }}>
       当前管理后台系统时间: {displayTime.format('YYYY-MM-DD HH:mm:ss')} (UTC{offsetStr})
+      {enabled ? ` · 此刻 ${currentRate.toFixed(2)} 倍` : ''}
     </Text>
   );
 };
@@ -256,6 +340,16 @@ const BillingRules: React.FC = () => {
   const _isLight = themeMode === 'light';
   const { t } = useTranslation();
   const { settings } = useSettingsStore();
+  const adminPath = settings?.site?.admin_path || 'admin1688';
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { id: routeParamId } = useParams<{ id?: string }>();
+  const [searchParams] = useSearchParams();
+  const normalizedPath = location.pathname.replace(/\/$/, '');
+  const isNewRoute = /\/billing-rules\/new$/.test(normalizedPath);
+  const isEditRoute = /\/billing-rules\/edit\/[^/]+$/.test(normalizedPath);
+  const routeEditId = isEditRoute ? routeParamId : undefined;
+  const isEditorOpen = isNewRoute || isEditRoute;
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const currencyUnit = settings?.currency?.currency_unit || '元';
 
@@ -283,11 +377,13 @@ const BillingRules: React.FC = () => {
   const [filterType, setFilterType] = useState('all');
   const [filterPricingType, setFilterPricingType] = useState('all');
   const [searchText, setSearchText] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(15);
-  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const { page: currentPage, pageSize, setPage: setCurrentPage, onChange } = useListPager();
+  const [saving, setSaving] = useState(false);
   const [editingItem, setEditingItem] = useState<BillingRuleData | null>(null);
+  const [copySource, setCopySource] = useState<BillingRuleData | null>(null);
+  const [copyName, setCopyName] = useState('');
+  const [copying, setCopying] = useState(false);
   const [billingType, setBillingType] = useState('tokens');
   const [form] = Form.useForm();
   const screens = useBreakpoint();
@@ -309,6 +405,8 @@ const BillingRules: React.FC = () => {
   const [filterTypeSelect, setFilterTypeSelect] = useState<number | null>(null);
   const [hasVolcengineEnhance, setHasVolcengineEnhance] = useState(false);
   const tableContainerRef = useRef<HTMLDivElement>(null);
+  const newFormReadyRef = useRef(false);
+  const hydratedEditIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -339,7 +437,16 @@ const BillingRules: React.FC = () => {
     setLoading(true);
     try {
       const resp = await (request.get('/billing-rules') as any);
-      setItems(Array.isArray(resp) ? resp : []);
+      const list = Array.isArray(resp) ? resp : [];
+      list.sort((a: BillingRuleData, b: BillingRuleData) => {
+        const timeA = a.updated_at ? dayjs(a.updated_at).valueOf() : 0;
+        const timeB = b.updated_at ? dayjs(b.updated_at).valueOf() : 0;
+        if (timeB !== timeA) {
+          return timeB - timeA;
+        }
+        return (b.id || 0) - (a.id || 0);
+      });
+      setItems(list);
     } catch (e) {
       console.error(e);
       setItems([]);
@@ -386,19 +493,16 @@ const BillingRules: React.FC = () => {
       }
 
       isDown = true;
-      (container as HTMLElement).style.cursor = 'grabbing';
       startX = e.pageX - (container as HTMLElement).offsetLeft;
       scrollLeft = (container as HTMLElement).scrollLeft;
     };
 
     const handleMouseLeave = () => {
       isDown = false;
-      (container as HTMLElement).style.cursor = 'grab';
     };
 
     const handleMouseUp = () => {
       isDown = false;
-      (container as HTMLElement).style.cursor = 'grab';
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -409,8 +513,8 @@ const BillingRules: React.FC = () => {
       (container as HTMLElement).scrollLeft = scrollLeft - walk;
     };
 
-    // 初始化为 grab 手势
-    (container as HTMLElement).style.cursor = 'grab';
+    // 默认保持系统默认指针，不显示手掌手势
+    (container as HTMLElement).style.cursor = 'default';
 
     container.addEventListener('mousedown', handleMouseDown as any);
     container.addEventListener('mouseleave', handleMouseLeave as any);
@@ -418,6 +522,7 @@ const BillingRules: React.FC = () => {
     container.addEventListener('mousemove', handleMouseMove as any);
 
     return () => {
+      (container as HTMLElement).style.cursor = '';
       container.removeEventListener('mousedown', handleMouseDown as any);
       container.removeEventListener('mouseleave', handleMouseLeave as any);
       container.removeEventListener('mouseup', handleMouseUp as any);
@@ -426,6 +531,10 @@ const BillingRules: React.FC = () => {
   }, [loading]);
 
   const handleAdd = () => {
+    navigate(billingRulesNewPath(adminPath));
+  };
+
+  const initNewBillingForm = () => {
     setEditingItem(null);
     setBillingType('tokens');
     setKlingPriceTable({});
@@ -451,6 +560,8 @@ const BillingRules: React.FC = () => {
       pricing_tiers: [],
       extended_config: {
         enable_time_multipliers: false,
+        invert_time_multipliers: false,
+        invert_remainder_multiplier: 1,
         time_multipliers: [],
         web_search_rate: 0,
       },
@@ -495,10 +606,9 @@ const BillingRules: React.FC = () => {
         return gptDefaultValues;
       })(),
     });
-    setIsModalVisible(true);
   };
 
-    let handleEdit = (item: BillingRuleData) => {
+    const hydrateBillingEditor = (item: BillingRuleData) => {
     let tiers: any[] = [];
     let ext: any = {};
     try {
@@ -553,7 +663,12 @@ const BillingRules: React.FC = () => {
         start: i.start ? dayjs(i.start, 'HH:mm') : null,
         end: i.end ? dayjs(i.end, 'HH:mm') : null,
         multiplier: i.multiplier ?? 1.0,
-      })).filter((i: any) => i.start && i.end);
+        days: normalizeWeekdays(i.days),
+        all_day: !!i.all_day,
+      })).filter((i: any) => i.all_day || (i.start && i.end));
+      if (ext.invert_time_multipliers && !hasExplicitRemainder(ext)) {
+        timeMultipliers = migrateLegacyInvertItems(timeMultipliers);
+      }
     }
 
     let sd2_resolutions: any[] = [];
@@ -610,6 +725,7 @@ const BillingRules: React.FC = () => {
       kling_enable_mode: ext.enable_mode !== false,
       kling_enable_sound: ext.enable_sound !== false,
       kling_enable_video_ref: ext.enable_video_ref === true,
+      enable_video_ref: ext.enable_video_ref !== false,
       kling_use_price_table: item.billing_rule === 'kling_video' && !!ext.price_table && Object.keys(ext.price_table).length > 0,
       vidu_offpeak_discount: ext.offpeak_discount ?? 0.5,
       enable_cached_rate: (item as any).cached_rate > 0,
@@ -631,26 +747,63 @@ const BillingRules: React.FC = () => {
       })(),
       extended_config: {
         enable_time_multipliers: !!ext.enable_time_multipliers,
+        invert_time_multipliers: !!ext.invert_time_multipliers,
+        invert_remainder_multiplier: invertRemainderFromExt(ext),
         time_multipliers: timeMultipliers,
         web_search_rate: ext.web_search_rate || 0,
       },
     });
-    setIsModalVisible(true);
+  };
+
+  const handleEdit = (item: BillingRuleData) => {
+    navigate(billingRulesEditPath(adminPath, item.pid || item.id));
+  };
+
+  const handleCloseEditor = () => {
+    navigate(billingRulesListPath(adminPath));
   };
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const editId = params.get('edit_id');
-    if (editId && items.length > 0) {
-      const target = items.find((item: any) => String(item.id) === editId);
-      if (target) {
-        handleEdit(target);
-        const url = new URL(window.location.href);
-        url.searchParams.delete('edit_id');
-        window.history.replaceState({}, '', url.toString());
-      }
+    const legacyPid = searchParams.get('pid');
+    const legacyId = searchParams.get('edit_id');
+    const target = legacyPid || legacyId;
+    if (target) {
+      navigate(billingRulesEditPath(adminPath, target), { replace: true });
     }
-  }, [items]);
+  }, [searchParams, adminPath]);
+
+  useEffect(() => {
+    if (!isNewRoute) {
+      newFormReadyRef.current = false;
+      return;
+    }
+    if (newFormReadyRef.current) return;
+    newFormReadyRef.current = true;
+    initNewBillingForm();
+  }, [isNewRoute]);
+
+  useEffect(() => {
+    if (!routeEditId) {
+      // 新建页点「保存更新」会先短暂停在 /new 再跳编辑页；此时不要清掉刚写入的 id，否则列表尚未包含新规则时会被误踢回列表
+      if (!isNewRoute) {
+        hydratedEditIdRef.current = null;
+      }
+      return;
+    }
+    if (hydratedEditIdRef.current === routeEditId) return;
+    if (loading) return;
+    const target = items.find((item) => item.pid && String(item.pid) === String(routeEditId))
+      || items.find((item) => String(item.id) === String(routeEditId));
+    if (target) {
+      hydratedEditIdRef.current = routeEditId;
+      hydrateBillingEditor(target);
+    } else if (editingItem && ((editingItem.pid && String(editingItem.pid) === String(routeEditId)) || String(editingItem.id) === String(routeEditId))) {
+      hydratedEditIdRef.current = routeEditId;
+    } else {
+      message.error('未找到指定计费规则');
+      handleCloseEditor();
+    }
+  }, [routeEditId, items, loading, isNewRoute, editingItem]);
 
   const handleDelete = async (id: number) => {
     try {
@@ -662,7 +815,64 @@ const BillingRules: React.FC = () => {
     }
   };
 
-  const handleSave = async (values: any) => {
+  const openCopy = (record: BillingRuleData) => {
+    setCopySource(record);
+    setCopyName(`${record.name} 副本`);
+  };
+
+  const parseBillingJson = (raw: string | undefined, fallback: unknown) => {
+    if (raw == null || raw === '') return fallback;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  };
+
+  const commitCopy = async () => {
+    if (!copySource || copying) return;
+    const nameTrim = (copyName || '').trim();
+    if (!nameTrim) {
+      message.error('请填写规则名称');
+      return;
+    }
+    if (items.some(i => i.name === nameTrim)) {
+      message.error('该费用规则名称已存在');
+      return;
+    }
+    try {
+      setCopying(true);
+      await request.post('/billing-rules', {
+        name: nameTrim,
+        billing_type: copySource.billing_type,
+        prompt_rate: copySource.prompt_rate || 0,
+        completion_rate: copySource.completion_rate || 0,
+        cached_rate: copySource.cached_rate || 0,
+        claude_cache_creation_rate: copySource.claude_cache_creation_rate || 0,
+        claude_cache_read_rate: copySource.claude_cache_read_rate || 0,
+        fixed_rate: copySource.fixed_rate || 0,
+        duration_rate: copySource.duration_rate || 0,
+        billing_rule: copySource.billing_rule,
+        pricing_tiers: parseBillingJson(copySource.pricing_tiers, []),
+        extended_config: parseBillingJson(copySource.extended_config, {}),
+        provider_id: copySource.provider_id || null,
+        type_id: copySource.type_id || null,
+        is_active: copySource.is_active ?? 1,
+        pricing_type: copySource.pricing_type || 'custom',
+        sort_order: copySource.sort_order || 0,
+      });
+      message.success('复制规则成功');
+      setCopySource(null);
+      fetchItems();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  const handleSave = async (values: any, stayOnPage = false) => {
+    setSaving(true);
     try {
       // 提取并校验时间段倍率设置
       const enableTimeMultipliers = form.getFieldValue(['extended_config', 'enable_time_multipliers']) === true;
@@ -670,12 +880,27 @@ const BillingRules: React.FC = () => {
 
       if (enableTimeMultipliers) {
         if (!timeMultipliers.length) {
-          message.error("已开启时间段价格倍率，请至少添加一个时段");
+          message.error("已开启时间段价格倍率，请至少添加一条时段或全天规则");
           return;
         }
-        const intervals: { start: number; end: number; index: number }[] = [];
+        const intervals = [];
         for (let i = 0; i < timeMultipliers.length; i++) {
           const item = timeMultipliers[i];
+          if (item.multiplier === undefined || item.multiplier === null || Number(item.multiplier) < 0) {
+            message.error(`第 ${i + 1} 个规则的倍率无效`);
+            return;
+          }
+
+          const days = normalizeWeekdays(item.days);
+          if (days.length === 0) {
+            message.error(`第 ${i + 1} 个规则请至少选择一个星期`);
+            return;
+          }
+
+          if (isAllDayMultiplier(item)) {
+            continue;
+          }
+
           if (!item.start || !item.end) {
             message.error("请完整填写所有时间段的起止时间");
             return;
@@ -688,33 +913,19 @@ const BillingRules: React.FC = () => {
             return;
           }
 
-          if (item.multiplier === undefined || item.multiplier === null || Number(item.multiplier) < 0) {
-            message.error(`第 ${i + 1} 个时间段的倍率无效`);
-            return;
-          }
-
-          if (startMin > endMin) {
-            // 跨天区间，拆分为 [start, 1440) 和 [0, end)
-            intervals.push({ start: startMin, end: 1440, index: i });
-            intervals.push({ start: 0, end: endMin, index: i });
-          } else {
-            intervals.push({ start: startMin, end: endMin, index: i });
-          }
+          intervals.push(...expandTimeMultiplierIntervals(startMin, endMin, days, i));
         }
 
-        // 两两进行重叠判断 (max(start) < min(end) 时重合)
-        for (let a = 0; a < intervals.length; a++) {
-          for (let b = a + 1; b < intervals.length; b++) {
-            const intA = intervals[a];
-            const intB = intervals[b];
-
-            if (intA.index === intB.index) continue;
-
-            if (Math.max(intA.start, intB.start) < Math.min(intA.end, intB.end)) {
-              message.error(`配置的时间段存在重叠，请修正（第 ${intA.index + 1} 组与第 ${intB.index + 1} 组）`);
-              return;
-            }
-          }
+        const overlap = findOverlappingTimeMultipliers(intervals);
+        if (overlap) {
+          const [intA, intB] = overlap;
+          message.error(`配置的时间段在${WEEKDAY_FULL[intA.day - 1]}存在重叠，请修正（第 ${intA.index + 1} 组与第 ${intB.index + 1} 组）`);
+          return;
+        }
+        const allDayOverlap = findOverlappingAllDayDays(timeMultipliers);
+        if (allDayOverlap) {
+          message.error(`${WEEKDAY_FULL[allDayOverlap.day - 1]}全天被第 ${allDayOverlap.a + 1} 组与第 ${allDayOverlap.b + 1} 组重复设置，请合并为一条`);
+          return;
         }
       }
       if (!RULES_WITH_PRICING_TIERS.has(values.billing_rule)) {
@@ -727,8 +938,9 @@ const BillingRules: React.FC = () => {
         let resRates: any = {};
         if (values.sd2_resolutions && Array.isArray(values.sd2_resolutions)) {
           values.sd2_resolutions.forEach((item: any) => {
-            if (item.enabled && item.resolution) {
-              resRates[item.resolution] = {
+            const key = String(item.resolution || '').trim().toLowerCase();
+            if (item.enabled && key) {
+              resRates[key] = {
                 with_video: item.with_video || 0,
                 without_video: item.without_video || 0
               };
@@ -830,13 +1042,16 @@ const BillingRules: React.FC = () => {
       } else if (values.billing_rule === 'doubao_chat') {
         const fastEnabled = form.getFieldValue('doubao_fast_enabled') === true;
         extConfig = { ...extConfig, doubao_fast_enabled: fastEnabled };
-      } else if (values.billing_rule === 'minimax_h3' || values.billing_rule === 'video_seconds_io' || values.billing_rule === 'volc_seedream_pro') {
+      } else if (values.billing_rule === 'minimax_h3' || values.billing_rule === 'video_seconds_io' || values.billing_rule === 'video_seconds_ref' || values.billing_rule === 'volc_seedream_pro') {
         const freeDefault = formDefaultFreeImageCount(values.billing_rule);
         const freeCount = Number(values.free_image_count);
         extConfig = {
           ...extConfig,
           free_image_count: Number.isFinite(freeCount) && freeCount >= 0 ? freeCount : freeDefault,
         };
+        if (values.billing_rule === 'video_seconds_ref') {
+          extConfig.enable_video_ref = form.getFieldValue('enable_video_ref') !== false;
+        }
         if (values.billing_rule === 'volc_seedream_pro') {
           extConfig.layer_pricing_enabled = form.getFieldValue('layer_pricing_enabled') === true;
         }
@@ -865,23 +1080,43 @@ const BillingRules: React.FC = () => {
       }
 
       // 将时间段倍率配置序列化为 HH:mm 并写入 extConfig
+      const invertRemainderRaw = Number(form.getFieldValue(['extended_config', 'invert_remainder_multiplier']));
+      if (enableTimeMultipliers && (!Number.isFinite(invertRemainderRaw) || invertRemainderRaw < 0)) {
+        message.error('请填写未规划时段倍率');
+        return;
+      }
       if (enableTimeMultipliers) {
-        const formattedMultipliers = timeMultipliers.map((item: any) => ({
-          start: item.start.format("HH:mm"),
-          end: item.end.format("HH:mm"),
-          multiplier: item.multiplier ?? 1.0,
-        }));
+        const formattedMultipliers = timeMultipliers.map((item: any) => {
+          const days = normalizeWeekdays(item.days);
+          if (isAllDayMultiplier(item)) {
+            return {
+              all_day: true,
+              multiplier: item.multiplier ?? 1.0,
+              days,
+            };
+          }
+          return {
+            start: item.start.format("HH:mm"),
+            end: item.end.format("HH:mm"),
+            multiplier: item.multiplier ?? 1.0,
+            days,
+          };
+        });
         extConfig = {
           ...extConfig,
           enable_time_multipliers: true,
+          invert_time_multipliers: true,
+          invert_remainder_multiplier: invertRemainderRaw,
           time_multipliers: formattedMultipliers,
         };
       } else {
         extConfig = {
           ...extConfig,
           enable_time_multipliers: false,
+          invert_time_multipliers: false,
           time_multipliers: [],
         };
+        delete extConfig.invert_remainder_multiplier;
       }
 
       // 清除表单中不应提交的临时字段
@@ -902,6 +1137,7 @@ const BillingRules: React.FC = () => {
       delete values.layer_pricing_enabled;
       delete values.vidu_offpeak_discount;
       delete values.free_image_count;
+      delete values.enable_video_ref;
       if (values.billing_rule === 'glm_5_3') {
         values.enable_claude_cache_creation = false;
         values.enable_claude_cache_read = false;
@@ -942,22 +1178,59 @@ const BillingRules: React.FC = () => {
           if (values.billing_rule === 'volc_seedream_pro' && !form.getFieldValue('layer_pricing_enabled')) {
             t.layer_rate = 0;
           }
+          if (values.billing_rule === 'video_seconds_ref') {
+            const isRefAware = form.getFieldValue('enable_video_ref') !== false;
+            if (isRefAware) {
+              t.rate_no_ref = Number(tier.rate_no_ref ?? tier.rate ?? 0);
+              t.rate_ref = Number(tier.rate_ref ?? tier.rate ?? 0);
+              t.input_rate_ref = Number(tier.input_rate_ref ?? tier.input_rate ?? 0);
+              t.rate = t.rate_no_ref;
+              t.input_rate = t.input_rate_ref;
+            } else {
+              t.rate = Number(tier.rate ?? 0);
+              t.input_rate = Number(tier.input_rate ?? 0);
+            }
+          }
           return t;
         }) || [],
         extended_config: extConfig,
         is_active: 1,
       };
+      // PID 由服务端按规则生成（手动 6xxxx），管理后台不提交、不改写
+      delete payload.pid;
 
+      const wasCreate = !editingItem;
+      let saved: any;
       if (editingItem) {
-        await request.put(`/billing-rules/${editingItem.id}`, payload);
+        saved = await request.put(`/billing-rules/${editingItem.id}`, payload);
       } else {
-        await request.post('/billing-rules', payload);
+        saved = await request.post('/billing-rules', payload);
       }
       message.success(t('common.success'));
-      setIsModalVisible(false);
+      const rule = saved?.id ? saved : saved?.data;
+      if (stayOnPage) {
+        if (wasCreate && rule?.id) {
+          hydrateBillingEditor(rule);
+          hydratedEditIdRef.current = String(rule.pid || rule.id);
+          navigate(billingRulesEditPath(adminPath, rule.pid || rule.id), { replace: true });
+        }
+      } else {
+        handleCloseEditor();
+      }
       fetchItems();
     } catch (e) {
       console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveAndStay = async () => {
+    try {
+      const values = await form.validateFields();
+      await handleSave(values, true);
+    } catch {
+      // 校验失败由表单项提示
     }
   };
 
@@ -974,7 +1247,7 @@ const BillingRules: React.FC = () => {
           const resp = await (request.post(`/billing-rules/${editingItem.id}/restore-default`) as any);
           message.success('恢复默认成功');
           // 更新表单回显与编辑状态
-          handleEdit(resp);
+          hydrateBillingEditor(resp);
           // 刷新列表
           fetchItems();
         } catch (e: any) {
@@ -990,14 +1263,32 @@ const BillingRules: React.FC = () => {
       dataIndex: 'pid',
       key: 'pid',
       width: 120,
-      render: (text: string) => <Tag color="blue">{text || '-'}</Tag>
+      render: (text: string, record: BillingRuleData) => (
+        <Tag 
+          color="blue" 
+          style={{ cursor: 'pointer' }}
+          onClick={() => handleEdit(record)}
+          title="点击编辑计费规则"
+        >
+          {text || '-'}
+        </Tag>
+      )
     },
     {
       title: '计费策略集命名',
       dataIndex: 'name',
       key: 'name',
       width: 200,
-      render: (text: string) => <Text strong>{text}</Text>
+      render: (text: string, record: BillingRuleData) => (
+        <Text 
+          strong 
+          style={{ cursor: 'pointer' }}
+          onClick={() => handleEdit(record)}
+          title="点击编辑计费规则"
+        >
+          {text}
+        </Text>
+      )
     },
     {
       title: '服务商 / 分类 / 计费',
@@ -1052,7 +1343,13 @@ const BillingRules: React.FC = () => {
       title: '最后修改时间',
       dataIndex: 'updated_at',
       key: 'updated_at',
-      width: 150,
+      width: 170,
+      sorter: (a: BillingRuleData, b: BillingRuleData) => {
+        const timeA = a.updated_at ? dayjs(a.updated_at).valueOf() : 0;
+        const timeB = b.updated_at ? dayjs(b.updated_at).valueOf() : 0;
+        return timeA - timeB;
+      },
+      defaultSortOrder: 'descend' as const,
       render: (text: string) => <Text type="secondary" style={{ fontSize: 12 }}>{text ? dayjs(text).format('YYYY-MM-DD HH:mm:ss') : '-'}</Text>,
     },
     {
@@ -1061,6 +1358,7 @@ const BillingRules: React.FC = () => {
       render: (_: any, record: BillingRuleData) => (
         <Space>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} size="small" />
+          <Button icon={<CopyOutlined />} onClick={() => openCopy(record)} size="small" />
           {record.is_system === 1 ? (
             <Tooltip title="系统内置规则，不可删除">
               <Button icon={<DeleteOutlined />} disabled size="small" />
@@ -1072,7 +1370,7 @@ const BillingRules: React.FC = () => {
           )}
         </Space>
       ),
-      width: 120,
+      width: 150,
     },
   ];
 
@@ -1086,29 +1384,22 @@ const BillingRules: React.FC = () => {
         return false;
       }
     }
+    if (filterProvider === 0 && item.provider_id) return false;
     if (filterProvider && item.provider_id !== filterProvider) return false;
+    if (filterTypeSelect === 0 && item.type_id) return false;
     if (filterTypeSelect && item.type_id !== filterTypeSelect) return false;
     return true;
   });
 
-  const paginationConfig = {
+  const paginationConfig = listPagination({
     current: currentPage,
-    pageSize: pageSize,
-    showSizeChanger: true,
-    pageSizeOptions: ['10', '15', '20', '50', '100'],
-    showTotal: (total: number) => `共 ${total} 条`,
-    showQuickJumper: true,
-    onChange: (page: number, newPageSize: number) => {
-      setCurrentPage(page);
-      if (newPageSize !== pageSize) {
-        setPageSize(newPageSize);
-      }
-    },
-  };
+    pageSize,
+    onChange,
+  });
 
   return (
     <>
-      {!isModalVisible && (
+      {!isEditorOpen && (
         <Card variant="borderless">
           <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', justifyContent: 'space-between', marginBottom: 16, gap: 12 }}>
             <Typography.Title level={4} style={{ margin: 0, fontSize: screens.xs ? 18 : 20, fontWeight: 600 }}>
@@ -1167,14 +1458,20 @@ const BillingRules: React.FC = () => {
           </div>
 
           <ClassificationFilter
-            providers={allProviders.map(p => ({
-              ...p,
-              count: items.filter(i => i.provider_id != null && Number(i.provider_id) === Number(p.id)).length
-            }))}
-            types={allTypes.map(t => ({
-              ...t,
-              count: items.filter(i => i.type_id != null && Number(i.type_id) === Number(t.id)).length
-            }))}
+            providers={[
+              ...allProviders.map(p => ({
+                ...p,
+                count: items.filter(i => i.provider_id != null && Number(i.provider_id) === Number(p.id)).length
+              })),
+              unclassifiedChip(items.filter(i => !i.provider_id).length),
+            ]}
+            types={[
+              ...allTypes.map(t => ({
+                ...t,
+                count: items.filter(i => i.type_id != null && Number(i.type_id) === Number(t.id)).length
+              })),
+              unclassifiedChip(items.filter(i => !i.type_id).length),
+            ]}
             selectedProvider={filterProvider}
             selectedType={filterTypeSelect}
             onProviderChange={setFilterProvider}
@@ -1205,6 +1502,7 @@ const BillingRules: React.FC = () => {
                     <CardRow label="最后修改"><Text type="secondary" style={{ fontSize: 12 }}>{record.updated_at ? dayjs(record.updated_at).format('YYYY-MM-DD HH:mm:ss') : '-'}</Text></CardRow>
                     <CardActions>
                       <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+                      <Button size="small" icon={<CopyOutlined />} onClick={() => openCopy(record)} />
                       {record.is_system === 1 ? (
                         <Tooltip title="系统内置规则，不可删除">
                           <Button size="small" icon={<DeleteOutlined />} disabled />
@@ -1235,21 +1533,46 @@ const BillingRules: React.FC = () => {
         </Card>
       )}
 
-      {isModalVisible && (
+      <Modal
+        title="复制计费规则"
+        open={!!copySource}
+        onCancel={() => setCopySource(null)}
+        onOk={commitCopy}
+        confirmLoading={copying}
+        okText="确定"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            将复制「{copySource?.name}」的全部计费参数，仅名称不同；新规则为手动添加，PID 自动生成
+          </Text>
+        </div>
+        <Input
+          autoFocus
+          placeholder="请输入新规则名称"
+          value={copyName}
+          onChange={e => setCopyName(e.target.value)}
+          onPressEnter={commitCopy}
+        />
+      </Modal>
+
+      {isEditorOpen && (
         <Card
           title={editingItem ? '编辑计费基础组' : '生成新的计费规则'}
           extra={
             <div style={{ display: 'flex', gap: '8px' }}>
-              <Button onClick={() => setIsModalVisible(false)}>取消</Button>
+              <Button onClick={handleCloseEditor} disabled={saving}>取消</Button>
+              <Button type="primary" loading={saving} onClick={saveAndStay}>保存更新</Button>
               {editingItem?.is_system === 1 && (
-                <Button danger onClick={handleRestoreDefault}>恢复默认</Button>
+                <Button danger onClick={handleRestoreDefault} disabled={saving}>恢复默认</Button>
               )}
-              <Button type="primary" onClick={() => form.submit()}>保存</Button>
+              <Button loading={saving} onClick={() => form.submit()}>保存退出</Button>
             </div>
           }
         >
           <div style={{ maxWidth: 1400, margin: '0 auto' }}>
-            <Form form={form} layout="vertical" onFinish={handleSave}>
+            <Form form={form} layout="vertical" onFinish={(values) => handleSave(values, false)}>
               <Row gutter={16}>
                 <Col xs={24} sm={12}>
                   <Form.Item name="name" label="大模型计费模版名称" rules={[{ required: true }]}>
@@ -1260,27 +1583,9 @@ const BillingRules: React.FC = () => {
                   <Form.Item
                     name="pid"
                     label="计费规则 PID"
-                    tooltip={editingItem ? "编辑时计费规则 PID 唯一且不可修改" : "选填，不填则自动生成。手动规则必须以 6 开头，系统规则必须以 7 开头，且都是 5 位数字字符串"}
-                    rules={[
-                      {
-                        validator: (_, value) => {
-                          if (!value) return Promise.resolve();
-                          if (!/^\d{5}$/.test(value)) {
-                            return Promise.reject(new Error('PID 必须是 5 位数字字符串'));
-                          }
-                          const isSys = editingItem?.is_system === 1;
-                          if (isSys && !value.startsWith('7')) {
-                            return Promise.reject(new Error('系统规则 PID 必须是以 7 开头'));
-                          }
-                          if (!isSys && !value.startsWith('6')) {
-                            return Promise.reject(new Error('手动添加规则 PID 必须是以 6 开头'));
-                          }
-                          return Promise.resolve();
-                        }
-                      }
-                    ]}
+                    tooltip={editingItem ? "PID 由系统按规则生成，唯一且不可修改" : "无需填写。保存后自动生成：手动规则为 6 开头的 5 位数字"}
                   >
-                    <Input placeholder="例如: 61001" maxLength={5} disabled={!!editingItem} />
+                    <Input placeholder="保存后自动生成" disabled />
                   </Form.Item>
                 </Col>
                 <Col xs={24} sm={6}>
@@ -1375,7 +1680,7 @@ const BillingRules: React.FC = () => {
                         ];
 
                         return (
-                          <RuleContainer isLight={_isLight} title="GPT图片计费配置" description="面向 GPT 图片/生图模型：文本输入、图片输入、图片输出及缓存可分别开关，按每 1M tokens 计价。仅出图时用「输出图片」项即可，无需配置输出文本。">
+                          <RuleContainer isLight={_isLight} title="GPT图片计费配置" description="面向图片/生图模型：文本输入、图片输入、图片输出及缓存可分别开关，按每 1M tokens 计价。仅出图时用「输出图片」项即可，无需配置输出文本。">
                             <Row gutter={16}>
                               {items.map(item => (
                                 <Col span={12} key={item.key}>
@@ -1438,7 +1743,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title={isGlm53 ? 'glm 5.3' : t('models.rule_standard')}
-                            description={isGlm53 ? '官方 OpenAI usage 按输入（含缓存）/输出/缓存命中拆账；差异 usage 输入=命中+未命中。' : undefined}
+                            description={isGlm53 ? '按输入（含缓存）/输出/缓存命中拆账；差异 usage 输入=命中+未命中。' : undefined}
                           >
                             <Row gutter={16} style={{ marginBottom: 16 }}>
                               <Col span={12}>
@@ -1452,7 +1757,7 @@ const BillingRules: React.FC = () => {
                                 </Form.Item>
                               </Col>
                             </Row>
-                            <CacheRateControl name="enable_cached_rate" rateName="cached_rate" label={isGlm53 ? '缓存命中费率' : '缓存命中费率（OpenAI/Gemini 等通用缓存读取）'} isLight={_isLight} />
+                            <CacheRateControl name="enable_cached_rate" rateName="cached_rate" label={isGlm53 ? '缓存命中费率' : '缓存命中费率（通用缓存读取）'} isLight={_isLight} />
                             {!isGlm53 && (
                               <>
                                 <CacheRateControl name="enable_claude_cache_creation" rateName="claude_cache_creation_rate" label="Claude 缓存创建费率" isLight={_isLight} />
@@ -1469,7 +1774,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="Seedance 2.0 计费配置"
-                            description="Seedance 2.0 — 指定具体支持的视频分辨率及是否包含视频输入的定价 (可分级管控)。匹配说明：按分辨率参数精确匹配（如 480p, 720p, 1080p, 4k）。若未命中且未配置，默认兜底使用 720p 档位。"
+                            description="指定具体支持的视频分辨率及是否包含视频输入的定价 (可分级管控)。匹配说明：按分辨率参数精确匹配（如 480p, 720p, 1080p, 4k）。若未命中且未配置，默认兜底使用 720p 档位。"
                           >
                             <Form.List name="sd2_resolutions" initialValue={[
                               { resolution: '480p', enabled: false, with_video: 0, without_video: 0 },
@@ -1554,7 +1859,7 @@ const BillingRules: React.FC = () => {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            description="Seedance 1.0 — 支持在线与离线的双轨计费"
+                            description="支持在线与离线的双轨计费"
                           >
                             <Row gutter={16} align="middle">
                               <Col span={12}><Form.Item name="s1_online_rate" label="在线推理定价" rules={[{ required: true }]} style={{ marginBottom: 0 }}><InputNumber style={{ width: '100%' }} precision={6} addonAfter="/ 1M" /></Form.Item></Col>
@@ -1792,14 +2097,14 @@ const BillingRules: React.FC = () => {
                 <>
                   <Form.Item name="billing_rule" label="计费子模式配置" initialValue="fixed" rules={[{ required: true, message: '请选择计费子模式' }]}>
                     <Radio.Group optionType="button" buttonStyle="solid">
-                      <Radio value="fixed">固定费率 (单次)</Radio>
-                      <Radio value="per_image">按张收费 (实际返回)</Radio>
-                      <Radio value="image_resolution">按分辨率K</Radio>
-                      <Radio value="image_resolution_io">按分辨率K(输入/生成)</Radio>
-                      <Radio value="image_size_pixel">按分辨率像素</Radio>
+                      <Radio value="fixed">固定费率</Radio>
+                      <Radio value="per_image">按张收费</Radio>
+                      <Radio value="image_resolution">分辨率 K</Radio>
+                      <Radio value="image_resolution_io">分辨率 K(双向)</Radio>
+                      <Radio value="image_size_pixel">分辨率像素</Radio>
                       <Radio value="vidu_image">Vidu 图片</Radio>
                       <Radio value="volc_seedream_pro">火山 Seedream 5.0 Pro</Radio>
-                      <Radio value="characters">按字符计费 (语音合成)</Radio>
+                      <Radio value="characters">字符计费</Radio>
                     </Radio.Group>
                   </Form.Item>
 
@@ -1812,7 +2117,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="图片分辨率K计费配置"
-                            description="匹配说明：此模式按图片模型的 resolution 参数匹配分辨率等级（如 1k、2k、4k）。系统自动忽略大小写（1K 和 1k 等效）。配置的匹配名称推荐统一写标准小写形式（如 1k、2k、4k）。若请求的分辨率未命中任何档位，将按最高价计费。"
+                            description="按分辨率等级 (1k/2k/4k) 计费的生图模型，按 resolution 参数匹配单张费率，支持图生图倍率。"
                           >
                             <Form.List name="pricing_tiers" initialValue={[]}>
                               {(fields, { add, remove }) => (
@@ -1871,7 +2176,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="图片分辨率K（输入/生成）"
-                            description="按 resolution 匹配档位（如 1k、2k），忽略大小写。未命中按最高生成价计费。"
+                            description="按 1k/2k/4k 分别设置输入与生成单张费率，适用于输入与生成分辨率费率分离的生图模型。"
                           >
                             <Form.List name="pricing_tiers" initialValue={[]}>
                               {(fields, { add, remove }) => (
@@ -1942,7 +2247,7 @@ const BillingRules: React.FC = () => {
                                       </Form.Item>
                                     </div>
                                   }
-                                  description={`匹配说明：此模式按图片模型的 size 参数匹配像素分辨率（如 1024x1024、1536x1024）。系统自动将 *、×、X、: 统一替换为 x 匹配（如 2:3 等同 2x3）；K 等级（如 1k）自动映射为像素值（1024x1024）。若未命中任何档位，将按最高价计费。${qpEnabled ? '开启画质后，将按请求的 quality 参数（low/medium/high）匹配对应的画质费率，未传画质参数时默认按中画质计费。' : ''}`}
+                                  description={`按像素宽高 (如 1024x1024) 计费的生图模型。${qpEnabled ? '已开启画质区分，按 low/medium/high 匹配不同画质费率。' : '按 size 参数匹配单张费率，支持图生图倍率。'}`}
                                 >
                                   <Form.List name="pricing_tiers" initialValue={[]}>
                                     {(fields, { add, remove }) => (
@@ -2161,7 +2466,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="Vidu 图片价格表"
-                            description="按 属性×分辨率 组合设置每张单价。属性由参考图数量自动判断：0张=文生图，1张=图生图，2~3张=参考生图(低)，4~7张=参考生图(高)。模型版本通过绑定不同计费规则区分。"
+                            description="适用腾讯云 Vidu 等生图模型，按文生图/图生图/参考生图及分辨率组合查表计费。"
                           >
                             <div style={{ padding: '12px', background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', borderRadius: 8 }}>
                               <Text strong style={{ fontSize: '13px', display: 'block', marginBottom: 12 }}>精确价格表 (单价/张)</Text>
@@ -2186,11 +2491,10 @@ const BillingRules: React.FC = () => {
                         );
                       }
 
-                      // 其它：包括 fixed (固定费率), per_image (按张收费), characters (按字符计费) 等
                       const ruleLabels: Record<string, string> = {
-                        fixed: '固定费率计费 (单次)',
-                        per_image: '按张收费计费 (实际返回)',
-                        characters: '按字符计费 (语音合成)'
+                        fixed: '固定费率配置',
+                        per_image: '按张收费配置',
+                        characters: '字符计费配置'
                       };
                       return (
                         <RuleContainer isLight={_isLight} title={ruleLabels[rule] || '常规计费配置'}>
@@ -2226,13 +2530,14 @@ const BillingRules: React.FC = () => {
                 <>
                   <Form.Item name="billing_rule" label="时长计费子模式配置" initialValue="standard" rules={[{ required: true, message: '请选择时长计费子模式' }]}>
                     <Radio.Group optionType="button" buttonStyle="solid">
-                      <Radio value="standard">按固定时长收费 (单价/秒)</Radio>
-                      <Radio value="video_resolution">按视频分辨率阶梯表</Radio>
-                      <Radio value="minimax_h3">视频秒价+输入图</Radio>
-                      <Radio value="video_seconds_io">视频秒价(输入/生成)+输入图</Radio>
-                      <Radio value="fal_ref_video">fal H3-MAX 视频</Radio>
-                      <Radio value="video_quality">按视频画质及帧率阶梯表</Radio>
-                      <Radio value="kling_video">可灵视频 (倍率计费)</Radio>
+                      <Radio value="standard">固定时长</Radio>
+                      <Radio value="video_resolution">分辨率阶梯</Radio>
+                      <Radio value="minimax_h3">MiniMax (秒价+参考图)</Radio>
+                      <Radio value="video_seconds_io">双向秒价 + 参考图</Radio>
+                      <Radio value="video_seconds_ref">双向秒价 + 参考视频</Radio>
+                      <Radio value="fal_ref_video">fal H3-MAX</Radio>
+                      <Radio value="video_quality">画质与帧率</Radio>
+                      <Radio value="kling_video">可灵视频</Radio>
                       <Radio value="vidu_video">Vidu 视频</Radio>
                       {(hasVolcengineEnhance || editingItem?.billing_rule === 'volc_enhance_cascade') && (
                         <Radio value="volc_enhance_cascade">火山级联增强</Radio>
@@ -2248,8 +2553,8 @@ const BillingRules: React.FC = () => {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            title="视频画质及帧率计费阶梯配置"
-                            description="匹配说明：根据任务中的输出视频分辨率短边规格、以及输出帧率（如 ≤30fps 或 >30fps）来决定秒级单价。分辨率名推荐写小写形式（如 720p, 1080p, 2k, 4k），匹配时会自动解析短边像素并判断档位。未命中的规格将自动采用已启用阶梯中的最高单价兜底。"
+                            title="画质与帧率阶梯配置"
+                            description="按分辨率规格与帧率（≤30fps / >30fps）阶梯匹配秒单价的视频模型。"
                           >
                             <Form.List name="pricing_tiers" initialValue={[]}>
                               {(fields, { add, remove }) => (
@@ -2304,8 +2609,8 @@ const BillingRules: React.FC = () => {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            title="视频分辨率计费组合包"
-                            description="匹配说明：系统会自动忽略大小写（例如 4K 和 4k 等效），并且自动将包含星号的乘式（如 1920*1080）转换为统一 of 1920x1080 格式；若仅传递纯数字（如 1080）则会自动追加 'p' 后缀匹配 1080p。此处配置的匹配名称推荐统一写标准小写形式（如 720p, 1080p, 4k）。"
+                            title="分辨率阶梯计费配置"
+                            description="适用阿里 Wan 等按成片分辨率（如 720p、1080p、4k）阶梯计费的视频模型，按分辨率匹配秒单价。"
                           >
                             <Form.List name="pricing_tiers" initialValue={[]}>
                               {(fields, { add, remove }) => (
@@ -2351,25 +2656,8 @@ const BillingRules: React.FC = () => {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            title="视频秒价+输入图计费配置"
-                            description={
-                              <div>
-                                <Text type="secondary" style={{ fontSize: '13px', display: 'block', marginBottom: '8px' }}>
-                                  计费说明：结算以官方 usage 为准——total_seconds（含输入参考视频+输出视频秒）× 分辨率秒单价，输入图超过免费张数后按张累加。文本/音频不计费。
-                                </Text>
-                                <Alert
-                                  type="info"
-                                  showIcon
-                                  message={
-                                    <span>
-                                      <strong>配置建议：</strong>
-                                      分辨率阶梯示例 2k=0.80 {currencyUnit}/秒、768p=0.50 {currencyUnit}/秒；输入图额外单价 0.20 {currencyUnit}/张；免费张数默认 5。
-                                    </span>
-                                  }
-                                  style={{ marginBottom: '12px' }}
-                                />
-                              </div>
-                            }
+                            title="MiniMax 视频 (秒价+参考图)"
+                            description="适用 MiniMax 视频系列模型，按总秒数 × 分辨率秒单价 + 超额输入图（超出免费张数后按张累加）计费。"
                           >
                             <Row gutter={16} style={{ marginBottom: 16 }}>
                               <Col span={12}>
@@ -2391,7 +2679,7 @@ const BillingRules: React.FC = () => {
                               </Col>
                             </Row>
 
-                            <Form.Item label="视频分辨率秒单价（对应 usage.total_seconds）" required style={{ marginBottom: 0 }}>
+                            <Form.Item label="视频分辨率秒单价" required style={{ marginBottom: 0 }}>
                               <Form.List name="pricing_tiers" initialValue={[]}>
                                 {(fields, { add, remove }) => (
                                   <>
@@ -2443,25 +2731,8 @@ const BillingRules: React.FC = () => {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            title="视频秒价(输入/生成)+输入图计费配置"
-                            description={
-                              <div>
-                                <Text type="secondary" style={{ fontSize: '13px', display: 'block', marginBottom: '8px' }}>
-                                  计费说明：输入参考视频时长按输入秒单价计算，输出生成视频时长按生成秒单价计算，输入图超过免费张数后按张累加。文本/音频不计费。
-                                </Text>
-                                <Alert
-                                  type="info"
-                                  showIcon
-                                  message={
-                                    <span>
-                                      <strong>配置建议：</strong>
-                                      分辨率阶梯示例 2k（生成=0.80 {currencyUnit}/秒、输入=0.10 {currencyUnit}/秒）；输入图额外单价 0.20 {currencyUnit}/张；免费张数默认 5。
-                                    </span>
-                                  }
-                                  style={{ marginBottom: '12px' }}
-                                />
-                              </div>
-                            }
+                            title="双向秒价 + 参考图计费配置"
+                            description="适用阿里 Wan 等输入与输出秒价分离的视频模型，输入参考时长与生成时长分别按秒计费，超额输入图按张累加。"
                           >
                             <Row gutter={16} style={{ marginBottom: 16 }}>
                               <Col span={12}>
@@ -2537,32 +2808,182 @@ const BillingRules: React.FC = () => {
                         );
                       }
 
+                      if (rule === 'video_seconds_ref') {
+                        return (
+                          <RuleContainer
+                            isLight={_isLight}
+                            title="双向秒价 + 参考视频计费配置"
+                            description="适用 Vega、可灵、Wan 等区分有无参考视频的模型。支持开启或关闭参考视频区分，开启后可分别配置无参考与有参考的秒单价，超额输入图按张累加。"
+                          >
+                            <Row gutter={16} style={{ marginBottom: 16 }}>
+                              <Col span={8}>
+                                <Form.Item name="prompt_rate" label="输入图额外单价" rules={[{ required: true, message: '请输入输入图额外单价' }]} style={{ marginBottom: 0 }}>
+                                  <InputNumber placeholder="超出免费张数后每张价格" style={{ width: '100%' }} precision={6} min={0} addonAfter={`${currencyUnit}/张`} />
+                                </Form.Item>
+                              </Col>
+                              <Col span={8}>
+                                <Form.Item
+                                  name="free_image_count"
+                                  label="输入图免费张数"
+                                  tooltip="不超过该数量的输入参考图不计费；默认 5 张"
+                                  initialValue={5}
+                                  rules={[{ required: true, message: '请输入免费张数' }]}
+                                  style={{ marginBottom: 0 }}
+                                >
+                                  <InputNumber style={{ width: '100%' }} precision={0} min={0} step={1} addonAfter="张" />
+                                </Form.Item>
+                              </Col>
+                              <Col span={8}>
+                                <Form.Item
+                                  name="enable_video_ref"
+                                  label="区分有无参考视频定价"
+                                  tooltip="开启后可分别设置无参考视频与有参考视频的秒单价；关闭则使用统一的双向秒单价"
+                                  valuePropName="checked"
+                                  initialValue={true}
+                                  style={{ marginBottom: 0 }}
+                                >
+                                  <Switch checkedChildren="已开启" unCheckedChildren="已关闭" />
+                                </Form.Item>
+                              </Col>
+                            </Row>
+
+                            <Form.Item
+                              noStyle
+                              shouldUpdate={(prev, curr) => prev.enable_video_ref !== curr.enable_video_ref}
+                            >
+                              {({ getFieldValue: getRefVal }) => {
+                                const isRefAware = getRefVal('enable_video_ref') !== false;
+                                return (
+                                  <Form.Item
+                                    label={isRefAware ? "视频分辨率秒单价 (区分有/无参考视频)" : "视频分辨率秒单价（输入参考 / 输出生成）"}
+                                    required
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Form.List name="pricing_tiers" initialValue={[]}>
+                                      {(fields, { add, remove }) => (
+                                        <>
+                                          {isRefAware ? (
+                                            <>
+                                              <Row gutter={12} style={{ marginBottom: 8, opacity: 0.7, fontSize: 12, fontWeight: 500 }}>
+                                                <Col span={6}>分辨率</Col>
+                                                <Col span={5}>无参考-生成单价</Col>
+                                                <Col span={5}>有参考-输入单价</Col>
+                                                <Col span={5}>有参考-生成单价</Col>
+                                                <Col span={3}>状态/操作</Col>
+                                              </Row>
+                                              {fields.map(({ key, name, ...restField }) => (
+                                                <Row key={key} gutter={12} align="middle" style={{ marginBottom: 12 }}>
+                                                  <Col span={6}>
+                                                    <Form.Item {...restField} name={[name, 'resolution']} rules={[{ required: true, message: '请填分辨率' }]} noStyle>
+                                                      <Input placeholder="如: 720p" style={{ width: '100%' }} />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={5}>
+                                                    <Form.Item {...restField} name={[name, 'rate_no_ref']} rules={[{ required: true, message: '请填无参考生成单价' }]} noStyle>
+                                                      <InputNumber placeholder="生成单价" style={{ width: '100%' }} precision={6} min={0} addonAfter="/秒" />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={5}>
+                                                    <Form.Item {...restField} name={[name, 'input_rate_ref']} rules={[{ required: true, message: '请填有参考输入单价' }]} noStyle>
+                                                      <InputNumber placeholder="输入单价" style={{ width: '100%' }} precision={6} min={0} addonAfter="/秒" />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={5}>
+                                                    <Form.Item {...restField} name={[name, 'rate_ref']} rules={[{ required: true, message: '请填有参考生成单价' }]} noStyle>
+                                                      <InputNumber placeholder="生成单价" style={{ width: '100%' }} precision={6} min={0} addonAfter="/秒" />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={3}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                      <Form.Item {...restField} name={[name, 'enabled']} valuePropName="checked" style={{ marginBottom: 0 }}>
+                                                        <Switch size="small" />
+                                                      </Form.Item>
+                                                      <Button type="text" danger icon={<DeleteOutlined />} onClick={() => remove(name)} style={{ marginLeft: 8 }} />
+                                                    </div>
+                                                  </Col>
+                                                </Row>
+                                              ))}
+                                              <Button
+                                                type="dashed"
+                                                onClick={() => add({
+                                                  resolution: '720p',
+                                                  rate_no_ref: 1.188,
+                                                  input_rate_ref: 0.74,
+                                                  rate_ref: 0.74,
+                                                  rate: 1.188,
+                                                  input_rate: 0.74,
+                                                  enabled: true
+                                                })}
+                                                block
+                                                icon={<PlusOutlined />}
+                                                style={{ marginTop: 8, height: '40px' }}
+                                              >
+                                                增加一个分辨率价格档位
+                                              </Button>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Row gutter={12} style={{ marginBottom: 8, opacity: 0.5, fontSize: 12 }}>
+                                                <Col span={6}>分辨率</Col>
+                                                <Col span={7}>输入秒单价</Col>
+                                                <Col span={7}>生成秒单价</Col>
+                                                <Col span={4}>状态</Col>
+                                              </Row>
+                                              {fields.map(({ key, name, ...restField }) => (
+                                                <Row key={key} gutter={12} align="middle" style={{ marginBottom: 12 }}>
+                                                  <Col span={6}>
+                                                    <Form.Item {...restField} name={[name, 'resolution']} rules={[{ required: true }]} noStyle>
+                                                      <Input placeholder="如: 720p" style={{ width: '100%' }} />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={7}>
+                                                    <Form.Item {...restField} name={[name, 'input_rate']} rules={[{ required: true }]} noStyle>
+                                                      <InputNumber placeholder="输入单价" style={{ width: '100%' }} precision={6} addonAfter="/秒" />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={7}>
+                                                    <Form.Item {...restField} name={[name, 'rate']} rules={[{ required: true }]} noStyle>
+                                                      <InputNumber placeholder="生成单价" style={{ width: '100%' }} precision={6} addonAfter="/秒" />
+                                                    </Form.Item>
+                                                  </Col>
+                                                  <Col span={4}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                      <Form.Item {...restField} name={[name, 'enabled']} valuePropName="checked" style={{ marginBottom: 0 }}>
+                                                        <Switch size="small" />
+                                                      </Form.Item>
+                                                      <Button type="text" danger icon={<DeleteOutlined />} onClick={() => remove(name)} style={{ marginLeft: 8 }} />
+                                                    </div>
+                                                  </Col>
+                                                </Row>
+                                              ))}
+                                              <Button
+                                                type="dashed"
+                                                onClick={() => add({ resolution: '720p', input_rate: 0, rate: 0.8, enabled: true })}
+                                                block
+                                                icon={<PlusOutlined />}
+                                                style={{ marginTop: 8, height: '40px' }}
+                                              >
+                                                增加一个分辨率价格档位
+                                              </Button>
+                                            </>
+                                          )}
+                                        </>
+                                      )}
+                                    </Form.List>
+                                  </Form.Item>
+                                );
+                              }}
+                            </Form.Item>
+                          </RuleContainer>
+                        );
+                      }
+
                       if (rule === 'fal_ref_video') {
                         return (
                           <RuleContainer
                             isLight={_isLight}
-                            title="fal H3-MAX 视频计费配置"
-                            description={
-                              <div>
-                                <Text type="secondary" style={{ fontSize: '13px', display: 'block', marginBottom: '8px' }}>
-                                  计费说明：成片生成费用（成片秒数 × 成片秒单价）+ 参考素材 Token 池超额费用。共享 Token 池默认免 4096 Token，超出部分按千 Token 收费。
-                                </Text>
-                                <Alert
-                                  type="info"
-                                  showIcon
-                                  message={
-                                    <span>
-                                      <strong>官方标准定价（美元原价）：</strong>
-                                      成片生成 0.08 美元/秒；参考素材免 4096 Token，超出 0.02 美元/千Token；参考图 1024 Token/张；参考视频 480p=2886 Token/秒、768p=7459 Token/秒；音频 80 Token/秒。
-                                      <span style={{ display: 'block', marginTop: '6px', color: '#fa8c16' }}>
-                                        <strong>换算说明：</strong>fal H3-MAX 官方定价计量单位为美元（USD），下方填写的单价请按本系统结算货币单位（{currencyUnit}）自行换算后录入。
-                                      </span>
-                                    </span>
-                                  }
-                                  style={{ marginBottom: '12px' }}
-                                />
-                              </div>
-                            }
+                            title="fal H3-MAX 计费配置"
+                            description="适用 fal.ai 代理的 MiniMax 视频模型，按成片秒数计费，参考素材（图/音/视）共享 Token 池超额计费。"
                           >
                             <Row gutter={16} style={{ marginBottom: 16 }}>
                               <Col span={12}>
@@ -2681,7 +3102,7 @@ const BillingRules: React.FC = () => {
                                       </Form.Item>
                                     </div>
                                   }
-                                  description="可灵视频按秒计费。精确查表模式下系统按 mode|sound|参考视频 组合 key 直接匹配单价；倍率模式下按 基准秒单价 × 倍率 计算。"
+                                  description="适用快手可灵系列模型，支持精确查表或倍率模式，区分画质规格、有声/无声及参考视频。"
                                 >
                                   {usePT ? (
                                     <>
@@ -2780,7 +3201,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="Vidu 视频价格表"
-                            description="按 属性×分辨率 组合设置每秒单价。模型版本通过绑定不同计费规则区分。错峰折扣在请求含 OutputConfig.OffPeak=Enabled 或 service_tier=flex 时自动应用。"
+                            description="适用腾讯云 Vidu 系列视频模型，按文生/图生/参考生视频与分辨率组合查表计费，支持错峰折扣。"
                           >
                             <Form.Item name="vidu_offpeak_discount" label="错峰折扣率" initialValue={0.5} style={{ marginBottom: 16 }}>
                               <InputNumber style={{ width: '200px' }} precision={2} step={0.1} min={0} max={1} addonAfter="x" />
@@ -2827,7 +3248,7 @@ const BillingRules: React.FC = () => {
                           <RuleContainer
                             isLight={_isLight}
                             title="火山级联增强价格表"
-                            description="按 标准/极速×分辨率×是否有视频输入 设置每秒单价。极速版对应模型 Id 含 fast，否则走标准版；无需在请求中传 version。"
+                            description="适用火山引擎视频画质增强 (MediaKit 级联)，按标准/极速版、目标分辨率及是否有输入视频查表计费。"
                           >
                             <div style={{ padding: '12px', background: _isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', borderRadius: 8 }}>
                               <Text strong style={{ fontSize: '13px', display: 'block', marginBottom: 12 }}>精确价格表 (单价/秒)</Text>
@@ -2853,7 +3274,11 @@ const BillingRules: React.FC = () => {
                       }
 
                       return (
-                        <RuleContainer isLight={_isLight} title="固定时长计费配置">
+                        <RuleContainer
+                          isLight={_isLight}
+                          title="固定时长计费配置"
+                          description="按任务总秒数 × 固定秒单价计费，不区分分辨率档位。"
+                        >
                           <Form.Item name="duration_rate" label={t('models.duration_rate')} rules={[{ required: true }]} style={{ marginBottom: 0 }}>
                             <InputNumber style={{ width: '100%' }} precision={6} addonAfter="/ s" />
                           </Form.Item>
@@ -2865,104 +3290,269 @@ const BillingRules: React.FC = () => {
               )}
 
 
-              {/* 全局时间段价格倍率设置 (峰谷价格) */}
-              <Form.Item noStyle dependencies={[['extended_config', 'enable_time_multipliers']]}>
+              {/* 按天规划时段倍率：上方默认价 × 当时倍率 */}
+              <Form.Item
+                noStyle
+                dependencies={[
+                  ['extended_config', 'enable_time_multipliers'],
+                  ['extended_config', 'invert_remainder_multiplier'],
+                  ['extended_config', 'time_multipliers'],
+                ]}
+              >
                 {({ getFieldValue }) => {
                   const enabled = getFieldValue(['extended_config', 'enable_time_multipliers']);
+                  const previewItems = getFieldValue(['extended_config', 'time_multipliers']) || [];
+                  const remainderRaw = Number(getFieldValue(['extended_config', 'invert_remainder_multiplier']));
+                  const remainder = Number.isFinite(remainderRaw) && remainderRaw >= 0
+                    ? remainderRaw
+                    : 1;
                   return (
                     <RuleContainer
                       isLight={_isLight}
-                      title="时间段价格倍率 (峰谷价格)"
+                      title="按天规划时段倍率"
                       extra={
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <RealTimeClock defaultTz={settings?.site?.default_timezone || 'Asia/Shanghai'} />
+                          <RealTimeClock
+                            defaultTz={settings?.site?.default_timezone || 'Asia/Shanghai'}
+                            enabled={enabled}
+                            items={previewItems}
+                            remainder={remainder}
+                          />
                           <Form.Item name={['extended_config', 'enable_time_multipliers']} valuePropName="checked" style={{ margin: 0 }}>
                             <Switch size="small" />
                           </Form.Item>
                         </div>
                       }
-                      description="开启后可按时间段（支持 01:00-06:00 等非重叠时段，也支持跨天时段）设置模型费率倍率。默认倍率 1.00，例如：闲时降价设为 0.50，高峰翻倍设为 2.00。按站点默认时区判定；倍率在请求开始时锁定，异步任务结算仍按开始时刻倍率，不会因跨峰谷变价。"
+                      description="上方填的是默认价格（倍率 1.00）。开启后按星期规划各时段倍率，该倍率即模型当前价（优先级最高）。实际结算 = 默认价 × 当时时段倍率 × 用户等级/模型折扣 × 渠道倍率。时段之间只取一档、不叠加。没写到的时段用「未规划」倍率。按站点时区、请求开始锁定。"
                     >
                       {enabled && (
-                        <Form.List name={['extended_config', 'time_multipliers']} initialValue={[]}>
-                          {(fields, { add, remove }) => (
-                            <>
-                              {fields.map(({ key, name: listName, ...restField }) => (
-                                <Row key={key} gutter={12} align="middle" style={{ marginBottom: 12 }}>
-                                  <Col span={9}>
-                                    <Form.Item
-                                      {...restField}
-                                      name={[listName, 'start']}
-                                      rules={[{ required: true, message: '选择开始时间' }]}
-                                      style={{ marginBottom: 0 }}
+                        <>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            justifyContent: 'space-between',
+                            gap: 16,
+                            marginBottom: 16,
+                            flexWrap: 'wrap',
+                          }}>
+                            <div style={{ flex: 1, minWidth: 240 }}>
+                              <Text style={{ fontSize: 13, fontWeight: 500 }}>未规划时段倍率</Text>
+                              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4, lineHeight: 1.5 }}>
+                                当天写过时段、但没落到任何一条时用此倍率。1.00 = 用上方默认价。例：09:00–12:00 填 1.00、未规划填 0.50 → 这三小时默认价，其余 5 折。
+                              </Text>
+                            </div>
+                            <Form.Item
+                              name={['extended_config', 'invert_remainder_multiplier']}
+                              style={{ margin: 0 }}
+                              rules={[{ required: true, message: '未规划倍率' }]}
+                            >
+                              <InputNumber
+                                min={0}
+                                precision={2}
+                                step={0.1}
+                                style={{ width: 148 }}
+                                addonBefore="未规划"
+                                addonAfter="倍"
+                              />
+                            </Form.Item>
+                          </div>
+                          <div style={{
+                            marginBottom: 16,
+                            padding: '10px 12px',
+                            borderRadius: 8,
+                            background: _isLight ? 'rgba(22,119,255,0.04)' : 'rgba(22,119,255,0.08)',
+                            fontSize: 12,
+                            lineHeight: 1.7,
+                            color: 'var(--text-secondary, #595959)',
+                          }}>
+                            <div style={{ fontWeight: 500, marginBottom: 2 }}>时段倍率（模型当前价，只取一档）</div>
+                            <div>1. 命中具体时段 → 用该时段填写倍率（例：09:00–12:00 的 1.00）</div>
+                            <div>2. 当天有全天规则 → 用全天倍率（例：周日全天 0.70）</div>
+                            <div>3. 当天已规划过时段、但此刻没命中 → 用「未规划」倍率</div>
+                            <div>4. 否则 1.00（上方默认价）。跨天时段在次日凌晨仍算第 1 档。</div>
+                            <div>结算再乘用户等级 / 模型折扣 / 渠道倍率；折扣限价不管控时段本身。</div>
+                          </div>
+                          <Form.List name={['extended_config', 'time_multipliers']} initialValue={[]}>
+                            {(fields, { add, remove }) => (
+                              <>
+                                {fields.map(({ key, name: listName, ...restField }) => {
+                                  const row = previewItems[listName] || {};
+                                  const allDay = isAllDayMultiplier(row);
+                                  const ratio = Number(row.multiplier);
+                                  const rowDays = normalizeWeekdays(row.days);
+                                  const sharesAllDay = rowDays.some((d) =>
+                                    (previewItems || []).some((item: any) =>
+                                      isAllDayMultiplier(item) && normalizeWeekdays(item.days).includes(d),
+                                    ),
+                                  );
+                                  const selectedRate = Number.isFinite(ratio) ? ratio : 1;
+                                  const restRate = remainder;
+                                  const daysLabel = isAllWeekdays(row.days)
+                                    ? '每天'
+                                    : formatWeekdayRange(row.days, WEEKDAY_CHIPS.map((c) => c.l), '每天');
+                                  return (
+                                    <div
+                                      key={key}
+                                      style={{
+                                        marginBottom: 12,
+                                        padding: '12px 12px 8px',
+                                        borderRadius: 8,
+                                        border: _isLight ? '1px solid #f0f0f0' : '1px solid #303030',
+                                      }}
                                     >
-                                      <TimePicker
-                                        placeholder="开始时间"
-                                        format="HH:mm"
-                                        style={{ width: '100%' }}
-                                        allowClear={false}
-                                      />
-                                    </Form.Item>
-                                  </Col>
-                                  <Col span={1} style={{ textAlign: 'center' }}>
-                                    <Text style={{ opacity: 0.5 }}>至</Text>
-                                  </Col>
-                                  <Col span={9}>
-                                    <Form.Item
-                                      {...restField}
-                                      name={[listName, 'end']}
-                                      rules={[{ required: true, message: '选择结束时间' }]}
-                                      style={{ marginBottom: 0 }}
-                                    >
-                                      <TimePicker
-                                        placeholder="结束时间"
-                                        format="HH:mm"
-                                        style={{ width: '100%' }}
-                                        allowClear={false}
-                                      />
-                                    </Form.Item>
-                                  </Col>
-                                  <Col span={4}>
-                                    <Form.Item
-                                      {...restField}
-                                      name={[listName, 'multiplier']}
-                                      rules={[{ required: true, message: '倍率' }]}
-                                      style={{ marginBottom: 0 }}
-                                      initialValue={1.0}
-                                    >
-                                      <InputNumber
-                                        placeholder="倍率"
-                                        min={0}
-                                        precision={2}
-                                        step={0.1}
-                                        style={{ width: '100%' }}
-                                        addonAfter="倍"
-                                      />
-                                    </Form.Item>
-                                  </Col>
-                                  <Col span={1} style={{ textAlign: 'right' }}>
-                                    <Button
-                                      type="text"
-                                      danger
-                                      icon={<DeleteOutlined />}
-                                      onClick={() => remove(listName)}
-                                      size="small"
-                                    />
-                                  </Col>
-                                </Row>
-                              ))}
-                              <Button
-                                type="dashed"
-                                onClick={() => add({ multiplier: 1.0 })}
-                                block
-                                icon={<PlusOutlined />}
-                                style={{ marginTop: fields.length > 0 ? 8 : 0 }}
-                              >
-                                添加时间段价格倍率
-                              </Button>
-                            </>
+                                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                          <Text style={{ fontSize: 13 }}>{allDay ? '全天' : '时段'}</Text>
+                                          <Form.Item
+                                            {...restField}
+                                            name={[listName, 'all_day']}
+                                            valuePropName="checked"
+                                            style={{ margin: 0 }}
+                                          >
+                                            <Switch size="small" checkedChildren="全天" unCheckedChildren="时段" />
+                                          </Form.Item>
+                                        </div>
+                                        <Button
+                                          type="text"
+                                          danger
+                                          icon={<DeleteOutlined />}
+                                          onClick={() => remove(listName)}
+                                          size="small"
+                                        />
+                                      </div>
+                                      {!allDay && (
+                                      <Row gutter={12} align="middle">
+                                        <Col xs={24} sm={8}>
+                                          <Form.Item
+                                            {...restField}
+                                            name={[listName, 'start']}
+                                            rules={allDay ? [] : [{ required: true, message: '选择开始时间' }]}
+                                            style={{ marginBottom: 8 }}
+                                          >
+                                            <TimePicker
+                                              placeholder="开始时间"
+                                              format="HH:mm"
+                                              style={{ width: '100%' }}
+                                              allowClear={false}
+                                            />
+                                          </Form.Item>
+                                        </Col>
+                                        <Col xs={0} sm={1} style={{ textAlign: 'center', marginBottom: 8 }}>
+                                          <Text style={{ opacity: 0.5 }}>至</Text>
+                                        </Col>
+                                        <Col xs={24} sm={8}>
+                                          <Form.Item
+                                            {...restField}
+                                            name={[listName, 'end']}
+                                            rules={allDay ? [] : [{ required: true, message: '选择结束时间' }]}
+                                            style={{ marginBottom: 8 }}
+                                          >
+                                            <TimePicker
+                                              placeholder="结束时间"
+                                              format="HH:mm"
+                                              style={{ width: '100%' }}
+                                              allowClear={false}
+                                            />
+                                          </Form.Item>
+                                        </Col>
+                                        <Col xs={24} sm={7}>
+                                          <Form.Item
+                                            {...restField}
+                                            name={[listName, 'multiplier']}
+                                            rules={[{ required: true, message: '倍率' }]}
+                                            style={{ marginBottom: 8 }}
+                                            initialValue={1.0}
+                                          >
+                                            <InputNumber
+                                              placeholder="倍率"
+                                              min={0}
+                                              precision={2}
+                                              step={0.1}
+                                              style={{ width: '100%' }}
+                                              addonAfter="倍"
+                                            />
+                                          </Form.Item>
+                                        </Col>
+                                      </Row>
+                                      )}
+                                      {allDay && (
+                                        <Row gutter={12} align="middle">
+                                          <Col xs={24} sm={10}>
+                                            <Form.Item
+                                              {...restField}
+                                              name={[listName, 'multiplier']}
+                                              rules={[{ required: true, message: '倍率' }]}
+                                              style={{ marginBottom: 8 }}
+                                              initialValue={0.6}
+                                            >
+                                              <InputNumber
+                                                placeholder="全天倍率"
+                                                min={0}
+                                                precision={2}
+                                                step={0.1}
+                                                style={{ width: '100%' }}
+                                                addonAfter="倍"
+                                              />
+                                            </Form.Item>
+                                          </Col>
+                                          <Col xs={24} sm={14} style={{ marginBottom: 8 }}>
+                                            <Text type="secondary" style={{ fontSize: 12 }}>勾选日 00:00–24:00 均按此倍率</Text>
+                                          </Col>
+                                        </Row>
+                                      )}
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                                        <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>星期</Text>
+                                        <Form.Item
+                                          {...restField}
+                                          name={[listName, 'days']}
+                                          initialValue={[...ALL_WEEKDAYS]}
+                                          style={{ marginBottom: 0, flex: 1 }}
+                                        >
+                                          <WeekdayPicker />
+                                        </Form.Item>
+                                      </div>
+                                      <Text type="secondary" style={{ fontSize: 12 }}>
+                                        {allDay
+                                          ? `${daysLabel}全天 ${selectedRate.toFixed(2)} 倍；同日更细时段会覆盖，不相乘`
+                                          : `${daysLabel}：所选 ${selectedRate.toFixed(2)} 倍${sharesAllDay ? '（覆盖全天）' : `，未规划 ${restRate.toFixed(2)} 倍`}`}
+                                      </Text>
+                                    </div>
+                                  );
+                                })}
+                                <div style={{ display: 'flex', gap: 8, marginTop: fields.length > 0 ? 8 : 0 }}>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => add({ multiplier: 1.0, days: [...ALL_WEEKDAYS], all_day: false })}
+                                    block
+                                    icon={<PlusOutlined />}
+                                  >
+                                    添加时段
+                                  </Button>
+                                  <Button
+                                    type="dashed"
+                                    onClick={() => {
+                                      const used = new Set<number>();
+                                      (previewItems || []).forEach((item: any) => {
+                                        if (isAllDayMultiplier(item)) {
+                                          normalizeWeekdays(item.days).forEach((d) => used.add(d));
+                                        }
+                                      });
+                                      const nextDay = [6, 7, 1, 2, 3, 4, 5].find((d) => !used.has(d)) || 7;
+                                      add({ multiplier: nextDay === 7 ? 0.7 : 0.6, days: [nextDay], all_day: true });
+                                    }}
+                                    block
+                                    icon={<PlusOutlined />}
+                                  >
+                                    添加某天全天
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </Form.List>
+                          {previewItems.length > 0 && (
+                            <TimeMultiplierChart items={previewItems} invert remainder={remainder} isLight={_isLight} />
                           )}
-                        </Form.List>
+                        </>
                       )}
                     </RuleContainer>
                   );
@@ -2971,13 +3561,14 @@ const BillingRules: React.FC = () => {
 
               {/* 始终启用，隐藏激活状态开关 */}
 
-              <Form.Item style={{ marginTop: 24, textAlign: 'center' }}>
-                <Space size="large">
-                  <Button onClick={() => setIsModalVisible(false)}>取消</Button>
+              <Form.Item style={{ marginTop: 24, textAlign: 'right' }}>
+                <Space size="middle">
+                  <Button onClick={handleCloseEditor} disabled={saving}>取消</Button>
+                  <Button type="primary" loading={saving} onClick={saveAndStay}>保存更新</Button>
                   {editingItem?.is_system === 1 && (
-                    <Button danger onClick={handleRestoreDefault}>恢复默认</Button>
+                    <Button danger onClick={handleRestoreDefault} disabled={saving}>恢复默认</Button>
                   )}
-                  <Button type="primary" htmlType="submit" style={{ minWidth: 120 }}>保存</Button>
+                  <Button htmlType="submit" loading={saving} style={{ minWidth: 120 }}>保存退出</Button>
                 </Space>
               </Form.Item>
             </Form>

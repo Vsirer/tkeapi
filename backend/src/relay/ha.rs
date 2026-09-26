@@ -1,15 +1,15 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 //! 高可用（HA）failover 策略：端点只碰 [`HaAttempt`] + 少量选渠/落库辅助。
 //! 语义：仅当「插件启用 AND 令牌 high_availability≠0」时可选 HA 组并做子渠切换。
 //!
 //! 终态对齐规则：
-//! - **全部上游失败**：客户端错误 + 日志的 status/error/`channel_config_id` 保留「第一次」失败（子渠 1）
+//! - **全部上游失败**：客户端错误 + 日志的 status/error/`channel_config_id` 按规则 `err`（首败/末败）
 //! - **某次成功**：日志 channel_id / `channel_config_id` / 上游 URL 使用**成功那一次**的子渠
 //! - HA 中间失败不 UPDATE `logs`；环结束一次记账；插件表 `ha_usage_logs` 记全量子渠过程
 //! - 展示用 YID：读路径 JOIN `channel_configs`，日志表不落 `yid` 列
@@ -32,27 +32,23 @@ const MIN_RETRY_BUDGET: Duration = Duration::from_secs(5);
 /// send 时剩余预算不足仍给极短超时，便于快速失败
 const MIN_REQ_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// 选渠是否允许 HA 组（尝试次数由 [`HaAttempt`] 绑定的规则决定）
-pub async fn policy(state: &AppState, token_ha: i32) -> bool {
-    super::relay_settings::get_cached_ha_enabled(&state.db).await && token_ha != 0
-}
 
-/// HA 整次墙钟预算秒数。`0`=自动 `min(540, 上游超时-60)`（为常见 Nginx 600s 留回写裕量）。
+/// HA 整次墙钟预算秒数。`0`=自动 `min(900, 上游超时-60)`（留足多模态慢任务与重试回写裕量）。
 fn resolve_budget_secs(configured: u64) -> u64 {
     if configured > 0 {
         configured
     } else {
         let upstream = crate::services::http_client::upstream_timeout_duration().as_secs();
-        upstream.saturating_sub(60).min(540).max(60)
+        upstream.saturating_sub(60).min(900).max(60)
     }
 }
 
 /// spawn 内在真正 send 前重算超时（避免 transform 空耗导致超时过宽）
 #[derive(Clone, Copy)]
 pub struct HaTimeoutCtx {
-    attempt: usize,
     started_at: Instant,
     budget: Option<Duration>,
+    ttfb: Option<Duration>,
 }
 
 impl HaTimeoutCtx {
@@ -62,17 +58,56 @@ impl HaTimeoutCtx {
             .map(|b| b.saturating_sub(self.started_at.elapsed()))
     }
 
-    /// 按当前墙钟解析本轮上游超时
+    /// 单次尝试超时（由规则 ttfb 配置，0 代表关闭）：
+    /// 仅在 HA 模式且 ttfb > 0 时生效，同时受剩余总预算严格收敛
+    #[inline]
+    pub fn single_attempt_timeout(self) -> Option<Duration> {
+        self.ttfb.map(|t| {
+            self.remaining()
+                .map(|rem| rem.min(t).max(MIN_REQ_TIMEOUT))
+                .unwrap_or(t)
+        })
+    }
+
+    /// 按当前墙钟解析本轮上游整请求兜底超时（针对非流式，无论首选或备选均受剩余预算约束）
     #[inline]
     pub fn resolve(self) -> Duration {
         let base = crate::services::http_client::upstream_timeout_duration();
-        if self.attempt == 0 {
-            return base;
-        }
         self.remaining()
             .filter(|&rem| rem < base)
             .map(|rem| rem.max(MIN_REQ_TIMEOUT))
             .unwrap_or(base)
+    }
+
+    /// 统一网络发送：
+    /// - 若为 HA 组子渠且开启了单次超时（`ttfb > 0`）：
+    ///   - 执行单次超时保护（超时切备渠防卡死）；
+    ///   - 流式提示 TTFB 首包响应超时，非流式提示单次请求超时；
+    /// - 若配置为 0（关闭）或普通单渠道：完全不设单次超时，沿用长等待原语。
+    pub async fn send(
+        self,
+        builder: reqwest::RequestBuilder,
+        is_stream: bool,
+    ) -> Result<reqwest::Response, String> {
+        if let Some(timeout) = self.single_attempt_timeout() {
+            match tokio::time::timeout(timeout, builder.send()).await {
+                Ok(Ok(resp)) => Ok(resp),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err(if is_stream {
+                    format!(
+                        "上游首包响应超时 (TTFB 超过 {}s 未返回响应头)",
+                        timeout.as_secs()
+                    )
+                } else {
+                    format!(
+                        "上游单次请求超时 (超过 {}s 未返回响应)",
+                        timeout.as_secs()
+                    )
+                }),
+            }
+        } else {
+            builder.send().await.map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -110,6 +145,12 @@ pub async fn resolve_log_config_id(state: &AppState, channel: &Channel) -> Optio
     .await
     .ok()
     .flatten()
+}
+
+/// HA 子渠道熔断键：`ha_group_{渠道id}_config_{上游配置id}`
+#[inline]
+pub fn ha_sub_channel_key(group_id: i64, config_id: i64) -> String {
+    format!("ha_group_{}_config_{}", group_id, config_id)
 }
 
 /// 是否仍在熔断窗口内；已过期则立即移除该键
@@ -156,6 +197,7 @@ pub struct FailBill {
     pub pre_deduct_gift: f64,
     pub is_stream: i32,
     pub request_content: String,
+    pub upstream_request_id: Option<String>,
 }
 
 impl FailBill {
@@ -180,6 +222,7 @@ impl FailBill {
     }
 
     /// HTTP 非 2xx（body 同时写入 response_body / response_content）
+    /// 若网关/代理层返回 5xx 笼统码但响应体明确携带业务 4xx code（如内容风控 400），优先采纳业务状态码
     #[inline]
     pub fn http(
         latency_ms: u32,
@@ -189,18 +232,28 @@ impl FailBill {
         upstream: impl Into<String>,
     ) -> Self {
         let body = body.into();
+        let prefer_status = if (500..600).contains(&status) && !body.is_empty() {
+            let biz_status = super::proxy::infer_error_status_code_from_str(&body);
+            if (400..500).contains(&biz_status) {
+                biz_status
+            } else {
+                status
+            }
+        } else {
+            status
+        };
         Self {
             latency_ms,
             response_body: body.clone(),
             response_content: Some(body),
             upstream_req: Some(upstream.into()),
-            prefer_status: Some(status),
+            prefer_status: Some(prefer_status),
             request_content: request.into(),
             ..Default::default()
         }
     }
 
-    /// HTTP 200 业务失败（prefer_status=None）
+    /// HTTP 200 业务失败（直接从响应体提取上游业务 code 作为 prefer_status，避免置空退化为 502）
     #[inline]
     pub fn biz(
         latency_ms: u32,
@@ -210,12 +263,13 @@ impl FailBill {
         upstream: impl Into<String>,
     ) -> Self {
         let body = body.into();
+        let prefer_status = Some(super::proxy::infer_error_status_code_from_str(&body));
         Self {
             latency_ms,
             response_body: body.clone(),
             response_content: Some(body),
             upstream_req: Some(upstream.into()),
-            prefer_status: None,
+            prefer_status,
             client_msg: Some(client_msg.into()),
             request_content: request.into(),
             ..Default::default()
@@ -262,6 +316,12 @@ impl FailBill {
     #[inline]
     pub fn client(mut self, m: impl Into<String>) -> Self {
         self.client_msg = Some(m.into());
+        self
+    }
+
+    #[inline]
+    pub fn upstream_request_id(mut self, req_id: Option<String>) -> Self {
+        self.upstream_request_id = req_id;
         self
     }
 }
@@ -348,7 +408,7 @@ struct HaSnap {
     pool: Option<HaPoolSnap>,
 }
 
-/// 首败快照：渠 + 对外文案 + 落库账单 + 首败 endpoint（中间续试不覆盖）
+/// 落库快照：`err=first` 只记首次；`err=last` 每次覆盖
 struct FirstFail {
     channel: Channel,
     status: u16,
@@ -377,6 +437,7 @@ pub struct HaAttempt {
     bundle: Option<Arc<HaRulesBundle>>,
     rule: Arc<HaRule>,
     pool: Option<HaPoolSnap>,
+    is_ha: bool,
 }
 
 impl HaAttempt {
@@ -424,6 +485,7 @@ impl HaAttempt {
             bundle,
             rule,
             pool: None,
+            is_ha: false,
         }
     }
 
@@ -437,7 +499,9 @@ impl HaAttempt {
 
     /// 选中 HA 组后绑定该组规则（未选 rule 则用默认）
     pub fn on_channel(&mut self, channel: &Channel) {
-        if !self.failover_on {
+        let is_ha = self.failover_on && channel_is_ha_flag(channel) == 1;
+        self.is_ha = is_ha;
+        if !is_ha {
             return;
         }
         let Some(bundle) = &self.bundle else {
@@ -449,6 +513,7 @@ impl HaAttempt {
         if !is_ha_aid(aid) {
             return;
         }
+        self.group_aid = Some(group_key(channel));
         let rid = parse_rule_id(&channel.config);
         self.apply_rule(bundle.resolve_arc(rid.as_deref()));
     }
@@ -478,9 +543,15 @@ impl HaAttempt {
     #[inline]
     pub fn park(
         buf: &Arc<Mutex<Option<FailBill>>>,
-        bill: FailBill,
+        mut bill: FailBill,
         headers: Option<axum::http::HeaderMap>,
     ) -> AppError {
+        if bill.upstream_request_id.is_none() {
+            if let Some(ref h) = headers {
+                bill.upstream_request_id =
+                    crate::relay::upstream_headers::extract_upstream_request_id(h);
+            }
+        }
         let err = err_of(&bill, headers);
         if let Ok(mut g) = buf.lock() {
             *g = Some(bill);
@@ -509,13 +580,17 @@ impl HaAttempt {
             .is_none_or(|rem| rem >= MIN_RETRY_BUDGET)
     }
 
-    /// 快照供 spawn 在 send 前 [`HaTimeoutCtx::resolve`]
+    /// 快照供 spawn 在 send 前 [`HaTimeoutCtx::resolve`] 与 [`HaTimeoutCtx::send`]
     #[inline]
     pub fn timeout_ctx(&self) -> HaTimeoutCtx {
         HaTimeoutCtx {
-            attempt: self.attempt,
             started_at: self.started_at,
             budget: self.budget,
+            ttfb: if self.is_ha && self.rule.ttfb > 0 {
+                Some(Duration::from_secs(self.rule.ttfb))
+            } else {
+                None
+            },
         }
     }
 
@@ -561,7 +636,7 @@ impl HaAttempt {
         self.last_err = e;
     }
 
-    /// 上游失败：push snap；HA 续试则不写 logs；停环则按首败一次记账并 [`save`]。
+    /// 上游失败：push snap；HA 续试则不写 logs；停环则按终态快照一次记账并 [`save`]。
     /// 返回 true → `bump(); continue`。
     pub async fn fail(
         &mut self,
@@ -597,9 +672,8 @@ impl HaAttempt {
         let err_code = bill
             .as_ref()
             .and_then(|b| extract_err_code(&b.response_body));
-        // 首败账单 move 进快照；后续失败账单留局部（退预扣 / 并入预扣额）
         let mut bill = bill;
-        if self.first.is_none() {
+        if self.first.is_none() || self.rule.err_last() {
             self.first = Some(FirstFail {
                 channel: channel.clone(),
                 status: fail_status,
@@ -613,44 +687,35 @@ impl HaAttempt {
             channel,
             fail_status,
             Some(super::proxy::extract_error_message(&msg)),
-            err_code,
+            err_code.clone(),
             masked.as_deref().unwrap_or(""),
             latency_ms,
             false,
         );
 
-        if self.try_switch(ctx.state, channel, fail_status, &msg) {
+        if self.try_switch(
+            ctx.state,
+            channel,
+            fail_status,
+            &msg,
+            err_code.as_deref(),
+        ) {
             self.refund_continue(ctx, bill.as_ref()).await;
             return true;
         }
 
-        // 末次：按终态策略决定落库数据来源
-        if self.rule.err_last() {
-            // err=last：用末败的渠道/端点/错误信息落库，使日志 upstream_url 和 error_message 反映真实末败上游
-            // 中间子渠预扣已由 refund_continue 退款，末败预扣额取末败账单
+        // err=first：保留首败账单，仅将末败预扣额并入一次落库
+        if let Some(last) = bill {
             if let Some(f) = self.first.as_mut() {
-                f.channel = channel.clone();
-                f.endpoint = ctx.ep.to_string();
-                f.status = fail_status;
-                f.message = msg.clone();
-                if let Some(last) = bill {
-                    f.bill = Some(last);
-                }
-            }
-        } else {
-            // err=first：保留首败账单，仅将末败预扣额并入一次落库
-            if let Some(last) = bill {
-                if let Some(f) = self.first.as_mut() {
-                    if let Some(b) = f.bill.as_mut() {
-                        b.pre_deducted = last.pre_deducted;
-                        b.pre_deduct_gift = last.pre_deduct_gift;
-                    } else if last.pre_deducted > 0.0 || last.pre_deduct_gift > 0.0 {
-                        f.bill = Some(FailBill {
-                            pre_deducted: last.pre_deducted,
-                            pre_deduct_gift: last.pre_deduct_gift,
-                            ..Default::default()
-                        });
-                    }
+                if let Some(b) = f.bill.as_mut() {
+                    b.pre_deducted = last.pre_deducted;
+                    b.pre_deduct_gift = last.pre_deduct_gift;
+                } else if last.pre_deducted > 0.0 || last.pre_deduct_gift > 0.0 {
+                    f.bill = Some(FailBill {
+                        pre_deducted: last.pre_deducted,
+                        pre_deduct_gift: last.pre_deduct_gift,
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -820,10 +885,10 @@ impl HaAttempt {
 
         let bill = first.bill.take();
         let prefer_http_status = match &bill {
-            Some(b) => b.prefer_status,
+            Some(b) => b.prefer_status.or(Some(status)),
             None => Some(status),
         };
-        let (pre, gift, is_stream, req, resp_c, up_req, detail, lat, response_body, client) =
+        let (pre, gift, is_stream, req, resp_c, up_req, detail, lat, response_body, client, up_req_id) =
             match bill {
                 Some(b) => {
                     let body = if b.response_body.is_empty() {
@@ -845,6 +910,7 @@ impl HaAttempt {
                         b.latency_ms,
                         body,
                         client,
+                        b.upstream_request_id,
                     )
                 }
                 None => (
@@ -858,6 +924,7 @@ impl HaAttempt {
                     0,
                     fallback.clone(),
                     super::proxy::extract_error_message(&fallback),
+                    None,
                 ),
             };
         let response_content =
@@ -883,6 +950,7 @@ impl HaAttempt {
             client_msg: Some(&client),
             pre_deducted: pre,
             pre_deduct_gift: gift,
+            upstream_request_id: up_req_id,
         })
         .await;
         self.billed = true;
@@ -934,6 +1002,7 @@ impl HaAttempt {
         channel: &Channel,
         fail_status: u16,
         msg: &str,
+        err_code: Option<&str>,
     ) -> bool {
         let aid = channel.group_aid.as_deref().unwrap_or("-");
         let yid = yid_label(channel.yid.as_deref());
@@ -946,6 +1015,7 @@ impl HaAttempt {
             channel.yid.as_deref(),
             fail_status,
             msg,
+            err_code,
             &mut self.exclude_aids,
             &self.rule,
         ) {
@@ -1097,6 +1167,7 @@ fn try_failover(
     yid: Option<&str>,
     status: u16,
     err_msg: &str,
+    err_code: Option<&str>,
     exclude_aids: &mut Vec<String>,
     rule: &HaRule,
 ) -> Option<String> {
@@ -1108,7 +1179,7 @@ fn try_failover(
     };
     let yid_disp = yid_label(yid);
 
-    if let Some(pattern) = match_err_keywords(err_msg, &rule.deny) {
+    if let Some(pattern) = match_err_keywords(err_msg, err_code, &rule.deny) {
         crate::relay_debug!(
             "[HA] 黑名单停止切换 状态码={} 上游YID={} 子渠标识={} 关键词={}",
             status,
@@ -1119,21 +1190,42 @@ fn try_failover(
         return Some(format!("命中错误黑名单「{pattern}」"));
     }
 
-    trigger_ha_meltdown(state, aid, status, err_msg, yid, rule);
+    trigger_ha_meltdown(state, aid, status, err_msg, err_code, yid, rule);
     if !exclude_aids.iter().any(|a| a == aid) {
         exclude_aids.push(aid.to_string());
     }
     None
 }
 
-fn match_err_keywords(error_message: &str, list: &[String]) -> Option<String> {
-    if error_message.is_empty() || list.is_empty() {
+fn match_err_keywords(
+    error_message: &str,
+    err_code: Option<&str>,
+    list: &[String],
+) -> Option<String> {
+    if list.is_empty() {
         return None;
     }
-    let err_lower = error_message.to_lowercase();
-    list.iter()
-        .find(|p| err_lower.contains(&p.to_lowercase()))
-        .cloned()
+
+    // 1. 优先上游结构化错误码精准匹配（大小写无关）
+    if let Some(code) = err_code.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(matched) = list.iter().find(|p| p.trim().eq_ignore_ascii_case(code)) {
+            return Some(matched.clone());
+        }
+    }
+
+    // 2. 兜底错误文本子串模糊匹配
+    if !error_message.is_empty() {
+        let err_lower = error_message.to_lowercase();
+        return list
+            .iter()
+            .find(|p| {
+                let p_trimmed = p.trim();
+                !p_trimmed.is_empty() && err_lower.contains(&p_trimmed.to_lowercase())
+            })
+            .cloned();
+    }
+
+    None
 }
 
 fn trigger_ha_meltdown(
@@ -1141,12 +1233,13 @@ fn trigger_ha_meltdown(
     group_aid: &str,
     status_code: u16,
     error_message: &str,
+    err_code: Option<&str>,
     yid: Option<&str>,
     rule: &HaRule,
 ) {
     let yid = yid_label(yid);
 
-    if let Some(pattern) = match_err_keywords(error_message, &rule.allow) {
+    if let Some(pattern) = match_err_keywords(error_message, err_code, &rule.allow) {
         crate::relay_debug!(
             "[HA] 白名单跳过熔断 上游YID={} 子渠标识={} 关键词={}",
             yid,

@@ -1,8 +1,8 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
 use crate::api::settings::default_registration_settings;
@@ -34,16 +34,6 @@ async fn load_registration(state: &AppState) -> AppResult<RegistrationSettings> 
         .unwrap_or_else(default_registration_settings))
 }
 
-#[allow(dead_code)]
-async fn ensure_kyc_enabled(state: &AppState) -> AppResult<()> {
-    let reg = load_registration(state).await?;
-    if !reg.enable_user_kyc {
-        return Err(AppError::BadRequest(
-            "站点未开启用户实名认证功能".to_string(),
-        ));
-    }
-    Ok(())
-}
 
 async fn fetch_user_kyc_list(state: &AppState, user_id: &str) -> AppResult<Vec<UserKyc>> {
     let rows: Vec<UserKyc> = sqlx::query_as(

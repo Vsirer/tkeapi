@@ -1,17 +1,22 @@
 /*
- * tokensbyte opensource
- * (c) 2026 tokensbyte.ai
+ * tkeapi (tokensbyte) opensource
+ * © 2026 tkeapi.com
  * @copyright      Copyright netbcloud/wstianxia 
- * @license        MIT (https://www.tokensbyte.ai/)
+ * @license        MIT (https://www.tkeapi.com/)
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, Table, Button, Space, Form, Input, Switch, message, Popconfirm, Modal, Tag, Select, Alert, Popover, Grid, Typography, Tooltip, Radio, InputNumber } from 'antd';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
+import { listPagination, useListPager } from '../../components/ListPagination';
 import { PlusOutlined, EditOutlined, DeleteOutlined, CodeOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import request from '../../utils/request';
 import { useThemeStore } from '../../store/theme';
+import { fetchActivePlugins } from '../../utils/activePlugins';
+import useSettingsStore from '../../store/settings';
+import { forwardRulesEditPath, forwardRulesListPath, forwardRulesNewPath } from './modelPaths';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -123,6 +128,81 @@ const compactResScene = (enhance: Record<string, string>, scene: Record<string, 
 const compactResBase = (raw: Record<string, string>) =>
   compactStrMap(raw, (k, v) => v !== BASE_OPTIONS[k][0]);
 
+const DEFAULT_CROP_COORDS = {
+  volc: { '16:9': '2, 6, 862, 490', '9:16': '6, 2, 490, 862' },
+  tencent: { '16:9': '0, 5, 864, 491', '9:16': '5, 0, 491, 864' },
+  post: { '16:9': '1, 0, 1281, 720', '9:16': '0, 1, 720, 1281' },
+} as const;
+
+const cropDefault = (engine: unknown, timing: unknown, ratio: '16:9' | '9:16'): string =>
+  timing === 'post' ? DEFAULT_CROP_COORDS.post[ratio] : (engine === 'tencent' ? DEFAULT_CROP_COORDS.tencent : DEFAULT_CROP_COORDS.volc)[ratio];
+
+/** 将坐标（数组或字符串）规范化为表单字符串 */
+const formatCropCoords = (val: unknown, fallback: string): string => {
+  if (Array.isArray(val) && val.length === 4) {
+    return val.join(', ');
+  }
+  if (typeof val === 'string' && val.trim()) {
+    return val.trim();
+  }
+  return fallback;
+};
+
+/** 解析字符串或数组为四元组数字数组，非法返回 null */
+const parseCropCoordsInput = (str: unknown): [number, number, number, number] | null => {
+  if (Array.isArray(str) && str.length === 4) {
+    const nums = str.map(Number);
+    if (!nums.some(isNaN) && nums[2] > nums[0] && nums[3] > nums[1]) {
+      return nums as [number, number, number, number];
+    }
+  }
+  if (typeof str === 'string') {
+    const parts = str
+      .split(/[, ]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map(Number);
+    if (parts.length === 4 && !parts.some(isNaN) && parts[2] > parts[0] && parts[3] > parts[1]) {
+      return parts as [number, number, number, number];
+    }
+  }
+  return null;
+};
+
+/** 从坐标计算偶数画布规格 key (如 864x486) */
+const cropCanvasKey = (str: unknown): string | null => {
+  const c = parseCropCoordsInput(str);
+  return c ? `${(c[2] - c[0]) & ~1}x${(c[3] - c[1]) & ~1}` : null;
+};
+
+const ENHANCE_CATEGORIES = new Set(['画质增强', '视频增强', '图像增强']);
+
+/** 级联规则的阶段二引擎；非级联返回 null。缺省火山 MediaKit。 */
+const cascadeEngineOf = (configJson: string): 'volc' | 'tencent' | null => {
+  try {
+    const config = JSON.parse(configJson || '{}');
+    const flag = config?.is_cascade;
+    const on = flag === true || flag === 1 || flag === '1' || flag === 'true';
+    if (!on) return null;
+    return String(config?.cascade_engine || '').toLowerCase() === 'tencent' ? 'tencent' : 'volc';
+  } catch {
+    return null;
+  }
+};
+
+/** 画质增强分类、MediaKit 转发依赖火山插件；腾讯级联依赖腾讯云增强。 */
+const enhancePluginOf = (item: { name?: string; category?: string; config_json?: string }): 'volc' | 'tencent' | null => {
+  const engine = cascadeEngineOf(item.config_json || '');
+  if (engine) return engine;
+  if (ENHANCE_CATEGORIES.has(item.category || '')) return 'volc';
+  if ((item.name || '').includes('MediaKit')) return 'volc';
+  try {
+    const config = JSON.parse(item.config_json || '{}');
+    if (config?.target_type === 'volcengine_media_enhance') return 'volc';
+  } catch { /* ignore */ }
+  return null;
+};
+
 interface ForwardRule {
   id: number;
   name: string;
@@ -139,33 +219,72 @@ interface ForwardRule {
 
 const ForwardRules: React.FC = () => {
   const { t } = useTranslation();
+  const { settings } = useSettingsStore();
+  const adminPath = settings?.site?.admin_path || 'admin1688';
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { id: routeParamId } = useParams<{ id?: string }>();
+  const normalizedPath = location.pathname.replace(/\/$/, '');
+  const isNewRoute = /\/forward-rules\/new$/.test(normalizedPath);
+  const isEditRoute = /\/forward-rules\/edit\/[^/]+$/.test(normalizedPath);
+  const routeEditId = isEditRoute ? routeParamId : undefined;
+  const isEditorOpen = isNewRoute || isEditRoute;
   const [items, setItems] = useState<ForwardRule[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [isConfigModalVisible, setIsConfigModalVisible] = useState(false);
   const [editingItem, setEditingItem] = useState<ForwardRule | null>(null);
   const [currentConfig, setCurrentConfig] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [ruleTypeFilter, setRuleTypeFilter] = useState('all');
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(15);
+  const { page: currentPage, pageSize, setPage: setCurrentPage, onChange } = useListPager();
   // 动态获取的模型分类类型列表（从 model_types 接口获取，保持与后台一致）
   const [modelTypes, setModelTypes] = useState<{ id: number; name: string }[]>([]);
+  const [hasTencentEnhance, setHasTencentEnhance] = useState(false);
+  const [hasVolcEnhance, setHasVolcEnhance] = useState(false);
+  const [enhancePluginsReady, setEnhancePluginsReady] = useState(false);
+  const [tencentCropTemplates, setTencentCropTemplates] = useState<Record<string, number>>({});
   const [form] = Form.useForm();
   const screens = useBreakpoint();
+  const newFormReadyRef = useRef(false);
+  const hydratedEditIdRef = useRef<string | null>(null);
+
+  const fetchTencentCropTemplates = async () => {
+    try {
+      const res: any = await request.get('/plugins/tencent_enhance/tencent-enhance-config');
+      if (res?.crop_templates && typeof res.crop_templates === 'object') {
+        setTencentCropTemplates(res.crop_templates);
+      }
+    } catch { /* ignore */ }
+  };
 
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, categoryFilter, ruleTypeFilter]);
 
-  const uniqueCategories = Array.from(new Set([
-    ...modelTypes.map(t => t.name),
-    ...items.map(i => i.category).filter(Boolean)
-  ]));
-  const uniqueTypes = Array.from(new Set(items.map(i => i.rule_type).filter(Boolean)));
+  useEffect(() => {
+    if (!enhancePluginsReady || hasVolcEnhance) return;
+    if (ENHANCE_CATEGORIES.has(categoryFilter)) setCategoryFilter('all');
+  }, [enhancePluginsReady, hasVolcEnhance, categoryFilter]);
 
-  const filteredItems = items.filter(item => {
+  const isEnhanceRuleVisible = (item: ForwardRule) => {
+    const plugin = enhancePluginOf(item);
+    if (!plugin) return true;
+    if (!enhancePluginsReady) return false;
+    return plugin === 'tencent' ? hasTencentEnhance : hasVolcEnhance;
+  };
+
+  const visibleItems = items.filter(isEnhanceRuleVisible);
+  const categoryChoices = modelTypes
+    .map(t => t.name)
+    .filter(name => hasVolcEnhance || !ENHANCE_CATEGORIES.has(name));
+  const uniqueCategories = Array.from(new Set([
+    ...categoryChoices,
+    ...visibleItems.map(i => i.category).filter(name => !!name && (hasVolcEnhance || !ENHANCE_CATEGORIES.has(name)))
+  ]));
+  const uniqueTypes = Array.from(new Set(visibleItems.map(i => i.rule_type).filter(Boolean)));
+
+  const filteredItems = visibleItems.filter(item => {
     let matchQuery = true;
     if (searchQuery) {
       const lowerQuery = searchQuery.toLowerCase();
@@ -197,9 +316,45 @@ const ForwardRules: React.FC = () => {
     (request.get('/model-types') as any).then((types: any[]) => {
       setModelTypes(types.filter((t: any) => t.is_active === 1));
     }).catch(() => { });
+    fetchActivePlugins().then((res) => {
+      const active = res?.active_plugins || [];
+      const hasTencent = active.some((p: any) => p.name === 'tencent_enhance');
+      setHasTencentEnhance(hasTencent);
+      if (hasTencent) {
+        fetchTencentCropTemplates();
+      }
+      setHasVolcEnhance(active.some((p: any) => p.name === 'volcengine_enhance'));
+    }).catch(() => {}).finally(() => setEnhancePluginsReady(true));
   }, []);
 
+  useEffect(() => {
+    if (!hasTencentEnhance) return;
+    const onFocus = () => {
+      fetchTencentCropTemplates();
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [hasTencentEnhance]);
+
   const handleAdd = () => {
+    navigate(forwardRulesNewPath(adminPath));
+  };
+
+  const syncCrop = (nextEngine?: string, nextTiming?: 'pre' | 'post') => {
+    const engine = nextEngine || form.getFieldValue('cascade_engine') || 'volc';
+    const timing = nextTiming || form.getFieldValue('crop_timing') || 'pre';
+    const cur169 = form.getFieldValue('crop_16_9');
+    const cur916 = form.getFieldValue('crop_9_16');
+    const defaults = [
+      cropDefault('volc', 'pre', '16:9'), cropDefault('tencent', 'pre', '16:9'), cropDefault('volc', 'post', '16:9'),
+      cropDefault('volc', 'pre', '9:16'), cropDefault('tencent', 'pre', '9:16'), cropDefault('volc', 'post', '9:16'),
+    ];
+    if (!cur169 || defaults.includes(cur169)) form.setFieldValue('crop_16_9', cropDefault(engine, timing, '16:9'));
+    if (!cur916 || defaults.includes(cur916)) form.setFieldValue('crop_9_16', cropDefault(engine, timing, '9:16'));
+  };
+
+  const initNewForwardForm = () => {
+    const initialEngine = hasVolcEnhance || !hasTencentEnhance ? 'volc' : 'tencent';
     setEditingItem(null);
     form.resetFields();
     form.setFieldsValue({
@@ -208,18 +363,25 @@ const ForwardRules: React.FC = () => {
       sort_order: 0,
       is_cascade: false,
       crop_480p: true,
+      crop_timing: 'pre',
+      crop_16_9: cropDefault(initialEngine, 'pre', '16:9'),
+      crop_9_16: cropDefault(initialEngine, 'pre', '9:16'),
       res_mul: defaultResMul(),
       res_enhance: defaultResEnhance(),
       res_scene: defaultResScene(),
       res_base: defaultResBase(),
+      cascade_engine: initialEngine,
     });
-    setIsModalVisible(true);
   };
 
-  const handleEdit = (item: ForwardRule) => {
+  const hydrateForwardEditor = (item: ForwardRule) => {
     let pollPath = '';
     let isCascade = false;
     let crop480p = true;
+    let cropTiming: 'pre' | 'post' = 'pre';
+    let cascadeEngine = 'volc';
+    let crop169: string = cropDefault('volc', 'pre', '16:9');
+    let crop916: string = cropDefault('volc', 'pre', '9:16');
     let resMul = defaultResMul();
     let resEnhance = defaultResEnhance();
     let resScene = defaultResScene();
@@ -230,6 +392,11 @@ const ForwardRules: React.FC = () => {
       isCascade = !!config.is_cascade;
       // 缺省 true；与后端 unwrap_or(true) 一致
       crop480p = config.crop_480p !== false;
+      cropTiming = config.crop_timing === 'post' ? 'post' : 'pre';
+      cascadeEngine = config.cascade_engine === 'tencent' ? 'tencent' : 'volc';
+      const coordsMap = cropTiming === 'post' ? config.crop_coords_720p : config.crop_coords_480p;
+      crop169 = formatCropCoords(coordsMap?.['16:9'], cropDefault(cascadeEngine, cropTiming, '16:9'));
+      crop916 = formatCropCoords(coordsMap?.['9:16'], cropDefault(cascadeEngine, cropTiming, '9:16'));
       resMul = parseResMul(config.res_mul);
       resEnhance = parseResEnhance(config.res_enhance);
       resScene = parseResScene(config.res_scene);
@@ -241,17 +408,67 @@ const ForwardRules: React.FC = () => {
       ...item,
       category: item.category ? [item.category] : ['聊天'],
       poll_path: pollPath,
-      is_cascade: isCascade,
+      is_cascade: !!isCascade,
       crop_480p: crop480p,
+      crop_timing: cropTiming,
+      crop_16_9: crop169,
+      crop_9_16: crop916,
       res_mul: resMul,
       res_enhance: resEnhance,
       res_scene: resScene,
       res_base: resBase,
+      cascade_engine: cascadeEngine,
       is_active: item.is_active === 1,
       sort_order: item.sort_order || 0,
     });
-    setIsModalVisible(true);
   };
+
+  const handleEdit = (item: ForwardRule) => {
+    navigate(forwardRulesEditPath(adminPath, item.id));
+  };
+
+  const handleCloseEditor = () => {
+    navigate(forwardRulesListPath(adminPath));
+  };
+
+  useEffect(() => {
+    if (!isNewRoute) {
+      newFormReadyRef.current = false;
+      return;
+    }
+    if (newFormReadyRef.current) return;
+    newFormReadyRef.current = true;
+    initNewForwardForm();
+  }, [isNewRoute]);
+
+  useEffect(() => {
+    if (!routeEditId) {
+      hydratedEditIdRef.current = null;
+      return;
+    }
+    if (loading || !enhancePluginsReady) return;
+    if (hydratedEditIdRef.current === routeEditId) return;
+    const target = items.find((item) => String(item.id) === String(routeEditId));
+    if (target && isEnhanceRuleVisible(target)) {
+      hydratedEditIdRef.current = routeEditId;
+      hydrateForwardEditor(target);
+    } else if (hydratedEditIdRef.current !== `missing:${routeEditId}`) {
+      hydratedEditIdRef.current = `missing:${routeEditId}`;
+      message.error('未找到指定转发规则');
+      handleCloseEditor();
+    }
+  }, [routeEditId, items, loading, enhancePluginsReady, hasVolcEnhance, hasTencentEnhance]);
+
+  useEffect(() => {
+    if (!enhancePluginsReady || !isEditorOpen) return;
+    if (!hasVolcEnhance && !hasTencentEnhance) return;
+    const engine = form.getFieldValue('cascade_engine');
+    const valid = engine === 'tencent' ? hasTencentEnhance : hasVolcEnhance;
+    if (valid) return;
+    const next = hasVolcEnhance ? 'volc' : 'tencent';
+    form.setFieldValue('cascade_engine', next);
+    syncCrop(next);
+  }, [enhancePluginsReady, hasVolcEnhance, hasTencentEnhance, isEditorOpen]);
 
   const handleStatusChange = async (record: ForwardRule, checked: boolean) => {
     try {
@@ -276,6 +493,7 @@ const ForwardRules: React.FC = () => {
   };
 
   const handleSave = async (values: any) => {
+    if (isEditRoute && hydratedEditIdRef.current !== routeEditId) return;
     try {
       let configObj: any = {};
       try {
@@ -297,26 +515,70 @@ const ForwardRules: React.FC = () => {
         if (val) configObj[key] = val;
         else delete configObj[key];
       };
-      if (values.is_cascade) {
+      const cascadeOpen = enhancePluginsReady && values.is_cascade && (hasVolcEnhance || hasTencentEnhance);
+      const useTencent = hasTencentEnhance && (values.cascade_engine === 'tencent' || !hasVolcEnhance);
+      if (!enhancePluginsReady) {
+        // 插件列表未返回前不改写级联字段，避免把已有配置误删
+      } else if (cascadeOpen) {
         configObj.is_cascade = true;
         configObj.res_mul = parseResMul(values.res_mul);
-        const enhanceMap = parseResEnhance(values.res_enhance);
-        putOpt('res_enhance', compactResEnhance(enhanceMap));
-        putOpt('res_scene', compactResScene(enhanceMap, parseResScene(values.res_scene)));
         putOpt('res_base', compactResBase(parseResBase(values.res_base)));
-        // 缺省 true 不落库；仅显式关闭时写入 false
+        if (useTencent) {
+          configObj.cascade_engine = 'tencent';
+        } else {
+          delete configObj.cascade_engine;
+          const enhanceMap = parseResEnhance(values.res_enhance);
+          putOpt('res_enhance', compactResEnhance(enhanceMap));
+          putOpt('res_scene', compactResScene(enhanceMap, parseResScene(values.res_scene)));
+        }
         if (values.crop_480p === false) {
           configObj.crop_480p = false;
+          delete configObj.crop_timing;
+          delete configObj.crop_coords_480p;
+          delete configObj.crop_coords_720p;
         } else {
           delete configObj.crop_480p;
+          const timing = values.crop_timing === 'post' ? 'post' : 'pre';
+          if (timing === 'post') {
+            configObj.crop_timing = 'post';
+          } else {
+            delete configObj.crop_timing;
+          }
+
+          const isTencent = useTencent;
+          const engineName = useTencent ? 'tencent' : 'volc';
+          const coords169 = parseCropCoordsInput(values.crop_16_9) || (isTencent ? parseCropCoordsInput(cropDefault('tencent', timing, '16:9')) : null);
+          const coords916 = parseCropCoordsInput(values.crop_9_16) || (isTencent ? parseCropCoordsInput(cropDefault('tencent', timing, '9:16')) : null);
+          const def169 = parseCropCoordsInput(cropDefault(engineName, timing, '16:9'));
+          const def916 = parseCropCoordsInput(cropDefault(engineName, timing, '9:16'));
+          const is169Custom = coords169 && (!def169 || coords169.some((v, i) => v !== def169[i]));
+          const is916Custom = coords916 && (!def916 || coords916.some((v, i) => v !== def916[i]));
+
+          const targetField = timing === 'post' ? 'crop_coords_720p' : 'crop_coords_480p';
+          const otherField = timing === 'post' ? 'crop_coords_480p' : 'crop_coords_720p';
+          delete configObj[otherField];
+
+          // 腾讯云增强始终保留并显式落库此 2 个裁剪坐标，方便开箱即用无需额外调整；火山引擎在非自定义时省去冗余配置
+          if (isTencent || is169Custom || is916Custom) {
+            const map: Record<string, number[]> = {};
+            if (coords169) map['16:9'] = coords169;
+            if (coords916) map['9:16'] = coords916;
+            configObj[targetField] = map;
+          } else {
+            delete configObj[targetField];
+          }
         }
       } else {
         delete configObj.is_cascade;
         delete configObj.crop_480p;
+        delete configObj.crop_timing;
+        delete configObj.crop_coords_480p;
+        delete configObj.crop_coords_720p;
         delete configObj.res_mul;
         delete configObj.res_enhance;
         delete configObj.res_scene;
         delete configObj.res_base;
+        delete configObj.cascade_engine;
       }
 
       const payload = {
@@ -329,6 +591,9 @@ const ForwardRules: React.FC = () => {
       delete payload.poll_path;
       delete payload.is_cascade;
       delete payload.crop_480p;
+      delete payload.crop_timing;
+      delete payload.crop_16_9;
+      delete payload.crop_9_16;
       delete payload.res_mul;
       delete payload.res_enhance;
       delete payload.res_scene;
@@ -340,7 +605,7 @@ const ForwardRules: React.FC = () => {
         await request.post('/forward-rules', payload);
       }
       message.success(t('common.success'));
-      setIsModalVisible(false);
+      handleCloseEditor();
       fetchItems();
     } catch (e) {
       console.error(e);
@@ -504,61 +769,34 @@ const ForwardRules: React.FC = () => {
     {
       n: '1',
       body: <>
-        <CText>target_type</CText>：目标协议类型。常用 <CText>openai</CText>、<CText>anthropic</CText>、
-        <CText>gemini</CText>、<CText>volcengine</CText>、<CText>dashscope</CText>、<CText>kling</CText>、<CText>kling_video</CText>、
-        <CText>minimax_image</CText>、<CText>minimax_video</CText>、<CText>fal_video</CText>、
-        <CText>tencent_vod_video</CText>、<CText>tencent_vod_image</CText>、<CText>tencent_mps_image</CText> 等。
-        <CText>kling_video</CText> 渠道密钥填官方 API Key（Bearer 直传，不生成 JWT）；
-        <CText>kling</CText> 仍为 <CText>access_key:secret_key</CText> 自动签 JWT。
-        <CText>fal_video</CText> 配合 <CText>auth_type=key</CText>（<CText>Authorization: Key</CText>，非厂商绑定），
-        渠道 base 用 <CText>https://queue.fal.run</CText>；提交路径{' '}
-        <CText>{`/minimax/\${model}/reference-to-video`}</CText>，模型 ID 填变体名（如 <CText>h3-max</CText>）；
-        需配置 <CText>poll_path</CText> 如 <CText>{`/minimax/\${model}/requests/\${task_id}/status`}</CText>。
+        <CText>target_type</CText>：目标协议类型。常用 <CText>openai</CText>、<CText>anthropic</CText>、<CText>gemini</CText>、<CText>volcengine</CText>、<CText>dashscope</CText>、<CText>kling_video</CText>、<CText>minimax_video</CText>、<CText>fal_video</CText>、<CText>tencent_vod_video</CText> 等。
       </>,
     },
     {
       n: '2',
       body: <>
-        <CText>path_rewrite</CText>：入口路径改写。
-        <div style={{ marginTop: 6 }}>
-          <ParamNo n="2.1">
-            <CText>old</CText>：匹配片段，如 <CText>/v1/video/generations</CText>
-          </ParamNo>
-          <ParamNo n="2.2">
-            <CText>new</CText>：上游路径，支持 <CText>{`\${model}`}</CText> 等宏，如{' '}
-            <CText>/api/v3/contents/generations/tasks</CText>
-          </ParamNo>
-        </div>
-        <div style={{ marginTop: 6 }}>
-          <CText>path_passthrough</CText>：字符串数组，命中任一入口则上游路径=入口路径且 body 仅换 model（不再做 old→new）；聊天透传示例{' '}
-          <CText>{`["/v1/chat/completions","/v1/responses","/v1/messages","/anthropic/v1/messages"]`}</CText>。
-        </div>
-        <div style={{ marginTop: 6 }}>
-          <CText>path_accept</CText>：字符串数组，命中则规则可匹配，上游仍走 <CText>path_rewrite.new</CText>（与 passthrough 不同）。Portrait 转素材示例{' '}
-          <CText>{`["/api/v3/contents/generations/tasks"]`}</CText> → <CText>/tenant/seedance/infer</CText>。
+        <CText>path_rewrites</CText>：路径重写映射数组（推荐）。支持多路由同时映射至上游，数组项包含 <CText>old</CText>（客户端入口）与 <CText>new</CText>（上游实际路径，支持 <CText>{`\${model}`}</CText> 宏）。
+        <div style={{ marginTop: 4, fontSize: 12, opacity: 0.85 }}>
+          示例：<CText>{`[{"old":"/v1/video/generations","new":"/minimax/v2/video_generation/tpl-3"}]`}</CText>。单条改写亦可简写为对象 <CText>path_rewrite</CText>；全透传模式支持配置 <CText>path_passthrough</CText> 数组。
         </div>
       </>,
     },
     {
       n: '3',
       body: <>
-        <CText>auth_type</CText>：鉴权方式，默认 <CText>bearer</CText>。可选{' '}
-        <CText>query_key</CText>、<CText>x-api-key</CText>、<CText>key</CText>（Authorization: Key）、
-        <CText>tencent_vod</CText>、<CText>tencent_mps</CText>、<CText>volcengine_tts</CText>。
+        <CText>auth_type</CText>：上游鉴权方式，默认 <CText>bearer</CText>。可选 <CText>query_key</CText>、<CText>x-api-key</CText>、<CText>key</CText>（Authorization: Key）、<CText>tencent_vod</CText>、<CText>tencent_mps</CText> 等。
       </>,
     },
     {
       n: '4',
       body: <>
-        <CText>poll_path</CText>：异步轮询路径，如 <CText>{`/api/v1/tasks/\${task_id}`}</CText>。
-        支持 <CText>{`\${task_id}`}</CText>、<CText>{`\${model}`}</CText>。
-        fal 示例 <CText>{`/minimax/\${model}/requests/\${task_id}/status`}</CText>，完成后自动再拉结果。
+        <CText>poll_path</CText>：异步任务轮询路径，支持占位宏 <CText>{`\${task_id}`}</CText> 与 <CText>{`\${model}`}</CText>。如 <CText>{`/minimax/query/\${task_id}`}</CText>。
       </>,
     },
     {
       n: '5',
       body: <>
-        <CText>asset_convert</CText>：<CText>true</CText> 时将 content 网络 URL / base64（data URI 或纯 base64）转为方舟素材 ID（<CText>asset://</CText>），需配置素材插件凭证；base64 依赖 TOS。
+        <CText>asset_convert</CText>：设为 <CText>true</CText> 时自动将 content 中的网络 URL / base64 转为方舟素材 ID（<CText>asset://</CText>）。
       </>,
     },
     {
@@ -570,53 +808,55 @@ const ForwardRules: React.FC = () => {
     {
       n: '7',
       body: <>
-        <CText>moderation</CText>：<CText>true</CText> 时素材注册免审核（<CText>Skip</CText>）。
+        <CText>moderation</CText>：设为 <CText>true</CText> 时素材注册免审核（Skip）。
       </>,
     },
     {
       n: '8',
       body: <>
-        <CText>content_to_prompt</CText>：无 <CText>prompt</CText> 时从 <CText>content</CText> 文本提取写入（部分火山视频通道）。
+        <CText>content_to_prompt</CText>：无 prompt 字段时自动从 content 文本提取写入（部分视频通道）。
       </>,
     },
     {
       n: '9',
       body: <>
-        <CText>is_cascade</CText>：启用二阶段级联（底座 → 超分）；阶段二超分不计费。
+        <CText>is_cascade</CText>：启用二阶段级联（底座成片后自动增强）。
       </>,
     },
     {
       n: '10',
       body: <>
-        <CText>res_mul</CText>：级联分辨率倍率，如 <CText>{`{"480p":1.5,"720p":2.15,"1080p":2.25,"2k":2.5,"4k":4}`}</CText>。
-        阶段二成功后：若 stage1 有 usage tokens，则 token（返回/列表/计费）× 倍率；否则底座费用 × 倍率。缺省 key 按 <CText>1.0</CText>。
+        <CText>cascade_engine</CText>：插件启用后可选 <CText>tencent</CText>（腾讯云增强）；缺省或不写则走火山 MediaKit。
       </>,
     },
     {
       n: '11',
       body: <>
-        <CText>res_enhance</CText>：每目标分辨率的增强版本（<CText>fast|standard|pro|ai</CText>），缺省 <CText>standard</CText>；
-        <CText>ai</CText>（大模型）仅允许 <CText>720p</CText>/<CText>1080p</CText>/<CText>2k</CText>。
+        <CText>res_mul</CText>：级联各分辨率消耗倍率映射，如 <CText>{`{"720p":1.5,"1080p":2.0,"2k":2.5,"4k":4}`}</CText>。
       </>,
     },
     {
       n: '12',
       body: <>
-        <CText>res_scene</CText>：标准版增强场景（<CText>common|ugc|short_series|aigc|old_film</CText>），缺省 <CText>common</CText>；仅增强为 standard 时生效。
+        <CText>res_enhance</CText>：级联增强版本（<CText>fast | standard | pro | ai</CText>），默认 <CText>standard</CText>。
       </>,
     },
     {
       n: '13',
       body: <>
-        <CText>res_base</CText>：每目标分辨率的阶段一座底，如 <CText>{`{"1080p":"720p"}`}</CText>。
-        默认取一级（480p 锁定 480p、720p→480p 可改 720p、1080p→720p 可改 480p/1080p、2k/4k→1080p）。
+        <CText>res_scene</CText>：标准增强版本下的场景优化（<CText>common | aigc | short_series</CText> 等）。
       </>,
     },
     {
       n: '14',
       body: <>
-        <CText>crop_480p</CText>：目标 <CText>720p</CText> 且底座为 <CText>480p</CText> 时，是否 MediaKit 居中裁成标准 480p。
-        缺省 <CText>true</CText>（兼容现网）；显式 <CText>false</CText> 跳过裁剪。其它目标分辨率不受影响。
+        <CText>res_base</CText>：级联目标分辨率对应的底座分辨率映射，如 <CText>{`{"1080p":"720p"}`}</CText>。
+      </>,
+    },
+    {
+      n: '15',
+      body: <>
+        <CText>crop_480p</CText>：480p 底座升 720p 时的智能居中裁剪开关（默认 <CText>true</CText>），配合 <CText>crop_timing</CText>（<CText>pre | post</CText>）。
       </>,
     },
   ];
@@ -649,20 +889,11 @@ const ForwardRules: React.FC = () => {
     </div>
   );
 
-  const paginationConfig = {
+  const paginationConfig = listPagination({
     current: currentPage,
-    pageSize: pageSize,
-    showSizeChanger: true,
-    pageSizeOptions: ['10', '15', '20', '50', '100'],
-    showTotal: (total: number) => `共 ${total} 条`,
-    showQuickJumper: true,
-    onChange: (page: number, newPageSize: number) => {
-      setCurrentPage(page);
-      if (newPageSize !== pageSize) {
-        setPageSize(newPageSize);
-      }
-    },
-  };
+    pageSize,
+    onChange,
+  });
 
   return (
     <>
@@ -789,8 +1020,8 @@ const ForwardRules: React.FC = () => {
 
       <Modal
         title={editingItem ? '编辑高级规则' : '新增规则引擎接入'}
-        open={isModalVisible}
-        onCancel={() => setIsModalVisible(false)}
+        open={isEditorOpen}
+        onCancel={handleCloseEditor}
         onOk={() => form.submit()}
         width={860}
       >
@@ -808,8 +1039,8 @@ const ForwardRules: React.FC = () => {
               mode="tags"
               maxCount={1}
               placeholder="请选择或输入新分类并回车..."
-              options={modelTypes.length > 0
-                ? modelTypes.map(t => ({ value: t.name, label: t.name }))
+              options={categoryChoices.length > 0
+                ? categoryChoices.map(name => ({ value: name, label: name }))
                 : [{ value: '聊天', label: '聊天' }]
               }
             />
@@ -827,7 +1058,14 @@ const ForwardRules: React.FC = () => {
             <Input placeholder={`例如: /v1/tasks/\${task_id} 或 /v1/video/generations/\${task_id}`} />
           </Form.Item>
 
-          <Form.Item name="is_cascade" label={<Space>级联超分 <Popover content="启用后走二阶段级联；阶段二超分不计费。阶段二成功后：有 usage tokens 则按 res_mul 放大 token（返回/列表/计费），无 tokens 时对底座费用相乘"><QuestionCircleOutlined /></Popover></Space>} valuePropName="checked">
+          {(hasVolcEnhance || hasTencentEnhance) && (
+          <>
+          <Form.Item
+            name="is_cascade"
+            label={<Space>级联增强 <Popover content="二阶段级联；阶段二增强不计费。成功后：有 usage 则 tokens×res_mul，否则底座费用×倍率。阶段二缺省火山 MediaKit，可选腾讯云增强。"><QuestionCircleOutlined /></Popover></Space>}
+            valuePropName="checked"
+            normalize={(v) => v === true || v === 1}
+          >
             <Switch />
           </Form.Item>
 
@@ -835,58 +1073,174 @@ const ForwardRules: React.FC = () => {
             noStyle
             shouldUpdate={(prev, cur) =>
               prev.is_cascade !== cur.is_cascade ||
+              prev.cascade_engine !== cur.cascade_engine ||
+              prev.crop_480p !== cur.crop_480p ||
+              prev.crop_timing !== cur.crop_timing ||
+              prev.crop_16_9 !== cur.crop_16_9 ||
+              prev.crop_9_16 !== cur.crop_9_16 ||
               RES_MUL_KEYS.some((k) => prev?.res_enhance?.[k] !== cur?.res_enhance?.[k])
             }
           >
-            {({ getFieldValue }) => getFieldValue('is_cascade') ? (
-              <>
-              <Form.Item
-                name="crop_480p"
-                label={<Space>720p←480 裁剪 <Popover content={<div style={{ maxWidth: 300 }}>仅当目标分辨率为 720p 且阶段一座底为 480p 时生效：开启则 MediaKit 居中裁成标准 480p 再超分；关闭则直接用底座原片。其它分辨率（480p/1080p/2k/4k）不受此开关影响。缺省开启以兼容现网。</div>}><QuestionCircleOutlined /></Popover></Space>}
-                valuePropName="checked"
-                initialValue={true}
-              >
-                <Switch />
-              </Form.Item>
-              <Form.Item
-                label={<Space>级联分辨率配置 <Popover content={<div style={{ maxWidth: 320 }}>每档可设：倍率、增强（默认标准；大模型仅 720p/1080p/2k）、场景（仅标准版，默认 common）、底座（默认一级；480p 锁定 480p，720p 可选 480p/720p，1080p 可选 720p/480p/1080p；2k/4k 不变）。阶段二成功：有 usage 时 tokens×倍率，否则底座费用×倍率。</div>}><QuestionCircleOutlined /></Popover></Space>}
-                style={{ marginBottom: 8 }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {RES_MUL_KEYS.map((k) => (
-                    <Space key={k} wrap size="middle" align="start">
-                      <Text strong style={{ width: 48, display: 'inline-block', lineHeight: '32px' }}>{k}</Text>
-                      <Form.Item name={['res_mul', k]} label="倍率" style={{ marginBottom: 0 }} rules={[{ required: true }]}>
-                        <InputNumber min={0.01} step={0.1} precision={2} style={{ width: 88 }} />
+            {({ getFieldValue }) => {
+              if (!getFieldValue('is_cascade')) return null;
+              const isTencent = hasTencentEnhance && (getFieldValue('cascade_engine') === 'tencent' || !hasVolcEnhance);
+              return (
+                <>
+                  <Form.Item
+                    name="cascade_engine"
+                    label={<Space>阶段二 <Popover content="只显示已启用的增强插件。缺省火山 MediaKit，与现网规则一致。选腾讯云增强则阶段二走媒体处理(MPS)，裁剪也走媒体处理转码，不依赖火山。"><QuestionCircleOutlined /></Popover></Space>}
+                    initialValue={hasVolcEnhance ? 'volc' : 'tencent'}
+                  >
+                    <Radio.Group
+                      buttonStyle="solid"
+                      onChange={(e) => syncCrop(e.target.value, undefined)}
+                    >
+                      {hasVolcEnhance && <Radio.Button value="volc">火山 MediaKit</Radio.Button>}
+                      {hasTencentEnhance && <Radio.Button value="tencent">腾讯云增强</Radio.Button>}
+                    </Radio.Group>
+                  </Form.Item>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={
+                      isTencent
+                        ? '阶段二走腾讯云媒体处理(MPS)，裁剪与抽尾帧也走媒体处理。'
+                        : '阶段二走火山 MediaKit，请确保增强模型与渠道已配置。'
+                    }
+                  />
+                  <>
+                      <Form.Item
+                        name="crop_480p"
+                        label={<Space>720p←480 裁剪 <Popover content={<div style={{ maxWidth: 320 }}>仅目标 720p 且底座 480p 时生效。开：按时机裁到标准画布；关：原片直接增强。其它分辨率不影响。缺省开。火山 MediaKit，腾讯媒体处理转码。</div>}><QuestionCircleOutlined /></Popover></Space>}
+                        valuePropName="checked"
+                        initialValue={true}
+                      >
+                        <Switch />
                       </Form.Item>
-                      <Form.Item name={['res_enhance', k]} label="增强" style={{ marginBottom: 0 }}>
-                        <Select style={{ width: 100 }} options={enhanceSelectOpts(k)} />
-                      </Form.Item>
-                      {getFieldValue(['res_enhance', k]) === 'standard' ? (
-                        <Form.Item name={['res_scene', k]} label="场景" style={{ marginBottom: 0 }}>
-                          <Select style={{ width: 128 }} options={SCENE_SELECT} />
-                        </Form.Item>
-                      ) : null}
-                      <Form.Item name={['res_base', k]} label="底座" style={{ marginBottom: 0 }} rules={[{ required: true }]}>
-                        <Select
-                          style={{ width: 100 }}
-                          disabled={BASE_OPTIONS[k].length <= 1}
-                          options={BASE_OPTIONS[k].map((b) => ({ value: b, label: b }))}
-                        />
-                      </Form.Item>
-                    </Space>
-                  ))}
-                </div>
-              </Form.Item>
-              </>
-            ) : null}
+                      {getFieldValue('crop_480p') !== false && (
+                        <>
+                          <Form.Item
+                            name="crop_timing"
+                            label={<Space>裁剪时机 <Popover content={<div style={{ maxWidth: 320 }}>仅 16:9 / 9:16。<br/><b>增强前 (480p)</b>：先裁成标准 480p 再增强（如 Seedance 2.0）。<br/><b>增强后 (720p)</b>：增强完再裁成标准 720p（如 Seedance 2.5 多 2 像素）。缺省增强前。火山与腾讯共用。</div>}><QuestionCircleOutlined /></Popover></Space>}
+                            initialValue="pre"
+                          >
+                            <Radio.Group
+                              buttonStyle="solid"
+                              onChange={(e) => syncCrop(undefined, e.target.value)}
+                            >
+                              <Radio.Button value="pre">增强前 (480p)</Radio.Button>
+                              <Radio.Button value="post">增强后 (720p)</Radio.Button>
+                            </Radio.Group>
+                          </Form.Item>
+                          <Form.Item
+                            label={<Space>裁剪坐标 (X1, Y1, X2, Y2) <Popover content={<div style={{ maxWidth: 320 }}>左上X, 左上Y, 右下X, 右下Y。火山按此矩形抠图；腾讯按此算出画布并复用插件里同比例模板。<br/><b>火山增强前默认</b>：16:9 <code>2, 6, 862, 490</code>；9:16 <code>6, 2, 490, 862</code>。<br/><b>腾讯增强前默认</b>：16:9 <code>0, 5, 864, 491</code>；9:16 <code>5, 0, 491, 864</code>。<br/>增强后默认：16:9 <code>1, 0, 1281, 720</code>；9:16 <code>0, 1, 720, 1281</code>。</div>}><QuestionCircleOutlined /></Popover></Space>}
+                            style={{ marginBottom: 12 }}
+                          >
+                            <Space direction="vertical" style={{ width: '100%' }}>
+                              {(() => {
+                                const renderCropStatus = (ratio: '16:9' | '9:16') => {
+                                  if (!isTencent) return null;
+                                  const timing = getFieldValue('crop_timing') || 'pre';
+                                  const val = getFieldValue(ratio === '16:9' ? 'crop_16_9' : 'crop_9_16');
+                                  const key = cropCanvasKey(val || cropDefault('tencent', timing, ratio));
+                                  const defId = key ? tencentCropTemplates[key] : null;
+                                  return defId ? (
+                                    <Tag color="success">{key} 模板已建 (#{defId})</Tag>
+                                  ) : (
+                                    <Space size={4}>
+                                      <Text type="secondary" style={{ fontSize: 12 }}>{key || '当前规格'}未建模板</Text>
+                                      <Button
+                                        size="small"
+                                        type="link"
+                                        href={`/${adminPath}/plugins/tencent_enhance/config#te_config`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ padding: 0, fontSize: 12 }}
+                                      >
+                                        去插件中心创建
+                                      </Button>
+                                    </Space>
+                                  );
+                                };
+                                return (
+                                  <>
+                                    <Space align="center" wrap>
+                                      <Text style={{ width: 44, color: '#888' }}>16:9</Text>
+                                      <Form.Item name="crop_16_9" noStyle>
+                                        <Input style={{ width: 220 }} placeholder={cropDefault(getFieldValue('cascade_engine'), getFieldValue('crop_timing') || 'pre', '16:9')} />
+                                      </Form.Item>
+                                      {renderCropStatus('16:9')}
+                                    </Space>
+                                    <Space align="center" wrap>
+                                      <Text style={{ width: 44, color: '#888' }}>9:16</Text>
+                                      <Form.Item name="crop_9_16" noStyle>
+                                        <Input style={{ width: 220 }} placeholder={cropDefault(getFieldValue('cascade_engine'), getFieldValue('crop_timing') || 'pre', '9:16')} />
+                                      </Form.Item>
+                                      {renderCropStatus('9:16')}
+                                    </Space>
+                                  </>
+                                );
+                              })()}
+                              <Button
+                                size="small"
+                                type="link"
+                                style={{ padding: 0, fontSize: 12, height: 'auto', alignSelf: 'flex-start' }}
+                                onClick={() => syncCrop()}
+                              >
+                                恢复当前引擎默认坐标
+                              </Button>
+                            </Space>
+                          </Form.Item>
+                        </>
+                      )}
+                    </>
+                  <Form.Item
+                    label={<Space>级联分辨率配置 <Popover content={<div style={{ maxWidth: 320 }}>每档可设：倍率、增强（默认标准；大模型仅 720p/1080p/2k）、场景（仅标准版，默认 common）、底座（默认一级；480p 锁定 480p，720p 可选 480p/720p，1080p 可选 720p/480p/1080p；2k/4k 不变）。阶段二成功：有 usage 时 tokens×倍率，否则底座费用×倍率。</div>}><QuestionCircleOutlined /></Popover></Space>}
+                    style={{ marginBottom: 8 }}
+                  >
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {RES_MUL_KEYS.map((k) => (
+                        <Space key={k} wrap size="middle" align="start">
+                          <Text strong style={{ width: 48, display: 'inline-block', lineHeight: '32px' }}>{k}</Text>
+                          <Form.Item name={['res_mul', k]} label="倍率" style={{ marginBottom: 0 }} rules={[{ required: true }]}>
+                            <InputNumber min={0.01} step={0.1} precision={2} style={{ width: 88 }} />
+                          </Form.Item>
+                          {!isTencent && (
+                            <>
+                              <Form.Item name={['res_enhance', k]} label="增强" style={{ marginBottom: 0 }}>
+                                <Select style={{ width: 100 }} options={enhanceSelectOpts(k)} />
+                              </Form.Item>
+                              {getFieldValue(['res_enhance', k]) === 'standard' ? (
+                                <Form.Item name={['res_scene', k]} label="场景" style={{ marginBottom: 0 }}>
+                                  <Select style={{ width: 128 }} options={SCENE_SELECT} />
+                                </Form.Item>
+                              ) : null}
+                            </>
+                          )}
+                          <Form.Item name={['res_base', k]} label="底座" style={{ marginBottom: 0 }} rules={[{ required: true }]}>
+                            <Select
+                              style={{ width: 100 }}
+                              disabled={BASE_OPTIONS[k].length <= 1}
+                              options={BASE_OPTIONS[k].map((b) => ({ value: b, label: b }))}
+                            />
+                          </Form.Item>
+                        </Space>
+                      ))}
+                    </div>
+                  </Form.Item>
+                </>
+              );
+            }}
           </Form.Item>
+          </>
+          )}
 
           <Form.Item name="config_json" label="JSON 引擎路由协议参数配置 (核心)" rules={[{ required: true }]}>
             <TextArea
               style={{ fontFamily: 'monospace', fontSize: 13, background: '#1e1e1e', color: '#d4d4d4', padding: 12 }}
               rows={10}
-              placeholder={'{\n  "target_type": "volcengine",\n  "path_rewrite": {"old": "/v1/video/generations", "new": "/api/v3/contents/generations/tasks"},\n  "auth_type": "bearer"\n}'}
+              placeholder={'{\n  "target_type": "minimax_video",\n  "path_rewrites": [\n    {"old": "/v1/video/generations", "new": "/minimax/v2/video_generation/tpl-3"}\n  ],\n  "auth_type": "bearer",\n  "poll_path": "/minimax/query/${task_id}"\n}'}
             />
           </Form.Item>
 

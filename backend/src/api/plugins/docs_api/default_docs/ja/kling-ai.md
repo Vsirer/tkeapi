@@ -5,7 +5,6 @@ Kling AI は、非常に高い水準の動画画質とモーションコント�
 ### 1. 動画モデル API
 * **テキストからの動画生成 (Text to Video)**: `/v1/videos/text2video` (`POST`)
 * **画像からの動画生成 (Image to Video)**: `/v1/videos/image2video` (`POST`)
-* **複数画像からの動画生成 (Multi-Image to Video)**: `/v1/videos/multi-image2video` (`POST`)
 * **Omni 動画参照からの動画生成**: `/v1/videos/omni-video` (`POST`)
 * **タスクステータス確認**: `/v1/videos/{endpoint}/{task_id}` (`GET`)
 
