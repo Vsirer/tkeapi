@@ -21,7 +21,7 @@ const MODEL_FEATURES: ModelFeature[] = [
   { key: 'edit-mask', label: '蒙版', kind: 'image' },
   { key: 'edit-bbox', label: '坐标框', kind: 'image' },
   { key: 'upscale-image', label: '放大图片', kind: 'image' },
-  { key: 'reference-i2v', label: '全能参考生视频', kind: 'video' },
+  { key: 'reference-i2v', label: '参考生视频', kind: 'video' },
   { key: 'text-to-video', label: '文生视频', kind: 'video' },
   { key: 'image-to-video', label: '图生视频', kind: 'video' },
   { key: 'starting-frame', label: '首尾帧生视频', kind: 'video' },

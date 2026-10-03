@@ -142,11 +142,7 @@ export function navIdFromPath(path: string): UserNavModuleId | null {
 
 export function userNavFromStorageStats(storageStats: any): UserNavModule[] {
   if (!storageStats) {
-    return NAV_DEFS.map((d) => ({
-      id: d.id,
-      enabled: false,
-      title: '',
-    }));
+    return defaultUserNavModules();
   }
   return normalizeUserNavModules(storageStats.user_nav_modules, {
     audioEnabled: storageStats.audio_enabled,

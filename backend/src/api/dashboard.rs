@@ -22,10 +22,28 @@ use std::time::Duration;
 pub const DASHBOARD_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 /// 清理扫描间隔
 pub const DASHBOARD_CACHE_CLEANUP_INTERVAL_SECS: u64 = 300;
+/// 看板 SWR 缓存有效时长。与前端自动刷新间隔一致，避免每次轮询都重扫 logs。
+pub const DASHBOARD_SWR_TTL: Duration = Duration::from_secs(180);
 
 /// 剔除超过 TTL 的看板缓存 key
 pub fn cleanup_stale_dashboard_cache(
     cache: &dashmap::DashMap<String, crate::DashboardCacheEntry>,
+    ttl: Duration,
+) -> usize {
+    let stale_keys: Vec<String> = cache
+        .iter()
+        .filter(|entry| entry.timestamp.elapsed() >= ttl)
+        .map(|entry| entry.key().clone())
+        .collect();
+    let n = stale_keys.len();
+    for key in stale_keys {
+        cache.remove(&key);
+    }
+    n
+}
+
+fn cleanup_stale_model_trend_cache(
+    cache: &dashmap::DashMap<String, ModelTrendCacheEntry>,
     ttl: Duration,
 ) -> usize {
     let stale_keys: Vec<String> = cache
@@ -53,8 +71,16 @@ pub async fn run_dashboard_cache_cleanup_loop(
         tokio::select! {
             _ = interval.tick() => {
                 let removed = cleanup_stale_dashboard_cache(&state.dashboard_cache, DASHBOARD_CACHE_TTL);
-                if removed > 0 {
-                    tracing::info!("[DashboardCache] 已清理 {} 条过期缓存", removed);
+                let removed_trend = cleanup_stale_model_trend_cache(
+                    &state.model_trend_cache,
+                    DASHBOARD_CACHE_TTL,
+                );
+                if removed > 0 || removed_trend > 0 {
+                    tracing::info!(
+                        "[DashboardCache] 已清理 {} 条概览缓存、{} 条用量趋势缓存",
+                        removed,
+                        removed_trend
+                    );
                 }
             }
             _ = shutdown.changed() => {
@@ -69,6 +95,8 @@ pub async fn run_dashboard_cache_cleanup_loop(
 pub struct DashboardParams {
     pub start_date: Option<String>,
     pub end_date: Option<String>,
+    /// 手动刷新：跳过缓存，同步重算后写回。
+    pub refresh: Option<bool>,
 }
 
 /// 看板首屏：统计走 SWR 缓存，实时吞吐每次现算（不进缓存）
@@ -120,65 +148,84 @@ pub async fn get_stats(
         )
     };
 
-    // Stale-While-Revalidate (SWR) 缓存验证机制：用户打开控制台秒级无感载入
-    if let Some(entry) = state.dashboard_cache.get(&cache_key) {
-        let elapsed = entry.timestamp.elapsed();
-        if elapsed < std::time::Duration::from_secs(180) {
-            return Ok(Json(with_live_metrics(entry.stats.clone(), &claims)));
-        } else {
-            // 缓存已过期，释放读锁，尝试通过写锁抢占“重算令牌”以防止并发击穿
-            drop(entry);
+    let force_refresh = params.refresh.unwrap_or(false);
 
-            if let Some(mut write_entry) = state.dashboard_cache.get_mut(&cache_key) {
-                if write_entry.timestamp.elapsed() >= std::time::Duration::from_secs(180) {
-                    // 更新时间戳，延长生命周期防止并发请求重复触发后台计算
-                    write_entry.timestamp = std::time::Instant::now();
-
-                    let state_clone = state.clone();
-                    let cache_key_clone = cache_key.clone();
-                    let params_clone = params.clone();
-                    let user_id_clone = user_id.to_string();
-                    let is_admin_clone = is_admin;
-                    let tz_clone = tz.clone();
-
-                    tokio::spawn(async move {
-                        match calculate_dashboard_stats(
-                            state_clone.clone(),
-                            is_admin_clone,
-                            &user_id_clone,
-                            params_clone,
-                            tz_clone,
-                        )
-                        .await
-                        {
-                            Ok(new_stats) => {
-                                state_clone.dashboard_cache.insert(
-                                    cache_key_clone.clone(),
-                                    crate::DashboardCacheEntry {
-                                        stats: new_stats,
-                                        timestamp: std::time::Instant::now(),
-                                    },
-                                );
-                                tracing::info!(
-                                    "✅ [SWR] 后台异步更新控制台仪表盘缓存成功: {}",
-                                    cache_key_clone
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "❌ [SWR] 后台异步更新控制台仪表盘缓存失败: {:?}, key: {}",
-                                    e,
-                                    cache_key_clone
-                                );
-                            }
-                        }
-                    });
-                }
-            }
-
-            // 立即返回缓存中的旧数据，完全消灭等待数据库查询的卡顿
-            if let Some(entry) = state.dashboard_cache.get(&cache_key) {
+    // Stale-While-Revalidate：有效期内直接返回。过期则先回旧数据，后台重算。
+    // 手动刷新不走这条路径。
+    if !force_refresh {
+        if let Some(entry) = state.dashboard_cache.get(&cache_key) {
+            let elapsed = entry.timestamp.elapsed();
+            if elapsed < DASHBOARD_SWR_TTL {
                 return Ok(Json(with_live_metrics(entry.stats.clone(), &claims)));
+            } else {
+                drop(entry);
+
+                if let Some(mut write_entry) = state.dashboard_cache.get_mut(&cache_key) {
+                    if write_entry.timestamp.elapsed() >= DASHBOARD_SWR_TTL {
+                        let previous_timestamp = write_entry.timestamp;
+                        let claim_timestamp = std::time::Instant::now();
+                        write_entry.timestamp = claim_timestamp;
+                        drop(write_entry);
+
+                        let state_clone = state.clone();
+                        let cache_key_clone = cache_key.clone();
+                        let params_clone = params.clone();
+                        let user_id_clone = user_id.to_string();
+                        let is_admin_clone = is_admin;
+                        let tz_clone = tz;
+
+                        tokio::spawn(async move {
+                            match calculate_dashboard_stats(
+                                state_clone.clone(),
+                                is_admin_clone,
+                                &user_id_clone,
+                                params_clone,
+                                tz_clone,
+                            )
+                            .await
+                            {
+                                Ok(new_stats) => {
+                                    let newer_landed = state_clone
+                                        .dashboard_cache
+                                        .get(&cache_key_clone)
+                                        .is_some_and(|entry| entry.timestamp > claim_timestamp);
+                                    if newer_landed {
+                                        return;
+                                    }
+                                    state_clone.dashboard_cache.insert(
+                                        cache_key_clone.clone(),
+                                        crate::DashboardCacheEntry {
+                                            stats: new_stats,
+                                            timestamp: std::time::Instant::now(),
+                                        },
+                                    );
+                                    tracing::info!(
+                                        "✅ [SWR] 后台异步更新控制台仪表盘缓存成功: {}",
+                                        cache_key_clone
+                                    );
+                                }
+                                Err(e) => {
+                                    if let Some(mut failed) =
+                                        state_clone.dashboard_cache.get_mut(&cache_key_clone)
+                                    {
+                                        if failed.timestamp == claim_timestamp {
+                                            failed.timestamp = previous_timestamp;
+                                        }
+                                    }
+                                    tracing::warn!(
+                                        "❌ [SWR] 后台异步更新控制台仪表盘缓存失败: {:?}, key: {}",
+                                        e,
+                                        cache_key_clone
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+
+                if let Some(entry) = state.dashboard_cache.get(&cache_key) {
+                    return Ok(Json(with_live_metrics(entry.stats.clone(), &claims)));
+                }
             }
         }
     }
@@ -194,6 +241,18 @@ pub async fn get_stats(
     );
 
     Ok(Json(with_live_metrics(stats, &claims)))
+}
+
+/// 每日汇总是否已经写下这一天。有记录就走汇总表，避免重复扫 logs。
+async fn usage_daily_stat_ready(state: &AppState, day: chrono::NaiveDate) -> bool {
+    let sql = state
+        .db
+        .format_query("SELECT EXISTS(SELECT 1 FROM usage_daily_stats WHERE stat_date = ?)");
+    sqlx::query_scalar::<_, bool>(&sql)
+        .bind(day)
+        .fetch_one(&state.db.pool)
+        .await
+        .unwrap_or(false)
 }
 
 async fn query_aggregated_data_helper(
@@ -293,6 +352,103 @@ async fn query_aggregated_data_helper(
     Ok((total_requests, total_tokens, total_cost, active_tokens))
 }
 
+/// 同一段 logs 同时拿出按模型合计和全段合计（含去重令牌数），避免当天热表扫两遍。
+async fn query_logs_rollup(
+    state: &Arc<AppState>,
+    is_admin: bool,
+    user_id: &str,
+    slices: &crate::api::date_helper::QueryTimeSlice,
+) -> AppResult<(
+    std::collections::HashMap<String, (i64, f64, i64)>,
+    i64,
+    i64,
+    f64,
+    i64,
+)> {
+    #[derive(sqlx::FromRow)]
+    struct RollupRow {
+        model: Option<String>,
+        count: i64,
+        tokens: i64,
+        cost: f64,
+        distinct_tokens: i64,
+        is_total: bool,
+    }
+
+    let mut model_map = std::collections::HashMap::new();
+    let mut total_requests = 0i64;
+    let mut total_tokens = 0i64;
+    let mut total_cost = 0.0f64;
+    let mut active_tokens = 0i64;
+
+    for r_slice in slices.realtime_slices() {
+        let sql = if is_admin {
+            format!(
+                "SELECT model, \
+                 COUNT(*)::bigint AS count, \
+                 (COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0))::bigint AS tokens, \
+                 COALESCE(SUM(cost), 0)::float8 AS cost, \
+                 COUNT(DISTINCT token_id)::bigint AS distinct_tokens, \
+                 (GROUPING(model) = 1) AS is_total \
+                 FROM logs WHERE {} \
+                 GROUP BY GROUPING SETS ((model), ())",
+                r_slice.sql_cond("created_at")
+            )
+        } else {
+            format!(
+                "SELECT model, \
+                 COUNT(*)::bigint AS count, \
+                 (COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0))::bigint AS tokens, \
+                 COALESCE(SUM(cost), 0)::float8 AS cost, \
+                 COUNT(DISTINCT token_id)::bigint AS distinct_tokens, \
+                 (GROUPING(model) = 1) AS is_total \
+                 FROM logs WHERE user_id = ? AND {} \
+                 GROUP BY GROUPING SETS ((model), ())",
+                r_slice.sql_cond("created_at")
+            )
+        };
+        let formatted = state.db.format_query(&sql);
+        let rows: Vec<RollupRow> = if is_admin {
+            sqlx::query_as(&formatted)
+                .bind(&r_slice.start)
+                .bind(&r_slice.end)
+                .fetch_all(&state.db.pool)
+                .await?
+        } else {
+            sqlx::query_as(&formatted)
+                .bind(user_id)
+                .bind(&r_slice.start)
+                .bind(&r_slice.end)
+                .fetch_all(&state.db.pool)
+                .await?
+        };
+        for row in rows {
+            if row.is_total {
+                total_requests += row.count;
+                total_tokens += row.tokens;
+                total_cost += row.cost;
+                active_tokens = active_tokens.max(row.distinct_tokens);
+                continue;
+            }
+            let Some(model) = row.model else {
+                continue;
+            };
+            let entry = model_map.entry(model).or_insert((0i64, 0.0f64, 0i64));
+            entry.0 += row.count;
+            entry.1 += row.cost;
+            entry.2 += row.tokens;
+        }
+    }
+
+    Ok((
+        model_map,
+        total_requests,
+        total_tokens,
+        total_cost,
+        active_tokens,
+    ))
+}
+
 /// 采用 Lambda 增量聚合架构（历史汇总表 + 今日日志表分段合并）的高性能控制台统计函数
 async fn calculate_dashboard_stats(
     state: Arc<AppState>,
@@ -329,8 +485,23 @@ async fn calculate_dashboard_stats(
     );
     let today_slices =
         crate::api::date_helper::calculate_query_slices(Some(&today_str), Some(&today_str), tz);
-    let (today_requests, today_tokens, today_cost, today_active_tokens) =
-        query_aggregated_data_helper(&state, is_admin, user_id, &today_slices).await?;
+    let detail_days = crate::api::date_helper::model_detail_days(
+        if params.end_date.is_some() {
+            Some(end_naive)
+        } else {
+            None
+        },
+        today_date,
+    );
+    let need_today_models = slices.has_today || detail_days.iter().any(|d| *d == today_date);
+    let (today_model_map, today_requests, today_tokens, today_cost, today_active_tokens) =
+        if need_today_models {
+            query_logs_rollup(&state, is_admin, user_id, &today_slices).await?
+        } else {
+            let (reqs, tokens, cost, active) =
+                query_aggregated_data_helper(&state, is_admin, user_id, &today_slices).await?;
+            (std::collections::HashMap::new(), reqs, tokens, cost, active)
+        };
     let hist_only = slices.excluding_today();
     let (mut total_requests, mut total_tokens, mut total_cost, _) =
         query_aggregated_data_helper(&state, is_admin, user_id, &hist_only).await?;
@@ -372,15 +543,42 @@ async fn calculate_dashboard_stats(
         .await?
     };
 
-    // 2. 昨日数据（归档表，不含今日 logs）
+    // 2. 昨日：汇总表已有该日则走表；零点到每日汇总完成前才回查 logs
     let yesterday_str = yesterday_date.format("%Y-%m-%d").to_string();
-    let yesterday_slices = crate::api::date_helper::calculate_query_slices(
-        Some(&yesterday_str),
-        Some(&yesterday_str),
-        tz,
-    );
-    let (yesterday_requests, yesterday_tokens, yesterday_cost, yesterday_active_tokens) =
-        query_aggregated_data_helper(&state, is_admin, user_id, &yesterday_slices).await?;
+    let yesterday_archived = usage_daily_stat_ready(&state, yesterday_date).await;
+    let yesterday_slices = if yesterday_archived {
+        crate::api::date_helper::calculate_query_slices(
+            Some(&yesterday_str),
+            Some(&yesterday_str),
+            tz,
+        )
+    } else {
+        crate::api::date_helper::logs_calendar_day_slice(yesterday_date, tz)
+    };
+    let need_yesterday_models = detail_days.iter().any(|d| *d == yesterday_date);
+    let (
+        yesterday_model_map,
+        yesterday_requests,
+        yesterday_tokens,
+        yesterday_cost,
+        yesterday_active_tokens,
+    ) = if need_yesterday_models && !yesterday_archived {
+        query_logs_rollup(&state, is_admin, user_id, &yesterday_slices).await?
+    } else {
+        let (reqs, tokens, cost, active) =
+            query_aggregated_data_helper(&state, is_admin, user_id, &yesterday_slices).await?;
+        let map = if need_yesterday_models {
+            crate::relay::usage_stats::query_model_stats_by_slices(
+                &state.db,
+                if is_admin { None } else { Some(user_id) },
+                &yesterday_slices,
+            )
+            .await?
+        } else {
+            std::collections::HashMap::new()
+        };
+        (map, reqs, tokens, cost, active)
+    };
 
     let mut date_where = String::new();
     let mut recent_binds = Vec::new();
@@ -406,7 +604,7 @@ async fn calculate_dashboard_stats(
         );
     }
 
-    // 最近活动：不选 TOAST 大字段，避免 LIMIT 10 仍读 request/response
+    // 最近活动：不选 TOAST 大字段，避免读 request/response
     const RECENT_LOG_COLS: &str = "l.id, l.user_id, l.channel_id, l.token_id, l.model, \
          l.prompt_tokens, l.completion_tokens, l.cached_tokens, l.cost, l.latency_ms, \
          l.status_code, l.endpoint, l.error_message, l.created_at, \
@@ -444,27 +642,8 @@ async fn calculate_dashboard_stats(
         }
     }
 
-    // 4. 各模型统计：今日 logs GROUP BY 只查一次，筛选合计与明细共用
+    // 4. 各模型统计：今日合计已从同一次 logs 汇总取出
     let user_filter = if is_admin { None } else { Some(user_id) };
-    let detail_days = crate::api::date_helper::model_detail_days(
-        if params.end_date.is_some() {
-            Some(end_naive)
-        } else {
-            None
-        },
-        today_date,
-    );
-    let need_today_models = slices.has_today || detail_days.iter().any(|d| *d == today_date);
-    let today_model_map = if need_today_models {
-        crate::relay::usage_stats::query_model_stats_by_slices(
-            &state.db,
-            user_filter,
-            &today_slices,
-        )
-        .await?
-    } else {
-        std::collections::HashMap::new()
-    };
     let mut model_map =
         crate::relay::usage_stats::query_model_stats_by_slices(&state.db, user_filter, &hist_only)
             .await?;
@@ -490,7 +669,7 @@ async fn calculate_dashboard_stats(
 
     let top_10_models: Vec<(String, f64, i64, i64)> = top_models_all.into_iter().take(10).collect();
 
-    // 4.3 模型明细近几日：历史日走归档；当日复用上面的 today_model_map
+    // 4.3 模型明细近几日：前日及更早走归档，昨日与当日走 logs
     let mut stats_by_date: std::collections::HashMap<
         String,
         std::collections::HashMap<String, (i64, f64, i64)>,
@@ -499,7 +678,7 @@ async fn calculate_dashboard_stats(
     let hist_days: Vec<_> = detail_days
         .iter()
         .copied()
-        .filter(|d| *d < today_date)
+        .filter(|d| *d < yesterday_date)
         .collect();
     if let (Some(hist_start), Some(hist_end)) = (hist_days.first(), hist_days.last()) {
         let hist_map = crate::relay::usage_stats::query_model_daily_stats_history(
@@ -510,6 +689,10 @@ async fn calculate_dashboard_stats(
         )
         .await?;
         stats_by_date.extend(hist_map);
+    }
+
+    if need_yesterday_models {
+        stats_by_date.insert(yesterday_str.clone(), yesterday_model_map);
     }
 
     if detail_days.iter().any(|d| *d == today_date) {
@@ -570,8 +753,9 @@ async fn calculate_dashboard_stats(
         std::collections::HashMap::new();
 
     // 5.1 历史统计趋势
-    let hist_trends: Vec<TrendHistRaw> = if trend_start_date <= yesterday_date {
-        let actual_hist_end = yesterday_date.min(trend_end_date);
+    let archive_trend_end = (yesterday_date - Duration::days(1)).min(trend_end_date);
+    let hist_trends: Vec<TrendHistRaw> = if trend_start_date <= archive_trend_end {
+        let actual_hist_end = archive_trend_end;
         if is_admin {
             sqlx::query_as(&state.db.format_query(
                 "SELECT stat_date::text as date, CAST(SUM(total_requests) AS BIGINT) as requests, SUM(total_cost) as cost \
@@ -600,6 +784,10 @@ async fn calculate_dashboard_stats(
 
     for row in hist_trends {
         trends_map.insert(row.date, (row.requests, row.cost));
+    }
+
+    if trend_start_date <= yesterday_date && trend_end_date >= yesterday_date {
+        trends_map.insert(yesterday_str.clone(), (yesterday_requests, yesterday_cost));
     }
 
     // 5.2 今日趋势（仅当结束日期范围包含今天时才合入今日实时数据）
@@ -645,7 +833,7 @@ async fn calculate_dashboard_stats(
     Ok(stats)
 }
 
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 
 pub struct ModelStat30d {
     pub model: String,
@@ -654,7 +842,7 @@ pub struct ModelStat30d {
     pub total_cost: f64,
 }
 
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct ModelDailyStat {
     pub date: String,
     pub model: String,
@@ -662,15 +850,52 @@ pub struct ModelDailyStat {
     pub total_cost: f64,
 }
 
-#[derive(Debug, serde::Serialize)]
+pub struct ModelTrendCacheEntry {
+    pub response: ModelTrend30dResponse,
+    pub timestamp: std::time::Instant,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelTrend30dResponse {
     pub top_models: Vec<ModelStat30d>,
     pub daily_data: Vec<ModelDailyStat>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ModelTrendParams {
+    pub days: Option<i64>,
+    pub limit: Option<i64>,
+    /// 用量趋势：前 N 名之外的模型按日合并为 `__other__`。分布页不传。
+    pub include_other: Option<bool>,
+}
+
+const USAGE_TREND_OTHER_MODEL: &str = "__other__";
+
+/// 趋势窗口起点相对今天的回看天数。
+/// 未传或非法值保持原接口：`today - 30`。
+/// 7 / 30 / 90 为闭区间：最近 7 天、最近 30 天、最近 90 天。
+fn trend_lookback_days(days: Option<i64>) -> i64 {
+    match days {
+        Some(7) => 6,
+        Some(30) => 29,
+        Some(90) => 89,
+        _ => 30,
+    }
+}
+
+/// 按成本返回的模型数。未传保持 30 天分布页的 12 个；用量趋势传 10。
+fn trend_model_limit(limit: Option<i64>) -> usize {
+    match limit {
+        Some(10) => 10,
+        Some(15) => 15,
+        _ => 12,
+    }
+}
+
 pub async fn get_model_stats_30d(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ModelTrendParams>,
     Extension(claims): Extension<auth::Claims>,
 ) -> AppResult<Json<ModelTrend30dResponse>> {
     let is_admin = claims.role == "admin";
@@ -685,9 +910,29 @@ pub async fn get_model_stats_30d(
             .await?;
 
     let bounds = crate::api::date_helper::get_timezone_time_bounds(tz);
+    let trend_cache_key = format!(
+        "trend:{}:{}:{}:{}:{}:{}",
+        if is_admin { "admin" } else { user_id },
+        tz.name(),
+        bounds.today,
+        query.days.unwrap_or(0),
+        query.limit.unwrap_or(0),
+        query.include_other.unwrap_or(false)
+    );
+    if let Some(hit) = state.model_trend_cache.get(&trend_cache_key) {
+        if hit.timestamp.elapsed() < DASHBOARD_SWR_TTL {
+            return Ok(Json(hit.response.clone()));
+        }
+    }
     let today_date = bounds.today;
     let yesterday_date = bounds.yesterday;
-    let trend_start_date = today_date - chrono::Duration::days(30);
+    let trend_start_date = today_date - chrono::Duration::days(trend_lookback_days(query.days));
+    let yesterday_archived = usage_daily_stat_ready(&state, yesterday_date).await;
+    let hist_end_date = if yesterday_archived {
+        yesterday_date
+    } else {
+        yesterday_date - chrono::Duration::days(1)
+    };
     let today_start_ts = bounds.today_start_ts;
 
     #[derive(Debug, sqlx::FromRow)]
@@ -713,7 +958,7 @@ pub async fn get_model_stats_30d(
         ",
         ))
         .bind(trend_start_date)
-        .bind(yesterday_date)
+        .bind(hist_end_date)
         .fetch_all(&state.db.pool)
         .await
         .unwrap_or_default()
@@ -732,7 +977,7 @@ pub async fn get_model_stats_30d(
         ))
         .bind(user_id)
         .bind(trend_start_date)
-        .bind(yesterday_date)
+        .bind(hist_end_date)
         .fetch_all(&state.db.pool)
         .await
         .unwrap_or_default()
@@ -776,6 +1021,20 @@ pub async fn get_model_stats_30d(
         .unwrap_or_default()
     };
 
+    let yesterday_str = yesterday_date.format("%Y-%m-%d").to_string();
+    let yesterday_models = if yesterday_archived {
+        std::collections::HashMap::new()
+    } else {
+        let yesterday_slices = crate::api::date_helper::logs_calendar_day_slice(yesterday_date, tz);
+        crate::relay::usage_stats::query_model_stats_by_slices(
+            &state.db,
+            if is_admin { None } else { Some(user_id.as_str()) },
+            &yesterday_slices,
+        )
+        .await
+        .unwrap_or_default()
+    };
+
     // 3. 内存合并并排序得到 top 10
     let mut merge_map: std::collections::HashMap<String, ModelStat30d> =
         std::collections::HashMap::new();
@@ -805,6 +1064,19 @@ pub async fn get_model_stats_30d(
         entry.total_tokens += row.total_tokens.unwrap_or(0);
         entry.total_cost += row.total_cost.unwrap_or(0.0);
     }
+    for (model, (count, cost, tokens)) in &yesterday_models {
+        let entry = merge_map
+            .entry(model.clone())
+            .or_insert_with(|| ModelStat30d {
+                model: model.clone(),
+                count: 0,
+                total_tokens: 0,
+                total_cost: 0.0,
+            });
+        entry.count += count;
+        entry.total_tokens += tokens;
+        entry.total_cost += cost;
+    }
 
     let mut all_models: Vec<ModelStat30d> = merge_map.into_values().collect();
     all_models.sort_by(|a, b| {
@@ -814,11 +1086,14 @@ pub async fn get_model_stats_30d(
             .then_with(|| b.count.cmp(&a.count))
     });
 
-    let top_models: Vec<ModelStat30d> = all_models.into_iter().take(10).collect();
+    let top_models: Vec<ModelStat30d> = all_models
+        .into_iter()
+        .take(trend_model_limit(query.limit))
+        .collect();
     let top_model_names: std::collections::HashSet<String> =
         top_models.iter().map(|s| s.model.clone()).collect();
 
-    // 4. 提取 top 10 模型的每日趋势
+    // 4. 提取按成本排序后的模型每日趋势
     #[derive(Debug, sqlx::FromRow)]
     struct ModelDailyRaw {
         date: String,
@@ -846,7 +1121,7 @@ pub async fn get_model_stats_30d(
             ",
             ))
             .bind(trend_start_date)
-            .bind(yesterday_date)
+            .bind(hist_end_date)
             .bind(&top_model_names_vec)
             .fetch_all(&state.db.pool)
             .await
@@ -866,7 +1141,7 @@ pub async fn get_model_stats_30d(
             ))
             .bind(user_id)
             .bind(trend_start_date)
-            .bind(yesterday_date)
+            .bind(hist_end_date)
             .bind(&top_model_names_vec)
             .fetch_all(&state.db.pool)
             .await
@@ -882,6 +1157,17 @@ pub async fn get_model_stats_30d(
             });
         }
 
+        for (model, (count, cost, _)) in &yesterday_models {
+            if top_model_names.contains(model) {
+                daily_data.push(ModelDailyStat {
+                    date: yesterday_str.clone(),
+                    model: model.clone(),
+                    count: *count,
+                    total_cost: *cost,
+                });
+            }
+        }
+
         let today_date_str = today_date.format("%Y-%m-%d").to_string();
         for row in &today_stats {
             if top_model_names.contains(&row.model) {
@@ -893,10 +1179,139 @@ pub async fn get_model_stats_30d(
                 });
             }
         }
+
+        if query.include_other.unwrap_or(false) {
+            #[derive(Debug, sqlx::FromRow)]
+            struct OtherDailyRaw {
+                date: String,
+                count: Option<i64>,
+                total_cost: Option<f64>,
+            }
+
+            let other_daily: Vec<OtherDailyRaw> = if is_admin {
+                sqlx::query_as(&state.db.format_query(
+                    "
+                    SELECT
+                        stat_date::text as date,
+                        CAST(SUM(total_requests) AS BIGINT) as count,
+                        SUM(total_cost) as total_cost
+                    FROM usage_daily_stats
+                    WHERE stat_date >= ? AND stat_date <= ? AND NOT (model = ANY(?))
+                    GROUP BY stat_date
+                ",
+                ))
+                .bind(trend_start_date)
+                .bind(hist_end_date)
+                .bind(&top_model_names_vec)
+                .fetch_all(&state.db.pool)
+                .await
+                .unwrap_or_default()
+            } else {
+                sqlx::query_as(&state.db.format_query(
+                    "
+                    SELECT
+                        stat_date::text as date,
+                        CAST(SUM(total_requests) AS BIGINT) as count,
+                        SUM(total_cost) as total_cost
+                    FROM usage_daily_stats
+                    WHERE user_id = ? AND stat_date >= ? AND stat_date <= ? AND NOT (model = ANY(?))
+                    GROUP BY stat_date
+                ",
+                ))
+                .bind(user_id)
+                .bind(trend_start_date)
+                .bind(hist_end_date)
+                .bind(&top_model_names_vec)
+                .fetch_all(&state.db.pool)
+                .await
+                .unwrap_or_default()
+            };
+
+            for row in other_daily {
+                let count = row.count.unwrap_or(0);
+                let total_cost = row.total_cost.unwrap_or(0.0);
+                if count == 0 && total_cost.abs() <= 0.0 {
+                    continue;
+                }
+                daily_data.push(ModelDailyStat {
+                    date: row.date,
+                    model: USAGE_TREND_OTHER_MODEL.to_string(),
+                    count,
+                    total_cost,
+                });
+            }
+
+            let mut yesterday_other_count = 0i64;
+            let mut yesterday_other_cost = 0.0;
+            for (model, (count, cost, _)) in &yesterday_models {
+                if top_model_names.contains(model) {
+                    continue;
+                }
+                yesterday_other_count += count;
+                yesterday_other_cost += cost;
+            }
+            if yesterday_other_count != 0 || yesterday_other_cost.abs() > 0.0 {
+                daily_data.push(ModelDailyStat {
+                    date: yesterday_str.clone(),
+                    model: USAGE_TREND_OTHER_MODEL.to_string(),
+                    count: yesterday_other_count,
+                    total_cost: yesterday_other_cost,
+                });
+            }
+
+            let mut today_other_count = 0i64;
+            let mut today_other_cost = 0.0;
+            for row in &today_stats {
+                if top_model_names.contains(&row.model) {
+                    continue;
+                }
+                today_other_count += row.count.unwrap_or(0);
+                today_other_cost += row.total_cost.unwrap_or(0.0);
+            }
+            if today_other_count != 0 || today_other_cost.abs() > 0.0 {
+                daily_data.push(ModelDailyStat {
+                    date: today_date_str,
+                    model: USAGE_TREND_OTHER_MODEL.to_string(),
+                    count: today_other_count,
+                    total_cost: today_other_cost,
+                });
+            }
+        }
     }
 
-    Ok(Json(ModelTrend30dResponse {
+    let response = ModelTrend30dResponse {
         top_models,
         daily_data,
-    }))
+    };
+    state.model_trend_cache.insert(
+        trend_cache_key,
+        ModelTrendCacheEntry {
+            response: response.clone(),
+            timestamp: std::time::Instant::now(),
+        },
+    );
+    Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{trend_lookback_days, trend_model_limit};
+
+    #[test]
+    fn trend_lookback_keeps_default_30_day_offset() {
+        assert_eq!(trend_lookback_days(None), 30);
+        assert_eq!(trend_lookback_days(Some(30)), 29);
+        assert_eq!(trend_lookback_days(Some(15)), 30);
+        assert_eq!(trend_lookback_days(Some(7)), 6);
+        assert_eq!(trend_lookback_days(Some(90)), 89);
+    }
+
+    #[test]
+    fn trend_model_limit_defaults_to_twelve() {
+        assert_eq!(trend_model_limit(None), 12);
+        assert_eq!(trend_model_limit(Some(12)), 12);
+        assert_eq!(trend_model_limit(Some(11)), 12);
+        assert_eq!(trend_model_limit(Some(10)), 10);
+        assert_eq!(trend_model_limit(Some(15)), 15);
+    }
 }

@@ -548,8 +548,19 @@ pub async fn simulate_channel_billing(
 
     let actual_cost = crate::money::round_money(cost_after_discount);
 
-    // 13. 预扣费冻结与差额退补
-    let pre_deducted = active_model.as_ref().map(|m| m.pre_deduction).unwrap_or(0.0);
+    // 13. 预扣费冻结与差额退补（对齐生产环境：视频分类模型按秒动态预扣，防止透支）
+    let is_video_model = active_model.as_ref().map_or(false, |m| {
+        m.type_name.as_deref().unwrap_or("").contains("视频")
+    }) || extracted_features.has_video;
+
+    let unit_pre = active_model.as_ref().map(|m| m.pre_deduction).unwrap_or(0.0);
+    let dur = extracted_features.duration_seconds.unwrap_or(5.0).max(1.0);
+    let (pre_deducted, is_by_second) = if is_video_model && unit_pre > 0.0 {
+        (crate::money::round_money(unit_pre * dur), true)
+    } else {
+        (crate::money::round_money(unit_pre), false)
+    };
+
     let refund_amount = if pre_deducted > actual_cost {
         crate::money::round_money(pre_deducted - actual_cost)
     } else {
@@ -599,24 +610,49 @@ pub async fn simulate_channel_billing(
 
     // Step 2: 预扣费冻结校验
     let pre_deduct_pass = user_context_balance >= pre_deducted;
-    steps.push(PipelineTraceStep {
-        step: 2,
-        stage: "pre_deduct".into(),
-        title: "预扣费冻结校验".into(),
-        formula: format!("预扣冻结: {:.6} {}", pre_deducted, c_unit),
-        description: if pre_deducted <= 0.0 {
-            "该模型未配置固定预扣金额，请求前免冻结直接透传".into()
-        } else if pre_deduct_pass {
+    let step2_formula = if is_by_second {
+        format!(
+            "按秒预扣冻结: {} {}/秒 × {:.0}秒 = {} {}",
+            crate::money::format_clean_money(unit_pre),
+            c_unit,
+            dur,
+            crate::money::format_clean_money(pre_deducted),
+            c_unit
+        )
+    } else {
+        format!("预扣冻结: {:.6} {}", pre_deducted, c_unit)
+    };
+    let step2_desc = if pre_deducted <= 0.0 {
+        "该模型未配置固定或按秒预扣金额，请求前免冻结直接透传".into()
+    } else if !pre_deduct_pass {
+        if is_by_second {
             format!(
-                "模拟用户钱包可用余额 {:.4} {} ≥ 预扣要求 {:.4} {}，预扣冻结校验通过",
-                user_context_balance, c_unit, pre_deducted, c_unit
+                "模拟用户可用余额 {:.4} {} 不足，无法满足按秒预扣要求 {:.4} {}（{} {}/秒 × {:.0}秒），线上将被拦截",
+                user_context_balance, c_unit, pre_deducted, c_unit, crate::money::format_clean_money(unit_pre), c_unit, dur
             )
         } else {
             format!(
                 "模拟用户可用余额 {:.4} {} 不足，无法满足预扣 {:.4} {}，线上将被拦截",
                 user_context_balance, c_unit, pre_deducted, c_unit
             )
-        },
+        }
+    } else if is_by_second {
+        format!(
+            "检测到当前为视频生成任务，系统严格执行「每秒预扣单价 × 视频时长」动态预扣机制。模拟用户钱包可用余额 {:.4} {} ≥ 预扣要求 {:.4} {}，预扣冻结校验通过",
+            user_context_balance, c_unit, pre_deducted, c_unit
+        )
+    } else {
+        format!(
+            "模拟用户钱包可用余额 {:.4} {} ≥ 预扣要求 {:.4} {}，预扣冻结校验通过",
+            user_context_balance, c_unit, pre_deducted, c_unit
+        )
+    };
+    steps.push(PipelineTraceStep {
+        step: 2,
+        stage: "pre_deduct".into(),
+        title: if is_by_second { "预扣费冻结校验 (按秒预扣)".into() } else { "预扣费冻结校验".into() },
+        formula: step2_formula,
+        description: step2_desc,
         value: Some(pre_deducted),
         status: if pre_deduct_pass { "pass".into() } else { "danger".into() },
     });
@@ -704,17 +740,18 @@ pub async fn simulate_channel_billing(
     });
 
     // Step 7: 最终结算与退补对账
+    let settlement_prefix = if is_by_second { "[按秒预扣结算] " } else { "[预扣结算] " };
     steps.push(PipelineTraceStep {
         step: 7,
         stage: "settlement".into(),
-        title: "最终结算与差额退补".into(),
-        formula: format!("实扣金额 = {:.6} {}（预扣差额: {}{:.6} {}）", actual_cost, c_unit, if refund_amount > 0.0 { "+" } else { "-" }, if refund_amount > 0.0 { refund_amount } else { additional_deduct }, c_unit),
+        title: if is_by_second { "最终结算与差额退补 (按秒结算)".into() } else { "最终结算与差额退补".into() },
+        formula: format!("{}实扣金额 = {:.6} {}（预扣差额: {}{:.6} {}）", settlement_prefix, actual_cost, c_unit, if refund_amount > 0.0 { "+" } else { "-" }, if refund_amount > 0.0 { refund_amount } else { additional_deduct }, c_unit),
         description: if refund_amount > 0.0 {
-            format!("预扣 {:.6} {} 大于实际结算消费，将向用户原路退回余额 {:.6} {}", pre_deducted, c_unit, refund_amount, c_unit)
+            format!("{}预扣 {:.6} {} 大于实际结算消费，将向用户原路退回余额 {:.6} {}", settlement_prefix, pre_deducted, c_unit, refund_amount, c_unit)
         } else if additional_deduct > 0.0 {
-            format!("实际结算金额超出预扣，将从用户余额中追加补扣 {:.6} {}", additional_deduct, c_unit)
+            format!("{}实际结算金额超出预扣，将从用户余额中追加补扣 {:.6} {}", settlement_prefix, additional_deduct, c_unit)
         } else {
-            "预扣金额与实际消费完全一致，无需额外退补".into()
+            format!("{}预扣金额与实际消费完全一致，无需额外退补", settlement_prefix)
         },
         value: Some(actual_cost),
         status: "normal".into(),

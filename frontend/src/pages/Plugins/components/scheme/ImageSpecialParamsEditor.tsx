@@ -8,6 +8,7 @@
 import React, { useMemo, useState } from 'react';
 import { Button, Input, Switch, Typography, Select, Tooltip } from 'antd';
 import { QuestionCircleOutlined, SettingOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import type { ImageSpecialParamsConfig, SchemeParam } from './types';
 import {
   associatedImageSizes,
@@ -26,27 +27,22 @@ type Props = {
   isLight: boolean;
 };
 
-const RATIO_LABELS: Record<string, string> = {
-  auto: '智能',
-};
-
-function optionLabel(opt: string): string {
-  return RATIO_LABELS[opt] || opt;
-}
-
-const IN_REQUEST_TIP =
-  '开启后，用户选中的值会随图片生成请求发给上游接口。关闭后页面仍可选择，但该字段不会写入请求体。';
-
 function optionsFirst(opts: string[] | undefined, fallback: string): string {
   return (opts && opts[0]) || fallback;
 }
 
 const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight }) => {
+  const { t } = useTranslation('playground_2026');
   const cfg = seedImageSpecialParams(value);
   const [mapOpen, setMapOpen] = useState(false);
   const muted = isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)';
   const cardBg = isLight ? '#fafafa' : '#1a1a1a';
   const cardBorder = isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)';
+
+  const optionLabel = (opt: string): string => {
+    if (opt === 'auto') return t('admin_isp_ratio_auto', '智能');
+    return opt;
+  };
 
   const patch = (next: ImageSpecialParamsConfig) => onChange({ ...cfg, ...next, enabled: true });
 
@@ -84,8 +80,8 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
         />
       </div>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Text style={{ fontSize: 12, color: muted, flexShrink: 0 }}>接口传参</Text>
-        <Tooltip title={IN_REQUEST_TIP}>
+        <Text style={{ fontSize: 12, color: muted, flexShrink: 0 }}>{t('admin_isp_in_request', '接口传参')}</Text>
+        <Tooltip title={t('admin_isp_in_request_tip', '开启后，用户选中的值会随图片生成请求发给上游接口。关闭后页面仍可选择，但该字段不会写入请求体。')}>
           <QuestionCircleOutlined style={{ fontSize: 13, color: muted, cursor: 'help' }} />
         </Tooltip>
         <Switch size="small" checked={inRequest} onChange={onInRequest} style={{ marginLeft: 10 }} />
@@ -96,12 +92,12 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Text style={{ fontSize: 12, color: muted }}>
-        每一项写入对应 Key。选定比例后，尺寸按当前分辨率填入对应宽高。
+        {t('admin_isp_header_desc', '每一项写入对应 Key。选定比例后，尺寸按当前分辨率填入对应宽高。')}
       </Text>
 
       <div style={{ background: cardBg, borderRadius: 8, padding: 14, border: cardBorder }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <Text strong>图片比例</Text>
+          <Text strong>{t('admin_isp_title_ratio', '图片比例')}</Text>
           <Switch
             size="small"
             checked={cfg.aspect_ratio?.enabled !== false}
@@ -132,7 +128,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
             </div>
             {(cfg.aspect_ratio?.options || []).filter(Boolean).length > 0 && (
             <div>
-              <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>默认比例</Text>
+              <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_default_ratio', '默认比例')}</Text>
               <Select
                 size="small"
                 style={{ width: 160 }}
@@ -151,7 +147,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
 
       <div style={{ background: cardBg, borderRadius: 8, padding: 14, border: cardBorder }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <Text strong>分辨率</Text>
+          <Text strong>{t('admin_isp_title_resolution', '分辨率')}</Text>
           <Switch
             size="small"
             checked={cfg.resolution?.enabled !== false}
@@ -181,7 +177,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
             </div>
             {(cfg.resolution?.options || []).filter(Boolean).length > 0 && (
             <div>
-              <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>默认分辨率</Text>
+              <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_default_resolution', '默认分辨率')}</Text>
               <Select
                 size="small"
                 style={{ width: 160 }}
@@ -197,7 +193,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
 
       <div style={{ background: cardBg, borderRadius: 8, padding: 14, border: cardBorder }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <Text strong>图片尺寸</Text>
+          <Text strong>{t('admin_isp_title_size', '图片尺寸')}</Text>
           <Switch
             size="small"
             checked={cfg.image_size?.enabled !== false}
@@ -222,15 +218,15 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                 marginBottom: 10,
               }}
             >
-              <Text style={{ fontSize: 12, color: muted }}>关联配置</Text>
+              <Text style={{ fontSize: 12, color: muted }}>{t('admin_isp_associated_config', '关联配置')}</Text>
               <Button size="small" icon={<SettingOutlined />} onClick={() => setMapOpen(true)}>
-                配置
+                {t('admin_isp_btn_config', '配置')}
               </Button>
             </div>
             {associated.length > 0 ? (
               <ImageSpecialOptionTags readOnly options={associated} isLight={isLight} />
             ) : (
-              <Text style={{ fontSize: 12, color: muted }}>尚未关联尺寸，请点击配置</Text>
+              <Text style={{ fontSize: 12, color: muted }}>{t('admin_isp_no_associated', '尚未关联尺寸，请点击配置')}</Text>
             )}
             <div
               style={{
@@ -242,7 +238,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                 marginBottom: 10,
               }}
             >
-              <Text style={{ fontSize: 12, color: muted }}>指定宽高</Text>
+              <Text style={{ fontSize: 12, color: muted }}>{t('admin_isp_custom_wh', '指定宽高')}</Text>
               <Switch
                 size="small"
                 checked={!!cfg.image_size?.custom?.enabled}
@@ -262,7 +258,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
             {cfg.image_size?.custom?.enabled && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
-                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>总像素下限</Text>
+                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_min_pixels', '总像素下限')}</Text>
                   <Input
                     size="small"
                     value={String(cfg.image_size.custom.min_pixels ?? IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS.min_pixels)}
@@ -277,7 +273,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                   />
                 </div>
                 <div>
-                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>总像素上限</Text>
+                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_max_pixels', '总像素上限')}</Text>
                   <Input
                     size="small"
                     value={String(cfg.image_size.custom.max_pixels ?? IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS.max_pixels)}
@@ -292,7 +288,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                   />
                 </div>
                 <div>
-                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>最窄比例</Text>
+                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_min_aspect', '最窄比例')}</Text>
                   <Input
                     size="small"
                     value={cfg.image_size.custom.min_aspect || IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS.min_aspect}
@@ -307,7 +303,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                   />
                 </div>
                 <div>
-                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>最宽比例</Text>
+                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_max_aspect', '最宽比例')}</Text>
                   <Input
                     size="small"
                     value={cfg.image_size.custom.max_aspect || IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS.max_aspect}
@@ -322,7 +318,7 @@ const ImageSpecialParamsEditor: React.FC<Props> = ({ value, onChange, isLight })
                   />
                 </div>
                 <div>
-                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>步进</Text>
+                  <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: muted }}>{t('admin_isp_step', '步进')}</Text>
                   <Input
                     size="small"
                     value={String(cfg.image_size.custom.step ?? IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS.step)}

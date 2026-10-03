@@ -193,6 +193,33 @@ fn require_settings_fields(ctx: &AdminContext, req: &UpdateSettingsRequest) -> A
     Ok(())
 }
 
+fn list_has_entry(items: &[String]) -> bool {
+    items.iter().any(|s| !s.trim().is_empty())
+}
+
+fn validate_site_ip_lists(site: &SiteSettings) -> AppResult<()> {
+    if site.ip_blacklist_enabled && !list_has_entry(&site.ip_blacklist) {
+        return Err(AppError::BadRequest(
+            "已开启注册 IP 黑名单，请至少填写一条 IP 或网段".to_string(),
+        ));
+    }
+    if site.ip_whitelist_enabled && !list_has_entry(&site.ip_whitelist) {
+        return Err(AppError::BadRequest(
+            "已开启注册 IP 白名单，请至少填写一条 IP 或网段".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_email_whitelist_entries(reg: &RegistrationSettings) -> AppResult<()> {
+    if reg.email_whitelist_enabled && !list_has_entry(&reg.email_whitelist) {
+        return Err(AppError::BadRequest(
+            "已开启邮箱白名单，请至少填写一个允许的邮箱域名".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn update_settings(
     State(state): State<Arc<AppState>>,
     Extension(ctx): Extension<AdminContext>,
@@ -200,9 +227,13 @@ pub async fn update_settings(
 ) -> AppResult<Json<AllSettings>> {
     require_settings_fields(&ctx, &request)?;
     let mut currency_or_site_changed = false;
-    if let Some(v) = request.site {
+    if let Some(v) = request.site.as_ref() {
+        let current =
+            get_setting::<SiteSettings>(&state, "site_settings", default_site_settings()).await?;
+        let merged = merge_patch(&current, v)?;
+        validate_site_ip_lists(&merged)?;
         let saved =
-            merge_and_save_setting(&state, "site_settings", &v, default_site_settings()).await?;
+            merge_and_save_setting(&state, "site_settings", v, default_site_settings()).await?;
         crate::relay::relay_settings::put_cached_site_timezone(saved.default_timezone);
         notify_schedule_changed();
         currency_or_site_changed = true;
@@ -215,11 +246,19 @@ pub async fn update_settings(
     if let Some(v) = request.login {
         merge_and_save_setting(&state, "login_settings", &v, default_login_settings()).await?;
     }
-    if let Some(v) = request.registration {
+    if let Some(v) = request.registration.as_ref() {
+        let current = get_setting::<RegistrationSettings>(
+            &state,
+            "registration_settings",
+            default_registration_settings(),
+        )
+        .await?;
+        let merged = merge_patch(&current, v)?;
+        validate_email_whitelist_entries(&merged)?;
         merge_and_save_setting(
             &state,
             "registration_settings",
-            &v,
+            v,
             default_registration_settings(),
         )
         .await?;
@@ -983,8 +1022,7 @@ pub async fn load_all_settings(state: &Arc<AppState>) -> AppResult<AllSettings> 
         allinpay: payment_allinpay.as_ref().map_or(false, |p| p.enabled),
     };
 
-    let mut site = get_setting(state, "site_settings", default_site_settings()).await?;
-    site.apply_builtin_ip_whitelist();
+    let site = get_setting(state, "site_settings", default_site_settings()).await?;
 
     Ok(AllSettings {
         site,
@@ -1205,6 +1243,7 @@ pub fn default_site_settings() -> SiteSettings {
     SiteSettings {
         name: "Tkeapi".to_string(),
         title: "Tkeapi - LLM API Gateway".to_string(),
+        intro: String::new(),
         keywords: "LLM, API, Gateway, Rust".to_string(),
         description: "Next-gen LLM API Distribution & Management Platform".to_string(),
         favicon: String::new(),
@@ -1582,7 +1621,7 @@ pub fn default_menu_config_settings() -> crate::models::MenuConfigSettings {
             },
             crate::models::MenuItemConfig {
                 key: "/assets".to_string(),
-                label_zh: "资产充值".to_string(),
+                label_zh: "资产素材".to_string(),
                 label_en: "Assets".to_string(),
                 icon: "PictureOutlined".to_string(),
                 enabled: true,

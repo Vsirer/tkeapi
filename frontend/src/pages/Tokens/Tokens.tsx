@@ -10,7 +10,7 @@ import { Table, Button, Space, Tag, Modal, Form, Input, InputNumber, message, Po
 import AppSwitch from '../../components/AppSwitch';
 import MobileCardList, { MobileCard, CardRow, CardActions } from '../../components/MobileCardList';
 import { listPagination } from '../../components/ListPagination';
-import { PlusOutlined, EditOutlined, DeleteOutlined, CopyOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, KeyOutlined, CheckOutlined, ArrowLeftOutlined, DollarOutlined, BarChartOutlined, EllipsisOutlined, PieChartOutlined, InfoCircleOutlined, FileTextOutlined, ClearOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, CopyOutlined, SyncOutlined, EyeOutlined, EyeInvisibleOutlined, KeyOutlined, CheckOutlined, ArrowLeftOutlined, DollarOutlined, BarChartOutlined, EllipsisOutlined, PieChartOutlined, InfoCircleOutlined, FileTextOutlined, ClearOutlined, LockOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 import request from '../../utils/request';
@@ -21,12 +21,19 @@ import useAuthStore from '../../store/auth';
 import type { ApiToken } from '../../types';
 import dayjs from 'dayjs';
 import { getPeriodicUsed, getQuotaRefreshText, hasPeriodicLimits } from './quotaUtils';
+import { QUOTA_RING_BLUE, quotaRingPercent } from '../../utils/quotaPeriod';
 import { resolveTimedisplay } from '../../utils/timedisplay';
 import { shouldBlockTokenCreate, tokenBindBlockI18nKey } from '../../utils/bindPolicy';
 import { copyToClipboard } from '../../utils/clipboard';
 
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
+
+const PLAYGROUND_2026_DEDICATED_TOKEN_NAME = '创作中心2026';
+
+function isPlayground2026DedicatedToken(record: Pick<ApiToken, 'name' | 'only_playground_2026'>): boolean {
+  return record.only_playground_2026 === 1 && record.name === PLAYGROUND_2026_DEDICATED_TOKEN_NAME;
+}
 
 const Tokens: React.FC = () => {
   const { t } = useTranslation();
@@ -98,7 +105,7 @@ const Tokens: React.FC = () => {
   const [clearingUsage, setClearingUsage] = useState(false);
 
   const refreshTokenInList = async (tokenId: number): Promise<ApiToken | null> => {
-    const resp = await (request.get('/tokens') as unknown as Promise<{ data: ApiToken[] }>);
+    const resp = await (request.get('/tokens', { params: { include_playground_2026: 1 } }) as unknown as Promise<{ data: ApiToken[] }>);
     setTokens(resp.data);
     return resp.data.find(t => t.id === tokenId) ?? null;
   };
@@ -119,6 +126,10 @@ const Tokens: React.FC = () => {
 
   const handleClearUsage = async () => {
     if (!selectedToken) return;
+    if (isPlayground2026DedicatedToken(selectedToken)) {
+      message.warning(t('tokens.playground_2026_dedicated_locked', '创作中心2026 专用密钥不可修改或删除'));
+      return;
+    }
     setClearingUsage(true);
     try {
       const updated = await (request.post(`/tokens/${selectedToken.id}/reset-usage`) as unknown as Promise<ApiToken>);
@@ -139,7 +150,7 @@ const Tokens: React.FC = () => {
   const fetchTokens = async () => {
     setLoading(true);
     try {
-      const resp = await (request.get('/tokens') as unknown as Promise<{ data: ApiToken[] }>);
+      const resp = await (request.get('/tokens', { params: { include_playground_2026: 1 } }) as unknown as Promise<{ data: ApiToken[] }>);
       setTokens(resp.data);
     } catch (e) {
       console.error(e);
@@ -223,6 +234,10 @@ const Tokens: React.FC = () => {
   };
 
   const handleEdit = (record: ApiToken) => {
+    if (isPlayground2026DedicatedToken(record)) {
+      message.warning(t('tokens.playground_2026_dedicated_locked', '创作中心2026 专用密钥不可修改或删除'));
+      return;
+    }
     setEditingToken(record);
     setSaving(false);
     const models = record.allowed_models ? (typeof record.allowed_models === 'string' ? JSON.parse(record.allowed_models) : record.allowed_models) : [];
@@ -247,6 +262,11 @@ const Tokens: React.FC = () => {
   };
 
   const handleDelete = async (id: number) => {
+    const target = tokens.find((item) => item.id === id);
+    if (target && isPlayground2026DedicatedToken(target)) {
+      message.warning(t('tokens.playground_2026_dedicated_locked', '创作中心2026 专用密钥不可修改或删除'));
+      return;
+    }
     try {
       await request.delete(`/tokens/${id}`);
       message.success(t('common.success'));
@@ -387,6 +407,109 @@ const Tokens: React.FC = () => {
     );
   };
 
+  const renderTokenQuotaRings = (record: ApiToken) => {
+    const { dailyUsed, weeklyUsed, monthlyUsed } = getPeriodicUsed(record, quotaTz);
+    const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(6));
+    const items: {
+      key: keyof typeof QUOTA_RING_BLUE;
+      label: string;
+      tipLabel: string;
+      used: number;
+      limit: number;
+    }[] = [
+      { key: 'total', label: t('tokens.quota_ring_total', '总'), tipLabel: t('tokens.limit'), used: record.quota_used || 0, limit: record.quota_limit ?? -1 },
+      { key: 'month', label: t('tokens.quota_ring_month', '月'), tipLabel: t('tokens.monthly_cap'), used: monthlyUsed, limit: record.monthly_quota_limit ?? -1 },
+      { key: 'week', label: t('tokens.quota_ring_week', '周'), tipLabel: t('tokens.weekly_cap'), used: weeklyUsed, limit: record.weekly_quota_limit ?? -1 },
+      { key: 'day', label: t('tokens.quota_ring_day', '日'), tipLabel: t('tokens.daily_cap'), used: dailyUsed, limit: record.daily_quota_limit ?? -1 },
+    ];
+    const hasAnyConfigured = items.some((item) => item.limit >= 0);
+
+    const slotWidth = 28;
+    const ringSize = 24;
+    const ringStroke = 5;
+    const slotStyle: React.CSSProperties = {
+      width: slotWidth,
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 1,
+    };
+    const labelStyle: React.CSSProperties = {
+      fontSize: 9,
+      color: isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.45)',
+      lineHeight: 1,
+      transform: 'scale(0.92)',
+      maxWidth: slotWidth,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    };
+
+    return (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(4, ${slotWidth}px)`,
+          gap: 3,
+          alignItems: 'center',
+          justifyContent: 'start',
+          width: 122,
+        }}
+      >
+        {items.map((item, index) => {
+          const configured = item.limit >= 0;
+          const showUnlimited = !hasAnyConfigured && index === 0;
+          const showRing = configured || showUnlimited;
+
+          if (!showRing) {
+            return (
+              <div key={item.key} style={{ ...slotStyle, visibility: 'hidden' }} aria-hidden>
+                <div style={{ width: ringSize, height: ringSize }} />
+                <span style={labelStyle}>{item.label}</span>
+              </div>
+            );
+          }
+
+          const pct = configured ? quotaRingPercent(item.used, item.limit) : 0;
+          const tip = showUnlimited
+            ? `${t('tokens.limit')}: ${fmt(item.used)} / ∞ (${t('tokens.unlimited')})`
+            : `${item.tipLabel}: ${fmt(item.used)} / ${fmt(item.limit)} (${pct}%)`;
+          const stroke = showUnlimited
+            ? (isLight ? '#a1a1aa' : 'rgba(255,255,255,0.28)')
+            : (pct >= 100 ? '#ef4444' : QUOTA_RING_BLUE[item.key]);
+
+          return (
+            <Tooltip key={item.key} title={tip}>
+              <div style={slotStyle}>
+                <Progress
+                  type="circle"
+                  percent={showUnlimited ? 100 : pct}
+                  size={ringSize}
+                  strokeWidth={ringStroke}
+                  strokeColor={stroke}
+                  trailColor={isLight ? '#e4e4e7' : 'rgba(255,255,255,0.12)'}
+                  format={() => (
+                    <span
+                      style={{
+                        fontSize: showUnlimited ? 9 : 8,
+                        fontWeight: 600,
+                        color: isLight ? 'rgba(0,0,0,0.72)' : 'rgba(255,255,255,0.88)',
+                        lineHeight: 1,
+                      }}
+                    >
+                      {showUnlimited ? '∞' : `${pct}%`}
+                    </span>
+                  )}
+                />
+                <span style={labelStyle}>{showUnlimited ? t('tokens.quota_ring_unlimited', '无限') : item.label}</span>
+              </div>
+            </Tooltip>
+          );
+        })}
+      </div>
+    );
+  };
+
   const columns = [
     {
       title: t('tokens.kid'),
@@ -420,6 +543,11 @@ const Tokens: React.FC = () => {
               <Tag color={scopeColor} style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
                 {scopeLabel}
               </Tag>
+              {isPlayground2026DedicatedToken(record) && (
+                <Tag color="purple" style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
+                  {t('tokens.playground_2026_dedicated', '系统专用')}
+                </Tag>
+              )}
               {isHA && (
                 <Tag color="blue" style={{ margin: 0, fontSize: '11px', padding: '0 4px', lineHeight: '16px' }}>
                   HA
@@ -442,43 +570,9 @@ const Tokens: React.FC = () => {
     {
       title: t('tokens.usage_quota'),
       key: 'usage',
+      width: 150,
       sorter: (a: ApiToken, b: ApiToken) => a.quota_used - b.quota_used,
-      render: (record: ApiToken) => {
-        const { dailyUsed, weeklyUsed, monthlyUsed } = getPeriodicUsed(record, quotaTz);
-        const periodic = hasPeriodicLimits(record);
-
-        const periodicTooltipContent = (
-          <div style={{ fontSize: '12px', padding: '4px' }}>
-            <div style={{ fontWeight: 600, marginBottom: '4px' }}>{t('tokens.periodic_quota_details')}</div>
-            <div style={{ marginBottom: '2px' }}>
-              {t('tokens.daily_cap')}: {record.daily_quota_limit < 0 ? `${dailyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${dailyUsed.toFixed(6)} / ${record.daily_quota_limit}`}
-            </div>
-            <div style={{ marginBottom: '2px' }}>
-              {t('tokens.weekly_cap')}: {record.weekly_quota_limit < 0 ? `${weeklyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${weeklyUsed.toFixed(6)} / ${record.weekly_quota_limit}`}
-            </div>
-            <div>
-              {t('tokens.monthly_cap')}: {record.monthly_quota_limit < 0 ? `${monthlyUsed.toFixed(6)} / ${t('tokens.unlimited')}` : `${monthlyUsed.toFixed(6)} / ${record.monthly_quota_limit}`}
-            </div>
-          </div>
-        );
-
-        return (
-          <Tooltip title={periodicTooltipContent}>
-            <Space direction="vertical" size={1} style={{ cursor: 'pointer' }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('tokens.used')}: {record.quota_used.toFixed(6)}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {t('tokens.today_used', '今日')}: {record.daily_quota_limit < 0 ? dailyUsed.toFixed(6) : `${dailyUsed.toFixed(6)} / ${record.daily_quota_limit}`}
-              </Text>
-              <Text style={{ fontSize: 12 }}>
-                {t('tokens.limit')}: {record.quota_limit < 0 ? t('tokens.unlimited') : record.quota_limit}
-                {periodic && <span style={{ marginLeft: '4px', color: '#1890ff', fontSize: '10px', fontWeight: 500 }}>[{t('tokens.periodic_badge')}]</span>}
-              </Text>
-            </Space>
-          </Tooltip>
-        );
-      },
+      render: (record: ApiToken) => renderTokenQuotaRings(record),
     },
     {
       title: t('tokens.limits'),
@@ -508,17 +602,28 @@ const Tokens: React.FC = () => {
     {
       title: t('common.actions'),
       key: 'actions',
-      render: (_: unknown, record: ApiToken) => (
+      render: (_: unknown, record: ApiToken) => {
+        const locked = isPlayground2026DedicatedToken(record);
+        return (
         <Space>
           <Tooltip title={t('tokens.quota_details')}>
             <Button icon={<PieChartOutlined />} onClick={() => handleShowDetails(record)} />
           </Tooltip>
-          <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
-            <Button icon={<DeleteOutlined />} danger />
-          </Popconfirm>
+          {locked ? (
+            <Tooltip title={t('tokens.playground_2026_dedicated_locked', '创作中心2026 专用密钥不可修改或删除')}>
+              <Button icon={<LockOutlined />} disabled />
+            </Tooltip>
+          ) : (
+            <>
+              <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
+              <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record.id)}>
+                <Button icon={<DeleteOutlined />} danger />
+              </Popconfirm>
+            </>
+          )}
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -724,26 +829,30 @@ const Tokens: React.FC = () => {
                             icon: <PieChartOutlined />,
                             onClick: () => handleShowDetails(record)
                           },
-                          {
-                            key: 'edit',
-                            label: t('tokens.edit_token'),
-                            icon: <EditOutlined />,
-                            onClick: () => handleEdit(record)
-                          },
-                          {
-                            key: 'delete',
-                            label: <Text>{t('tokens.delete_token')}</Text>,
-                            icon: <DeleteOutlined />,
-                            onClick: () => {
-                              Modal.confirm({
-                                title: t('common.confirm_delete'),
-                                okText: t('common.confirm'),
-                                okType: 'danger',
-                                cancelText: t('common.cancel'),
-                                onOk: () => handleDelete(record.id)
-                              });
-                            }
-                          }
+                          ...(isPlayground2026DedicatedToken(record)
+                            ? []
+                            : [
+                                {
+                                  key: 'edit',
+                                  label: t('tokens.edit_token'),
+                                  icon: <EditOutlined />,
+                                  onClick: () => handleEdit(record)
+                                },
+                                {
+                                  key: 'delete',
+                                  label: <Text>{t('tokens.delete_token')}</Text>,
+                                  icon: <DeleteOutlined />,
+                                  onClick: () => {
+                                    Modal.confirm({
+                                      title: t('common.confirm_delete'),
+                                      okText: t('common.confirm'),
+                                      okType: 'danger',
+                                      cancelText: t('common.cancel'),
+                                      onOk: () => handleDelete(record.id)
+                                    });
+                                  }
+                                }
+                              ])
                         ]
                       }}
                       trigger={['click']}
@@ -768,19 +877,9 @@ const Tokens: React.FC = () => {
                         <Tag color="default" style={{ margin: 0 }}>{record.is_active ? t('common.active') : t('common.disabled')}</Tag>
                       </CardRow>
                       <CardRow label={t('tokens.available_quota')} compact={true}>
-                        <Space direction="vertical" size={0}>
-                          <Text style={{ fontSize: 12 }}>{record.quota_limit < 0 ? t('tokens.unlimited') : `${record.quota_used.toFixed(6)} / ${record.quota_limit}`}</Text>
-                          {(() => {
-                            const { dailyUsed, weeklyUsed, monthlyUsed } = getPeriodicUsed(record, quotaTz);
-                            const parts: string[] = [];
-                            parts.push(`${t('tokens.today_used', '今日')} ${record.daily_quota_limit < 0 ? dailyUsed.toFixed(6) : `${dailyUsed.toFixed(6)}/${record.daily_quota_limit}`}`);
-                            if (record.weekly_quota_limit >= 0) parts.push(`${t('tokens.weekly_cap')} ${weeklyUsed.toFixed(6)}/${record.weekly_quota_limit}`);
-                            if (record.monthly_quota_limit >= 0) parts.push(`${t('tokens.monthly_cap')} ${monthlyUsed.toFixed(6)}/${record.monthly_quota_limit}`);
-                            return (
-                              <Text type="secondary" style={{ fontSize: 11 }}>{parts.join(' · ')}</Text>
-                            );
-                          })()}
-                        </Space>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          {renderTokenQuotaRings(record)}
+                        </div>
                       </CardRow>
                       <CardRow label={t('tokens.usage_scope')} compact={true}>
                         <Space size={4} wrap>
@@ -793,6 +892,11 @@ const Tokens: React.FC = () => {
                                   ? t('tokens.playground_only')
                                   : t('tokens.general')}
                           </Tag>
+                          {isPlayground2026DedicatedToken(record) && (
+                            <Tag color="purple" style={{ fontSize: 11, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
+                              {t('tokens.playground_2026_dedicated', '系统专用')}
+                            </Tag>
+                          )}
                           {(record.high_availability === 1 || (record.high_availability as any) === true) && (
                             <Tag color="blue" style={{ fontSize: 11, margin: 0, padding: '0 4px', lineHeight: '16px' }}>
                               HA
@@ -1533,6 +1637,7 @@ const Tokens: React.FC = () => {
           })()}
         </div>
 
+        {selectedToken && !isPlayground2026DedicatedToken(selectedToken) ? (
         <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
           <Popconfirm
             title={t('tokens.clear_usage_confirm', '确认清空该令牌的已用额度数据？')}
@@ -1552,6 +1657,7 @@ const Tokens: React.FC = () => {
             </Button>
           </Popconfirm>
         </div>
+        ) : null}
       </Modal>
 
       {/* 开启高可用通道确认弹窗 */}

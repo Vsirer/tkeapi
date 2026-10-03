@@ -7,6 +7,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Modal, Typography } from 'antd';
+import { useTranslation } from 'react-i18next';
 import type { ImageSpecialSizeMap } from './types';
 import { lookupPixelSize, normalizeSizeMap } from './imageSpecialParams';
 
@@ -52,6 +53,7 @@ const ImageSpecialSizeMapEditor: React.FC<Props> = ({
   onCancel,
   onOk,
 }) => {
+  const { t } = useTranslation('playground_2026');
   const rows = useMemo(() => usableRatios(ratios), [ratios]);
   const cols = useMemo(
     () => resolutions.map((r) => String(r).trim()).filter(Boolean),
@@ -81,7 +83,7 @@ const ImageSpecialSizeMapEditor: React.FC<Props> = ({
 
   return (
     <Modal
-      title="关联配置"
+      title={t('admin_isp_size_map_title', '关联配置')}
       open={open}
       onCancel={onCancel}
       width={width}
@@ -89,22 +91,22 @@ const ImageSpecialSizeMapEditor: React.FC<Props> = ({
       destroyOnHidden
       footer={
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <Button onClick={onCancel}>取消</Button>
+          <Button onClick={onCancel}>{t('admin_cancel', '取消')}</Button>
           <Button
             type="primary"
             disabled={empty}
             onClick={() => onOk(normalizeSizeMap(draft))}
           >
-            确定
+            {t('admin_confirm', '确定')}
           </Button>
         </div>
       }
     >
       <Text style={{ display: 'block', marginBottom: 12, fontSize: 12, color: muted }}>
-        表头为分辨率，左侧为图片比例，单元格填写对应宽高（如 2048x2048）。
+        {t('admin_isp_map_desc', '表头为分辨率，左侧为图片比例，单元格填写对应宽高（如 2048x2048）。')}
       </Text>
       {empty ? (
-        <Text style={{ color: muted, fontSize: 13 }}>请先在上方配置图片比例和分辨率。</Text>
+        <Text style={{ color: muted, fontSize: 13 }}>{t('admin_isp_map_empty', '请先在上方配置图片比例和分辨率。')}</Text>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table
@@ -130,7 +132,7 @@ const ImageSpecialSizeMapEditor: React.FC<Props> = ({
                     fontWeight: 600,
                   }}
                 >
-                  图片比例
+                  {t('admin_isp_title_ratio', '图片比例')}
                 </th>
                 {cols.map((reso) => (
                   <th
@@ -170,7 +172,7 @@ const ImageSpecialSizeMapEditor: React.FC<Props> = ({
                       <Input
                         size="small"
                         value={draft[reso]?.[ratio] || ''}
-                        placeholder="宽x高"
+                        placeholder={t('admin_isp_wh_ph', '宽x高')}
                         onChange={(e) => setCell(reso, ratio, e.target.value)}
                       />
                     </td>

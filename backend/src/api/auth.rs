@@ -30,7 +30,7 @@ use std::sync::Arc;
 const MAX_CODE_ATTEMPTS: i32 = 3;
 /// OAuth state 有效期（秒）
 const OAUTH_STATE_TTL_SECS: i64 = 600;
-const USER_WITH_LEVEL_SQL: &str = "SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key";
+const USER_WITH_LEVEL_SQL: &str = "SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config, ul.marketing_enabled, ul.commission_ratio FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key";
 
 /// 常量时间字符串比较，避免时序旁路
 fn ct_eq_str(a: &str, b: &str) -> bool {
@@ -107,6 +107,14 @@ pub async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Response {
     let client_ip = extract_client_ip(&headers, &addr);
+    match get_all_settings(&state).await {
+        Ok(settings) => {
+            if let Err(err) = check_ip_blacklist(&settings.site, &client_ip) {
+                return err.into_response();
+            }
+        }
+        Err(err) => return err.into_response(),
+    }
     if let Err(lock_msg) = state.rate_limiter.check_login_lock(&client_ip) {
         return AppError::Forbidden(lock_msg).into_response();
     }
@@ -376,7 +384,7 @@ pub async fn init_admin(
         .await?;
 
         let user: User = sqlx::query_as(
-            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?")
+            &state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config, ul.marketing_enabled, ul.commission_ratio FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?")
         )
         .bind(&id)
         .fetch_one(&state.db.pool)
@@ -619,13 +627,14 @@ pub async fn send_code(
         let purpose = request.purpose.as_str();
         validate_code_purpose(purpose, CodeChannel::Email)?;
 
-        if purpose == "register" {
-            let raw_ip = extract_client_ip(&headers, &addr);
-            check_ip_blacklist(&settings.site, &raw_ip)?;
-        }
+        let raw_ip = extract_client_ip(&headers, &addr);
+        check_ip_blacklist(&settings.site, &raw_ip)?;
 
-        // 邮箱防刷与白名单校验
+        // 格式与防刷对所有发码都生效；域名白名单只拦新邮箱注册
         validate_email(&settings.registration, &request.email)?;
+        if purpose == "register" {
+            enforce_registration_email_whitelist(&settings.registration, &request.email)?;
+        }
         if is_placeholder_email(&request.email) {
             return Err(AppError::BadRequest("无效的邮箱地址".to_string()));
         }
@@ -681,10 +690,8 @@ pub async fn send_sms_code(
         let purpose = request.purpose.as_str();
         validate_code_purpose(purpose, CodeChannel::Sms)?;
 
-        if purpose == "register" {
-            let raw_ip = extract_client_ip(&headers, &addr);
-            check_ip_blacklist(&settings.site, &raw_ip)?;
-        }
+        let raw_ip = extract_client_ip(&headers, &addr);
+        check_ip_blacklist(&settings.site, &raw_ip)?;
 
         if request.mobile.trim().is_empty() {
             return Err(AppError::BadRequest("手机号不能为空".to_string()));
@@ -747,8 +754,9 @@ pub async fn register_email(
         }
         let timezone = new_user_timezone(request.timezone.as_deref());
 
-        // 邮箱校验
+        // 邮箱校验（含域名白名单，仅新注册）
         validate_email(&settings.registration, &request.email)?;
+        enforce_registration_email_whitelist(&settings.registration, &request.email)?;
 
         // IP 黑名单与防刷
         let raw_ip = extract_client_ip(&headers, &addr);
@@ -954,7 +962,6 @@ pub async fn register_mobile(
         // IP 提取与黑名单校验
         let raw_ip = extract_client_ip(&headers, &addr);
         check_ip_blacklist(&settings.site, &raw_ip)?;
-        // check_ip_rate_limit(&state, &settings.registration, &raw_ip).await?;
 
         // 验证短信验证码
         verify_sms_code(&state, &request.mobile, &request.code, "register", false).await?;
@@ -1137,10 +1144,14 @@ pub async fn register_mobile(
 
 pub async fn reset_password(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<ResetPasswordRequest>,
 ) -> Response {
     let result = (async {
         let settings = get_all_settings(&state).await?;
+        let raw_ip = extract_client_ip(&headers, &addr);
+        check_ip_blacklist(&settings.site, &raw_ip)?;
         if !settings.registration.enable_password_recovery {
             return Err(AppError::Forbidden("Password recovery is disabled".to_string()));
         }
@@ -1618,15 +1629,14 @@ pub async fn oauth_wechat_callback(
             &state.db.format_query("SELECT * FROM users WHERE wechat_id = ? OR wechat_id = ?")
         ).bind(wechat_identifier).bind(fallback_identifier).fetch_optional(&state.db.pool).await?;
 
+        let raw_ip = extract_client_ip(&headers, &addr);
+        check_ip_blacklist(&settings.site, &raw_ip)?;
         let user = if let Some(u) = existing {
             // 更新三方昵称和最新标识
             sqlx::query(&state.db.format_query("UPDATE users SET wechat_id = ?, wechat_name = ? WHERE id = ?"))
                 .bind(wechat_identifier).bind(&info.nickname).bind(&u.id).execute(&state.db.pool).await?;
             u
         } else {
-            // 自动注册（IP 黑名单检查 + state 邀请优先，cookie 兜底）
-            let raw_ip = extract_client_ip(&headers, &addr);
-            check_ip_blacklist(&settings.site, &raw_ip)?;
             let invite =
                 resolve_oauth_invite(&state, &settings, &headers, state_aff, state_team).await?;
             let user_id = uuid::Uuid::new_v4().to_string();
@@ -1776,14 +1786,13 @@ pub async fn oauth_google_callback(
 
         let google_display_name = info.name.clone().or_else(|| info.email.clone());
 
+        let raw_ip = extract_client_ip(&headers, &addr);
+        check_ip_blacklist(&settings.site, &raw_ip)?;
         let user = if let Some(u) = existing {
             sqlx::query(&state.db.format_query("UPDATE users SET google_name = ? WHERE id = ?"))
                 .bind(&google_display_name).bind(&u.id).execute(&state.db.pool).await?;
             u
         } else {
-            // 自动注册（IP 黑名单检查 + state 邀请优先，cookie 兜底）
-            let raw_ip = extract_client_ip(&headers, &addr);
-            check_ip_blacklist(&settings.site, &raw_ip)?;
             let invite =
                 resolve_oauth_invite(&state, &settings, &headers, state_aff, state_team).await?;
             let user_id = uuid::Uuid::new_v4().to_string();
@@ -2586,7 +2595,7 @@ pub(crate) fn check_ip_blacklist(site_settings: &SiteSettings, client_ip: &str) 
         return Ok(());
     }
     if client_ip_in_entries(client_ip, &site_settings.ip_blacklist) {
-        return Err(AppError::Forbidden("当前 IP 已被禁止注册".to_string()));
+        return Err(AppError::Forbidden("当前 IP 已被限制".to_string()));
     }
     Ok(())
 }
@@ -2617,7 +2626,7 @@ fn ip_in_cidr(ip: std::net::IpAddr, net_ip: std::net::IpAddr, prefix_len: u8) ->
     }
 }
 
-/// IP 注册防刷检查
+/// IP 注册防刷：只统计、只拦截用户名和邮箱注册。手机号、微信、谷歌不占当日次数。
 async fn check_ip_rate_limit(
     state: &Arc<AppState>,
     reg: &RegistrationSettings,
@@ -2632,7 +2641,7 @@ async fn check_ip_rate_limit(
     }
     let (day_start, day_end) = today_bounds_db_ts(site_timedisplay(&settings));
     let count: i64 = sqlx::query_scalar(&state.db.format_query(
-        "SELECT COUNT(*) FROM users WHERE register_ip = ? AND created_at >= ?::timestamptz AND created_at < ?::timestamptz",
+        "SELECT COUNT(*) FROM users WHERE register_ip = ? AND created_at >= ?::timestamptz AND created_at < ?::timestamptz AND COALESCE(mobile, '') = '' AND COALESCE(wechat_id, '') = '' AND COALESCE(google_id, '') = ''",
     ))
     .bind(ip)
     .bind(&day_start)
@@ -2649,13 +2658,13 @@ async fn check_ip_rate_limit(
     Ok(())
 }
 
-/// 邮箱防刷 + 白名单校验
+/// 邮箱格式与防刷。找回密码、绑定/换绑也走这里，不看域名白名单。
 fn validate_email(reg: &RegistrationSettings, email: &str) -> AppResult<()> {
     let parts: Vec<&str> = email.splitn(2, '@').collect();
     if parts.len() != 2 {
         return Err(AppError::BadRequest("邮箱格式不正确".to_string()));
     }
-    let (local, domain) = (parts[0], parts[1]);
+    let local = parts[0];
 
     if reg.email_validation_strict {
         if local.len() > 25 {
@@ -2667,18 +2676,25 @@ fn validate_email(reg: &RegistrationSettings, email: &str) -> AppResult<()> {
             ));
         }
     }
+    Ok(())
+}
 
-    if reg.email_whitelist_enabled && !reg.email_whitelist.is_empty() {
-        if !reg
+/// 域名白名单只用于新邮箱注册。开关关闭时不拦截；开关打开且名单为空时，没有任何域名可通过。
+fn enforce_registration_email_whitelist(reg: &RegistrationSettings, email: &str) -> AppResult<()> {
+    if !reg.email_whitelist_enabled {
+        return Ok(());
+    }
+    let domain = email.splitn(2, '@').nth(1).unwrap_or("");
+    if domain.is_empty()
+        || !reg
             .email_whitelist
             .iter()
             .any(|d| d.eq_ignore_ascii_case(domain))
-        {
-            return Err(AppError::BadRequest(format!(
-                "不支持 @{} 域名的邮箱注册",
-                domain
-            )));
-        }
+    {
+        return Err(AppError::BadRequest(format!(
+            "不支持 @{} 域名的邮箱注册",
+            domain
+        )));
     }
     Ok(())
 }
@@ -2939,18 +2955,18 @@ mod registration_ip_list_tests {
     }
 
     #[test]
-    fn empty_disabled_whitelist_upgrades_to_builtin() {
+    fn empty_whitelist_does_not_exempt() {
         let mut settings = crate::api::settings::default_site_settings();
-        settings.ip_whitelist_enabled = false;
+        settings.ip_whitelist_enabled = true;
         settings.ip_whitelist.clear();
-        settings.apply_builtin_ip_whitelist();
-        assert!(registration_ip_whitelisted(&settings, "192.168.1.20"));
+        assert!(!registration_ip_whitelisted(&settings, "192.168.1.20"));
+        settings.ip_whitelist_enabled = false;
+        assert!(!registration_ip_whitelisted(&settings, "10.0.0.8"));
     }
 
     #[test]
     fn disabled_whitelist_with_entries_stays_off() {
-        let mut settings = site(&[], &["10.0.0.8"], false, false);
-        settings.apply_builtin_ip_whitelist();
+        let settings = site(&[], &["10.0.0.8"], false, false);
         assert!(!registration_ip_whitelisted(&settings, "10.0.0.8"));
     }
 
@@ -2959,6 +2975,43 @@ mod registration_ip_list_tests {
         let settings = site(&[], &["127.0.0.1"], false, true);
         assert!(registration_ip_whitelisted(&settings, "::ffff:127.0.0.1"));
         assert!(!registration_ip_whitelisted(&settings, "10.0.0.1"));
+    }
+}
+
+#[cfg(test)]
+mod email_whitelist_tests {
+    use super::{enforce_registration_email_whitelist, validate_email};
+    use crate::models::RegistrationSettings;
+
+    fn whitelist_on(domains: &[&str]) -> RegistrationSettings {
+        let mut reg = RegistrationSettings::default();
+        reg.email_whitelist_enabled = true;
+        reg.email_whitelist = domains.iter().map(|s| (*s).to_string()).collect();
+        reg
+    }
+
+    #[test]
+    fn registration_rejects_domain_outside_list() {
+        let reg = whitelist_on(&["qq.com", "163.com"]);
+        assert!(enforce_registration_email_whitelist(&reg, "a@gmail.com").is_err());
+        assert!(enforce_registration_email_whitelist(&reg, "a@qq.com").is_ok());
+        assert!(enforce_registration_email_whitelist(&reg, "a@QQ.COM").is_ok());
+    }
+
+    #[test]
+    fn existing_account_mail_ignores_whitelist() {
+        let reg = whitelist_on(&["qq.com"]);
+        assert!(validate_email(&reg, "old.user@gmail.com").is_ok());
+    }
+
+    #[test]
+    fn disabled_allows_any_domain_empty_list_blocks() {
+        let mut reg = whitelist_on(&["qq.com"]);
+        reg.email_whitelist_enabled = false;
+        assert!(enforce_registration_email_whitelist(&reg, "a@gmail.com").is_ok());
+        reg.email_whitelist_enabled = true;
+        reg.email_whitelist.clear();
+        assert!(enforce_registration_email_whitelist(&reg, "a@gmail.com").is_err());
     }
 }
 

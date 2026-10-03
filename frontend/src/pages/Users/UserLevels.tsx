@@ -21,7 +21,7 @@ const { useBreakpoint } = Grid;
 
 
 
-const UserLevels: React.FC = () => {
+const UserLevels: React.FC<{ embedded?: boolean; keyword?: string }> = ({ embedded = false, keyword }) => {
   const { t } = useTranslation();
   const screens = useBreakpoint();
   const navigate = useNavigate();
@@ -47,9 +47,11 @@ const UserLevels: React.FC = () => {
     fetchLevels();
   }, []);
 
+  const activeKeyword = keyword !== undefined ? keyword : searchKeyword;
+
   const filteredLevels = useMemo(() => {
-    if (!searchKeyword.trim()) return levels;
-    const kw = searchKeyword.trim().toLowerCase();
+    if (!activeKeyword.trim()) return levels;
+    const kw = activeKeyword.trim().toLowerCase();
     return levels.filter((lvl) => {
       const matchName = lvl.name?.toLowerCase().includes(kw);
       const matchId = lvl.id?.toString().includes(kw);
@@ -59,7 +61,7 @@ const UserLevels: React.FC = () => {
       const matchDesc = lvl.description?.toLowerCase().includes(kw);
       return matchName || matchId || matchUlid || matchKey || matchDesc;
     });
-  }, [levels, searchKeyword]);
+  }, [levels, activeKeyword]);
 
   const handleAdd = () => {
     navigate(`/${adminPath}/user-levels/new`);
@@ -148,9 +150,10 @@ const UserLevels: React.FC = () => {
       dataIndex: 'commission_ratio',
       key: 'commission_ratio',
       sorter: (a: UserLevel, b: UserLevel) => (a.commission_ratio || 0) - (b.commission_ratio || 0),
-      render: (val: number) => {
+      render: (val: number, record: UserLevel) => {
         const percent = Math.round((val || 0) * 100);
-        return <Tag color="green">{percent}%</Tag>;
+        const basis = record.commission_basis === 'recharge' ? '充值' : '消费';
+        return <Tag color="green">{percent}% · {basis}</Tag>;
       },
     },
     {
@@ -227,8 +230,9 @@ const UserLevels: React.FC = () => {
     },
   ];
 
-  return (
-    <Card bordered={false}>
+  const body = (
+    <>
+      {!embedded && (
       <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', justifyContent: 'space-between', marginBottom: 12, gap: 12 }}>
         <Title level={screens.xs ? 4 : 2} style={{ margin: 0 }}>{t('user_levels.title')}</Title>
         <Space wrap>
@@ -243,6 +247,7 @@ const UserLevels: React.FC = () => {
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>{t('user_levels.add_level')}</Button>
         </Space>
       </div>
+      )}
 
       {screens.xs ? (
         <MobileCardList
@@ -254,6 +259,7 @@ const UserLevels: React.FC = () => {
             const off = Math.round((1 - record.discount) * 100);
             const up = Math.round((record.discount - 1) * 100);
             const commPercent = Math.round((record.commission_ratio || 0) * 100);
+            const commBasis = record.commission_basis === 'recharge' ? '充值' : '消费';
             return (
               <MobileCard
                 title={
@@ -296,7 +302,7 @@ const UserLevels: React.FC = () => {
                     {up > 0 && <Tag color="volcano">+{up}%</Tag>}
                   </Space>
                 </CardRow>
-                <CardRow label="返利比例"><Tag color="green">{commPercent}%</Tag></CardRow>
+                <CardRow label="返利比例"><Tag color="green">{commPercent}% · {commBasis}</Tag></CardRow>
                 <CardRow label="等级营销推广">
                   {record.marketing_enabled === 1 ? <Tag color="blue">已开启</Tag> : <Tag color="default">已关闭</Tag>}
                 </CardRow>
@@ -328,10 +334,11 @@ const UserLevels: React.FC = () => {
           showSorterTooltip={false}
         />
       )}
-
-
-    </Card>
+    </>
   );
+
+  if (embedded) return body;
+  return <Card bordered={false}>{body}</Card>;
 };
 
 export default UserLevels;

@@ -998,3 +998,217 @@ pub async fn get_wallet_stats_batch(
     Ok(Json(result))
 }
 
+// ========== 佣金明细（佣金钱包流水 + 系统佣金赠送）==========
+
+#[derive(Debug, Deserialize)]
+pub struct CommissionListQuery {
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+    pub user_id: Option<String>,
+    pub source: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct FinanceCommissionRecord {
+    pub id: String,
+    pub amount: f64,
+    pub ratio: Option<f64>,
+    pub source: String,
+    pub wallet: String,
+    pub created_at: DbTs,
+    pub username: String,
+    pub uid: String,
+    pub from_username: Option<String>,
+    pub from_uid: Option<String>,
+    pub operator: Option<String>,
+    pub remark: Option<String>,
+    pub order_no: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FinanceCommissionResponse {
+    pub data: Vec<FinanceCommissionRecord>,
+    pub total: i64,
+    pub total_amount: f64,
+}
+
+fn commission_source_allowed(source: &str) -> bool {
+    matches!(
+        source,
+        "consumption"
+            | "recharge"
+            | "system_award"
+            | "invite_gift"
+            | "transfer"
+            | "video"
+            | "refund"
+            | "clawback"
+            | "system_clawback"
+            | "other"
+    )
+}
+
+/// 佣金钱包流水，加上系统侧不进 `commissions` 的邀请赠送、结转、系统钱包扣回。
+fn commission_ledger_from() -> &'static str {
+    r#"FROM (
+        SELECT
+            ('c' || c.id::text) AS id,
+            c.amount::float8 AS amount,
+            c.ratio::float8 AS ratio,
+            CASE
+                WHEN COALESCE(c.source_key, '') LIKE 'adjustclaw:%' THEN 'clawback'
+                WHEN COALESCE(c.source_key, '') LIKE 'arkrefund:%'
+                    OR (c.amount < 0 AND COALESCE(c.source_key, '') LIKE 'ark:%') THEN 'refund'
+                WHEN COALESCE(c.source_key, '') LIKE 'ark:%' THEN 'video'
+                WHEN COALESCE(c.source_key, '') LIKE 'log:%' THEN 'consumption'
+                WHEN COALESCE(c.source_key, '') LIKE 'recharge:%' AND rr.recharge_type = 'manual' THEN 'system_award'
+                WHEN COALESCE(c.source_key, '') LIKE 'recharge:%' THEN 'recharge'
+                WHEN c.amount < 0 THEN 'refund'
+                ELSE 'other'
+            END AS source,
+            'commission'::text AS wallet,
+            c.created_at::timestamptz AS created_at,
+            beneficiary.username AS username,
+            beneficiary.uid AS uid,
+            src.username AS from_username,
+            src.uid AS from_uid,
+            rr.operator AS operator,
+            rr.remark AS remark,
+            rr.order_no AS order_no
+        FROM commissions c
+        JOIN users beneficiary ON beneficiary.id = c.user_id
+        LEFT JOIN users src ON src.id = c.from_user_id
+        LEFT JOIN recharge_records rr ON rr.id = c.recharge_id
+        UNION ALL
+        SELECT
+            ('r' || rr.id::text) AS id,
+            rr.amount::float8 AS amount,
+            NULL::float8 AS ratio,
+            CASE
+                WHEN rr.recharge_type = 'commission' THEN 'invite_gift'
+                WHEN rr.recharge_type = 'transfer' THEN 'transfer'
+                ELSE 'system_clawback'
+            END AS source,
+            CASE
+                WHEN rr.recharge_type = 'commission' THEN 'gift'
+                ELSE 'system'
+            END AS wallet,
+            rr.created_at::timestamptz AS created_at,
+            u.username AS username,
+            u.uid AS uid,
+            NULL::text AS from_username,
+            NULL::text AS from_uid,
+            rr.operator AS operator,
+            rr.remark AS remark,
+            rr.order_no AS order_no
+        FROM recharge_records rr
+        JOIN users u ON u.id = rr.user_id
+        WHERE rr.recharge_type IN ('commission', 'transfer')
+           OR (
+                rr.recharge_type = 'manual'
+                AND rr.remark LIKE '下级 %余额调减，返佣差额从系统钱包扣回'
+           )
+    ) q"#
+}
+
+pub async fn list_commissions(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<CommissionListQuery>,
+) -> AppResult<Json<FinanceCommissionResponse>> {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
+    let offset = (page - 1) * per_page;
+
+    let from_sql = commission_ledger_from();
+    let mut where_clause = " WHERE 1=1".to_string();
+    let mut binds: Vec<String> = Vec::new();
+
+    if let Some(search) = query.user_id.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        where_clause.push_str(
+            " AND (q.username LIKE ? OR q.uid = ? OR q.uid LIKE ? OR COALESCE(q.from_username, '') LIKE ? OR COALESCE(q.from_uid, '') = ? OR COALESCE(q.order_no, '') LIKE ? OR COALESCE(q.remark, '') LIKE ?)",
+        );
+        let like = format!("%{search}%");
+        binds.push(like.clone());
+        binds.push(search.to_string());
+        binds.push(like.clone());
+        binds.push(like.clone());
+        binds.push(search.to_string());
+        binds.push(like.clone());
+        binds.push(like);
+    }
+
+    if let Some(source) = query
+        .source
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| commission_source_allowed(s))
+    {
+        where_clause.push_str(" AND q.source = ?");
+        binds.push(source.to_string());
+    }
+
+    let tz = finance_filter_tz(&state).await;
+    if let Some(ref start) = query.start_time {
+        crate::api::date_helper::push_timestamptz_bound(
+            &mut where_clause,
+            &mut binds,
+            "q.created_at",
+            start,
+            false,
+            tz,
+        );
+    }
+    if let Some(ref end) = query.end_time {
+        crate::api::date_helper::push_timestamptz_bound(
+            &mut where_clause,
+            &mut binds,
+            "q.created_at",
+            end,
+            true,
+            tz,
+        );
+    }
+
+    let count_sql = format!("SELECT COUNT(*) {from_sql}{where_clause}");
+    let count_sql = state.db.format_query(&count_sql);
+    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+    for val in &binds {
+        count_q = count_q.bind(val);
+    }
+    let total = count_q.fetch_one(&state.db.pool).await.map_err(|e| {
+        tracing::warn!("Finance commissions count error: {:?}", e);
+        e
+    })?;
+
+    let total_amount_sql = format!(
+        "SELECT COALESCE(SUM(q.amount), 0.0)::float8 {from_sql}{where_clause}"
+    );
+    let total_amount_sql = state.db.format_query(&total_amount_sql);
+    let mut amount_q = sqlx::query_scalar::<_, f64>(&total_amount_sql);
+    for val in &binds {
+        amount_q = amount_q.bind(val);
+    }
+    let total_amount = amount_q.fetch_one(&state.db.pool).await.unwrap_or(0.0);
+
+    let data_sql = format!(
+        "SELECT q.* {from_sql}{where_clause} ORDER BY q.created_at DESC, q.id DESC LIMIT {per_page} OFFSET {offset}"
+    );
+    let data_sql = state.db.format_query(&data_sql);
+    let mut data_q = sqlx::query_as::<_, FinanceCommissionRecord>(&data_sql);
+    for val in &binds {
+        data_q = data_q.bind(val);
+    }
+    let data = data_q.fetch_all(&state.db.pool).await.map_err(|e| {
+        tracing::warn!("Finance commissions data error: {:?}", e);
+        e
+    })?;
+
+    Ok(Json(FinanceCommissionResponse {
+        data,
+        total,
+        total_amount,
+    }))
+}
+

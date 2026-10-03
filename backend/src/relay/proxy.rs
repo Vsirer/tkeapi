@@ -248,8 +248,9 @@ async fn allow_volc_preset(
 
 /// 根据 mid 查找处于激活状态的模型数据
 pub async fn find_active_model_by_mid(state: &AppState, mid: &str) -> Option<crate::models::Model> {
-    let sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE m.mid = ? AND m.is_active = 1 AND m.is_listed = 1 LIMIT 1";
+    let sql = "SELECT m.*, t.name AS type_name FROM models m LEFT JOIN model_types t ON m.type_id = t.id WHERE (m.mid = ? OR m.library_mid = ?) AND m.is_active = 1 AND m.is_listed = 1 LIMIT 1";
     match sqlx::query_as(&state.db.format_query(sql))
+        .bind(mid)
         .bind(mid)
         .fetch_optional(&state.db.pool)
         .await
@@ -768,6 +769,8 @@ pub struct PendingLog<'a> {
     pub db_model: Option<&'a crate::models::Model>,
     pub forward_eid: Option<&'a str>,
     pub requested_log_id: Option<&'a str>,
+    /// 受理时就要能按这个号查询。空则保持空串，由后续结算从响应里提取。
+    pub task_id: Option<&'a str>,
 }
 
 /// 在上游请求发送前预记录一条"处理中"日志（status_code=0），返回 logs 主键 id。
@@ -792,7 +795,12 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
         db_model,
         forward_eid,
         requested_log_id,
+        task_id,
     } = p;
+    let task_id = task_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
     let (mut action_type, billing_pid, enable_log) =
         resolve_model_meta(state, model, category, Some(channel), db_model).await;
     // 元信息未解析到类型时透传调用方 category（业务模块已知，无需再猜 endpoint）
@@ -825,7 +833,7 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
          request_content, response_content, is_stream, upstream_url, \
          billing_detail, task_id, action_type, billing_pid, forward_eid, plugin_tag, channel_config_id, is_ha) \
          VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0.0, 0, ?, NULL, 0, ?, NULL, ?, ?, \
-                 '请求处理中', '', ?, ?, ?, ?, ?, ?) RETURNING id"
+                 '请求处理中', ?, ?, ?, ?, ?, ?, ?) RETURNING id"
     );
 
     let sys_ep = endpoint.split_once('|').map(|(s, _)| s).unwrap_or(endpoint);
@@ -840,6 +848,7 @@ pub async fn record_pending_log(p: PendingLog<'_>) -> Option<i64> {
         .bind(stored_req.as_deref())
         .bind(is_stream)
         .bind(masked_url.as_deref())
+        .bind(task_id)
         .bind(&action_type)
         .bind(&billing_pid)
         .bind(&forward_eid)
@@ -1245,14 +1254,14 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
         // 在持有 users 行锁之前，先完成耗时的大文本 UPDATE logs（PostgreSQL TOAST 耗时 20ms）。
         // 此时锁定的仅是 logs 表当前行主键，完全不占 users 表行锁，并发请求互不阻塞！
         // CAS status_code=0：避免孤儿清理/启动恢复已关单后退款后又被结算扣费覆盖
-        if let Some(log_id) = pending_log_id {
+        let commission_log_id: i64 = if let Some(log_id) = pending_log_id {
             let touched = sqlx::query(&state.db.format_query(
                 "UPDATE logs SET channel_id = ?, model = ?, \
                  prompt_tokens = ?, completion_tokens = ?, cached_tokens = ?, \
                  cost = ?, status_code = ?, endpoint = ?, error_message = ?, latency_ms = ?, \
                  request_content = ?, response_content = ?, post_response = ?, upstream_url = ?, \
                  upstream_req_content = ?, billing_detail = ?, \
-                 task_id = CASE WHEN ? = '' OR ? IS NULL THEN task_id ELSE ? END, \
+                 task_id = CASE WHEN COALESCE(task_id, '') <> '' THEN task_id WHEN ? = '' OR ? IS NULL THEN task_id ELSE ? END, \
                  action_type = ?, billing_pid = ?, \
                  billing_features = ?, pre_deduct_gift = ?, is_completed = ?, \
                  channel_config_id = ?, is_ha = ?, \
@@ -1297,12 +1306,13 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
                 // 已被孤儿清理/启动恢复/并发结案；勿与预扣余额不足的 RowNotFound 混淆
                 return Err(sqlx::Error::Protocol("pending_cas_miss".into()));
             }
+            log_id
         } else {
             let fb_prefix = if !final_action_type.is_empty() && final_action_type != "聊天" { "tsk_" } else { "log_" };
             let fallback_log_id = format!("{}{}", fb_prefix, ulid::Ulid::new().to_string().to_lowercase());
-            sqlx::query(&state.db.format_query(
+            sqlx::query_scalar::<_, i64>(&state.db.format_query(
                 "INSERT INTO logs (log_id, user_id, channel_id, token_id, model, prompt_tokens, completion_tokens, cached_tokens, cost, status_code, endpoint, error_message, latency_ms, request_content, response_content, post_response, is_stream, upstream_url, upstream_req_content, billing_detail, task_id, action_type, billing_pid, forward_eid, billing_features, pre_deduct_gift, plugin_tag, is_completed, channel_config_id, is_ha, upstream_request_id, has_video) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             ))
             .bind(&fallback_log_id)
             .bind(&token.user_id)
@@ -1336,9 +1346,9 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
             .bind(is_ha)
             .bind(&upstream_request_id)
             .bind(has_video_val)
-            .execute(&mut *tx)
-            .await?;
-        }
+            .fetch_one(&mut *tx)
+            .await?
+        };
 
         // 【倒序写入第二阶段：令牌与渠道配额消耗统计】
         if settled_cost > 0.0 || pre_deducted > 0.0 {
@@ -1363,7 +1373,18 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
             }
 
             // 【倒序写入第三阶段：用户钱包扣减/退补（锁持有时间压缩至 0.3ms 极速放锁）】
-            // 绝不在此之后执行任何大文本 I/O，更新后紧随 tx.commit()
+            // 钱包更新后只做同事务的小额返佣入账，然后立即 commit。不要在这里写大文本。
+            let consumption_award = crate::services::affiliate::prepare_consumption_commission(
+                &state.db,
+                &mut tx,
+                &token.user_id,
+                settled_cost,
+                pre_deducted,
+                pre_deduct_gift,
+                is_freeze,
+            )
+            .await
+            .map_err(|e| sqlx::Error::Protocol(format!("commission: {e}")))?;
             if apply_balance > 0.0 {
                 sqlx::query(&state.db.format_query(
                     "UPDATE users SET
@@ -1409,6 +1430,17 @@ pub async fn record_and_bill_inner(p: BillRecord<'_>) {
                 .bind(&token.user_id)
                 .execute(&mut *tx)
                 .await?;
+            }
+            if let Some(award) = consumption_award {
+                crate::services::affiliate::credit_consumption_commission(
+                    &state.db,
+                    &mut tx,
+                    &token.user_id,
+                    &format!("log:{commission_log_id}"),
+                    &award,
+                )
+                .await
+                .map_err(|e| sqlx::Error::Protocol(format!("commission: {e}")))?;
             }
         }
 
@@ -1613,12 +1645,12 @@ where
     Ok(())
 }
 
-/// 清理孤儿预记录日志（status_code=0 且超过 30 分钟）
+/// 清理孤儿预记录日志（status_code=0 且超过 1 小时）
 pub async fn cleanup_orphan_pending_logs(state: &Arc<AppState>) {
     let orphans: Vec<i64> = match sqlx::query_scalar(&state.db.format_query(
         "SELECT id FROM logs \
              WHERE is_completed = 0 AND status_code = 0 \
-             AND created_at < CURRENT_TIMESTAMP - INTERVAL '30 minutes'",
+             AND created_at < CURRENT_TIMESTAMP - INTERVAL '1 hour'",
     ))
     .fetch_all(&state.db.pool)
     .await

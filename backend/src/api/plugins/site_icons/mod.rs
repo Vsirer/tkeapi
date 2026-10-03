@@ -278,6 +278,15 @@ pub async fn list_icons(
             binds.push(src.clone());
         }
     }
+    if let Some(letter) = params.initial.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let letter = letter.to_ascii_lowercase();
+        if letter == "#" {
+            conditions.push("substring(lower(name) from 1 for 1) !~ '^[a-z]$'".to_string());
+        } else if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic()) {
+            conditions.push(format!("lower(name) LIKE ${}", binds.len() + 1));
+            binds.push(format!("{letter}%"));
+        }
+    }
 
     let where_clause = conditions.join(" AND ");
 
@@ -289,7 +298,7 @@ pub async fn list_icons(
     let total: i64 = count_query.fetch_one(&state.db.pool).await?;
 
     let data_sql = format!(
-        "SELECT * FROM site_icons WHERE {} ORDER BY source ASC, name ASC LIMIT ${} OFFSET ${}",
+        "SELECT * FROM site_icons WHERE {} ORDER BY lower(name) ASC, name ASC LIMIT ${} OFFSET ${}",
         where_clause,
         binds.len() + 1,
         binds.len() + 2

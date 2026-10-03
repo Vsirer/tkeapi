@@ -41,6 +41,12 @@ pub struct User {
     pub invoice_mode: Option<String>,
     #[sqlx(default)]
     pub invoice_config: Option<String>,
+    /// 等级是否开启专属推广（注册邀请奖励）
+    #[sqlx(default)]
+    pub marketing_enabled: Option<i64>,
+    /// 等级返利比例，0 到 1
+    #[sqlx(default)]
+    pub commission_ratio: Option<f64>,
     #[sqlx(default)]
     pub admin_group_id: Option<i64>,
     #[serde(skip_deserializing)]
@@ -197,6 +203,9 @@ pub struct RechargeRequest {
     /// wallet_type: 'system'=系统钱包, 'gift'=赠送钱包
     #[serde(default)]
     pub wallet_type: String,
+    /// 系统钱包调整时是否联动上级返佣。加款缺省为是，扣款缺省为否。扣回先扣佣金钱包，差额再扣系统钱包。
+    #[serde(default)]
+    pub apply_commission: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -213,8 +222,21 @@ pub struct WalletStats {
     pub commission_ratio: f64,
     pub invite_reward_inviter: f64,
     pub invite_reward_invitee: f64,
+    /// consumption=按系统钱包实际消费，recharge=按充值入账
+    #[serde(default = "default_wallet_commission_basis")]
+    pub commission_basis: String,
+    /// 单次划转下限，0 为不限制
+    #[serde(default)]
+    pub commission_transfer_min: f64,
+    /// 单次划转上限，0 为不限制
+    #[serde(default)]
+    pub commission_transfer_max: f64,
     /// 是否允许在线支付
     pub pay_enabled: bool,
+}
+
+fn default_wallet_commission_basis() -> String {
+    "consumption".to_string()
 }
 
 /// 用户名+密码登录（保持原有接口兼容）

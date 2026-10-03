@@ -618,4 +618,101 @@ fn wrap_volcengine_query(raw: &str, model: &str, request_content: &str) -> Strin
     serde_json::to_string(&resp).unwrap_or_else(|_| raw.to_string())
 }
 
+/// 日志还没有上游响应时，按本次请求路径组装受理体。
+pub fn route_accept_body(path: &str, task_id: &str, model: &str) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let seed = json!({
+        "id": task_id,
+        "task_id": task_id,
+        "status": "pending",
+        "created": now,
+    })
+    .to_string();
+    let p = path.split(['|', '?']).next().unwrap_or(path).trim_end_matches('/');
+    if crate::relay::response_formatter::is_openai_compatible_path(p) {
+        return crate::relay::response_formatter::format_openai("视频", &seed, false, Some(task_id));
+    }
+    if p.contains("/video-generation/video-synthesis") || p.starts_with("/api/v1/tasks/") {
+        return json!({
+            "request_id": task_id,
+            "output": { "task_id": task_id, "task_status": "PENDING" }
+        })
+        .to_string();
+    }
+    wrap_official_client(p, &seed, model, "")
+}
+
+/// 本次视频受理（POST 已返回系统任务号，上游提交在后台）。
+pub fn tag_is_video_accept(tag: &str) -> bool {
+    serde_json::from_str::<Value>(tag)
+        .ok()
+        .and_then(|v| v.get("la").and_then(Value::as_i64))
+        == Some(1)
+}
+
+/// 新受理且响应仍为空、上游号还没写下：轮询只回受理体。
+pub fn awaiting_video_submit(response: &str, tag: &str) -> bool {
+    if !response.trim().is_empty() {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(tag) else {
+        return false;
+    };
+    v.get("la").and_then(Value::as_i64) == Some(1)
+        && !v
+            .get("upstream_task")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty())
+}
+
+pub fn remember_upstream_task(tag: &mut Option<String>, upstream_id: &str) {
+    let id = upstream_id.trim();
+    if id.is_empty() {
+        return;
+    }
+    let mut v: Value = tag
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_else(|| json!({}));
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    obj.insert("la".into(), json!(1));
+    obj.insert("upstream_task".into(), json!(id));
+    *tag = Some(v.to_string());
+}
+
+#[cfg(test)]
+mod route_accept_tests {
+    use super::*;
+
+    #[test]
+    fn awaiting_only_when_new_accept_has_no_result() {
+        assert!(awaiting_video_submit("", r#"{"la":1}"#));
+        assert!(!awaiting_video_submit("", r#"{}"#));
+        assert!(!awaiting_video_submit(r#"{"id":"x"}"#, r#"{"la":1}"#));
+        assert!(!awaiting_video_submit(
+            "",
+            r#"{"la":1,"upstream_task":"up-1"}"#
+        ));
+    }
+
+    #[test]
+    fn route_bodies_use_system_task_id() {
+        let id = "tsk_abc";
+        let openai = route_accept_body("/v1/video/generations", id, "m");
+        assert!(openai.contains(id) && openai.contains("pending"));
+        let volc = route_accept_body("/api/v3/contents/generations/tasks", id, "m");
+        assert!(volc.contains(id));
+        let ali = route_accept_body(
+            "/api/v1/services/aigc/video-generation/video-synthesis",
+            id,
+            "m",
+        );
+        assert!(ali.contains("PENDING") && ali.contains(id));
+        let poll = route_accept_body("/v1/video/generations/tsk_abc", id, "m");
+        assert!(poll.contains(id) && poll.contains("pending"));
+    }
+}
+
 

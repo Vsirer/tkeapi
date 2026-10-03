@@ -424,46 +424,46 @@ const UserInvoices: React.FC = () => {
 
   const renderChinaInvoiceTypeTag = (val: string) => {
     if (val === 'special') {
-      return <Tag color="purple">增值税专用发票</Tag>;
+      return <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>增值税专用发票</Tag>;
     }
-    return <Tag color="blue">增值税普通发票</Tag>;
+    return <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>增值税普通发票</Tag>;
   };
 
   const renderIntlTypeTag = (kind: IntlDocKind) => {
     if (kind === 'receipt') {
-      return <Tag color="green">付款收据 (Payment Receipt)</Tag>;
+      return <Tag color="green" style={{ margin: 0, fontSize: 11 }}>付款收据 (Receipt)</Tag>;
     }
-    return <Tag color="blue">商业发票 (Commercial Invoice)</Tag>;
+    return <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>商业发票 (Invoice)</Tag>;
   };
 
   const renderStatusTag = (status: string) => {
     switch (status) {
       case 'pending':
         return (
-          <Tag icon={<ClockCircleOutlined />} color="warning">
+          <Tag icon={<ClockCircleOutlined />} color="warning" style={{ margin: 0, fontSize: 11 }}>
             待审核
           </Tag>
         );
       case 'approved':
         return (
-          <Tag icon={<CheckCircleOutlined />} color="success">
+          <Tag icon={<CheckCircleOutlined />} color="success" style={{ margin: 0, fontSize: 11 }}>
             已开票
           </Tag>
         );
       case 'rejected':
         return (
-          <Tag icon={<CloseCircleOutlined />} color="error">
+          <Tag icon={<CloseCircleOutlined />} color="error" style={{ margin: 0, fontSize: 11 }}>
             已驳回
           </Tag>
         );
       case 'cancelled':
         return (
-          <Tag icon={<MinusCircleOutlined />} color="default">
+          <Tag icon={<MinusCircleOutlined />} color="default" style={{ margin: 0, fontSize: 11 }}>
             已取消
           </Tag>
         );
       default:
-        return <Tag>{status}</Tag>;
+        return <Tag style={{ margin: 0, fontSize: 11 }}>{status}</Tag>;
     }
   };
 
@@ -471,18 +471,18 @@ const UserInvoices: React.FC = () => {
     {
       title: '申请单号 / 发票号',
       key: 'identifiers',
-      width: 190,
+      width: 180,
       render: (_: unknown, record: InvoiceRequestRecord) => (
-        <Space vertical size={2}>
+        <Space vertical size={1}>
           <Text
             copyable={{ text: record.request_no || String(record.id) }}
-            style={{ fontSize: 13, fontWeight: 500 }}
+            style={{ fontSize: 12, fontWeight: 500, fontFamily: 'monospace', whiteSpace: 'nowrap' }}
           >
             {record.request_no || `#${record.id}`}
           </Text>
           {record.invoice_number && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              发票号: {record.invoice_number}
+            <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+              发票: {record.invoice_number}
             </Text>
           )}
         </Space>
@@ -492,27 +492,28 @@ const UserInvoices: React.FC = () => {
       title: '发票类型',
       dataIndex: 'invoice_type',
       key: 'invoice_type',
-      width: 140,
+      width: 130,
       render: (val: string) => renderChinaInvoiceTypeTag(val),
     },
     {
       title: '发票抬头',
       key: 'title',
+      width: 180,
       ellipsis: true,
       render: (_: unknown, record: InvoiceRequestRecord) => {
         const isCompany = record.title_type === 'company';
         return (
-          <Space vertical size={2}>
-            <Space size={6}>
-              <Tag color={isCompany ? 'cyan' : 'default'} style={{ fontSize: 11 }}>
+          <Space vertical size={1} style={{ maxWidth: '100%' }}>
+            <Space size={4} style={{ maxWidth: '100%', overflow: 'hidden' }}>
+              <Tag color={isCompany ? 'cyan' : 'default'} style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
                 {isCompany ? '企业' : '个人'}
               </Tag>
-              <Text strong style={{ fontSize: 13 }}>
+              <Text strong ellipsis={{ tooltip: record.title }} style={{ fontSize: 12 }}>
                 {record.title}
               </Text>
             </Space>
             {record.tax_number && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
+              <Text type="secondary" ellipsis={{ tooltip: record.tax_number }} style={{ fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                 税号: {record.tax_number}
               </Text>
             )}
@@ -524,14 +525,16 @@ const UserInvoices: React.FC = () => {
       title: '开票金额',
       dataIndex: 'amount',
       key: 'amount',
-      width: 130,
+      width: 110,
       align: 'right' as const,
       render: (amt: number, record: InvoiceRequestRecord) => (
         <span
           style={{
-            fontSize: 14,
+            fontSize: 13,
             fontWeight: 600,
+            fontFamily: 'monospace',
             color: record.status === 'approved' ? '#10b981' : undefined,
+            whiteSpace: 'nowrap',
           }}
         >
           {currencySymbol}
@@ -543,7 +546,7 @@ const UserInvoices: React.FC = () => {
       title: '接收邮箱',
       dataIndex: 'email',
       key: 'email',
-      width: 170,
+      width: 160,
       ellipsis: true,
       render: (email: string) => (
         <Text copyable={{ text: email }} style={{ fontSize: 12 }}>
@@ -555,16 +558,16 @@ const UserInvoices: React.FC = () => {
       title: '审核状态',
       dataIndex: 'status',
       key: 'status',
-      width: 110,
+      width: 100,
       render: (st: string) => renderStatusTag(st),
     },
     {
       title: '申请时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 160,
+      width: 140,
       render: (time: string) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
+        <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
           {formatApiDateTime(time)}
         </Text>
       ),
@@ -572,13 +575,13 @@ const UserInvoices: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 140,
+      width: 110,
       render: (_: unknown, record: InvoiceRequestRecord) => (
-        <Space size={8}>
+        <Space size={6}>
           <Button
             size="small"
             type="link"
-            style={{ padding: 0 }}
+            style={{ padding: 0, fontSize: 12 }}
             onClick={() => {
               setSelectedInvoice(record);
               setDrawerVisible(true);
@@ -606,14 +609,14 @@ const UserInvoices: React.FC = () => {
     {
       title: '凭证编号',
       key: 'id',
-      width: 220,
+      width: 190,
       render: (_: unknown, record: IntlDocument) => (
-        <Space vertical size={2}>
-          <Text copyable={{ text: record.id }} style={{ fontSize: 13, fontWeight: 500 }}>
+        <Space vertical size={1}>
+          <Text copyable={{ text: record.id }} style={{ fontSize: 12, fontWeight: 500, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
             {record.id}
           </Text>
           {record.transaction_id && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
+            <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
               Txn: {record.transaction_id}
             </Text>
           )}
@@ -624,29 +627,30 @@ const UserInvoices: React.FC = () => {
       title: '凭证类型',
       dataIndex: 'kind',
       key: 'kind',
-      width: 210,
+      width: 170,
       render: (kind: IntlDocKind) => renderIntlTypeTag(kind),
     },
     {
       title: '账单抬头 (Billed To)',
       key: 'billed_to',
+      width: 180,
       ellipsis: true,
       render: () => {
         const isCompany = billedParty.kind === 'enterprise';
         return (
-          <Space vertical size={2}>
-            <Space size={6}>
+          <Space vertical size={1} style={{ maxWidth: '100%' }}>
+            <Space size={4} style={{ maxWidth: '100%', overflow: 'hidden' }}>
               {billedParty.kind && billedParty.kind !== 'unverified' && (
-                <Tag color={isCompany ? 'cyan' : 'default'} style={{ fontSize: 11 }}>
-                  {isCompany ? '企业 (Company)' : '个人 (Individual)'}
+                <Tag color={isCompany ? 'cyan' : 'default'} style={{ fontSize: 10, margin: 0, padding: '0 4px', lineHeight: '16px', flexShrink: 0 }}>
+                  {isCompany ? '企业' : '个人'}
                 </Tag>
               )}
-              <Text strong style={{ fontSize: 13 }}>
+              <Text strong ellipsis={{ tooltip: billedParty.name }} style={{ fontSize: 12 }}>
                 {billedParty.name}
               </Text>
             </Space>
             {billedParty.taxId && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
+              <Text type="secondary" ellipsis={{ tooltip: billedParty.taxId }} style={{ fontSize: 11, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                 Tax ID: {billedParty.taxId}
               </Text>
             )}
@@ -658,12 +662,12 @@ const UserInvoices: React.FC = () => {
       title: '支付方式',
       dataIndex: 'payment_method',
       key: 'payment_method',
-      width: 150,
+      width: 130,
       render: (method: string, record: IntlDocument) => (
-        <Space vertical size={2}>
-          <Text style={{ fontSize: 13 }}>{formatPaymentMethod(method)}</Text>
+        <Space size={4} align="center">
+          <Text style={{ fontSize: 12 }}>{formatPaymentMethod(method)}</Text>
           {record.payment === 'paid' && (
-            <Tag color="success" style={{ margin: 0, fontSize: 11 }}>paid</Tag>
+            <Tag color="success" style={{ margin: 0, fontSize: 10, padding: '0 4px', lineHeight: '16px' }}>paid</Tag>
           )}
         </Space>
       ),
@@ -672,10 +676,10 @@ const UserInvoices: React.FC = () => {
       title: '金额',
       dataIndex: 'amount',
       key: 'amount',
-      width: 130,
+      width: 110,
       align: 'right' as const,
       render: (amt: number, record: IntlDocument) => (
-        <span style={{ fontSize: 14, fontWeight: 600, color: '#10b981' }}>
+        <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'monospace', color: '#10b981', whiteSpace: 'nowrap' }}>
           {record.currency || currencySymbol}
           {Number(amt || 0).toFixed(2)}
         </span>
@@ -685,9 +689,9 @@ const UserInvoices: React.FC = () => {
       title: '资金类型',
       dataIndex: 'fund_type',
       key: 'fund_type',
-      width: 130,
+      width: 110,
       render: (_: string, record: IntlDocument) => (
-        <Tag color={record.fund_type === 'gift_bonus' ? 'default' : 'blue'}>
+        <Tag color={record.fund_type === 'gift_bonus' ? 'default' : 'blue'} style={{ margin: 0, fontSize: 11 }}>
           {record.fund_type_label || (record.fund_type === 'gift_bonus' ? '活动赠送' : '实付资金')}
         </Tag>
       ),
@@ -696,9 +700,9 @@ const UserInvoices: React.FC = () => {
       title: '开具时间',
       dataIndex: 'raw_date',
       key: 'raw_date',
-      width: 170,
+      width: 140,
       render: (time: string, record: IntlDocument) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
+        <Text type="secondary" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
           {time ? formatApiDateTime(time) : record.date}
         </Text>
       ),
@@ -706,12 +710,12 @@ const UserInvoices: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 100,
+      width: 80,
       render: (_: unknown, record: IntlDocument) => (
         <Button
           size="small"
           type="link"
-          style={{ padding: 0 }}
+          style={{ padding: 0, fontSize: 12 }}
           onClick={() => {
             setSelectedIntlDoc(record);
           }}
@@ -727,12 +731,26 @@ const UserInvoices: React.FC = () => {
   const fundStats = intlPayload?.fund_stats;
 
   return (
-    <div style={{ padding: '0 4px', animation: 'fadeIn 0.25s ease' }}>
+    <div className="compact-invoices-page" style={{ padding: '0 4px', animation: 'fadeIn 0.25s ease' }}>
+      <style>{`
+        .compact-invoices-page .ant-table-thead > tr > th {
+          padding: 6px 8px !important;
+          font-size: 12px !important;
+          white-space: nowrap;
+        }
+        .compact-invoices-page .ant-table-tbody > tr > td {
+          padding: 5px 8px !important;
+          font-size: 12px !important;
+        }
+        .compact-invoices-page .ant-pagination {
+          margin: 8px 0 0 !important;
+        }
+      `}</style>
       {!isInvoiceEnabled && (
         <Alert
           type="warning"
           showIcon
-          style={{ marginBottom: 16, borderRadius: 8 }}
+          style={{ marginBottom: 10, borderRadius: 8 }}
           message={isChinaMode ? '全局开票服务当前未开启' : 'Invoices 收据与发票服务当前未开启'}
           description="系统设置「站点设置 - 支付设置 - 收据与发票」中服务处于关闭状态。当前页面仅供查阅与归档该用户历史开票数据。"
         />
@@ -743,13 +761,14 @@ const UserInvoices: React.FC = () => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          marginBottom: 16,
+          marginBottom: 10,
           flexWrap: 'wrap',
-          gap: 12,
+          gap: 8,
         }}
       >
-        <Space size={12} align="center">
+        <Space size={10} align="center">
           <Button
+            size="small"
             icon={<ArrowLeftOutlined />}
             onClick={() => navigate(`/${adminPath}/users`)}
             style={{ borderRadius: 6 }}
@@ -757,31 +776,34 @@ const UserInvoices: React.FC = () => {
             返回用户列表
           </Button>
           <div>
-            <Title level={4} style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <FileTextOutlined style={{ color: '#fa8c16' }} />
-              {isChinaMode ? '用户开票历史记录' : '用户发票与收据记录'}
-              <Tag color={isChinaMode ? 'orange' : 'blue'} style={{ marginLeft: 4 }}>
+            <div style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <FileTextOutlined style={{ color: '#fa8c16', fontSize: 15 }} />
+              <span style={{ fontSize: 15, fontWeight: 600 }}>
+                {isChinaMode ? '用户开票历史记录' : '用户发票与收据记录'}
+              </span>
+              <Tag color={isChinaMode ? 'orange' : 'blue'} style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}>
                 {isChinaMode ? '🇨🇳 境内增值税发票' : '🌐 国际凭证 (Invoices & Receipts)'}
               </Tag>
               {targetUser?.username && (
-                <Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
                   ({targetUser.username} · UID: {targetUser.uid || targetUser.id})
                 </Text>
               )}
-            </Title>
+            </div>
           </div>
         </Space>
 
-        <Space size={10}>
+        <Space size={8}>
           {isChinaMode && (
             <Button
+              size="small"
               icon={<AuditOutlined />}
               onClick={() => navigate(`/${adminPath}/finance/invoices`)}
             >
               发票审核中心
             </Button>
           )}
-          <Button icon={<SyncOutlined spin={loading} />} onClick={handleRefresh}>
+          <Button size="small" icon={<SyncOutlined spin={loading} />} onClick={handleRefresh}>
             刷新
           </Button>
         </Space>
@@ -790,15 +812,16 @@ const UserInvoices: React.FC = () => {
       <Card
         size="small"
         bordered={false}
+        styles={{ body: { padding: '8px 12px' } }}
         style={{
-          marginBottom: 16,
+          marginBottom: 10,
           borderRadius: 8,
           background: 'var(--ant-color-bg-container)',
           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)',
         }}
       >
         {userLoading ? (
-          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+          <div style={{ textAlign: 'center', padding: '12px 0' }}>
             <Spin size="small" tip="正在加载用户基本资料..." />
           </div>
         ) : targetUser ? (
@@ -808,52 +831,53 @@ const UserInvoices: React.FC = () => {
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: 16,
+              gap: 12,
             }}
           >
-            <Space size={14} align="center">
+            <Space size={10} align="center">
               <div
                 style={{
-                  width: 44,
-                  height: 44,
+                  width: 32,
+                  height: 32,
                   borderRadius: '50%',
                   background: 'rgba(250, 140, 22, 0.12)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   color: '#fa8c16',
-                  fontSize: 20,
+                  fontSize: 16,
+                  flexShrink: 0,
                 }}
               >
                 <UserOutlined />
               </div>
               <div>
-                <Space size={8} align="center">
-                  <Text strong style={{ fontSize: 16 }}>
+                <Space size={6} align="center" wrap>
+                  <Text strong style={{ fontSize: 14 }}>
                     {targetUser.username}
                   </Text>
                   {targetUser.nickname && (
-                    <Text type="secondary" style={{ fontSize: 13 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
                       ({targetUser.nickname})
                     </Text>
                   )}
-                  <Tag color="orange" style={{ margin: 0 }}>
+                  <Tag color="orange" style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}>
                     {targetUser.user_group || '默认等级'}
                   </Tag>
-                  <Tag color={targetUser.is_active ? 'success' : 'error'} style={{ margin: 0 }}>
+                  <Tag color={targetUser.is_active ? 'success' : 'error'} style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}>
                     {targetUser.is_active ? '正常' : '已禁用'}
                   </Tag>
                 </Space>
-                <div style={{ marginTop: 4, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
+                <div style={{ marginTop: 2, display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>
                   <span>
                     UID:{' '}
-                    <Text code copyable={{ text: targetUser.uid || String(targetUser.id) }} style={{ fontSize: 12 }}>
+                    <Text code copyable={{ text: targetUser.uid || String(targetUser.id) }} style={{ fontSize: 11, fontFamily: 'monospace' }}>
                       {targetUser.uid || targetUser.id}
                     </Text>
                   </span>
                   {targetUser.email && (
                     <span>
-                      邮箱: <Text copyable={{ text: targetUser.email }} style={{ fontSize: 12 }}>{targetUser.email}</Text>
+                      邮箱: <Text copyable={{ text: targetUser.email }} style={{ fontSize: 11 }}>{targetUser.email}</Text>
                     </span>
                   )}
                   {targetUser.mobile && (
@@ -866,62 +890,62 @@ const UserInvoices: React.FC = () => {
               </div>
             </Space>
 
-            <Space size={24} wrap>
+            <Space size={20} wrap>
               <div>
                 <div style={{ fontSize: 11, color: 'var(--ant-color-text-secondary)' }}>系统钱包余额</div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: '#1677ff' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#1677ff', fontFamily: 'monospace' }}>
                   {currencySymbol}{Number(targetUser.balance || 0).toFixed(4)}
                 </div>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: 'var(--ant-color-text-secondary)' }}>赠送钱包余额</div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: '#52c41a' }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#52c41a', fontFamily: 'monospace' }}>
                   {currencySymbol}{Number(targetUser.gift_balance || 0).toFixed(4)}
                 </div>
               </div>
             </Space>
           </div>
         ) : (
-          <Text type="secondary">用户标识: {userId}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>用户标识: {userId}</Text>
         )}
       </Card>
 
       {isChinaMode ? (
-        <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+        <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>累计已开票总额</span>}
                 value={stats.total_approved_amount}
                 precision={2}
                 prefix={currencySymbol}
-                valueStyle={{ color: '#10b981', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#10b981', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>本月已开票金额</span>}
                 value={stats.this_month_approved_amount}
                 precision={2}
                 prefix={currencySymbol}
-                valueStyle={{ color: '#059669', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#059669', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>申请开票总数</span>}
                 value={stats.total_count}
                 suffix={<span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>笔</span>}
-                valueStyle={{ color: '#1677ff', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#1677ff', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>待审核 / 驳回</span>}
                 value={stats.pending_count}
@@ -933,53 +957,54 @@ const UserInvoices: React.FC = () => {
                 valueStyle={{
                   color: stats.pending_count > 0 ? '#fa8c16' : 'var(--ant-color-text)',
                   fontWeight: 700,
-                  fontSize: 22,
+                  fontSize: 18,
+                  fontFamily: 'monospace',
                 }}
               />
             </Card>
           </Col>
         </Row>
       ) : (
-        <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
+        <Row gutter={[8, 8]} style={{ marginBottom: 10 }}>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>累计实付金额</span>}
                 value={fundStats?.total_real_paid || 0}
                 precision={2}
                 prefix={currencySymbol}
-                valueStyle={{ color: '#10b981', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#10b981', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>商业发票 (Invoices)</span>}
                 value={intlInvoiceCount}
                 suffix={<span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>份</span>}
-                valueStyle={{ color: '#1677ff', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#1677ff', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>付款收据 (Receipts)</span>}
                 value={intlReceiptCount}
                 suffix={<span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>份</span>}
-                valueStyle={{ color: '#059669', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: '#059669', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
           <Col xs={12} sm={12} md={6}>
-            <Card size="small" bordered={false} style={{ borderRadius: 8 }}>
+            <Card size="small" bordered={false} styles={{ body: { padding: '8px 12px' } }} style={{ borderRadius: 8 }}>
               <Statistic
                 title={<span style={{ fontSize: 12 }}>赠送金（不可开具）</span>}
                 value={fundStats?.total_gift_recharged || 0}
                 precision={2}
                 prefix={currencySymbol}
-                valueStyle={{ color: 'var(--ant-color-text-secondary)', fontWeight: 700, fontSize: 22 }}
+                valueStyle={{ color: 'var(--ant-color-text-secondary)', fontWeight: 700, fontSize: 18, fontFamily: 'monospace' }}
               />
             </Card>
           </Col>
@@ -987,7 +1012,9 @@ const UserInvoices: React.FC = () => {
       )}
 
       <Card
+        size="small"
         bordered={false}
+        styles={{ body: { padding: '10px 12px' } }}
         style={{
           borderRadius: 8,
           boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)',
@@ -998,9 +1025,9 @@ const UserInvoices: React.FC = () => {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            marginBottom: 16,
+            marginBottom: 10,
             flexWrap: 'wrap',
-            gap: 12,
+            gap: 8,
           }}
         >
           {isChinaMode ? (
@@ -1012,7 +1039,7 @@ const UserInvoices: React.FC = () => {
               }}
               optionType="button"
               buttonStyle="solid"
-              size="middle"
+              size="small"
             >
               <Radio.Button value="all">全部 ({stats.total_count})</Radio.Button>
               <Radio.Button value="pending">
@@ -1030,7 +1057,7 @@ const UserInvoices: React.FC = () => {
               }}
               optionType="button"
               buttonStyle="solid"
-              size="middle"
+              size="small"
             >
               <Radio.Button value="all">全部 ({intlDocuments.length})</Radio.Button>
               {showIntlInvoices && (
@@ -1042,15 +1069,16 @@ const UserInvoices: React.FC = () => {
             </Radio.Group>
           )}
 
-          <Space size={10} wrap>
+          <Space size={8} wrap>
             {isChinaMode && (
               <Select
+                size="small"
                 value={typeFilter}
                 onChange={(val) => {
                   setTypeFilter(val);
                   onChange(1, pageSize);
                 }}
-                style={{ width: 160 }}
+                style={{ width: 140 }}
                 options={[
                   { label: '全部发票类型', value: 'all' },
                   { label: '增值税普通发票', value: 'normal' },
@@ -1059,15 +1087,17 @@ const UserInvoices: React.FC = () => {
               />
             )}
             <Input
-              placeholder={isChinaMode ? '搜索抬头 / 税号 / 单号 / 发票号' : '搜索凭证号 / 支付方式 / 交易号'}
+              size="small"
+              placeholder={isChinaMode ? '搜索抬头/税号/单号/发票号' : '搜索凭证号/支付方式/交易号'}
               prefix={<SearchOutlined style={{ color: 'var(--ant-color-text-quaternary)' }} />}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               onPressEnter={handleSearch}
               allowClear
-              style={{ width: 230 }}
+              style={{ width: 210 }}
             />
             <RangePicker
+              size="small"
               value={dateRange}
               onChange={(dates) => {
                 setDateRange(dates as any);
@@ -1075,15 +1105,15 @@ const UserInvoices: React.FC = () => {
                   onChange(1, pageSize);
                 }
               }}
-              placeholder={isChinaMode ? ['申请起始时间', '申请截止时间'] : ['开具起始时间', '开具截止时间']}
-              style={{ width: 250 }}
+              placeholder={isChinaMode ? ['申请起始', '申请截止'] : ['开具起始', '开具截止']}
+              style={{ width: 220 }}
             />
             {isChinaMode && (
-              <Button type="primary" onClick={handleSearch}>
+              <Button size="small" type="primary" onClick={handleSearch}>
                 查询
               </Button>
             )}
-            <Button onClick={handleReset}>重置</Button>
+            <Button size="small" onClick={handleReset}>重置</Button>
           </Space>
         </div>
 
@@ -1099,8 +1129,8 @@ const UserInvoices: React.FC = () => {
               pageSize,
               onChange,
             })}
-            scroll={{ x: 1080 }}
-            size="middle"
+            scroll={{ x: 1000 }}
+            size="small"
           />
         ) : (
           <Table
@@ -1125,8 +1155,8 @@ const UserInvoices: React.FC = () => {
               pageSize,
               onChange,
             })}
-            scroll={{ x: 1180 }}
-            size="middle"
+            scroll={{ x: 1080 }}
+            size="small"
           />
         )}
       </Card>

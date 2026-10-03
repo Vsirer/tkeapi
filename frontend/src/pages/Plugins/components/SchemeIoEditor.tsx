@@ -23,6 +23,7 @@ import {
   Typography,
 } from 'antd';
 import { QuestionCircleOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import { WORKFLOW_BASIC_NODE_TYPES } from './scheme/workflowBasicNodes';
 import {
   fullImageSchemeIoCatalog,
@@ -52,6 +53,7 @@ import {
   SEEDANCE_EDITION_LIMITS,
   MINIMAX_H3_EDITION,
 } from './scheme/schemeIo';
+import { localizeSchemePhrase } from './scheme/schemeParamUtils';
 
 const { Text } = Typography;
 
@@ -162,6 +164,8 @@ export type SchemeIoEditorProps = {
   schemeId?: string;
   /** 模型 IO 覆写：绑定字段以方案为准，不可改 */
   bindKeyDisabled?: boolean;
+  /** 创作中心 2026：口名、节点类型、素材类型随界面语言显示 */
+  localizeLabels?: boolean;
 };
 
 const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
@@ -174,7 +178,10 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
   standalone = false,
   schemeId,
   bindKeyDisabled = false,
+  localizeLabels = false,
 }) => {
+  const { t } = useTranslation('playground_2026');
+  const phrase = (text: string) => (localizeLabels ? localizeSchemePhrase(text) : text);
   const muted = isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)';
   const cardBg = isLight ? '#fafafa' : '#1a1a1a';
   const cardBorder = isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)';
@@ -219,7 +226,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
     .filter((p) => p?.key)
     .map((p) => ({
       value: p.key,
-      label: p.label ? `${p.key}（${p.label}）` : p.key,
+      label: p.label ? `${p.key}（${phrase(p.label)}）` : p.key,
     }));
 
   const commit = (
@@ -259,34 +266,34 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
           <Space>
             <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>
-              {port.label || port.key}
+              {phrase(port.label || port.key)}
             </Text>
             <Switch
               size="small"
               checked={isOn}
               onChange={(v) => patchInput(idx, 'enabled', v)}
             />
-            <Text style={{ fontSize: 11, color: muted }}>{isOn ? '启用' : '已禁用'}</Text>
+            <Text style={{ fontSize: 11, color: muted }}>{isOn ? t('admin_enabled', '启用') : t('admin_disabled', '已禁用')}</Text>
           </Space>
         </div>
         {isFeatureTogglePort(port) ? (
           <Text style={{ display: 'block', fontSize: 12, color: muted }}>
             {port.key === 'thinking'
-              ? '开启后，用户端聊天栏出现深度思考按钮（默认开）。关闭后不出现按钮，请求不带 thinking。模型 IO 可单独覆盖。'
-              : '能力开关，不是上传口。'}
+              ? t('admin_io_thinking_tip', '开启后，用户端聊天栏出现深度思考按钮（默认开）。关闭后不出现按钮，请求不带 thinking。模型 IO 可单独覆盖。')
+              : t('admin_io_feature_toggle_tip', '能力开关，不是上传口。')}
           </Text>
         ) : (
         <>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 140 }}>
-            <Text style={fieldHint}>绑定字段</Text>
+            <Text style={fieldHint}>{t('admin_io_bind_key', '绑定字段')}</Text>
             <AutoComplete
               size="small"
               style={{ width: '100%' }}
               options={bindOptions}
               value={port.bind_key || ''}
               onChange={(v) => patchInput(idx, 'bind_key', v)}
-              placeholder="选参数键或手填"
+              placeholder={t('admin_io_bind_ph', '选参数键或手填')}
               disabled={!isOn || bindKeyDisabled}
               filterOption={(input, option) =>
                 String(option?.value || '')
@@ -299,12 +306,12 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
             />
           </div>
           <div style={{ flex: 2, minWidth: 180 }}>
-            <Text style={fieldHint}>可连接上游</Text>
+            <Text style={fieldHint}>{t('admin_io_upstream', '可连接上游')}</Text>
             <Select
               size="small"
               mode="multiple"
               style={{ width: '100%' }}
-              options={ACCEPTS_OPTIONS}
+              options={ACCEPTS_OPTIONS.map((opt) => ({ ...opt, label: phrase(opt.label) }))}
               value={port.accepts || []}
               onChange={(v) => {
                 const list = Array.isArray(v) ? v : [];
@@ -323,7 +330,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                 });
                 commit(next, displayOutputs);
               }}
-              placeholder="选择节点类型"
+              placeholder={t('admin_io_nodes_ph', '选择节点类型')}
               disabled={!isOn}
             />
           </div>
@@ -331,8 +338,8 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
         {(port.accepts || []).includes('asset') && (
           <div style={{ marginBottom: 8 }}>
             <Text style={fieldHint}>
-              素材类型{' '}
-              <Tooltip title="勾选「素材」后生效：限制可接入的素材文件类型。未选时按口模态（图/视/音）回落。">
+              {t('admin_io_asset_type', '素材类型')}{' '}
+              <Tooltip title={t('admin_io_asset_tip', '勾选「素材」后生效：限制可接入的素材文件类型。未选时按口模态（图/视/音）回落。')}>
                 <QuestionCircleOutlined style={{ color: muted, cursor: 'help' }} />
               </Tooltip>
             </Text>
@@ -340,7 +347,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
               size="small"
               mode="multiple"
               style={{ width: '100%', maxWidth: 420 }}
-              options={SCHEME_ASSET_KIND_OPTIONS}
+              options={SCHEME_ASSET_KIND_OPTIONS.map((opt) => ({ ...opt, label: phrase(opt.label) }))}
               value={
                 port.accept_asset_kinds?.length
                   ? port.accept_asset_kinds
@@ -353,7 +360,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                   Array.isArray(v) && v.length ? v : defaultAcceptAssetKinds(port.modality),
                 )
               }
-              placeholder="选择素材文件类型"
+              placeholder={t('admin_io_assets_ph', '选择素材文件类型')}
               disabled={!isOn}
             />
           </div>
@@ -362,8 +369,8 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ width: 140 }}>
               <Text style={fieldHint}>
-                数量上限{' '}
-                <Tooltip title="工作流与生成工具中，该口可上传或接入的最大数量。参考图/参考视频/参考音频会同步限制用户端提示词附件。编辑视频与延长视频默认为 1。">
+                {t('admin_io_max_count', '数量上限')}{' '}
+                <Tooltip title={t('admin_io_max_tip', '工作流与生成工具中，该口可上传或接入的最大数量。参考图/参考视频/参考音频会同步限制用户端提示词附件。编辑视频与延长视频默认为 1。')}>
                   <QuestionCircleOutlined style={{ color: muted, cursor: 'help' }} />
                 </Tooltip>
               </Text>
@@ -402,7 +409,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
       }
       if (isReferenceMediaPort(port) && refIndices.length) {
         refIndices.forEach((i) => used.add(i));
-        inputBlocks.push({ type: 'group', title: '全能参考生视频', indices: refIndices });
+        inputBlocks.push({ type: 'group', title: t('admin_io_ref_i2v', '参考生视频'), indices: refIndices });
         return;
       }
       used.add(idx);
@@ -418,23 +425,23 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
 
       <div style={{ marginBottom: 8 }}>
         <Text strong style={{ color: isLight ? '#1f2937' : '#fff', fontSize: 14 }}>
-          {standalone ? '输入输出配置' : 'IO 配置'}
+          {standalone ? t('admin_scheme_io_title', '输入输出配置') : t('admin_io_title', 'IO 配置')}
         </Text>
       </div>
       <Text style={{ display: 'block', marginTop: 0, marginBottom: 12, fontSize: 12, color: muted }}>
         {seedanceMode
-          ? 'Seedance 按官方能力配置：文生 / 首帧 / 首尾帧 / 全能参考。编辑与延长是全能参考的子能力，默认开启。'
+          ? t('admin_io_seedance_intro', 'Seedance 按官方能力配置：文生 / 首帧 / 首尾帧 / 全能参考。编辑与延长是全能参考的子能力，默认开启。')
           : wan3Mode
-            ? '万相 3.0 按官方能力配置：文生 / 首帧 / 首尾帧 / 全能参考。编辑与延长是全能参考的子能力，默认开启。'
+            ? t('admin_io_wan3_intro', '万相 3.0 按官方能力配置：文生 / 首帧 / 首尾帧 / 全能参考。编辑与延长是全能参考的子能力，默认开启。')
             : minimaxMode
-              ? 'MiniMax H3 按官方能力配置：文生 / 图生（首尾帧）/ 多模态参考。可切换 MiniMax-H3 与 MiniMax-H3-Max。'
+              ? t('admin_io_minimax_intro', 'MiniMax H3 按官方能力配置：文生 / 图生（首尾帧）/ 多模态参考。可切换 MiniMax-H3 与 MiniMax-H3-Max。')
             : chatMode
-              ? '深度思考是能力开关：打开后用户端聊天栏显示深度思考按钮。关闭则不显示、请求不带 thinking。模型 IO 可单独覆盖方案。'
-              : '全部口固定展示；关闭「启用」后其余字段不可改。方案列表点「重置」可恢复默认参数与 IO。'}
+              ? t('admin_io_chat_thinking_intro', '深度思考是能力开关：打开后用户端聊天栏显示深度思考按钮。关闭则不显示、请求不带 thinking。模型 IO 可单独覆盖方案。')
+              : t('admin_io_generic_intro', '全部口固定展示；关闭「启用」后其余字段不可改。方案列表点「重置」可恢复默认参数与 IO。')}
       </Text>
 
       <div style={{ marginBottom: 8 }}>
-        <Text style={{ fontSize: 13, color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>输入</Text>
+        <Text style={{ fontSize: 13, color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{t('admin_io_inputs', '输入')}</Text>
       </div>
 
       {inputBlocks.map((block) => {
@@ -484,7 +491,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                       commit(next, displayOutputs);
                     }}
                   />
-                  <Text style={{ fontSize: 11, color: muted }}>{groupOn ? '启用' : '已禁用'}</Text>
+                  <Text style={{ fontSize: 11, color: muted }}>{groupOn ? t('admin_enabled', '启用') : t('admin_disabled', '已禁用')}</Text>
                 </Space>
               </div>
               {minimaxMode && (
@@ -509,8 +516,8 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                   </Radio.Group>
                   <Text style={{ display: 'block', marginTop: 6, fontSize: 11, color: muted }}>
                     {minimaxEdition === 'h3-max'
-                      ? '仅文生 / 图生（首尾帧）；不支持参考图、参考视频、参考音频。分辨率 480P / 768P，时长 5–15 秒'
-                      : '文生 / 图生（首尾帧）/ 多模态参考。参考图 0–9、视频 0–3、音频 0–3。分辨率 768P / 2K，时长 4–15 秒'}
+                      ? t('admin_io_minimax_max_rule', '仅文生 / 图生（首尾帧）；不支持参考图、参考视频、参考音频。分辨率 480P / 768P，时长 5–15 秒')
+                      : t('admin_io_minimax_h3_rule', '文生 / 图生（首尾帧）/ 多模态参考。参考图 0–9、视频 0–3、音频 0–3。分辨率 768P / 2K，时长 4–15 秒')}
                   </Text>
                 </div>
               )}
@@ -536,19 +543,28 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                   </Radio.Group>
                   <Text style={{ display: 'block', marginTop: 6, fontSize: 11, color: muted }}>
                     {seedanceEdition === '2.5'
-                      ? `参考图 0–${lim.images}、视频 0–${lim.videos}、音频 0–${lim.audios}；可任意搭配（含只传音频）；无参考素材按文生视频；时长最长 ${lim.durationMax} 秒`
-                      : `参考图 0–${lim.images}、视频 0–${lim.videos}、音频 0–${lim.audios}；无参考素材按文生视频；传了参考音频必须搭配参考图`}
+                      ? t('admin_io_seedance_25_rule', '参考图 0–{{images}}、视频 0–{{videos}}、音频 0–{{audios}}；可任意搭配（含只传音频）；无参考素材按文生视频；时长最长 {{durationMax}} 秒', {
+                        images: lim.images,
+                        videos: lim.videos,
+                        audios: lim.audios,
+                        durationMax: lim.durationMax,
+                      })
+                      : t('admin_io_seedance_20_rule', '参考图 0–{{images}}、视频 0–{{videos}}、音频 0–{{audios}}；无参考素材按文生视频；传了参考音频必须搭配参考图', {
+                        images: lim.images,
+                        videos: lim.videos,
+                        audios: lim.audios,
+                      })}
                   </Text>
                 </div>
               )}
               {wan3Mode && (
                 <Text style={{ display: 'block', marginBottom: 10, fontSize: 11, color: muted }}>
-                  参考图 0–10、视频 0–5、音频 0–5；图/视频/音频可任意组合（含只传音频）。有参考素材时比例建议 adaptive；编辑时长建议 -1。
+                  {t('admin_io_wan3_ref_rule', '参考图 0–10、视频 0–5、音频 0–5；图/视频/音频可任意组合（含只传音频）。有参考素材时比例建议 adaptive；编辑时长建议 -1。')}
                 </Text>
               )}
               {!omniFamilyMode && !minimaxMode && (
                 <Text style={{ display: 'block', marginBottom: 10, fontSize: 11, color: muted }}>
-                  参考图、参考视频、参考音频同属一组功能，可单独开关并设置数量上限。
+                  {t('admin_io_ref_group_rule', '参考图、参考视频、参考音频同属一组功能，可单独开关并设置数量上限。')}
                 </Text>
               )}
               {block.indices.map((idx) => renderInputCard(displayInputs[idx], idx, true))}
@@ -565,9 +581,9 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                   }}
                 >
                   <div>
-                    <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>编辑视频</Text>
+                    <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>{t('admin_io_edit_video', '编辑视频')}</Text>
                     <Text style={{ display: 'block', fontSize: 11, color: muted }}>
-                      自动保持输出宽高比、时长与待编辑视频一致
+                      {t('admin_io_edit_keep', '自动保持输出宽高比、时长与待编辑视频一致')}
                     </Text>
                   </div>
                   <Switch
@@ -593,9 +609,9 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
                   }}
                 >
                   <div>
-                    <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>延长视频</Text>
+                    <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>{t('admin_io_extend_video', '延长视频')}</Text>
                     <Text style={{ display: 'block', fontSize: 11, color: muted }}>
-                      自动保持输出宽高比与待延长视频一致
+                      {t('admin_io_extend_keep', '自动保持输出宽高比与待延长视频一致')}
                     </Text>
                   </div>
                   <Switch
@@ -617,7 +633,7 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
       })}
 
       <div style={{ margin: '16px 0 8px' }}>
-        <Text style={{ fontSize: 13, color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>输出</Text>
+        <Text style={{ fontSize: 13, color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{t('admin_io_outputs', '输出')}</Text>
       </div>
 
       {displayOutputs.map((port: any, idx: number) => {
@@ -637,24 +653,24 @@ const SchemeIoEditor: React.FC<SchemeIoEditorProps> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <Space>
               <Text strong style={{ fontSize: 13, color: isLight ? '#1f2937' : '#fff' }}>
-                {port.label || port.key}
+                {phrase(port.label || port.key)}
               </Text>
               <Switch
                 size="small"
                 checked={isOn}
                 onChange={(v) => patchOutput(idx, 'enabled', v)}
               />
-              <Text style={{ fontSize: 11, color: muted }}>{isOn ? '启用' : '已禁用'}</Text>
+              <Text style={{ fontSize: 11, color: muted }}>{isOn ? t('admin_enabled', '启用') : t('admin_disabled', '已禁用')}</Text>
             </Space>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ flex: 1, minWidth: 140 }}>
-              <Text style={fieldHint}>结果字段</Text>
+              <Text style={fieldHint}>{t('admin_io_result_field', '结果字段')}</Text>
               <Input
                 size="small"
                 value={port.result_key || ''}
                 onChange={(e) => patchOutput(idx, 'result_key', e.target.value)}
-                placeholder="如 image_url / video_url"
+                placeholder={t('admin_io_result_ph', '如 image_url / video_url')}
                 disabled={!isOn || bindKeyDisabled}
               />
             </div>

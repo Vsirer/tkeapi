@@ -39,6 +39,8 @@ export interface User {
   allow_view_log_details?: number;
   gift_balance?: number;
   gift_used_quota?: number;
+  /** 佣金钱包余额。列表仅在大于 0 时展示 */
+  commission_balance?: number;
   /** 用户模型单独折扣(JSON: {"mid": discount})，优先于等级折扣 */
   model_discounts?: string;
   timezone?: string;
@@ -53,6 +55,10 @@ export interface User {
   invoice_enabled?: number;
   invoice_mode?: string;
   invoice_config?: string;
+  /** 等级是否开启专属推广：1 开启 */
+  marketing_enabled?: number;
+  /** 等级返利比例，0 到 1 */
+  commission_ratio?: number;
   /** 是否已通过个人实名（用户列表接口填充） */
   kyc_personal?: boolean;
   /** 是否已通过企业实名（用户列表接口填充） */
@@ -71,6 +77,12 @@ export interface UserLevel {
   /** 折扣模式: 0=不选择(跟随系统全站与等级), 1=使用全站折扣, 2=使用等级折扣 */
   discount_type?: number;
   commission_ratio: number;
+  /** consumption=按实际消费，recharge=按充值 */
+  commission_basis?: string;
+  /** 佣金钱包单次划转下限，0 为不限制 */
+  commission_transfer_min?: number;
+  /** 佣金钱包单次划转上限，0 为不限制 */
+  commission_transfer_max?: number;
   invite_reward_inviter: number;
   invite_reward_invitee: number;
   daily_invite_limit: number;
@@ -301,6 +313,12 @@ export interface WalletStats {
   total_referred: number;
   marketing_enabled: boolean;
   commission_ratio: number;
+  /** consumption=按实际消费，recharge=按充值 */
+  commission_basis?: string;
+  /** 单次划转下限，0 为不限制 */
+  commission_transfer_min?: number;
+  /** 单次划转上限，0 为不限制 */
+  commission_transfer_max?: number;
   invite_reward_inviter: number;
   invite_reward_invitee: number;
   /** 是否允许在线支付 */
@@ -563,6 +581,7 @@ export interface ModelTrend30dResponse {
 interface SiteSettings {
   name: string;
   title: string;
+  intro?: string;
   keywords: string;
   description: string;
   favicon?: string;
@@ -1030,6 +1049,12 @@ export interface Announcement {
   active_expires_at?: string | null;
   /** created=新建时间, updated=最后修改时间 */
   display_time_mode?: 'created' | 'updated' | string;
+  /** 逗号分隔，可多选：console,playground_2026,portal_pro */
+  target_module?: string;
+  /** 创作中心顶栏背景色，#RRGGBB */
+  playground_banner_bg?: string | null;
+  /** 门户顶栏背景色，#RRGGBB */
+  portal_banner_bg?: string | null;
   created_at: string;
   updated_at: string;
 }

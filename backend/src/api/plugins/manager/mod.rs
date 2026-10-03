@@ -188,6 +188,18 @@ pub async fn load_active_plugins(state: &Arc<AppState>) -> AppResult<Vec<serde_j
             if let Some(obj) = p_json.as_object_mut() {
                 obj.insert("show_in_playground_prompt".to_string(), json!(show));
             }
+            if plugin.name == "asset_manager" {
+                let menu_val: Option<String> = sqlx::query_scalar(
+                    &state.db.format_query("SELECT config_value FROM plugin_configs WHERE plugin_name = ? AND config_key = 'user_asset_menu_enabled'")
+                )
+                .bind(&plugin.name)
+                .fetch_optional(&state.db.pool)
+                .await?;
+                let menu_on = matches!(menu_val.as_deref(), Some("true") | Some("1"));
+                if let Some(obj) = p_json.as_object_mut() {
+                    obj.insert("user_asset_menu_enabled".to_string(), json!(menu_on));
+                }
+            }
         }
         if plugin.name == "model_marketplace" || plugin.name == "docs_api" {
             let config_val: Option<String> = sqlx::query_scalar(
@@ -199,6 +211,21 @@ pub async fn load_active_plugins(state: &Arc<AppState>) -> AppResult<Vec<serde_j
             let allow_guest = config_val.unwrap_or_else(|| "false".to_string()) == "true";
             if let Some(obj) = p_json.as_object_mut() {
                 obj.insert("mp_allow_guest".to_string(), json!(allow_guest));
+            }
+        }
+        if plugin.name == "playground_2026" {
+            let config_val: Option<String> = sqlx::query_scalar(
+                &state.db.format_query("SELECT config_value FROM plugin_configs WHERE plugin_name = ? AND config_key = 'site_default_enabled'")
+            )
+            .bind(&plugin.name)
+            .fetch_optional(&state.db.pool)
+            .await?;
+            let site_default = config_val
+                .as_deref()
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false);
+            if let Some(obj) = p_json.as_object_mut() {
+                obj.insert("site_default_enabled".to_string(), json!(site_default));
             }
         }
         enhanced_plugins.push(p_json);
@@ -250,6 +277,10 @@ async fn toggle_plugin(
 
     if name == "volcengine_enhance" && payload.is_enabled == 1 {
         let _ = crate::api::billing_rules::ensure_volcengine_enhance_system_rules(&state).await;
+        let _ = crate::db::migrations::helpers::volc_mediakit_image::refresh_presets_on_enable(
+            &state.db.pool,
+        )
+        .await;
     }
 
     crate::api::plugins::notify_marketplace_data_changed(&state).await;
@@ -293,6 +324,8 @@ pub struct ConfigRequest {
     pub image_edit_enabled: Option<bool>,
     /// 创作中心2026：视频编辑工作台入口总开关（默认关闭；不关闭生成页 edit-video）
     pub video_edit_workbench_enabled: Option<bool>,
+    /// 创作中心2026：站点默认创作中心。开启后普通用户登录进入创作中心主页（默认关闭）
+    pub site_default_enabled: Option<bool>,
     /// 创作中心2026：用户端左侧功能菜单（顺序即展示顺序）
     pub user_nav_modules: Option<Value>,
     /// 创作中心2026：用户端技能菜单名称（默认「技能」）
@@ -301,7 +334,11 @@ pub struct ConfigRequest {
     pub skill_user_limit: Option<i64>,
     /// 创作中心2026：AI 优化提示词所用聊天模型 mid
     pub prompt_optimize_model_mid: Option<String>,
+    /// 创作中心2026：AI 优化提示词总开关（默认关闭）
+    pub prompt_optimize_enabled: Option<bool>,
     pub show_in_playground_prompt: Option<bool>, // 体验中心提示词输入窗口加载显示
+    /// 素材资产管理：用户端「资产素材」菜单。默认关闭，仅开启后用户端才展示该菜单。
+    pub user_asset_menu_enabled: Option<bool>,
     pub docs_api_allow_guest: Option<bool>,      // 文档API是否允许免登录访问
     pub show_in_admin_menu: Option<i64>,         // 管理后台左侧二级菜单开关
     pub admin_menu_sort: Option<i64>,            // 二级菜单排序权重（越大越靠前）
@@ -546,6 +583,15 @@ async fn update_plugin_config(
             )
             .await?;
         }
+        if let Some(enabled) = payload.site_default_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "site_default_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
+        }
         if let Some(title) = payload.skill_menu_title {
             upsert_config(&state, &name, "skill_menu_title", title.trim()).await?;
         }
@@ -564,6 +610,15 @@ async fn update_plugin_config(
             if !mid.is_empty() {
                 upsert_config(&state, &name, "prompt_optimize_model_mid", mid).await?;
             }
+        }
+        if let Some(enabled) = payload.prompt_optimize_enabled {
+            upsert_config(
+                &state,
+                &name,
+                "prompt_optimize_enabled",
+                if enabled { "true" } else { "false" },
+            )
+            .await?;
         }
         #[cfg(feature = "commercial_plugins")]
         {
@@ -630,6 +685,16 @@ async fn update_plugin_config(
             &name,
             "show_in_playground_prompt",
             if show { "true" } else { "false" },
+        )
+        .await?;
+    }
+
+    if let Some(enabled) = payload.user_asset_menu_enabled {
+        upsert_config(
+            &state,
+            &name,
+            "user_asset_menu_enabled",
+            if enabled { "true" } else { "false" },
         )
         .await?;
     }
@@ -928,6 +993,10 @@ async fn get_storage_config(
         .get("show_in_playground_prompt")
         .map(|v| v == "true")
         .unwrap_or(false);
+    let user_asset_menu_enabled: bool = configs
+        .get("user_asset_menu_enabled")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
     let docs_api_allow_guest: bool = configs
         .get("mp_allow_guest")
         .map(|v| v == "true")
@@ -1073,6 +1142,13 @@ async fn get_storage_config(
                     .map(|v| v == "true" || v == "1")
                     .unwrap_or(false)),
             );
+            obj.insert(
+                "site_default_enabled".into(),
+                json!(configs
+                    .get("site_default_enabled")
+                    .map(|v| v == "true" || v == "1")
+                    .unwrap_or(false)),
+            );
             #[cfg(feature = "commercial_plugins")]
             {
                 let po_mid = configs
@@ -1095,6 +1171,12 @@ async fn get_storage_config(
                 obj.insert(
                     "prompt_optimize_llm_options".into(),
                     crate::api::plugins::playground_2026::prompt_optimize::options_json(&po_llms),
+                );
+                obj.insert(
+                    "prompt_optimize_enabled".into(),
+                    json!(crate::api::plugins::playground_2026::prompt_optimize::config_enabled(
+                        configs.get("prompt_optimize_enabled").map(|s| s.as_str()),
+                    )),
                 );
             }
             #[cfg(feature = "commercial_plugins")]
@@ -1137,6 +1219,10 @@ async fn get_storage_config(
         obj.insert(
             "show_in_playground_prompt".into(),
             json!(show_in_playground_prompt),
+        );
+        obj.insert(
+            "user_asset_menu_enabled".into(),
+            json!(user_asset_menu_enabled),
         );
         obj.insert("docs_api_allow_guest".into(), json!(docs_api_allow_guest));
     }

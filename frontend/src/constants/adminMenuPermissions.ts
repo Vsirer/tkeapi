@@ -71,6 +71,7 @@ export const ADMIN_MENU_PERMISSIONS: AdminMenuPermNode[] = [
       { label: '管理员列表', labelKey: 'menu.admin_list', value: 'users.admins' },
       { label: '用户等级', labelKey: 'menu.user_levels', value: 'users.levels' },
       { label: '管理员等级', labelKey: 'menu.admin_groups', value: 'admin_groups' },
+      { label: '用户数据分析', labelKey: 'menu.user_analytics', value: 'users.analytics' },
     ],
   },
   {
@@ -79,8 +80,9 @@ export const ADMIN_MENU_PERMISSIONS: AdminMenuPermNode[] = [
     value: 'finance',
     children: [
       { label: '系统资金明细', labelKey: 'menu.finance_recharges', value: 'finance.recharges' },
-      { label: '赠送金明细', labelKey: 'menu.finance_gifts', value: 'finance.gifts' },
       { label: '在线充值明细', labelKey: 'menu.finance_orders', value: 'finance.orders' },
+      { label: '赠送金明细', labelKey: 'menu.finance_gifts', value: 'finance.gifts' },
+      { label: '佣金明细', labelKey: 'menu.finance_commissions', value: 'finance.commissions' },
       { label: '发票申请审核', labelKey: 'menu.finance_invoices', value: 'finance.invoices' },
       { label: '财务数据分析', labelKey: 'menu.finance_analysis', value: 'finance.analysis' },
     ],

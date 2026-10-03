@@ -130,7 +130,7 @@ const AdminGroupEdit: React.FC = () => {
         );
         if (!group) {
           message.error('未找到对应管理员等级');
-          navigate(`/${adminPath}/admin-groups`);
+          navigate(`/${adminPath}/user-levels?tab=admins`);
           return;
         }
 
@@ -378,7 +378,7 @@ const AdminGroupEdit: React.FC = () => {
         await request.put(`/admin_groups/${actionId}`, payload);
         message.success('保存成功');
       }
-      navigate(`/${adminPath}/admin-groups`);
+      navigate(`/${adminPath}/user-levels?tab=admins`);
     } catch (e) {
       console.error(e);
     } finally {
@@ -687,7 +687,7 @@ const AdminGroupEdit: React.FC = () => {
             <Button
               size="small"
               icon={<ArrowLeftOutlined />}
-              onClick={() => navigate(`/${adminPath}/admin-groups`)}
+              onClick={() => navigate(`/${adminPath}/user-levels?tab=admins`)}
             />
             <SafetyCertificateOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
             <span style={{ fontWeight: 600, fontSize: 15 }}>
@@ -697,7 +697,7 @@ const AdminGroupEdit: React.FC = () => {
         }
         extra={
           <Space size={8}>
-            <Button size="small" onClick={() => navigate(`/${adminPath}/admin-groups`)}>
+            <Button size="small" onClick={() => navigate(`/${adminPath}/user-levels?tab=admins`)}>
               取消
             </Button>
             <Button
@@ -1012,7 +1012,7 @@ const AdminGroupEdit: React.FC = () => {
               zIndex: 10,
             }}
           >
-            <Button size="middle" onClick={() => navigate(`/${adminPath}/admin-groups`)}>
+            <Button size="middle" onClick={() => navigate(`/${adminPath}/user-levels?tab=admins`)}>
               取消
             </Button>
             <Button

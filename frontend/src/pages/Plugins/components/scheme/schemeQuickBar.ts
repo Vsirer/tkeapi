@@ -6,7 +6,8 @@
  */
 
 import type { SchemeParam } from './types';
-import { isCountParam, isDurationParam, isSingleCountParam, DEFAULT_OPTION_LABELS, formatParamLabel } from './schemeParamUtils';
+import i18n from '../../../../i18n';
+import { isCountParam, isDurationParam, isSingleCountParam, DEFAULT_OPTION_LABELS, formatChoiceLabel, formatParamLabel } from './schemeParamUtils';
 import { pickSchemeOption } from './generationParams';
 
 export const SCHEME_QUICK_BAR_MAX = 3;
@@ -24,29 +25,69 @@ export function isQuickBarEligible(param: SchemeParam): boolean {
   );
 }
 
+const QUICK_OPTION_I18N_KEYS: Record<string, string> = {
+  opaque: 'opt_opaque',
+  transparent: 'opt_transparent',
+  standard: 'opt_standard',
+  fast: 'opt_fast',
+  auto: 'opt_auto',
+  adaptive: 'aspect_adaptive',
+  high: 'opt_high',
+  ultra: 'opt_ultra',
+  medium: 'opt_standard',
+  low: 'opt_low',
+  quality: 'opt_quality',
+  speed: 'opt_speed',
+  portrait: 'opt_portrait',
+  landscape: 'opt_landscape',
+};
+
+const CHINESE_QUICK_OPTION_I18N_KEYS: Record<string, string> = {
+  '不透明': 'opt_opaque',
+  '透明': 'opt_transparent',
+  '标准': 'opt_standard',
+  '快速': 'opt_fast',
+  '智能': 'opt_auto',
+  '自适应': 'aspect_adaptive',
+  '高清': 'opt_high',
+  '超清': 'opt_ultra',
+  '画质优先': 'opt_quality',
+  '速度优先': 'opt_speed',
+  '人像': 'opt_portrait',
+  '风景': 'opt_landscape',
+};
+
 /** 参数选项展示文案（优先 option_labels，其次内置中文字典，时长加 s，数量加张） */
 export function formatParamOptionLabel(param: SchemeParam, val: any): string {
   if (val == null || val === '') return formatParamLabel(param);
   const str = String(val).trim();
   const lower = str.toLowerCase();
+  const curLang = i18n.language || 'zh';
+  const isSimplified = curLang === 'zh' || curLang === 'zh-CN';
 
-  // 1. 优先自定义 option_labels
+  // 1. 优先自定义 option_labels；背景/提示词优化的内置中文走属性框同一套语言
   if (param.option_labels) {
-    if (param.option_labels[str]) return param.option_labels[str];
-    if (param.option_labels[lower]) return param.option_labels[lower];
+    const custom = param.option_labels[str] || param.option_labels[lower];
+    if (custom) {
+      const paramKey = (param.key || '').toLowerCase();
+      if (paramKey === 'background' || paramKey === 'optimize_prompt_mode') {
+        return formatChoiceLabel(param, val);
+      }
+      return custom;
+    }
   }
 
   // 针对 quality 画质参数的定制中文对照与历史值回退
   if ((param.key || '').toLowerCase() === 'quality') {
-    if (lower === 'low' || str === '流畅') return '常用画质';
-    if (lower === 'medium' || str === '标准') return '高画质';
-    if (lower === 'high' || str === '高清') return '高精细画质';
+    if (lower === 'low' || str === '常用画质' || str === '流畅') return i18n.t('playground_2026:quality_low', '常用画质');
+    if (lower === 'medium' || str === '高画质' || str === '标准') return i18n.t('playground_2026:quality_medium', '高画质');
+    if (lower === 'high' || str === '高精细画质' || str === '高清') return i18n.t('playground_2026:quality_high', '高精细画质');
   }
 
   // 2. 时长
   if (isDurationParam(param)) {
-    if (lower === '-1' || lower === 'auto' || lower === 'adaptive') {
-      return '智能时长';
+    if (lower === '-1' || lower === 'auto' || lower === 'adaptive' || str === '智能' || str === '自适应') {
+      return i18n.t('playground_2026:smart_duration', '智能时长');
     }
     if (/^\d+(\.\d+)?$/.test(str)) {
       return `${str}s`;
@@ -55,11 +96,22 @@ export function formatParamOptionLabel(param: SchemeParam, val: any): string {
 
   // 3. 数量
   if (isCountParam(param)) {
-    if (/张/.test(str)) return str;
-    if (/^\d+$/.test(str)) return `${str}张`;
+    const sheetsUnit = i18n.t('playground_2026:unit_sheets', '张');
+    if (/张/.test(str)) {
+      return isSimplified ? str : str.replace('张', sheetsUnit);
+    }
+    if (/^\d+$/.test(str)) return `${str}${sheetsUnit}`;
   }
 
-  // 4. 内置常用选项对照
+  // 4. 中文选项反向匹配 (非简体中文)
+  if (!isSimplified && CHINESE_QUICK_OPTION_I18N_KEYS[str]) {
+    return i18n.t(`playground_2026:${CHINESE_QUICK_OPTION_I18N_KEYS[str]}`, str);
+  }
+
+  // 5. 内置常用选项对照 (支持多语言)
+  if (QUICK_OPTION_I18N_KEYS[lower]) {
+    return i18n.t(`playground_2026:${QUICK_OPTION_I18N_KEYS[lower]}`, DEFAULT_OPTION_LABELS[lower] || str);
+  }
   if (DEFAULT_OPTION_LABELS[lower]) {
     return DEFAULT_OPTION_LABELS[lower];
   }

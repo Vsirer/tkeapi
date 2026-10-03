@@ -21,7 +21,6 @@ import {
   adminSidebarPluginLabel,
   adminSidebarPluginHref,
 } from '../utils/adminPlugins';
-import generateUUID from '../utils/uuid';
 import { persistUserLanguagePreference, LANG_NAME_MAP, toDisplayLocale } from '../utils/language';
 import useSettingsStore from '../store/settings';
 import { hasAdminChildMenuPermission } from '../constants/adminMenuPermissions';
@@ -120,7 +119,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   const { settings } = useSettingsStore();
   const adminPath = settings?.site?.admin_path || 'admin1688';
   const site = settings?.site;
-  const siteName = isUserEnd ? (site?.name || 'Tkeapi') : `${site?.name || 'Tkeapi'}${t('common.admin_suffix', '管理后台')}`;
+  const siteName = site?.name || 'Tkeapi';
   const siteLogo = site?.logo || '';
   const logoTitleHref = normalizeTitleHref(site?.logo_title_url);
   const goLogoTitle = () => {
@@ -399,7 +398,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
         { key: '/tokens', label_zh: '令牌管理', label_en: 'Tokens', icon: 'KeyOutlined', enabled: true, sort_order: 4, allowed_levels: 'all' },
         { key: '/logs', label_zh: '日志记录', label_en: 'Logs', icon: 'HistoryOutlined', enabled: true, sort_order: 5, allowed_levels: 'all' },
         { key: '/task-logs', label_zh: '任务列表', label_en: 'Task Logs', icon: 'ScheduleOutlined', enabled: true, sort_order: 6, allowed_levels: 'all' },
-        { key: '/assets', label_zh: '素材管理', label_en: 'Assets', icon: 'PictureOutlined', enabled: true, sort_order: 7, allowed_levels: 'all' },
+        { key: '/assets', label_zh: '资产素材', label_en: 'Assets', icon: 'PictureOutlined', enabled: true, sort_order: 7, allowed_levels: 'all' },
         { key: '/assets-intl', label_zh: '资产管理', label_en: 'Assets Intl', icon: 'FolderOpenOutlined', enabled: true, sort_order: 8, allowed_levels: 'all' },
         { key: '/advanced-marketing', label_zh: '高级推广', label_en: 'Advanced Marketing', icon: 'TeamOutlined', enabled: true, sort_order: 10, allowed_levels: 'all' },
 
@@ -431,32 +430,17 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
         if (item.key === '/moderation-query') return;
         if (item.key === '/playground' && !isPluginVisibleForUser('playground')) return;
         if (item.key === '/playground-2026' && !isPluginVisibleForUser('playground_2026')) return;
-        if (item.key === '/assets' && !isPluginVisibleForUser('asset_manager')) return;
+        if (item.key === '/assets') {
+          if (!isPluginVisibleForUser('asset_manager')) return;
+          const assetPlugin = activePlugins.find((p: any) => p.name === 'asset_manager');
+          if (assetPlugin?.user_asset_menu_enabled !== true) return;
+        }
         if (item.key === '/assets-intl' && !isPluginVisibleForUser('asset_manager_intl')) return;
         if (item.key === '/advanced-marketing' && !isPluginVisibleForUser('team_marketing')) return;
 
         if (item.key === '/ark-video-monitor' && !isPluginVisibleForUser('volcengine_ark_monitor')) return;
 
-        let labelNode;
-        if (item.key === '/playground' || item.key === '/playground-2026') {
-          const isImpersonating = !!sessionStorage.getItem('token');
-          const targetPath = item.key;
-          labelNode = isImpersonating ? (
-            <a onClick={(e) => {
-              e.preventDefault();
-              const impToken = sessionStorage.getItem('token');
-              if (!impToken) return;
-              const handoffKey = `imp_handoff_${generateUUID()}`;
-              localStorage.setItem(handoffKey, impToken);
-              const safePath = targetPath.startsWith('/') && !targetPath.startsWith('//') ? targetPath : '/dashboard';
-              window.location.href = `${window.location.origin}/login?impersonate=1&handoff=${encodeURIComponent(handoffKey)}&redirect=${encodeURIComponent(safePath)}`;
-            }}>{getMenuLabel(item)}</a>
-          ) : (
-            <Link to={targetPath}>{getMenuLabel(item)}</Link>
-          );
-        } else {
-          labelNode = <Link to={item.key}>{getMenuLabel(item)}</Link>;
-        }
+        const labelNode = <Link to={item.key}>{getMenuLabel(item)}</Link>;
 
         if (item.key === '/wallet' || item.key === '/profile') {
           userSettingsChildren.push({
@@ -496,13 +480,13 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
         }
 
         userSettingsChildren.sort((a, b) => {
-          if (a.key === '/profile') return -1;
-          if (b.key === '/profile') return 1;
-          if (a.key === '/wallet') return -1;
-          if (b.key === '/wallet') return 1;
-          if (a.key === '/invoices') return -1;
-          if (b.key === '/invoices') return 1;
-          return 0;
+          const rank = (key: string) => {
+            if (key === '/profile') return 0;
+            if (key === '/wallet') return 1;
+            if (key === '/invoices') return 2;
+            return 3;
+          };
+          return rank(a.key) - rank(b.key);
         });
         menuItems.push({
           key: 'user-settings-group',
@@ -687,16 +671,22 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           label: <Link to="/admin0755/admins">{t('menu.admin_list')}</Link>,
         });
       }
-      if (hasChildMenu('users', 'users.levels')) {
+      const canUserLevels = hasChildMenu('users', 'users.levels');
+      const canAdminGroups = hasChildMenu('users', 'admin_groups');
+      if (canUserLevels || canAdminGroups) {
         userItems.push({
           key: '/admin0755/user-levels',
-          label: <Link to="/admin0755/user-levels">{t('menu.user_levels')}</Link>,
+          label: (
+            <Link to={canUserLevels ? '/admin0755/user-levels' : '/admin0755/user-levels?tab=admins'}>
+              {t('menu.user_levels')}
+            </Link>
+          ),
         });
       }
-      if (hasChildMenu('users', 'admin_groups')) {
+      if (hasChildMenu('users', 'users.analytics')) {
         userItems.push({
-          key: '/admin0755/admin-groups',
-          label: <Link to="/admin0755/admin-groups">{t('menu.admin_groups')}</Link>,
+          key: '/admin0755/users/analytics',
+          label: <Link to="/admin0755/users/analytics">{t('menu.user_analytics')}</Link>,
         });
       }
 
@@ -718,16 +708,22 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
           label: <Link to="/admin0755/finance/recharges">{t('menu.finance_recharges')}</Link>,
         });
       }
+      if (hasChildMenu('finance', 'finance.orders')) {
+        financeChildren.push({
+          key: '/admin0755/finance/orders',
+          label: <Link to="/admin0755/finance/orders">{t('menu.finance_orders')}</Link>,
+        });
+      }
       if (hasChildMenu('finance', 'finance.gifts')) {
         financeChildren.push({
           key: '/admin0755/finance/gifts',
           label: <Link to="/admin0755/finance/gifts">{t('menu.finance_gifts')}</Link>,
         });
       }
-      if (hasChildMenu('finance', 'finance.orders')) {
+      if (hasChildMenu('finance', 'finance.commissions')) {
         financeChildren.push({
-          key: '/admin0755/finance/orders',
-          label: <Link to="/admin0755/finance/orders">{t('menu.finance_orders')}</Link>,
+          key: '/admin0755/finance/commissions',
+          label: <Link to="/admin0755/finance/commissions">{t('menu.finance_commissions', '佣金明细')}</Link>,
         });
       }
       const isChinaInvoiceEnabled =
@@ -913,6 +909,16 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
       }
     }
 
+    if (path.includes('/admin-groups')) {
+      for (const item of items) {
+        const children = item?.children || [];
+        for (const child of children) {
+          const baseKey = typeof child?.key === 'string' ? child.key.split('?')[0] : '';
+          if (baseKey.endsWith('/user-levels')) return child.key;
+        }
+      }
+    }
+
     return fullPath;
   };
 
@@ -952,6 +958,9 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
       }))
       .map((item: any) => item.key as string);
     
+    if (path.includes('/admin-groups') && !keys.includes('user-management-group')) {
+      keys.push('user-management-group');
+    }
     if (!keys.includes('user-settings-group')) {
       keys.push('user-settings-group');
     }
@@ -967,10 +976,11 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   pageName = findName(processedMenuItems) || findName(processedMenuItems, true) || '';
   if (!pageName) {
     if (location.pathname === '/profile') pageName = t('menu.profile', '个人中心') as string;
-    else if (location.pathname === '/wallet') pageName = t('menu.wallet', '我的钱包') as string;
-    else if (location.pathname === '/assets') pageName = t('menu.assets', '素材资产管理') as string;
+    else if (location.pathname === '/wallet' || location.pathname === '/affiliate') pageName = t('menu.wallet', '我的钱包') as string;
+    else if (location.pathname === '/assets') pageName = t('menu.assets', '资产素材') as string;
     else if (location.pathname === '/assets-intl') pageName = t('menu.assets_intl', '资产管理') as string;
     else if (location.pathname === '/advanced-marketing') pageName = t('menu.advanced_marketing', '团队营销管理') as string;
+    else if (location.pathname.includes('/admin-groups')) pageName = t('menu.user_levels') as string;
 
     else if (location.pathname === '/playground' || location.pathname.startsWith('/playground/')) {
       const pgItem = settings?.menu_config?.items?.find((i: any) => i.key === '/playground');
@@ -1001,7 +1011,38 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
   const emptyTextColor = isLight ? '#6b7280' : '#e5e5e5';
   const emptySubtextColor = isLight ? '#9ca3af' : 'rgba(255,255,255,0.45)';
 
+  const siteIntro = site?.intro?.trim();
+  const renderAdminBadge = () => {
+    const badge = (
+      <span
+        className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium leading-none shrink-0 border select-none transition-colors"
+        style={{
+          backgroundColor: isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.08)',
+          borderColor: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)',
+          color: isLight ? '#71717a' : '#a1a1aa',
+        }}
+      >
+        {t('common.admin_suffix', '管理后台').trim()}
+      </span>
+    );
 
+    if (!siteIntro) {
+      return badge;
+    }
+
+    return (
+      <Tooltip
+        title={
+          <div style={{ maxWidth: 280, fontSize: 12, lineHeight: 1.6, padding: '2px 0', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+            {siteIntro}
+          </div>
+        }
+        placement="bottom"
+      >
+        {badge}
+      </Tooltip>
+    );
+  };
 
   const announcementContent = (
     <div style={{ width: 360, display: 'flex', flexDirection: 'column' }}>
@@ -1143,7 +1184,7 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 8,
+                  gap: 6,
                   justifyContent: 'center',
                   width: 224,
                   minWidth: 224,
@@ -1178,19 +1219,29 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                 )}
                 <div
                   style={{
-                    color: themeMode === 'light' ? '#1f2937' : '#fff',
-                    margin: 0,
-                    fontSize: siteName.length > 12 ? 14 : siteName.length > 8 ? 16 : 18,
-                    fontWeight: 700,
-                    lineHeight: 1.2,
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
                     minWidth: 0,
+                    flexShrink: 1,
+                    overflow: 'hidden',
                   }}
-                  title={siteName}
                 >
-                  {siteName}
+                  <div
+                    style={{
+                      color: themeMode === 'light' ? '#1f2937' : '#fff',
+                      margin: 0,
+                      fontSize: siteName.length > 14 ? 12 : siteName.length > 10 ? 13 : siteName.length > 6 ? 14 : 16,
+                      fontWeight: 700,
+                      lineHeight: 1.2,
+                      wordBreak: 'break-word',
+                      minWidth: 0,
+                    }}
+                    title={siteName}
+                  >
+                    {siteName}
+                  </div>
+                  {!isUserEnd && renderAdminBadge()}
                 </div>
               </div>
               {!screens.xs && (
@@ -1357,17 +1408,16 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ isUserEnd = false }) 
                     style={{
                       color: themeMode === 'light' ? '#1f2937' : '#fff',
                       margin: 0,
-                      fontSize: 14,
+                      fontSize: siteName.length > 14 ? 11 : siteName.length > 10 ? 12 : 13,
                       fontWeight: 600,
                       whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
                       lineHeight: 1.2,
                     }}
                     title={siteName}
                   >
                     {siteName}
                   </span>
+                  {!isUserEnd && renderAdminBadge()}
                 </div>
               )}
             </div>

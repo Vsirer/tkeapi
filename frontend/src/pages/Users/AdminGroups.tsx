@@ -29,7 +29,7 @@ const { useBreakpoint } = Grid;
 
 const ALL_BASIC_PERMISSION_VALUES = flattenAdminMenuPermissions();
 
-const AdminGroups: React.FC = () => {
+const AdminGroups: React.FC<{ embedded?: boolean; keyword?: string }> = ({ embedded = false, keyword }) => {
   const [groups, setGroups] = useState<AdminGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [activePlugins, setActivePlugins] = useState<any[]>([]);
@@ -68,9 +68,11 @@ const AdminGroups: React.FC = () => {
     loadActivePlugins();
   }, []);
 
+  const activeKeyword = keyword !== undefined ? keyword : searchKeyword;
+
   const filteredGroups = useMemo(() => {
-    if (!searchKeyword.trim()) return groups;
-    const kw = searchKeyword.trim().toLowerCase();
+    if (!activeKeyword.trim()) return groups;
+    const kw = activeKeyword.trim().toLowerCase();
     return groups.filter((g) => {
       const matchName = g.name?.toLowerCase().includes(kw);
       const matchId = g.id?.toString().includes(kw);
@@ -79,7 +81,7 @@ const AdminGroups: React.FC = () => {
       const matchDesc = g.description?.toLowerCase().includes(kw);
       return matchName || matchId || matchPadId || matchDesc;
     });
-  }, [groups, searchKeyword]);
+  }, [groups, activeKeyword]);
 
   const handleCreate = () => {
     navigate(`/${adminPath}/admin-groups/new`);
@@ -187,7 +189,26 @@ const AdminGroups: React.FC = () => {
         </Space>
       ),
     },
-    { title: '用户数', dataIndex: 'user_count', key: 'user_count', width: 80, sorter: (a: AdminGroup, b: AdminGroup) => (a.user_count || 0) - (b.user_count || 0), render: (val: number) => <Tag color="blue">{val || 0}</Tag> },
+    {
+      title: '用户数',
+      dataIndex: 'user_count',
+      key: 'user_count',
+      width: 80,
+      sorter: (a: AdminGroup, b: AdminGroup) => (a.user_count || 0) - (b.user_count || 0),
+      render: (val: number, record: AdminGroup) => (
+        <Tag
+          color="blue"
+          className="cursor-pointer transition-all hover:opacity-80 active:scale-95 select-none"
+          style={{ margin: 0 }}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigate(`/${adminPath}/admins?group=${record.id}`);
+          }}
+        >
+          {val || 0}
+        </Tag>
+      ),
+    },
     { 
       title: '权限详细', 
       key: 'permissions_detail', 
@@ -222,8 +243,9 @@ const AdminGroups: React.FC = () => {
     },
   ];
 
-  return (
-    <Card bordered={false}>
+  const body = (
+    <>
+      {!embedded && (
       <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', justifyContent: 'space-between', marginBottom: 12, gap: 12 }}>
         <Title level={screens.xs ? 4 : 2} style={{ margin: 0 }}>管理员等级</Title>
         <Space wrap>
@@ -240,6 +262,7 @@ const AdminGroups: React.FC = () => {
           </Button>
         </Space>
       </div>
+      )}
 
       {screens.xs ? (
         <MobileCardList
@@ -261,7 +284,19 @@ const AdminGroups: React.FC = () => {
               extra={null}
             >
               <CardRow label="权限详细">{renderPermissionsTags(record.permissions)}</CardRow>
-              <CardRow label="用户数"><Tag color="blue">{record.user_count || 0}</Tag></CardRow>
+              <CardRow label="用户数">
+                <Tag
+                  color="blue"
+                  className="cursor-pointer transition-all hover:opacity-80 active:scale-95 select-none"
+                  style={{ margin: 0 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(`/${adminPath}/admins?group=${record.id}`);
+                  }}
+                >
+                  {record.user_count || 0}
+                </Tag>
+              </CardRow>
               {record.description && <CardRow label="描述"><Text type="secondary" style={{ fontSize: 12 }}>{record.description}</Text></CardRow>}
               <CardRow label="排序"><Text type="secondary" style={{ fontSize: 12 }}>{record.sort_order || 0}</Text></CardRow>
               <CardRow label="创建时间"><Text type="secondary" style={{ fontSize: 12 }}>{formatApiDateTime(record.created_at)}</Text></CardRow>
@@ -286,8 +321,11 @@ const AdminGroups: React.FC = () => {
           showSorterTooltip={false}
         />
       )}
-    </Card>
+    </>
   );
+
+  if (embedded) return body;
+  return <Card bordered={false}>{body}</Card>;
 };
 
 export default AdminGroups;

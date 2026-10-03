@@ -6,10 +6,11 @@
  */
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use chrono::{DateTime, Duration, Utc};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -24,6 +25,147 @@ const DEFAULT_FLAG_EXPIRE_DAYS: i64 = 5;
 const PERMANENT_EXPIRE: &str = "permanent";
 const DISPLAY_TIME_CREATED: &str = "created";
 const DISPLAY_TIME_UPDATED: &str = "updated";
+const MODULE_CONSOLE: &str = "console";
+const MODULE_PLAYGROUND: &str = "playground_2026";
+const MODULE_PORTAL: &str = "portal_pro";
+
+#[derive(Debug, Deserialize)]
+pub struct PublicAnnouncementQuery {
+    pub module: Option<String>,
+}
+
+fn normalize_public_module(raw: Option<&str>) -> AppResult<String> {
+    let candidate = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(MODULE_CONSOLE);
+    match candidate {
+        MODULE_CONSOLE | MODULE_PLAYGROUND | MODULE_PORTAL => Ok(candidate.to_string()),
+        _ => Err(AppError::BadRequest(
+            "通知模块无效，请选择控制台、创作中心或门户".to_string(),
+        )),
+    }
+}
+
+fn normalize_target_modules(raw: Option<&str>) -> AppResult<String> {
+    let text = raw.map(str::trim).filter(|s| !s.is_empty());
+    let Some(text) = text else {
+        return Ok(MODULE_CONSOLE.to_string());
+    };
+    let mut console = false;
+    let mut playground = false;
+    let mut portal = false;
+    for part in text.split(',') {
+        match part.trim() {
+            "" => {}
+            MODULE_CONSOLE => console = true,
+            MODULE_PLAYGROUND => playground = true,
+            MODULE_PORTAL => portal = true,
+            _ => {
+                return Err(AppError::BadRequest(
+                    "通知模块无效，请选择控制台、创作中心或门户".to_string(),
+                ))
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if console {
+        out.push(MODULE_CONSOLE);
+    }
+    if playground {
+        out.push(MODULE_PLAYGROUND);
+    }
+    if portal {
+        out.push(MODULE_PORTAL);
+    }
+    if out.is_empty() {
+        return Err(AppError::BadRequest("请至少选择一个通知模块".to_string()));
+    }
+    Ok(out.join(","))
+}
+
+fn parse_banner_bg(raw: &str) -> AppResult<Option<String>> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if !matches!(hex.len(), 3 | 6 | 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(AppError::BadRequest(
+            "背景颜色格式无效，请使用 #RRGGBB".to_string(),
+        ));
+    }
+    let hex = if hex.len() == 8 { &hex[..6] } else { hex };
+    let full = if hex.len() == 3 {
+        hex.chars().flat_map(|c| [c, c]).collect::<String>()
+    } else {
+        hex.to_string()
+    };
+    Ok(Some(format!("#{}", full.to_ascii_lowercase())))
+}
+
+fn module_plugin_name(module: &str) -> Option<&'static str> {
+    match module {
+        MODULE_PLAYGROUND => Some("playground_2026"),
+        MODULE_PORTAL => Some("site_portal_pro"),
+        _ => None,
+    }
+}
+
+async fn is_plugin_enabled(state: &Arc<AppState>, name: &str) -> AppResult<bool> {
+    let enabled: Option<i64> = sqlx::query_scalar(
+        &state
+            .db
+            .format_query("SELECT is_enabled FROM plugins WHERE name = ?"),
+    )
+    .bind(name)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    Ok(enabled == Some(1))
+}
+
+fn module_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+async fn ensure_added_modules(
+    state: &Arc<AppState>,
+    next: &str,
+    previous: &str,
+) -> AppResult<()> {
+    let prev = module_list(previous);
+    for module in module_list(next) {
+        if prev.iter().any(|item| item == &module) {
+            continue;
+        }
+        ensure_module_selectable(state, &module).await?;
+    }
+    Ok(())
+}
+
+async fn ensure_module_selectable(state: &Arc<AppState>, module: &str) -> AppResult<()> {
+    let Some(plugin) = module_plugin_name(module) else {
+        return Ok(());
+    };
+    if is_plugin_enabled(state, plugin).await? {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(match module {
+        MODULE_PLAYGROUND => "创作中心2026插件未开启，无法选择创作中心通知".to_string(),
+        _ => "站点门户增强版插件未开启，无法选择门户通知".to_string(),
+    }))
+}
+
+async fn module_is_publicly_available(state: &Arc<AppState>, module: &str) -> AppResult<bool> {
+    match module_plugin_name(module) {
+        Some(plugin) => is_plugin_enabled(state, plugin).await,
+        None => Ok(true),
+    }
+}
 
 fn normalize_display_time_mode(raw: Option<&str>, fallback: &str) -> AppResult<String> {
     let candidate = raw
@@ -53,6 +195,9 @@ fn should_touch_updated_at(payload: &UpdateAnnouncementReq) -> bool {
         || payload.popup_expires_at.is_some()
         || payload.active_expires_at.is_some()
         || payload.display_time_mode.is_some()
+        || payload.target_module.is_some()
+        || payload.playground_banner_bg.is_some()
+        || payload.portal_banner_bg.is_some()
 }
 
 fn default_flag_expires_at(now: DateTime<Utc>) -> DbTs {
@@ -173,11 +318,17 @@ pub async fn list_admin_announcements(
 
 pub(crate) async fn load_public_announcements(
     state: &Arc<AppState>,
+    module: &str,
 ) -> AppResult<Vec<Announcement>> {
+    let module = normalize_public_module(Some(module))?;
     apply_announcement_expiries(state).await?;
+    if !module_is_publicly_available(state, &module).await? {
+        return Ok(Vec::new());
+    }
     let announcements: Vec<Announcement> = sqlx::query_as(&state.db.format_query(
-        "SELECT * FROM announcements WHERE is_active = 1 ORDER BY is_pinned DESC, sort_order DESC, id DESC LIMIT 10",
+        "SELECT * FROM announcements WHERE is_active = 1 AND strpos(',' || target_module || ',', ',' || ? || ',') > 0 ORDER BY is_pinned DESC, sort_order DESC, id DESC LIMIT 10",
     ))
+    .bind(&module)
     .fetch_all(&state.db.pool)
     .await?;
     Ok(announcements)
@@ -185,8 +336,10 @@ pub(crate) async fn load_public_announcements(
 
 pub async fn get_public_announcements(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<PublicAnnouncementQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let announcements = load_public_announcements(&state).await?;
+    let module = normalize_public_module(query.module.as_deref())?;
+    let announcements = load_public_announcements(&state, &module).await?;
 
     Ok(Json(json!({
         "success": true,
@@ -213,10 +366,14 @@ pub async fn create_announcement(
     let is_active = apply_flag_expiry(payload.is_active, active_expires_at.as_ref(), now_dt);
     let display_time_mode =
         normalize_display_time_mode(payload.display_time_mode.as_deref(), DISPLAY_TIME_CREATED)?;
+    let target_module = normalize_target_modules(payload.target_module.as_deref())?;
+    ensure_added_modules(&state, &target_module, "").await?;
+    let playground_banner_bg = parse_banner_bg(payload.playground_banner_bg.as_deref().unwrap_or(""))?;
+    let portal_banner_bg = parse_banner_bg(payload.portal_banner_bg.as_deref().unwrap_or(""))?;
 
     let announcement: Announcement = sqlx::query_as(&state.db.format_query(
-        "INSERT INTO announcements (title, content, is_pinned, is_popup, is_active, sort_order, pin_expires_at, popup_expires_at, active_expires_at, display_time_mode, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO announcements (title, content, is_pinned, is_popup, is_active, sort_order, pin_expires_at, popup_expires_at, active_expires_at, display_time_mode, target_module, playground_banner_bg, portal_banner_bg, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
     ))
     .bind(&payload.title)
     .bind(&payload.content)
@@ -228,6 +385,9 @@ pub async fn create_announcement(
     .bind(&popup_expires_at)
     .bind(&active_expires_at)
     .bind(&display_time_mode)
+    .bind(&target_module)
+    .bind(&playground_banner_bg)
+    .bind(&portal_banner_bg)
     .bind(&now)
     .bind(&now)
     .fetch_one(&state.db.pool)
@@ -261,6 +421,21 @@ pub async fn update_announcement(
         payload.display_time_mode.as_deref(),
         &current.display_time_mode,
     )?;
+    let target_module = normalize_target_modules(
+        payload
+            .target_module
+            .as_deref()
+            .or(Some(current.target_module.as_str())),
+    )?;
+    ensure_added_modules(&state, &target_module, &current.target_module).await?;
+    let playground_banner_bg = match payload.playground_banner_bg.as_deref() {
+        Some(raw) => parse_banner_bg(raw)?,
+        None => current.playground_banner_bg.clone(),
+    };
+    let portal_banner_bg = match payload.portal_banner_bg.as_deref() {
+        Some(raw) => parse_banner_bg(raw)?,
+        None => current.portal_banner_bg.clone(),
+    };
     let title = payload.title.unwrap_or(current.title);
     let content = payload.content.unwrap_or(current.content);
     let is_pinned = payload.is_pinned.unwrap_or(current.is_pinned);
@@ -296,7 +471,7 @@ pub async fn update_announcement(
 
     let updated: Announcement = sqlx::query_as(
         &state.db.format_query(
-            "UPDATE announcements SET title = ?, content = ?, is_pinned = ?, is_popup = ?, is_active = ?, sort_order = ?, pin_expires_at = ?, popup_expires_at = ?, active_expires_at = ?, display_time_mode = ?, updated_at = ? WHERE id = ? RETURNING *"
+            "UPDATE announcements SET title = ?, content = ?, is_pinned = ?, is_popup = ?, is_active = ?, sort_order = ?, pin_expires_at = ?, popup_expires_at = ?, active_expires_at = ?, display_time_mode = ?, target_module = ?, playground_banner_bg = ?, portal_banner_bg = ?, updated_at = ? WHERE id = ? RETURNING *"
         )
     )
     .bind(&title)
@@ -309,6 +484,9 @@ pub async fn update_announcement(
     .bind(&popup_expires_at)
     .bind(&active_expires_at)
     .bind(&display_time_mode)
+    .bind(&target_module)
+    .bind(&playground_banner_bg)
+    .bind(&portal_banner_bg)
     .bind(&now)
     .bind(id)
     .fetch_one(&state.db.pool)
@@ -338,4 +516,26 @@ pub async fn delete_announcement(
         "success": true,
         "message": "通知删除成功"
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_modules_can_combine_and_reject_unknown() {
+        assert_eq!(normalize_target_modules(None).unwrap(), MODULE_CONSOLE);
+        assert_eq!(
+            normalize_target_modules(Some("portal_pro, console, playground_2026")).unwrap(),
+            "console,playground_2026,portal_pro"
+        );
+        assert_eq!(
+            normalize_target_modules(Some("console,console")).unwrap(),
+            MODULE_CONSOLE
+        );
+        assert!(normalize_target_modules(Some("dashboard")).is_err());
+        assert_eq!(parse_banner_bg("").unwrap(), None);
+        assert_eq!(parse_banner_bg("#ABC").unwrap().as_deref(), Some("#aabbcc"));
+        assert!(parse_banner_bg("red").is_err());
+    }
 }

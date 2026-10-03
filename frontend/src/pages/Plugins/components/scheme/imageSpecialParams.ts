@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { clampParamsToSchemeOptions } from './generationParams';
 import { formatShortcutSummary, getShortcutSummaryParams } from './schemeQuickBar';
+import i18n from '../../../../i18n';
 
 const IMAGE_SPECIAL_RATIO_PRESETS = [
   '1:1',
@@ -163,7 +164,17 @@ export const IMAGE_SPECIAL_CUSTOM_PRO_DEFAULTS: Required<ImageSpecialCustomPixel
 
 export function isSmartRatio(ratio: unknown): boolean {
   const r = String(ratio ?? '').trim();
-  return !r || r === 'auto' || r === '智能';
+  const lower = r.toLowerCase();
+  return (
+    !r ||
+    r === 'auto' ||
+    r === '智能' ||
+    r === '智慧' ||
+    lower === 'smart' ||
+    r === 'スマート' ||
+    r === '스마트' ||
+    lower === 'thông minh'
+  );
 }
 
 export function isCustomSizeEnabled(cfg: ImageSpecialParamsConfig | null | undefined): boolean {
@@ -1003,6 +1014,7 @@ function formatImageSpecialSummary(
   cfg: ImageSpecialParamsConfig | null | undefined,
   values: Record<string, any>,
   _params?: SchemeParam[] | null,
+  t?: (key: string, fallback: string) => string,
 ): string {
   if (!imageSpecialHasControls(cfg)) return '';
   const n = normalizeImageSpecialParams(cfg);
@@ -1013,7 +1025,10 @@ function formatImageSpecialSummary(
     return parts.join(' | ');
   }
   if (n.aspect_ratio?.enabled) {
-    parts.push(isSmartRatio(state.ratio) ? '智能' : state.ratio);
+    const smartLabel = t
+      ? t('playground_2026:image_special_smart', '智能')
+      : i18n.t('playground_2026:image_special_smart', '智能');
+    parts.push(isSmartRatio(state.ratio) ? smartLabel : state.ratio);
   }
   if (n.image_size?.enabled && !isSmartRatio(state.ratio) && state.width > 0 && state.height > 0) {
     parts.push(`${state.width}×${state.height}`);
@@ -1029,13 +1044,14 @@ export function formatImageParamsTriggerLabel(
   displayParams: SchemeParam[],
   values: Record<string, any>,
   fallback: string,
+  t?: (key: string, fallback: string) => string,
 ): string {
   const cfg = model?.image_special_params;
   if (!imageSpecialHasControls(cfg)) {
     return formatShortcutSummary(getShortcutSummaryParams(displayParams), values) || fallback;
   }
   const skip = new Set(imageSpecialParamKeys(cfg));
-  const special = formatImageSpecialSummary(cfg, values, model?.params || displayParams);
+  const special = formatImageSpecialSummary(cfg, values, model?.params || displayParams, t);
   const quick = getShortcutSummaryParams(displayParams, { skipFirstFallback: true }).filter(
     (p) => !skip.has(p.key),
   );

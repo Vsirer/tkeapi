@@ -305,6 +305,10 @@ const Users: React.FC = () => {
 
   useEffect(() => {
     const qGroup = searchParams.get('group') || searchParams.get('user_group') || searchParams.get('level');
+    if (isAdminPage) {
+      setFilterGroup(qGroup || 'all');
+      return;
+    }
     if (qGroup) {
       if (userLevels.length > 0) {
         const matched = userLevels.find((l: any) => l.group_key === qGroup || String(l.id) === qGroup);
@@ -317,7 +321,7 @@ const Users: React.FC = () => {
     } else {
       setFilterGroup('all');
     }
-  }, [searchParams, userLevels]);
+  }, [searchParams, userLevels, isAdminPage]);
 
   const handleFilterGroupChange = (val: string) => {
     setFilterGroup(val);
@@ -344,6 +348,7 @@ const Users: React.FC = () => {
 
   // ── 钱包明细弹窗状态 ──
   const [walletDetailUser, setWalletDetailUser] = useState<User | null>(null);
+  const [walletDetailTab, setWalletDetailTab] = useState('system');
   const [walletRecharges, setWalletRecharges] = useState<any[]>([]);
   const [walletDetailLoading, setWalletDetailLoading] = useState(false);
   // 缓存：{ userId: { data: [...], time: timestamp } }
@@ -403,7 +408,9 @@ const Users: React.FC = () => {
     let result = users;
     
     if (filterGroup && filterGroup !== 'all') {
-      result = result.filter(user => user.user_group === filterGroup);
+      result = isAdminPage
+        ? result.filter(user => user.admin_group_id != null && String(user.admin_group_id) === filterGroup)
+        : result.filter(user => user.user_group === filterGroup);
     }
 
     const trimmedFilterReferrer = filterReferrer.trim();
@@ -486,7 +493,7 @@ const Users: React.FC = () => {
     }
     
     return result;
-  }, [users, searchText, contactFilter, filterGroup, filterReferrer, allUsers, listSort, walletTimeFilter, monthConsumptionMap]);
+  }, [users, searchText, contactFilter, filterGroup, filterReferrer, allUsers, listSort, walletTimeFilter, monthConsumptionMap, isAdminPage]);
 
   const applyContactFilter = (kind: ClickFilterKind, value: string) => {
     const trimmed = value.trim();
@@ -627,6 +634,7 @@ const Users: React.FC = () => {
   const referrerOptions = useMemo(() => {
     // 过滤掉当前正在编辑的用户自己，不能自己推荐自己
     const filtered = allUsers.filter(u => {
+      if (!isAdminPage && u.role === 'admin') return false;
       if (!editingUser) return true;
       if (u.id === editingUser.id) return false;
       if (editingUser.uid && String(u.uid) === String(editingUser.uid)) return false;
@@ -657,9 +665,10 @@ const Users: React.FC = () => {
       if (currentRefId && !isSelf && !options.some(opt => opt.value === currentRefId)) {
         const matched = findReferrerUser(currentRefId);
         if (matched) {
+          const adminReferrer = !isAdminPage && matched.role === 'admin';
           options.unshift({
             value: String(matched.id),
-            label: formatLabel(matched),
+            label: adminReferrer ? `${formatLabel(matched)}（管理员，不能作为上级）` : formatLabel(matched),
             searchKey: `${matched.username} ${matched.nickname || ''} ${matched.uid || ''} ${matched.id} ${matched.email || ''}`.toLowerCase(),
           });
         } else {
@@ -673,7 +682,7 @@ const Users: React.FC = () => {
     }
 
     return options;
-  }, [allUsers, editingUser]);
+  }, [allUsers, editingUser, isAdminPage]);
 
   const initEditUser = (record: User, activeTab = '1') => {
     setEditingUser(record);
@@ -960,6 +969,10 @@ const Users: React.FC = () => {
             message.error('不能将自己设置为上级推荐人');
             return;
           }
+          if (!isAdminPage && findReferrerUser(refVal)?.role === 'admin') {
+            message.error('上级推荐人不能是管理员');
+            return;
+          }
         }
         // 编辑模式下不发送 balance/gift_balance，避免并发覆盖充值操作
         delete payload.balance;
@@ -988,6 +1001,10 @@ const Users: React.FC = () => {
         const payload: any = { ...values, role: targetRole };
         if (payload.referred_by && payload.username && String(payload.referred_by).trim() === String(payload.username).trim()) {
           message.error('不能将自己设置为上级推荐人');
+          return;
+        }
+        if (!isAdminPage && payload.referred_by && findReferrerUser(String(payload.referred_by))?.role === 'admin') {
+          message.error('上级推荐人不能是管理员');
           return;
         }
         // 创建时去掉值为0的余额字段，避免后端不必要的记录
@@ -1019,7 +1036,7 @@ const Users: React.FC = () => {
   };
 
 
-  const handleRechargeSave = async (values: any) => {
+  const handleRechargeSave = async (values: any, applyCommission: boolean) => {
     if (!rechargingUser) return;
     if (rechargeLoading) return;
     setRechargeLoading(true);
@@ -1032,12 +1049,26 @@ const Users: React.FC = () => {
         amount: finalAmount,
         remark: values.remark,
         wallet_type: values.walletType || 'system',
+        apply_commission: applyCommission,
       };
-      await request.post(`/users/${rechargingUser.uid || rechargingUser.id}/recharge`, payload);
-      message.success(t('users.recharge_success'));
+      const resp = await (request.post(`/users/${rechargingUser.uid || rechargingUser.id}/recharge`, payload) as any);
+      const applied = Number(resp?.commission_applied || 0);
+      const fromWallet = Number(resp?.commission_from_wallet || 0);
+      const fromSystem = Number(resp?.commission_from_system || 0);
+      if (applied > 0) {
+        message.success(`余额已调整，已向上级佣金钱包发放 ${currencySymbol}${applied.toFixed(6)}`);
+      } else if (applied < 0 || fromWallet > 0 || fromSystem > 0) {
+        const parts: string[] = [];
+        if (fromWallet > 0) parts.push(`佣金钱包 ${currencySymbol}${fromWallet.toFixed(6)}`);
+        if (fromSystem > 0) parts.push(`系统钱包 ${currencySymbol}${fromSystem.toFixed(6)}`);
+        if (parts.length === 0) parts.push(`${currencySymbol}${Math.abs(applied).toFixed(6)}`);
+        message.success(`余额已调整，已从上级扣回：${parts.join('，')}`);
+      } else {
+        message.success(t('users.recharge_success'));
+      }
       setIsRechargeModalVisible(false);
-      // 充值后清除该用户的钱包明细缓存，确保下次查看时获取最新数据
-      delete walletCacheRef.current[rechargingUser.uid || rechargingUser.id];
+      // 本次可能同时改了该用户和上级的系统钱包流水
+      walletCacheRef.current = {};
       fetchUsers();
     } catch (e) {
       console.error(e);
@@ -1046,7 +1077,351 @@ const Users: React.FC = () => {
     }
   };
 
-  const confirmRechargeSave = (values: any) => {
+interface ConfirmModalContentProps {
+  rechargingUser: User;
+  values: any;
+  walletLabel: string;
+  isDecrease: boolean;
+  currentBalance: number;
+  afterBalance: number;
+  currencySymbol: string;
+  isLight: boolean;
+  preview: any;
+  onClose: () => void;
+  onConfirm: (applyCommission: boolean) => Promise<any>;
+}
+
+const ConfirmModalContent: React.FC<ConfirmModalContentProps> = ({
+  rechargingUser,
+  values,
+  walletLabel,
+  isDecrease,
+  currentBalance,
+  afterBalance,
+  currencySymbol,
+  isLight,
+  preview,
+  onClose,
+  onConfirm,
+}) => {
+  const [choice, setChoice] = useState<boolean | undefined>(undefined);
+  const [submitting, setSubmitting] = useState(false);
+
+  const isAward = preview?.direction === 'award';
+  const ratioPercent = Math.round((preview?.ratio || 0) * 100);
+  const formattedActual = Number((preview?.actual || 0).toFixed(6));
+  const formattedSuggested = Number((preview?.suggested || 0).toFixed(6));
+  const isConfirmDisabled = !!(preview?.eligible && choice === undefined);
+
+  const bgCard = isLight ? '#f4f4f5' : '#18181b';
+  const borderCard = isLight ? '#e4e4e7' : '#27272a';
+  const textPrimary = isLight ? '#09090b' : '#fafafa';
+  const textSecondary = isLight ? '#71717a' : '#a1a1aa';
+  const textMuted = isLight ? '#a1a1aa' : '#71717a';
+
+  const handleSubmit = async () => {
+    if (isConfirmDisabled || submitting) return;
+    setSubmitting(true);
+    try {
+      await onConfirm(!!choice);
+      onClose();
+    } catch (e) {
+      console.error(e);
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      {/* 目标用户 */}
+      <div
+        style={{
+          padding: '8px 12px',
+          borderRadius: 6,
+          background: bgCard,
+          border: `1px solid ${borderCard}`,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+          <span style={{ color: textSecondary }}>目标用户</span>
+          <span style={{ fontWeight: 600, color: textPrimary }}>
+            {rechargingUser.username}
+            <span style={{ color: textMuted, fontSize: 12, fontWeight: 400, marginLeft: 6 }}>
+              (UID: {rechargingUser.uid || rechargingUser.id})
+            </span>
+          </span>
+        </div>
+        {values.remark && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, borderTop: `1px solid ${borderCard}`, paddingTop: 6 }}>
+            <span style={{ color: textSecondary }}>调整备注</span>
+            <span style={{ color: textPrimary, fontSize: 12, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {values.remark}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* 金额变动概览 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 14px',
+          borderRadius: 6,
+          background: bgCard,
+          border: `1px solid ${borderCard}`,
+          marginBottom: preview?.eligible ? 10 : 0,
+        }}
+      >
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span
+              style={{
+                fontSize: 11,
+                lineHeight: '16px',
+                padding: '1px 6px',
+                borderRadius: 4,
+                fontWeight: 600,
+                background: isLight ? '#e4e4e7' : '#27272a',
+                color: textPrimary,
+              }}
+            >
+              {isDecrease ? '减少' : '增加'}
+            </span>
+            <span style={{ fontSize: 12, color: textSecondary }}>
+              {walletLabel}
+            </span>
+          </div>
+          <div
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              color: textPrimary,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              letterSpacing: '-0.02em',
+              lineHeight: 1.2,
+            }}
+          >
+            {isDecrease ? '-' : '+'}{currencySymbol}{values.amount}
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 12, color: textSecondary, marginBottom: 4 }}>调整后余额</div>
+          <div
+            style={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: textPrimary,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              lineHeight: 1.2,
+            }}
+          >
+            {currencySymbol}{Number(afterBalance.toFixed(6))}
+          </div>
+          <div style={{ fontSize: 11, color: textMuted, marginTop: 2 }}>
+            当前: {currencySymbol}{Number(currentBalance.toFixed(6))}
+          </div>
+        </div>
+      </div>
+
+      {/* 上级返佣联动（必选项） */}
+      {preview?.eligible && (
+        <div
+          style={{
+            padding: '10px 12px',
+            borderRadius: 6,
+            background: bgCard,
+            border: `1px solid ${borderCard}`,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: textPrimary }}>
+              上级返佣联动
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                lineHeight: '16px',
+                padding: '1px 6px',
+                borderRadius: 4,
+                fontWeight: 500,
+                background: choice === undefined ? (isLight ? '#e4e4e7' : '#27272a') : (isLight ? '#09090b' : '#fafafa'),
+                color: choice === undefined ? textSecondary : (isLight ? '#fafafa' : '#09090b'),
+              }}
+            >
+              {choice === undefined ? '必选选项' : '已选择'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {/* 选项 1：发放 / 扣回 */}
+            <div
+              onClick={() => setChoice(true)}
+              style={{
+                padding: '8px 10px',
+                borderRadius: 6,
+                background: choice === true ? (isLight ? '#ffffff' : '#27272a') : (isLight ? '#ffffff' : '#18181b'),
+                border: `1px solid ${choice === true ? (isLight ? '#09090b' : '#a1a1aa') : borderCard}`,
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  border: `1.5px solid ${choice === true ? textPrimary : textMuted}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  marginTop: 3,
+                }}
+              >
+                {choice === true && (
+                  <div
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: textPrimary,
+                    }}
+                  />
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: textPrimary }}>
+                    {isAward ? '发放返佣' : '同步扣回'}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: textPrimary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
+                    {isAward ? `+${currencySymbol}${formattedActual}` : `-${currencySymbol}${formattedSuggested}`}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: textSecondary, marginTop: 2 }}>
+                  按 {ratioPercent}% {isAward ? '向上级' : '从上级'} {preview.inviter_username} {isAward ? '佣金钱包发放' : '扣回佣金'}
+                </div>
+                {!isAward && choice === true && (
+                  <div style={{ marginTop: 6, fontSize: 11, color: textSecondary, lineHeight: 1.5, borderTop: `1px dashed ${borderCard}`, paddingTop: 4 }}>
+                    <div>
+                      优先扣佣金钱包 {currencySymbol}{Number((preview.from_commission || 0).toFixed(6))}
+                      {preview.inviter_commission_balance !== undefined && `（当前 ${currencySymbol}${Number((preview.inviter_commission_balance || 0).toFixed(6))}）`}
+                    </div>
+                    {(preview.from_system || 0) > 0 && (
+                      <div style={{ marginTop: 2 }}>
+                        系统钱包补扣 {currencySymbol}{Number((preview.from_system || 0).toFixed(6))}
+                        {preview.inviter_system_balance !== undefined && `（当前 ${currencySymbol}${Number((preview.inviter_system_balance || 0).toFixed(6))}）`}
+                      </div>
+                    )}
+                    {(preview.from_system || 0) > 0 && ((preview.inviter_system_balance || 0) - (preview.from_system || 0)) < -0.0000005 && (
+                      <div style={{ marginTop: 2, fontWeight: 500, color: textPrimary }}>
+                        上级系统钱包扣后为负数
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 选项 2：不发放 / 不扣回 */}
+            <div
+              onClick={() => setChoice(false)}
+              style={{
+                padding: '8px 10px',
+                borderRadius: 6,
+                background: choice === false ? (isLight ? '#ffffff' : '#27272a') : (isLight ? '#ffffff' : '#18181b'),
+                border: `1px solid ${choice === false ? (isLight ? '#09090b' : '#a1a1aa') : borderCard}`,
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  border: `1.5px solid ${choice === false ? textPrimary : textMuted}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                {choice === false && (
+                  <div
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: textPrimary,
+                    }}
+                  />
+                )}
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: textPrimary }}>
+                {isAward ? '不发放返佣' : '不扣回佣金'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 底部按钮栏 (shadcn 样式) */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+        <Button
+          style={{
+            flex: 1,
+            height: 34,
+            borderRadius: 6,
+            borderColor: borderCard,
+            color: textPrimary,
+            background: 'transparent',
+            fontWeight: 500,
+          }}
+          onClick={onClose}
+          disabled={submitting}
+        >
+          取消
+        </Button>
+        <Button
+          type="primary"
+          style={{
+            flex: 1,
+            height: 34,
+            borderRadius: 6,
+            background: isConfirmDisabled ? undefined : (isLight ? '#09090b' : '#fafafa'),
+            borderColor: isConfirmDisabled ? undefined : (isLight ? '#09090b' : '#fafafa'),
+            color: isConfirmDisabled ? undefined : (isLight ? '#fafafa' : '#09090b'),
+            fontWeight: 500,
+            opacity: isConfirmDisabled ? 0.45 : 1,
+          }}
+          disabled={isConfirmDisabled}
+          loading={submitting}
+          onClick={handleSubmit}
+        >
+          确认调整
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+  const confirmRechargeSave = async (values: any) => {
     if (!rechargingUser) return;
     const walletLabel = values.walletType === 'gift'
       ? '赠送钱包'
@@ -1064,82 +1439,62 @@ const Users: React.FC = () => {
     const adjustmentAmount = Number(values.amount);
     const afterBalance = isDecrease ? currentBalance - adjustmentAmount : currentBalance + adjustmentAmount;
     
-    const amountColor = isDecrease ? token.colorError : token.colorSuccess;
-    const detailRows: { label: string; value: React.ReactNode }[] = [
-      { label: '用户', value: rechargingUser.username },
-      { label: '钱包', value: walletLabel },
-      { label: '操作', value: isDecrease ? '减少金额' : '增加金额' },
-      {
-        label: '金额',
-        value: (
-          <span style={{ color: amountColor, fontSize: 16, fontWeight: 700, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-            {isDecrease ? '-' : '+'}{currencySymbol}{values.amount}
-          </span>
-        ),
-      },
-      {
-        label: '调整后余额',
-        value: (
-          <span style={{ fontSize: 16, fontWeight: 700, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-            {currencySymbol}{Number(afterBalance.toFixed(6))}
-          </span>
-        ),
-      },
-    ];
-    modal.confirm({
-      title: <div style={{ textAlign: 'center', marginBottom: 16, fontSize: 18 }}>确认余额调整</div>,
+    let preview: {
+      eligible?: boolean;
+      direction?: string;
+      inviter_username?: string;
+      ratio?: number;
+      basis?: string;
+      suggested?: number;
+      actual?: number;
+      inviter_commission_balance?: number;
+      inviter_system_balance?: number;
+      from_commission?: number;
+      from_system?: number;
+      default_apply?: boolean;
+    } | null = null;
+    if ((values.walletType || 'system') === 'system' && adjustmentAmount > 0) {
+      try {
+        preview = await (request.get(`/users/${rechargingUser.uid || rechargingUser.id}/commission-preview`, {
+          params: { amount: isDecrease ? -adjustmentAmount : adjustmentAmount },
+        }) as any);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    let modalRef: any = null;
+    modalRef = modal.confirm({
+      title: (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 600, color: _isLight ? '#09090b' : '#fafafa' }}>
+          <WalletOutlined style={{ color: _isLight ? '#71717a' : '#a1a1aa' }} />
+          <span>确认余额调整</span>
+        </div>
+      ),
       icon: null,
       centered: true,
-      width: 400,
+      width: 440,
       content: (
-        <div>
-          <div
-            style={{
-              marginTop: 8,
-              padding: '4px 14px',
-              borderRadius: 8,
-              background: token.colorFillTertiary,
-              border: `1px solid ${token.colorBorderSecondary}`,
-            }}
-          >
-            {detailRows.map((row, idx) => (
-              <div
-                key={row.label}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 16,
-                  padding: '10px 0',
-                  borderBottom: idx === detailRows.length - 1 ? 'none' : `1px solid ${token.colorSplit}`,
-                }}
-              >
-                <span style={{ color: token.colorTextSecondary, fontSize: 13, flexShrink: 0 }}>{row.label}</span>
-                <span style={{ color: token.colorText, fontSize: 13, fontWeight: 600, textAlign: 'right' }}>{row.value}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 16, color: token.colorTextTertiary, fontSize: 13, textAlign: 'center' }}>
-            确认后余额将立即变动，请核对无误。
-          </div>
-        </div>
+        <ConfirmModalContent
+          rechargingUser={rechargingUser}
+          values={values}
+          walletLabel={walletLabel}
+          isDecrease={isDecrease}
+          currentBalance={currentBalance}
+          afterBalance={afterBalance}
+          currencySymbol={currencySymbol}
+          isLight={_isLight}
+          preview={preview}
+          onClose={() => modalRef?.destroy?.()}
+          onConfirm={(choiceVal) => handleRechargeSave(values, choiceVal)}
+        />
       ),
-      okText: '确认调整',
-      cancelText: '取消',
-      okButtonProps: { danger: isDecrease, style: { width: '100%' } },
-      cancelButtonProps: { style: { width: '100%' } },
-      footer: (_, { OkBtn, CancelBtn }) => (
-        <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-          <div style={{ flex: 1 }}><CancelBtn /></div>
-          <div style={{ flex: 1 }}><OkBtn /></div>
-        </div>
-      ),
-      onOk: () => handleRechargeSave(values),
+      footer: null,
     });
   };
 
   // ── 钱包明细：获取用户充值记录（30秒 TTL 缓存） ──
-  const openWalletDetail = async (record: User) => {
+  const openWalletDetail = async (record: User, tab?: 'commission') => {
+    setWalletDetailTab(tab === 'commission' ? 'commission' : 'system');
     setWalletDetailUser(record);
     const userKey = record.uid || record.id;
     // 检查缓存是否有效（30秒内）
@@ -1409,6 +1764,18 @@ const Users: React.FC = () => {
               options={[
                 { value: 'all', label: '全部用户等级' },
                 ...userLevels.map(level => ({ value: level.group_key, label: `${level.name} (${level.discount}x)` }))
+              ]}
+            />
+          )}
+          {isAdminPage && (
+            <Select
+              value={filterGroup}
+              onChange={handleFilterGroupChange}
+              style={{ width: screens.xs ? '100%' : 200, fontSize: 12, height: 32 }}
+              styles={{ popup: { root: { fontSize: 12 } } }}
+              options={[
+                { value: 'all', label: '全部管理员等级' },
+                ...adminGroups.map(group => ({ value: String(group.id), label: group.name }))
               ]}
             />
           )}
@@ -1890,6 +2257,9 @@ const Users: React.FC = () => {
                       return Promise.reject(new Error('不能选择自己作为上级推荐人'));
                     }
                   }
+                  if (!isAdminPage && findReferrerUser(String(value))?.role === 'admin') {
+                    return Promise.reject(new Error('上级推荐人不能是管理员'));
+                  }
                   return Promise.resolve();
                 }
               }
@@ -2313,16 +2683,18 @@ const Users: React.FC = () => {
         destroyOnClose
       >
         <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ 
-              width: 24, height: 24, borderRadius: '50%', 
-              background: _isLight ? '#e6f4ff' : 'rgba(22,119,255,0.15)', 
-              display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 8 
-            }}>
-              <UserOutlined style={{ fontSize: 13, color: '#1677ff' }} />
-            </div>
-            <Text type="secondary" style={{ fontSize: 13, marginRight: 6 }}>{t('users.username')}:</Text>
-            <Text strong style={{ fontSize: 14 }}>{rechargingUser?.username}</Text>
+          <div style={{ marginBottom: 12, lineHeight: 1.6, whiteSpace: 'nowrap' }}>
+            <Text type="secondary" style={{ fontSize: 15, marginRight: 6 }}>{t('users.username')}:</Text>
+            <Text strong style={{ fontSize: 15 }}>{rechargingUser?.username}</Text>
+            <Text type="secondary" style={{ fontSize: 15, marginLeft: 8 }}>UID: {rechargingUser?.uid || rechargingUser?.id}</Text>
+            {rechargingUser?.referred_by && (() => {
+              const referrer = findReferrerUser(rechargingUser.referred_by);
+              return (
+                <Text type="secondary" style={{ fontSize: 13, marginLeft: 8 }}>
+                  （推荐人: {referrer?.username || rechargingUser.referred_by} UID: {referrer?.uid || referrer?.id || rechargingUser.referred_by}）
+                </Text>
+              );
+            })()}
           </div>
           
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
@@ -2361,7 +2733,7 @@ const Users: React.FC = () => {
             showIcon
             message={
               <Text strong style={{ fontSize: 13, color: _isLight ? '#d46b08' : '#faad14' }}>
-                所有用户赠送、消费补偿、返现请选择赠送钱包充值
+                用户赠送和消费补偿请选择赠送钱包。邀请返佣进入上级佣金钱包，不要再手工加到赠送钱包。
               </Text>
             }
             style={{ marginBottom: 14, borderRadius: 6, padding: '8px 12px' }}
@@ -2474,10 +2846,11 @@ const Users: React.FC = () => {
       >
         {walletDetailUser && (
           <WalletDetailsView 
-            key={walletDetailUser.id}
+            key={`${walletDetailUser.id}-${walletDetailTab}`}
             user={walletDetailUser} 
             recharges={walletRecharges} 
-            loading={walletDetailLoading} 
+            loading={walletDetailLoading}
+            initialTab={walletDetailTab}
           />
         )}
       </Modal>

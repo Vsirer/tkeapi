@@ -18,6 +18,16 @@ pub struct UserLevel {
     pub discount_type: i32,
     #[sqlx(default)]
     pub commission_ratio: f64,
+    /// consumption=按系统钱包实际消费，recharge=按充值入账
+    #[sqlx(default)]
+    #[serde(default = "default_commission_basis")]
+    pub commission_basis: String,
+    /// 佣金钱包单次划转下限，0 为不限制
+    #[sqlx(default)]
+    pub commission_transfer_min: f64,
+    /// 佣金钱包单次划转上限，0 为不限制
+    #[sqlx(default)]
+    pub commission_transfer_max: f64,
     #[sqlx(default)]
     pub invite_reward_inviter: f64,
     #[sqlx(default)]
@@ -54,6 +64,9 @@ pub struct CreateUserLevelRequest {
     pub discount: f64,
     pub discount_type: Option<i32>,
     pub commission_ratio: Option<f64>,
+    pub commission_basis: Option<String>,
+    pub commission_transfer_min: Option<f64>,
+    pub commission_transfer_max: Option<f64>,
     pub invite_reward_inviter: Option<f64>,
     pub invite_reward_invitee: Option<f64>,
     pub daily_invite_limit: Option<i64>,
@@ -75,6 +88,9 @@ pub struct UpdateUserLevelRequest {
     pub discount: Option<f64>,
     pub discount_type: Option<i32>,
     pub commission_ratio: Option<f64>,
+    pub commission_basis: Option<String>,
+    pub commission_transfer_min: Option<f64>,
+    pub commission_transfer_max: Option<f64>,
     pub invite_reward_inviter: Option<f64>,
     pub invite_reward_invitee: Option<f64>,
     pub daily_invite_limit: Option<i64>,
@@ -87,6 +103,10 @@ pub struct UpdateUserLevelRequest {
     pub invoice_config: Option<String>,
     pub description: Option<String>,
     pub sort_order: Option<i32>,
+}
+
+fn default_commission_basis() -> String {
+    "consumption".to_string()
 }
 
 #[derive(Debug, Serialize)]

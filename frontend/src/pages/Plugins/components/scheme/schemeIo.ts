@@ -17,6 +17,8 @@ import type {
   SchemePortModality,
 } from './types';
 import { isWorkflowBasicNodeType, WORKFLOW_BASIC_NODE_TYPES } from './workflowBasicNodes';
+import i18n from '../../../../i18n';
+import { localizeSchemePhrase } from './schemeParamUtils';
 import { flowPortSocketLabel, flowSocketLabelZh } from './flowSocketLabels';
 
 const BIND_KEY_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -55,11 +57,11 @@ const MODALITY_ZH: Record<string, string> = {
 };
 
 function nodeTypeLabelZh(type: string): string {
-  return NODE_TYPE_ZH[type] || type;
+  return localizeSchemePhrase(NODE_TYPE_ZH[type] || type);
 }
 
 function modalityLabelZh(modality: string): string {
-  return MODALITY_ZH[modality] || modality;
+  return localizeSchemePhrase(MODALITY_ZH[modality] || modality);
 }
 
 function isValidBindKey(key: string): boolean {
@@ -693,7 +695,7 @@ function inferSourceMediaFromNodeType(
 }
 
 function assetKindLabelZh(kind: string): string {
-  return SCHEME_ASSET_KIND_OPTIONS.find((o) => o.value === kind)?.label || kind;
+  return localizeSchemePhrase(SCHEME_ASSET_KIND_OPTIONS.find((o) => o.value === kind)?.label || kind);
 }
 
 function portNeedMediaLabels(port: SchemePort): string[] {
@@ -734,17 +736,29 @@ export function portConnectionRejectReason(
     !kinds.includes(media as SchemeAssetKind) &&
     port.modality !== 'text'
   ) {
-    return `插孔「${socketLabel}」需要${needZh}，当前是${assetKindLabelZh(media)}（文件类型不匹配）`;
+    return i18n.t('playground_2026:io_reject_type', '插孔「{{port}}」需要{{need}}，当前是{{got}}（文件类型不匹配）', {
+      port: socketLabel,
+      need: needZh,
+      got: assetKindLabelZh(media),
+    });
   }
 
   if (!(port.accepts || []).includes(sourceNodeType)) {
-    return `插孔「${socketLabel}」不接受「${nodeTypeLabelZh(sourceNodeType)}」节点`;
+    return i18n.t('playground_2026:io_reject_node', '插孔「{{port}}」不接受「{{node}}」节点', {
+      port: socketLabel,
+      node: nodeTypeLabelZh(sourceNodeType),
+    });
   }
 
   if (needZh) {
-    return `插孔「${socketLabel}」需要${needZh}，素材类型不匹配`;
+    return i18n.t('playground_2026:io_reject_kind', '插孔「{{port}}」需要{{need}}，素材类型不匹配', {
+      port: socketLabel,
+      need: needZh,
+    });
   }
-  return `插孔「${socketLabel}」不接受该上游节点类型`;
+  return i18n.t('playground_2026:io_reject_upstream', '插孔「{{port}}」不接受该上游节点类型', {
+    port: socketLabel,
+  });
 }
 
 /** 口是否接受该上游节点类型（preview 在 accepts 内则不限制媒体；asset 校验 kinds / modality） */
@@ -1340,18 +1354,18 @@ export function findStaleInputConnections(opts: {
       ? flowPortSocketLabel(port.label, handleId)
       : flowSocketLabelZh(handleId);
     if (!port) {
-      stale.push({ handleId, label, reason: '当前模型未启用该入参口' });
+      stale.push({ handleId, label, reason: i18n.t('playground_2026:io_stale_disabled', '当前模型未启用该入参口') });
       continue;
     }
     const srcType = resolveSourceType(sourceId);
     if (!srcType) {
-      stale.push({ handleId, label, reason: '上游节点已不存在' });
+      stale.push({ handleId, label, reason: i18n.t('playground_2026:io_stale_missing', '上游节点已不存在') });
       continue;
     }
     const media = resolveSourceMedia?.(sourceId);
     if (!isPortCompatibleWithSource(port, srcType, media)) {
       const detail = portConnectionRejectReason(port, srcType, media, handleId);
-      const reason = detail?.replace(/^插孔「[^」]+」/, '') || '上游类型不兼容';
+      const reason = detail?.replace(/^插孔「[^」]+」/, '') || i18n.t('playground_2026:io_stale_incompat', '上游类型不兼容');
       stale.push({ handleId, label, reason });
     }
   }

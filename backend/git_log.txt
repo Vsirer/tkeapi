@@ -1,10 +1,10 @@
-ec9fd56cf8683b46101c084f9373dad6e01a093bec9fd56aqachatm5pm2026-09-26 14:37:27 +0800模型更新支持
-ea58706fc3c000f554d36f2549d7d4ba8b7905dfea58706cgm5pm2026-09-08 11:08:29 +0800Create tokensbyte-offline.tar.gz
-6cd6a96a023dc050f128184be87d34de7ce01f0e6cd6a96cgm5pm2026-09-08 11:08:16 +0800docker
-474c324553a5214ebb142215f3b2cf86553f8b6e474c324cgm5pm2026-09-08 10:34:23 +0800更新打包镜像
-416cbd19425d8067689910be91920b19db2f8d9d416cbd1cgm5pm2026-09-08 10:25:50 +0800Update git_log.txt
-cc0e61831d04e4b075c51ac888d5abeb65eac23ccc0e618cgm5pm2026-09-08 10:24:58 +0800计费更新转发
-3555eb2d553bd5ee42eb8d621b3a9b6fe9f558d73555eb2cgm5pm2026-08-15 16:13:46 +0800cg
-7620f3549d9d04cb1b67a9d68bac1e530b0631ed7620f35cgm5pm2026-08-15 16:11:28 +0800更新
-0fc20ccd6fa4c36413eba456f6b2997c490924880fc20cccgm5pm2026-08-15 15:39:20 +0800docker
-7ebd17958138a3190f9e4088417e493d996959fb7ebd179cgm5pm2026-08-15 15:00:54 +0800update
+1569eb5ac2af5cf0db453dfc885263e309a6170b1569eb5aaqachat2026-10-03 09:59:33 +0800feat(team_marketing & wallet & invoices): 团队营销发票权限联动境内模式门禁与钱包发票优化
+b295f95a108c5afabac480a553109257e0d414a8b295f95aaqachat2026-10-03 09:20:01 +0800feat(finance & wallet): 新增佣金流水明细、佣金划转上下限控制及扣回差额联动系统钱包
+a6fff5dae89f2c90ed57684e5817f4d23be0272fa6fff5daaqachat2026-10-02 22:54:52 +0800fix(icons): 模型图标按站点图标库原文件显示，取消暗色反色
+42b6883837312424863560bd2e4024b6b6daa84642b68838aqachat2026-10-02 22:36:04 +0800feat(wallet & affiliate): 整合邀请返利与推广明细至我的钱包统一面板
+30d415f114e4d460e65a52cf4990f463a35edbe230d415f1aqachat2026-10-02 22:32:54 +0800feat(affiliate & plugins): 会员中心推广总览与充值联动佣金，未配置插件默认关闭
+93f1fe99b0adfa3626b10513a8d3e3ab46bf687f93f1fe99cgm5pm2026-10-01 01:38:02 +0800feat(users & analytics & affiliate): 新增用户数据分析看板、用户等级分佣基数与比例配置及会员中心
+1bdc04e3aac8b80cac5388564965c8d69c09f3fe1bdc04e3cgm5pm2026-09-30 21:06:03 +0800chore(build): 更新本地提交日志缓存
+09f1552d4d8e540bcdc2e46487ccdcbf4bd7344f09f1552dcgm5pm2026-09-30 21:05:23 +0800merge: 合并 origin/dev-cz2026 到本地 cgdev0808，保留双方功能
+e4e370c0131b8438b1c488c45e0441973a154b11e4e370c0陈元2026-09-30 21:04:01 +0800修复居中问题
+f8999c6e5a709593670201af380d843921eba215f8999c6ecgm5pm2026-09-30 20:43:54 +0800chore(build): 更新本地提交日志缓存

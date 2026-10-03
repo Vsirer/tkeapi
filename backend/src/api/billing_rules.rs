@@ -6,7 +6,7 @@
  */
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use sqlx::Row;
@@ -16,19 +16,40 @@ use crate::error::AppResult;
 use crate::models::{BillingRule, CreateBillingRuleRequest, UpdateBillingRuleRequest};
 use crate::AppState;
 
-pub async fn list_rules(State(state): State<Arc<AppState>>) -> AppResult<Json<Vec<BillingRule>>> {
-    let volc_active = crate::api::plugins::is_plugin_compiled("volcengine_enhance")
+#[derive(serde::Deserialize, Default)]
+pub struct BillingRuleListQuery {
+    pub include_pid: Option<String>,
+}
+
+pub async fn list_rules(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<BillingRuleListQuery>,
+) -> AppResult<Json<Vec<BillingRule>>> {
+    let plugin_on = crate::api::plugins::is_plugin_compiled("volcengine_enhance")
         && crate::api::plugins::is_plugin_enabled(&state, "volcengine_enhance").await;
 
-    let query_str = if volc_active {
-        "SELECT * FROM billing_rules ORDER BY sort_order DESC, id DESC"
-    } else {
-        "SELECT * FROM billing_rules WHERE name NOT ILIKE '%MediaKit%' AND billing_rule != 'volc_enhance_cascade' AND pid != '78242' AND name != '火山级联画质增强默认计费' ORDER BY sort_order DESC, id DESC"
-    };
+    let rules: Vec<BillingRule> = sqlx::query_as(
+        &state
+            .db
+            .format_query("SELECT * FROM billing_rules ORDER BY sort_order DESC, id DESC"),
+    )
+    .fetch_all(&state.db.pool)
+    .await?;
 
-    let rules = sqlx::query_as(&state.db.format_query(query_str))
-        .fetch_all(&state.db.pool)
-        .await?;
+    let include_key = query.include_pid.as_deref();
+    let rules = rules
+        .into_iter()
+        .filter(|rule| {
+            crate::db::migrations::helpers::volc_mediakit_image::billing_rule_listed(
+                &rule.name,
+                &rule.pid,
+                &rule.billing_rule,
+                rule.id,
+                plugin_on,
+                include_key,
+            )
+        })
+        .collect();
     Ok(Json(rules))
 }
 
@@ -696,6 +717,19 @@ fn get_default_by_name(name: &str) -> Option<BillingRuleDefault> {
             pricing_tiers: "[]",
             extended_config: "{}",
         }),
+        "火山 MediaKit 图像画质增强" | "火山 MediaKit 图像背景移除" => Some(BillingRuleDefault {
+            billing_type: "requests",
+            prompt_rate: 0.0,
+            completion_rate: 0.0,
+            cached_rate: 0.0,
+            claude_cache_creation_rate: 0.0,
+            claude_cache_read_rate: 0.0,
+            fixed_rate: 0.006,
+            duration_rate: 0.0,
+            billing_rule: "standard",
+            pricing_tiers: "[]",
+            extended_config: "{}",
+        }),
         "火山 MediaKit 视频字幕擦除 (精细版)" => Some(BillingRuleDefault {
             billing_type: "duration",
             prompt_rate: 0.0,
@@ -724,6 +758,47 @@ fn get_default_by_name(name: &str) -> Option<BillingRuleDefault> {
         }),
         _ => None,
     }
+}
+
+/// 插件重新开启时，把八条预置计费规则的单价和启用状态写回系统默认。
+pub async fn restore_volc_preset_billing(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    for (_, name, _) in crate::db::migrations::helpers::volc_mediakit_image::PRESET_BILLING {
+        let Some(default_val) = get_default_by_name(name) else {
+            continue;
+        };
+        sqlx::query(
+            r#"UPDATE billing_rules SET
+                billing_type = $1,
+                prompt_rate = $2,
+                completion_rate = $3,
+                cached_rate = $4,
+                claude_cache_creation_rate = $5,
+                claude_cache_read_rate = $6,
+                fixed_rate = $7,
+                duration_rate = $8,
+                billing_rule = $9,
+                pricing_tiers = $10,
+                extended_config = $11,
+                is_active = 1,
+                updated_at = CURRENT_TIMESTAMP
+               WHERE name = $12"#,
+        )
+        .bind(default_val.billing_type)
+        .bind(default_val.prompt_rate)
+        .bind(default_val.completion_rate)
+        .bind(default_val.cached_rate)
+        .bind(default_val.claude_cache_creation_rate)
+        .bind(default_val.claude_cache_read_rate)
+        .bind(default_val.fixed_rate)
+        .bind(default_val.duration_rate)
+        .bind(default_val.billing_rule)
+        .bind(default_val.pricing_tiers)
+        .bind(default_val.extended_config)
+        .bind(*name)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn restore_default_rule(
@@ -938,6 +1013,7 @@ pub async fn ensure_volcengine_enhance_system_rules(state: &AppState) -> AppResu
     }
 
     let _ = crate::db::migrations::helpers::volc_mediakit_image::seed(pool).await;
+    let _ = crate::db::migrations::helpers::volc_mediakit_image::backfill_preset_billing_pids(pool).await;
 
     Ok(())
 }

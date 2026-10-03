@@ -85,25 +85,6 @@ pub fn merge_upstream_response_headers(dest: &mut HeaderMap, upstream: &HeaderMa
     }
 }
 
-/// 已有该响应头时替换为 `value`；无则不动。`value` 空/非法则移除该头。
-#[inline]
-pub fn replace_header_if_present(headers: &mut HeaderMap, name: &str, value: &str) {
-    if !headers.contains_key(name) {
-        return;
-    }
-    let Ok(key) = HeaderName::try_from(name) else {
-        return;
-    };
-    match HeaderValue::try_from(value) {
-        Ok(v) if !value.is_empty() => {
-            headers.insert(key, v);
-        }
-        _ => {
-            headers.remove(key);
-        }
-    }
-}
-
 /// 透传上游诊断头并设置指定 Content-Type。
 pub fn with_content_type(
     upstream: &HeaderMap,

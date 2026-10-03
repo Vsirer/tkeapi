@@ -375,7 +375,7 @@ const Settings: React.FC = () => {
         { key: '/tokens', label_zh: '令牌管理', label_en: 'Tokens', icon: 'KeyOutlined', enabled: true, sort_order: 4, allowed_levels: 'all' },
         { key: '/logs', label_zh: '日志记录', label_en: 'Logs', icon: 'HistoryOutlined', enabled: true, sort_order: 5, allowed_levels: 'all' },
         { key: '/task-logs', label_zh: '任务列表', label_en: 'Task Logs', icon: 'ScheduleOutlined', enabled: true, sort_order: 6, allowed_levels: 'all' },
-        { key: '/assets', label_zh: '素材管理', label_en: 'Assets', icon: 'PictureOutlined', enabled: true, sort_order: 7, allowed_levels: 'all' },
+        { key: '/assets', label_zh: '资产素材', label_en: 'Assets', icon: 'PictureOutlined', enabled: true, sort_order: 7, allowed_levels: 'all' },
         { key: '/assets-intl', label_zh: '资产管理', label_en: 'Assets Intl', icon: 'FolderOpenOutlined', enabled: true, sort_order: 8, allowed_levels: 'all' },
         { key: '/advanced-marketing', label_zh: '高级推广', label_en: 'Advanced Marketing', icon: 'TeamOutlined', enabled: true, sort_order: 10, allowed_levels: 'all' },
         { key: '/wallet', label_zh: '我的钱包', label_en: 'Wallet', icon: 'WalletOutlined', enabled: true, sort_order: 11, allowed_levels: 'all' },
@@ -425,10 +425,8 @@ const Settings: React.FC = () => {
         admin_path: site?.admin_path || 'admin1688',
         ip_blacklist_enabled: site?.ip_blacklist_enabled === true,
         ip_blacklist_text: (site?.ip_blacklist || []).join('\n'),
-        ip_whitelist_enabled: site?.ip_whitelist_enabled === true || !(site?.ip_whitelist && site.ip_whitelist.length > 0),
-        ip_whitelist_text: (site?.ip_whitelist && site.ip_whitelist.length > 0)
-          ? site.ip_whitelist.join('\n')
-          : '10.0.0.0/24\n192.168.1.0/24\n172.16.0.0/24',
+        ip_whitelist_enabled: site?.ip_whitelist_enabled === true,
+        ip_whitelist_text: (site?.ip_whitelist || []).join('\n'),
         login_style: site?.login_style || 'split',
         login_quote: site?.login_quote || '',
         show_timezone: site?.show_timezone !== false,
@@ -488,9 +486,25 @@ const Settings: React.FC = () => {
       let payload: any = {};
 
       if (tab === 'basic') {
+        const nonemptyLines = (text: string) => text.split('\n').map((s) => s.trim()).filter(Boolean);
+        if (values.ip_blacklist_enabled === true && nonemptyLines(values.ip_blacklist_text || '').length === 0) {
+          message.error('已开启注册 IP 黑名单，请至少填写一条 IP 或网段');
+          return;
+        }
+        if (values.ip_whitelist_enabled === true && nonemptyLines(values.ip_whitelist_text || '').length === 0) {
+          message.error('已开启注册 IP 白名单，请至少填写一条 IP 或网段');
+          return;
+        }
+        const emailDomains = values.registration?.email_whitelist;
+        const hasEmailDomain = Array.isArray(emailDomains) && emailDomains.some((d: string) => String(d).trim());
+        if (values.registration?.email_whitelist_enabled === true && !hasEmailDomain) {
+          message.error('已开启邮箱白名单，请至少填写一个允许的邮箱域名');
+          return;
+        }
         payload.site = {
           ...settings?.site,
           name: values.name || '', logo: values.logo || '', title: values.title || '',
+          intro: values.intro || '',
           keywords: values.keywords || '', description: values.description || '',
           favicon: values.favicon || '',
           logo_title_url: (values.logo_title_url || '').trim(),
@@ -598,6 +612,17 @@ const Settings: React.FC = () => {
   const siteSettingsContent = (
     <div style={{ maxWidth: 680 }}>
       <Form.Item label={t('settings.site_name')} name="name" rules={[{ required: true }]}><Input placeholder="Tkeapi" /></Form.Item>
+      <Form.Item
+        label="站点简介"
+        name="intro"
+      >
+        <Input.TextArea
+          rows={3}
+          placeholder="请输入站点简介，例如：企业级多模型聚合调度与中转分发平台..."
+          maxLength={300}
+          showCount
+        />
+      </Form.Item>
       <Form.Item label="站点 Logo" extra={<Text type="secondary">支持图片链接，建议尺寸 32x32 或 40x40，留空则显示站点名称</Text>}>
         <Space.Compact style={{ width: '100%' }}>
           <Form.Item name="logo" noStyle>
@@ -870,7 +895,7 @@ const Settings: React.FC = () => {
         label="开启注册 IP 黑名单"
         name="ip_blacklist_enabled"
         valuePropName="checked"
-        extra={<Text type="secondary">开启后黑名单内的 IP 禁止发送验证码和注册</Text>}
+        extra={<Text type="secondary">开启后，黑名单内的 IP 不能登录、注册、找回密码和绑定账号，也不能发送这些操作的验证码。管理后台登录不受此限</Text>}
       >
         <Switch />
       </Form.Item>
@@ -927,7 +952,7 @@ const Settings: React.FC = () => {
       </Form.Item>
 
       <Form.Item label={t('settings.ip_rate_limit_enabled')} name={['registration', 'ip_rate_limit_enabled']} valuePropName="checked"
-        extra={<Text type="secondary">限制同一 IP 每天注册次数（手机号注册不受此限）</Text>}>
+        extra={<Text type="secondary">限制同一 IP 每天的用户名和邮箱注册次数。手机号、微信、谷歌新注册不拦截，也不计入该次数</Text>}>
         <Switch />
       </Form.Item>
       <Form.Item noStyle dependencies={[['registration', 'ip_rate_limit_enabled']]}>
@@ -1801,11 +1826,11 @@ const Settings: React.FC = () => {
             navigate(`/${adminPath}/settings?tab=basic&subtab=${k}`, { replace: true });
           }} items={[
             { key: 'site', label: '站点信息', children: siteSettingsContent },
-            { key: 'security', label: '站点安全', children: securitySettingsContent },
             { key: 'login', label: '登录设置', children: loginSettingsContent },
             { key: 'registration', label: '注册设置', children: registrationSettingsContent },
             { key: 'agreement', label: '站点协议', children: agreementSettingsContent },
             { key: 'menu', label: '菜单配置', children: menuSettingsContent },
+            { key: 'security', label: '站点安全', children: securitySettingsContent },
             { key: 'relay', label: '模型调用安全', children: relaySettingsContent },
           ]} />
         )}

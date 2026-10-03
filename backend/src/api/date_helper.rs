@@ -464,6 +464,27 @@ pub fn calculate_query_slices(
     slice
 }
 
+/// 单个自然日的 logs 半开区间 `[当日 00:00, 次日 00:00)`。
+/// 仅在 `usage_daily_stats` 还没有这一天时使用，避免汇总落地后仍扫热表。
+pub fn logs_calendar_day_slice(day: NaiveDate, tz: chrono_tz::Tz) -> QueryTimeSlice {
+    let start = resolve_local_dt(tz, day, 0, 0, 0, 0);
+    let end = resolve_local_dt(tz, day + Duration::days(1), 0, 0, 0, 0);
+    QueryTimeSlice {
+        has_history_days: false,
+        hist_start_date: None,
+        hist_end_date: None,
+        has_today: false,
+        today_start_ts: None,
+        today_end_ts: None,
+        has_head_slice: true,
+        head_start_ts: Some(fmt_ts(start)),
+        head_end_ts: Some(fmt_ts(end)),
+        has_tail_slice: false,
+        tail_start_ts: None,
+        tail_end_ts: None,
+    }
+}
+
 fn resolve_local_dt(
     tz: chrono_tz::Tz,
     day: NaiveDate,

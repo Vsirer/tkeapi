@@ -357,21 +357,13 @@ const KNOWN_BRAND_LOGO_MAP: Record<string, string> = {
 const lobeIconSrc = (
   logo?: string | null,
   providerLogo?: string | null,
-  isLight: boolean = true,
+  _isLight: boolean = true,
   fallbackName?: string | null
 ) => {
   const rawCandidate = (logo || providerLogo || fallbackName || '').trim();
   if (!rawCandidate) return LOBE_DEFAULT_ICON;
 
-  // 1. Kimi 专属双模高保真图标判定：
-  // 无论传入的是 kimi、kimi.svg、kimi-dark、kimi-light、/assets/icons/lobe/kimi.svg 还是模型名称中包含 kimi (如 kimi-k1.5、kimi-k3)，
-  // 均优先自适应映射到高保真矢量资源（亮色模式黑色底色，暗色模式纯白底色，均保留经典海蓝圆点）
-  const allIdentifiers = `${logo || ''} ${providerLogo || ''} ${fallbackName || ''}`.toLowerCase();
-  if (allIdentifiers.includes('kimi')) {
-    return isLight ? '/assets/icons/lobe/kimi-light.svg' : '/assets/icons/lobe/kimi-dark.svg';
-  }
-
-  // 2. 完整 URL、Data URI 或站内绝对路径直接返回
+  // 完整 URL、Data URI 或站内绝对路径直接返回。图标文件与站点图标库预览同一份，不另换资源。
   if (
     rawCandidate.startsWith('http://') ||
     rawCandidate.startsWith('https://') ||
@@ -381,7 +373,7 @@ const lobeIconSrc = (
     return rawCandidate;
   }
 
-  // 3. 常见品牌中英文别名智能映射
+  // 常见品牌中英文别名智能映射
   const cleaned = rawCandidate.replace(/\.svg$/i, '').trim().toLowerCase();
   const matchedLogo = KNOWN_BRAND_LOGO_MAP[cleaned]
     || KNOWN_BRAND_LOGO_MAP[rawCandidate.trim()]
@@ -427,29 +419,8 @@ const isNewModel = (model: { created_at?: string; variants?: { created_at?: stri
   });
 };
 
-const getLogoFilter = (logoName: string | undefined, isLight: boolean, resolvedSrc?: string) => {
-  if (isLight) return 'none';
-  const name = (logoName || '').toLowerCase();
-  const src = (resolvedSrc || '').toLowerCase();
-
-  // 1. 默认立方体图标绝对不反色
-  if (name.includes('default') || src.includes('default')) return 'none';
-
-  // 2. Kimi 拥有官方专属黑白+蓝点双模高保真图标，无论标识还是实际渲染 URL 包含 kimi，坚决禁止反色滤镜
-  if (name.includes('kimi') || src.includes('kimi')) return 'none';
-
-  // 3. 包含以下关键字的单色/黑色图标，在暗色模式下反色为白色显示
-  const monochromeKeywords = [
-    'openai', 'github', 'anthropic', 'groq', 'ollama',
-    'moonshot', 'zeroone', 'openrouter', 'xai', 'grok',
-    'hermes'
-  ];
-
-  if (monochromeKeywords.some(keyword => name.includes(keyword) || src.includes(keyword))) {
-    return 'invert(1)';
-  }
-  return 'none';
-};
+/** 与站点图标库预览一致，不按主题反色。 */
+const getLogoFilter = (_logoName?: string, _isLight = true, _resolvedSrc?: string) => 'none';
 
 interface CopyModelIdButtonProps {
   modelId: string;
@@ -2787,8 +2758,8 @@ const ModelMarketplace: React.FC = () => {
 
           <Content style={{
             margin: 0,
-            padding: activeView === 'trending' && !selectedModel ? 0 : (screens.xs ? '12px 16px' : '20px 32px'),
-            paddingTop: activeView === 'trending' && !selectedModel
+            padding: !showModelsSkeleton && activeView === 'trending' && !selectedModel ? 0 : (screens.xs ? '12px 16px' : '20px 32px'),
+            paddingTop: !showModelsSkeleton && activeView === 'trending' && !selectedModel
               ? (screens.xs ? 48 : 56)
               : (screens.xs ? 48 + 12 : 56 + 20),
             minHeight: 280,

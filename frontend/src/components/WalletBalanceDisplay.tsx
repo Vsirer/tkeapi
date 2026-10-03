@@ -6,7 +6,8 @@
  */
 
 import React from 'react';
-import { Typography, Tag, Progress, Tooltip } from 'antd';
+import { Typography, Tag, Progress } from 'antd';
+import { DollarCircleOutlined, RightOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useThemeStore } from '../store/theme';
 import useSettingsStore from '../store/settings';
@@ -20,9 +21,10 @@ interface WalletBalanceDisplayProps {
     gift_balance?: number;
     gift_used_quota?: number;
     credit_limit?: number;
+    commission_balance?: number;
     pay_enabled?: number;
   };
-  onWalletClick?: (record: any) => void;
+  onWalletClick?: (record: any, tab?: 'commission') => void;
   isLight?: boolean;
   currencySymbol?: string;
   systemLabel?: React.ReactNode;
@@ -82,6 +84,8 @@ const WalletBalanceDisplay: React.FC<WalletBalanceDisplayProps> = ({
   const gift_percent = gift_total > 0 ? (gift / gift_total) * 100 : 0;
 
   const creditLimit = record.credit_limit || 0;
+  const commission = record.commission_balance || 0;
+  const muted = isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)';
 
   const isMonthView = !!monthStats;
   const hasTotalRecharge = totalRecharge !== undefined;
@@ -107,7 +111,9 @@ const WalletBalanceDisplay: React.FC<WalletBalanceDisplayProps> = ({
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'flex-start',
-    gap: typeof gap === 'number' ? `${gap}px` : gap,
+    flexWrap: 'wrap',
+    columnGap: typeof gap === 'number' ? `${gap}px` : gap,
+    rowGap: 6,
   };
 
   const itemStyle: React.CSSProperties = width !== undefined
@@ -196,6 +202,53 @@ const WalletBalanceDisplay: React.FC<WalletBalanceDisplayProps> = ({
           style={{ margin: 0, lineHeight: 1 }} 
         />
       </div>
+
+      {commission > 0 && (
+        <div
+          style={{
+            flexBasis: '100%',
+            maxWidth: typeof width === 'number' ? width * 2 + (typeof gap === 'number' ? gap : 16) : undefined,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '3px 8px',
+            borderRadius: 6,
+            border: `1px solid ${isLight ? 'rgba(217, 119, 6, 0.22)' : 'rgba(250, 173, 20, 0.26)'}`,
+            background: isLight
+              ? 'linear-gradient(135deg, rgba(254, 243, 199, 0.5) 0%, rgba(253, 230, 138, 0.22) 100%)'
+              : 'linear-gradient(135deg, rgba(250, 173, 20, 0.12) 0%, rgba(217, 119, 6, 0.05) 100%)',
+            cursor: onWalletClick ? 'pointer' : 'default',
+            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            boxSizing: 'border-box',
+          }}
+          className="transition-all hover:brightness-105"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onWalletClick) onWalletClick(record, 'commission');
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <DollarCircleOutlined style={{ fontSize: 12, color: isLight ? '#d97706' : '#faad14' }} />
+            <span style={{ color: isLight ? '#92400e' : '#faad14', fontSize: 11, fontWeight: 500 }}>
+              {t('commission_wallet', '佣金钱包')}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: isLight ? '#b45309' : '#ffe58f',
+                fontVariantNumeric: 'tabular-nums',
+                letterSpacing: '-0.2px',
+              }}
+            >
+              {currencySymbol}{commission.toFixed(6)}
+            </span>
+            <RightOutlined style={{ fontSize: 9, color: isLight ? '#d97706' : '#faad14', opacity: 0.6 }} />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

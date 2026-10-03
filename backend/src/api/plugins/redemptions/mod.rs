@@ -674,30 +674,14 @@ pub async fn redeem_code(
     .execute(&mut *tx)
     .await?;
 
-    let recharge_id: i64 = sqlx::query_scalar::<_, i64>(
-        &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'redemption', ?) RETURNING id")
+    sqlx::query(
+        &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'redemption', ?)")
     )
     .bind(&user_id)
     .bind(redemption.quota)
     .bind(format!("兑换码: {}", redemption.name))
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await?;
-
-    if let Err(e) = crate::services::affiliate::award_commission(
-        &state.db,
-        &mut tx,
-        &user_id,
-        recharge_id,
-        redemption.quota,
-    )
-    .await
-    {
-        tracing::warn!(
-            "Failed to award commission for redemption {}: {}",
-            recharge_id,
-            e
-        );
-    }
 
     tx.commit().await?;
 

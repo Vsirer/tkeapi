@@ -375,9 +375,15 @@ async fn try_client_poll_from_logs(
         _ => {
             if completed && log.status_code != 200 {
                 crate::relay_debug!("[TaskPoll] {} 已失败无缓存", task_id);
+                let err = log
+                    .error_message
+                    .as_deref()
+                    .map(proxy::extract_error_message)
+                    .filter(|s| !s.is_empty());
+                let msg = err.as_deref().unwrap_or("已失败");
                 return Some(json_poll_response(forward::enrich_client_poll(
                     target_type,
-                    &format_async_task_failed(raw_path, category, task_id, "已失败"),
+                    &format_async_task_failed(raw_path, category, task_id, msg),
                     log.to_poll_ctx(raw_path),
                 )));
             }
@@ -603,6 +609,15 @@ pub async fn task_status(
             log.model.clone_from(m);
         }
     }
+    if log.is_completed == 0
+        && forward::awaiting_video_submit(&log.response_content, &log.plugin_tag)
+    {
+        return Ok(json_poll_response(forward::route_accept_body(
+            raw_path,
+            &task_id,
+            &log.model,
+        )));
+    }
 
     // 与选渠同源水合（channel_config_id 还原 HA 子配）
     let channel = super::router::fetch_channel(&state, log.channel_id, log.channel_config_id).await;
@@ -722,6 +737,10 @@ pub async fn task_status(
         cascade_stage,
         get_resp_str.len()
     );
+    let mut get_resp_str = get_resp_str;
+    if forward::tag_is_video_accept(&log.plugin_tag) {
+        force_json_task_id(&mut get_resp_str, &task_id);
+    }
 
     // 组落库体基准：腾讯云转 OpenAI 规整化；若发起端点是官方路由且成功，提前转为官方响应体（前置于级联增强）
     let is_tencent = forward::is_tencent_target(&resolved.target_type);
@@ -1166,6 +1185,9 @@ pub async fn sync_single_task(state: &Arc<AppState>, log_id: i64) -> anyhow::Res
     if log.is_completed == 1 {
         return Ok("已完成".to_string());
     }
+    if forward::awaiting_video_submit(&log.response_content, &log.plugin_tag) {
+        return Ok("受理中".to_string());
+    }
 
     let channel = super::router::fetch_channel(state, log.channel_id, log.channel_config_id)
         .await
@@ -1255,6 +1277,10 @@ pub async fn sync_single_task(state: &Arc<AppState>, log_id: i64) -> anyhow::Res
             return Ok(format!("上游终态失败: {}", message));
         }
     };
+    let mut body = body;
+    if forward::tag_is_video_accept(&log.plugin_tag) {
+        force_json_task_id(&mut body, &log.task_id);
+    }
 
     // 组落库体与 GET 同源：腾讯云转 OpenAI 规整化；若发起端点是官方路由且成功，提前转为官方响应体（前置于级联增强）
     let is_tencent = forward::is_tencent_target(&resolved.target_type);
@@ -1805,6 +1831,17 @@ pub(super) async fn execute_settlement_tx(
 
             // 更新用户账户余额、令牌配额和渠道配额，任一步骤失败都会导致整个事务回滚，确保计费落地一致性
             let res: Result<(), sqlx::Error> = async {
+                let consumption_award = crate::services::affiliate::prepare_consumption_commission(
+                    &state.db,
+                    &mut tx,
+                    user_id,
+                    settled_cost,
+                    pre_deduction,
+                    pre_deduct_gift,
+                    false,
+                )
+                .await
+                .map_err(|e| sqlx::Error::Protocol(format!("commission: {e}")))?;
                 if apply_balance > 0.0 {
                     sqlx::query(&state.db.format_query(
                         "UPDATE users SET \
@@ -1886,6 +1923,17 @@ pub(super) async fn execute_settlement_tx(
                             }
                         }
                     }
+                }
+                if let Some(award) = consumption_award {
+                    crate::services::affiliate::credit_consumption_commission(
+                        &state.db,
+                        &mut tx,
+                        user_id,
+                        &format!("log:{log_id}"),
+                        &award,
+                    )
+                    .await
+                    .map_err(|e| sqlx::Error::Protocol(format!("commission: {e}")))?;
                 }
                 Ok(())
             }

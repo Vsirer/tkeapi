@@ -7,6 +7,8 @@
 
 import React, { useState } from 'react';
 import { Input, Tag, Typography } from 'antd';
+import { useTranslation } from 'react-i18next';
+import { localizeSchemePhrase } from './schemeParamUtils';
 
 const { Text } = Typography;
 
@@ -19,6 +21,7 @@ type Props = {
 
 /** 与站点模型管理「二级功能属性选择」同一套勾选 + 自定义标签 */
 const FeatureAttributesEditor: React.FC<Props> = ({ value, options, onChange, isLight }) => {
+  const { t } = useTranslation('playground_2026');
   const [inputValue, setInputValue] = useState('');
   const selected = Array.isArray(value) ? value : [];
 
@@ -39,8 +42,8 @@ const FeatureAttributesEditor: React.FC<Props> = ({ value, options, onChange, is
   return (
     <div>
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Text strong>二级功能属性选择</Text>
-        <Text type="secondary" style={{ fontSize: 12 }}>与站点模型管理同步，支持自定义输入添加</Text>
+        <Text strong>{t('admin_feature_editor_title', '二级功能属性选择')}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>{t('admin_feature_editor_desc', '与站点模型管理同步，支持自定义输入添加')}</Text>
       </div>
       <div
         style={{
@@ -64,7 +67,7 @@ const FeatureAttributesEditor: React.FC<Props> = ({ value, options, onChange, is
                 lineHeight: '22px',
               }}
             >
-              {opt}
+              {localizeSchemePhrase(opt)}
             </Tag.CheckableTag>
           ))}
           {customTags.map((opt) => (
@@ -78,13 +81,13 @@ const FeatureAttributesEditor: React.FC<Props> = ({ value, options, onChange, is
               color="blue"
               style={{ padding: '4px 12px', fontSize: 13, border: 'none', lineHeight: '22px' }}
             >
-              {opt}
+              {localizeSchemePhrase(opt)}
             </Tag>
           ))}
           <Input
             size="small"
             style={{ width: 140, height: 32, borderRadius: 6 }}
-            placeholder="+ 自定义并回车"
+            placeholder={t('admin_feature_editor_ph', '+ 自定义并回车')}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleAddCustom}

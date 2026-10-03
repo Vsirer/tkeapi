@@ -436,7 +436,9 @@ const BillingRules: React.FC = () => {
   const fetchItems = async () => {
     setLoading(true);
     try {
-      const resp = await (request.get('/billing-rules') as any);
+      const resp = await (request.get('/billing-rules', {
+        params: routeEditId ? { include_pid: routeEditId } : undefined,
+      }) as any);
       const list = Array.isArray(resp) ? resp : [];
       list.sort((a: BillingRuleData, b: BillingRuleData) => {
         const timeA = a.updated_at ? dayjs(a.updated_at).valueOf() : 0;
@@ -456,10 +458,13 @@ const BillingRules: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchItems();
     fetchClassifications();
     fetchPlugins();
   }, []);
+
+  useEffect(() => {
+    fetchItems();
+  }, [routeEditId]);
 
   // ===== PC端鼠标左键按下拖拽滚动表格功能 =====
   useEffect(() => {

@@ -85,12 +85,22 @@ const GiftRecords: React.FC = () => {
         const orderNo = extractOrderNo(record);
         if (orderNo) {
           return (
-            <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+            <Text
+              copyable
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                whiteSpace: 'nowrap',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 11,
+                letterSpacing: '-0.2px',
+              }}
+            >
               {orderNo}
             </Text>
           );
         }
-        return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        return <Text type="secondary" style={{ fontSize: 11 }}>-</Text>;
       },
     },
     {
@@ -223,9 +233,19 @@ const GiftRecords: React.FC = () => {
                   <Text style={{ fontSize: 12 }}>{record.uid || '-'}</Text>
                 </div>
                 {extractOrderNo(record) && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>{t('finance.order_no', { defaultValue: '订单号' })}</Text>
-                    <Text copyable style={{ fontSize: 12, fontFamily: 'monospace' }}>
+                    <Text
+                      copyable
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        whiteSpace: 'nowrap',
+                        fontSize: 11,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                        letterSpacing: '-0.2px',
+                      }}
+                    >
                       {extractOrderNo(record)}
                     </Text>
                   </div>

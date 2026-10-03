@@ -25,6 +25,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Input } from 'antd';
 import { PlusOutlined, CloseOutlined, HolderOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 
 type Item = { id: string; value: string };
 
@@ -39,7 +40,7 @@ type Props = {
 
 function parseStoredOption(raw: string): string {
   const s = raw.trim();
-  if (s === '智能') return 'auto';
+  if (s === '智能' || s.toLowerCase() === 'smart auto' || s.toLowerCase() === 'auto') return 'auto';
   return s;
 }
 
@@ -73,6 +74,7 @@ const SortablePill: React.FC<{
   onEdit: () => void;
   onRemove: () => void;
 }> = ({ item, isLight, label, onEdit, onRemove }) => {
+  const { t } = useTranslation('playground_2026');
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
   });
@@ -89,7 +91,7 @@ const SortablePill: React.FC<{
       <span
         {...attributes}
         {...listeners}
-        title="拖动排序"
+        title={t('admin_skill_cat_drag', '拖动排序')}
         style={{
           cursor: 'grab',
           color: '#a1a1aa',
@@ -101,7 +103,7 @@ const SortablePill: React.FC<{
       >
         <HolderOutlined />
       </span>
-      <span onClick={onEdit} title="点击修改" style={{ cursor: 'text' }}>
+      <span onClick={onEdit} title={t('admin_skill_cat_click_edit', '点击修改')} style={{ cursor: 'text' }}>
         {label || '…'}
       </span>
       <CloseOutlined
@@ -122,6 +124,7 @@ const ImageSpecialOptionTags: React.FC<Props> = ({
   labelOf = (o) => o,
   readOnly = false,
 }) => {
+  const { t } = useTranslation('playground_2026');
   const [items, setItems] = useState<Item[]>(() => toItems(options));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -217,7 +220,7 @@ const ImageSpecialOptionTags: React.FC<Props> = ({
                   size="small"
                   autoFocus
                   value={draft}
-                  placeholder="输入选项"
+                  placeholder={t('admin_isp_input_opt_ph', '输入选项')}
                   style={{ width: 88, height: 32, borderRadius: 8 }}
                   onChange={(e) => setDraft(e.target.value)}
                   onBlur={() => commitEdit(item.id, draft)}
@@ -239,7 +242,7 @@ const ImageSpecialOptionTags: React.FC<Props> = ({
                 label={labelOf(item.value)}
                 onEdit={() => {
                   setEditingId(item.id);
-                  setDraft(item.value === 'auto' ? '智能' : item.value);
+                  setDraft(item.value === 'auto' ? t('admin_isp_ratio_auto', '智能') : item.value);
                 }}
                 onRemove={() => commitList(items.filter((it) => it.id !== item.id))}
               />
@@ -260,7 +263,7 @@ const ImageSpecialOptionTags: React.FC<Props> = ({
           size="small"
           autoFocus
           value={addDraft}
-          placeholder="输入选项"
+          placeholder={t('admin_isp_input_opt_ph', '输入选项')}
           style={{ width: 88, height: 32, borderRadius: 8 }}
           onChange={(e) => setAddDraft(e.target.value)}
           onBlur={() => commitAdd(addDraft)}
@@ -284,7 +287,7 @@ const ImageSpecialOptionTags: React.FC<Props> = ({
             setAdding(true);
             setAddDraft('');
           }}
-          title="添加选项"
+          title={t('admin_isp_add_opt_btn', '添加选项')}
           style={{
             width: 32,
             height: 32,

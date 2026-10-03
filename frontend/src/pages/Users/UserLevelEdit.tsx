@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Form, Input, InputNumber, Button, message, Space, Tabs, Spin, Switch, Radio } from 'antd';
+import { Card, Form, Input, InputNumber, Button, message, Space, Tabs, Spin, Switch, Radio, Row, Col } from 'antd';
 import { SaveOutlined, ArrowLeftOutlined, KeyOutlined, FileTextOutlined, SettingOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -23,7 +23,10 @@ const UserLevelEdit: React.FC = () => {
   const navigate = useNavigate();
   const { settings } = useSettingsStore();
   const adminPath = settings?.site?.admin_path || 'admin1688';
+  const currencyUnit = settings?.currency?.currency_unit || '元';
   const [form] = Form.useForm();
+  const marketingEnabled = Form.useWatch('marketing_enabled', form);
+  const isMarketingActive = Boolean(marketingEnabled);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [marketingToggleLoading, setMarketingToggleLoading] = useState(false);
@@ -56,6 +59,9 @@ const UserLevelEdit: React.FC = () => {
         discount: 1.0,
         discount_type: 2,
         commission_ratio: 0.0,
+        commission_basis: 'consumption',
+        commission_transfer_min: 0,
+        commission_transfer_max: 0,
         invite_reward_inviter: 0.0,
         invite_reward_invitee: 0.0,
         daily_invite_limit: 10,
@@ -79,6 +85,7 @@ const UserLevelEdit: React.FC = () => {
             ...level,
             discount_type: level.discount_type ?? 0,
             marketing_enabled: level.marketing_enabled === 1,
+            commission_basis: level.commission_basis === 'recharge' ? 'recharge' : 'consumption',
             is_default: level.is_default === 1,
             allow_view_log_details: level.allow_view_log_details === undefined ? true : level.allow_view_log_details === 1,
             invoice_enabled: level.invoice_enabled === 1,
@@ -251,65 +258,211 @@ const UserLevelEdit: React.FC = () => {
           </TabPane>
 
           <TabPane tab="等级营销推广" key="2" forceRender>
-            <Form.Item 
-              name="marketing_enabled" 
-              label="开启专属推广模式 (高优先级)" 
-              valuePropName="checked"
-              extra={
-                isAdd
-                  ? '开启后，被邀请人注册时将不再发放站点的「全局注册好礼」，而是直接发放该等级配置的面额。邀请人也会根据日限制额度获得对应提成。新建等级需点击「保存配置」后生效。'
-                  : '开启后立即生效，无需点击「保存配置」。被邀请人注册时将不再发放站点的「全局注册好礼」，而是直接发放该等级配置的面额。邀请人也会根据日限制额度获得对应提成。'
-              }
-            >
-              <Switch
-                loading={marketingToggleLoading}
-                onChange={handleMarketingEnabledChange}
-              />
-            </Form.Item>
+            <div className="space-y-4 pt-1">
+              {/* 专属推广模式开关卡片 */}
+              <div className="rounded-xl border border-border bg-card p-5 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-foreground">专属推广模式</span>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition-colors ${
+                        isMarketingActive 
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' 
+                          : 'border-border bg-muted text-muted-foreground'
+                      }`}>
+                        {isMarketingActive ? '已开启' : '已关闭'}
+                      </span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full border border-border bg-muted/60 text-muted-foreground font-medium">高优先级</span>
+                      {!isAdd && (
+                        <span className="text-[11px] text-muted-foreground/70 hidden sm:inline">（切换即时生效）</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground m-0">
+                      开启后该等级用户享有专属返利与赠送策略，并覆盖全局注册赠礼配置
+                    </p>
+                  </div>
+                  <div className="shrink-0 flex items-center">
+                    <Form.Item name="marketing_enabled" valuePropName="checked" className="mb-0">
+                      <Switch
+                        loading={marketingToggleLoading}
+                        onChange={handleMarketingEnabledChange}
+                      />
+                    </Form.Item>
+                  </div>
+                </div>
+              </div>
 
-            <Form.Item 
-              name="commission_ratio" 
-              label="返利比例 (邀请充值返现)" 
-              rules={[{ required: true }]}
-              extra="邀请的用户充值后，邀请人获得的奖金入账比例 (0-1)"
-            >
-              <InputNumber 
-                style={{ width: '100%' }} 
-                min={0} 
-                max={1} 
-                step={0.01} 
-                precision={2} 
-                formatter={value => `${Math.round((Number(value) || 0) * 100)}%`}
-                parser={value => (parseFloat(value?.replace('%', '') || '0') / 100) as any}
-              />
-            </Form.Item>
+              {/* 受开关控制的配置卡片区域 */}
+              <div className={`space-y-4 transition-all duration-200 ${!isMarketingActive ? 'opacity-60 select-none' : ''}`}>
+                {/* 返佣规则卡片 */}
+                <div className="rounded-xl border border-border bg-card shadow-sm">
+                  <div className="px-5 py-3.5 border-b border-border/60">
+                    <div className="text-sm font-semibold text-foreground">返佣规则</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">配置邀请人获得的返利比例与结算基准</div>
+                  </div>
+                  <div className="p-5">
+                    <Row gutter={[16, 16]}>
+                      <Col xs={24} sm={12}>
+                        <Form.Item 
+                          name="commission_ratio" 
+                          label="返利比例 (邀请返现)" 
+                          rules={isMarketingActive ? [{ required: true, message: '请输入返利比例' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            max={1} 
+                            step={0.01} 
+                            precision={2} 
+                            placeholder="0% ~ 100%"
+                            formatter={value => `${Math.round((Number(value) || 0) * 100)}%`}
+                            parser={value => (parseFloat(value?.replace('%', '') || '0') / 100) as any}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12}>
+                        <Form.Item
+                          name="commission_basis"
+                          label="返佣发放基准"
+                          rules={isMarketingActive ? [{ required: true, message: '请选择发放基准' }] : []}
+                          className="mb-0"
+                        >
+                          <Radio.Group 
+                            disabled={!isMarketingActive}
+                            optionType="button" 
+                            buttonStyle="solid" 
+                            className="w-full flex"
+                          >
+                            <Radio.Button value="consumption" className="flex-1 text-center">按实际消费</Radio.Button>
+                            <Radio.Button value="recharge" className="flex-1 text-center">按充值发放</Radio.Button>
+                          </Radio.Group>
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                    <div className="mt-3 text-[12px] text-muted-foreground/80 flex items-center gap-1.5">
+                      <span>💡</span>
+                      <span>实际消费按调用净额计入，充值按在线支付到账即时发放。返利直接进入邀请人佣金钱包。</span>
+                    </div>
+                  </div>
+                </div>
 
-            <Form.Item 
-              name="invite_reward_inviter" 
-              label="邀请成功送额度（给邀请人）" 
-              rules={[{ required: true }]}
-              extra="当受邀人成功注册并激活后，一次性赠送给【邀请人】的固定消费额度"
-            >
-              <InputNumber style={{ width: '100%' }} min={0} step={1} precision={2} />
-            </Form.Item>
+                {/* 佣金划转限额卡片 */}
+                <div className="rounded-xl border border-border bg-card shadow-sm">
+                  <div className="px-5 py-3.5 border-b border-border/60">
+                    <div className="text-sm font-semibold text-foreground">佣金划转限额</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">控制佣金钱包划转至系统可用余额的额度门槛</div>
+                  </div>
+                  <div className="p-5">
+                    <Row gutter={[16, 16]}>
+                      <Col xs={24} sm={12}>
+                        <Form.Item
+                          name="commission_transfer_min"
+                          label="最低划转金额"
+                          rules={isMarketingActive ? [{ required: true, message: '请输入最低划转金额' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            step={1} 
+                            precision={2} 
+                            placeholder="0 为不限制"
+                            addonAfter={currencyUnit}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12}>
+                        <Form.Item
+                          name="commission_transfer_max"
+                          label="单次划转上限"
+                          rules={isMarketingActive ? [{ required: true, message: '请输入单次最多划转金额' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            step={1} 
+                            precision={2} 
+                            placeholder="0 为不限制"
+                            addonAfter={currencyUnit}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </div>
+                </div>
 
-            <Form.Item 
-              name="invite_reward_invitee" 
-              label="走邀请链接注册送额度（给新客户/受邀人）" 
-              rules={[{ required: true }]}
-              extra="【受到邀请】而来的新用户，一经注册额外直接赠送的启动资金加成额度"
-            >
-              <InputNumber style={{ width: '100%' }} min={0} step={1} precision={2} />
-            </Form.Item>
-
-            <Form.Item 
-              name="daily_invite_limit" 
-              label="每日邀请人数上限 (0为无限)" 
-              rules={[{ required: true }]}
-              extra="限制每天最多有多少个有效下线名额可以获得固定额度奖励，防止机器批量注册撸羊毛（超出的邀请可能依然绑定但不支持送额度）"
-            >
-              <InputNumber style={{ width: '100%' }} min={0} step={1} precision={0} />
-            </Form.Item>
+                {/* 注册赠礼与每日限额卡片 */}
+                <div className="rounded-xl border border-border bg-card shadow-sm">
+                  <div className="px-5 py-3.5 border-b border-border/60">
+                    <div className="text-sm font-semibold text-foreground">注册赠礼与每日限额</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">新用户通过邀请注册时的双向额度奖励及每日防刷上限</div>
+                  </div>
+                  <div className="p-5">
+                    <Row gutter={[16, 16]}>
+                      <Col xs={24} sm={8}>
+                        <Form.Item 
+                          name="invite_reward_inviter" 
+                          label="邀请人奖励额度" 
+                          rules={isMarketingActive ? [{ required: true, message: '请输入邀请人奖励' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            step={1} 
+                            precision={2} 
+                            placeholder="0.00"
+                            addonAfter={currencyUnit}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <Form.Item 
+                          name="invite_reward_invitee" 
+                          label="受邀人新客额度" 
+                          rules={isMarketingActive ? [{ required: true, message: '请输入受邀人奖励' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            step={1} 
+                            precision={2} 
+                            placeholder="0.00"
+                            addonAfter={currencyUnit}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={8}>
+                        <Form.Item 
+                          name="daily_invite_limit" 
+                          label="每日奖励名额上限" 
+                          rules={isMarketingActive ? [{ required: true, message: '请输入每日上限' }] : []}
+                          className="mb-0"
+                        >
+                          <InputNumber 
+                            disabled={!isMarketingActive}
+                            style={{ width: '100%' }} 
+                            min={0} 
+                            step={1} 
+                            precision={0} 
+                            placeholder="0 为无限制"
+                            addonAfter="人/天"
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </div>
+                </div>
+              </div>
+            </div>
           </TabPane>
 
           <TabPane tab={<span><KeyOutlined /> 密钥配置</span>} key="3" forceRender>

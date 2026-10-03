@@ -40,6 +40,7 @@ pub mod task_logs;
 pub mod tokens;
 pub mod upstreams;
 pub mod user;
+pub mod user_analytics;
 pub mod user_kyc;
 pub mod user_levels;
 pub mod users;
@@ -62,6 +63,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/users/consumption/stats_batch",
             post(users::get_consumption_stats_batch),
         )
+        .route("/users/analytics", get(user_analytics::get_user_analytics))
         .route(
             "/users/contact-bind",
             get(users::get_contact_bind)
@@ -75,6 +77,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .delete(users::delete_user),
         )
         .route("/users/{id}/recharge", post(users::recharge_user))
+        .route(
+            "/users/{id}/commission-preview",
+            get(users::preview_commission_adjust),
+        )
+        .route(
+            "/users/{id}/commission-ledger",
+            get(users::list_user_commission_ledger),
+        )
         .route("/users/{id}/impersonate", post(users::impersonate_user))
         .route("/users/{id}/level-logs", get(users::get_user_level_logs))
         .route("/users/{id}/invoices", get(invoices::admin_get_user_invoices))
@@ -274,6 +284,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         admin_routes = admin_routes
             .route("/finance/orders", get(plugins::finance::list_orders))
             .route("/finance/recharges", get(plugins::finance::list_recharges))
+            .route("/finance/commissions", get(plugins::finance::list_commissions))
             .route(
                 "/finance/recharges/stats_batch",
                 post(plugins::finance::get_wallet_stats_batch),
@@ -382,6 +393,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(invoices::cancel_user_invoice_request),
         )
         .route("/user/affiliate/transfer", post(user::transfer_commission))
+        .route("/user/affiliate/overview", get(user::get_affiliate_overview))
         .route("/user/bind/mobile", post(user::bind_mobile))
         .route("/user/bind/email", post(user::bind_email))
         .route("/user/bind/oauth-state", get(user::bind_oauth_state))

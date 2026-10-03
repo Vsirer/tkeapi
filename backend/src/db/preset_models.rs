@@ -407,14 +407,12 @@ pub fn models_join_relation(source: Option<&str>) -> &'static str {
     }
 }
 
-/// 目录里已有副本的 mid 不再重复出现。
-/// MediaKit 八条预置模型例外：已上架副本在运营列表，目录行仍留在模型仓库；只有已下架副本时才改由运营表那一行代表。
+/// 仓库目录和运营/下架副本只留一处。副本用 mid、library_mid 或 model_id 对上目录行时，目录行让位。
 pub const LIBRARY_CATALOG_FREE: &str = "NOT EXISTS (\
     SELECT 1 FROM models shelf \
-    WHERE shelf.library_mid = m.mid AND shelf.library_mid <> '' \
-      AND (shelf.is_listed = 0 OR m.mid NOT IN (\
-        'vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg'\
-      ))\
+    WHERE (shelf.library_mid <> '' AND shelf.library_mid = m.mid) \
+       OR shelf.mid = m.mid \
+       OR (m.model_id <> '' AND shelf.model_id = m.model_id) \
 )";
 
 pub fn library_catalog_free_predicate(source: Option<&str>) -> Option<&'static str> {

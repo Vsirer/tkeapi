@@ -110,7 +110,21 @@ const OrderDetails: React.FC = () => {
       dataIndex: 'out_trade_no',
       key: 'out_trade_no',
       width: 220,
-      render: (text: string) => <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>{text}</Text>,
+      render: (text: string) => (
+        <Text
+          copyable
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            whiteSpace: 'nowrap',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            fontSize: 11,
+            letterSpacing: '-0.2px',
+          }}
+        >
+          {text}
+        </Text>
+      ),
     },
     {
       title: t('finance.user_info'),
@@ -156,8 +170,21 @@ const OrderDetails: React.FC = () => {
       title: '第三方交易号',
       dataIndex: 'trade_no',
       key: 'trade_no',
-      width: 220,
-      render: (text: string | null) => text ? <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>{text}</Text> : <Text type="secondary">-</Text>,
+      render: (text: string | null) => text ? (
+        <Text
+          copyable
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            whiteSpace: 'nowrap',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            fontSize: 11,
+            letterSpacing: '-0.2px',
+          }}
+        >
+          {text}
+        </Text>
+      ) : <Text type="secondary" style={{ fontSize: 11 }}>-</Text>,
     },
     {
       title: '创建时间',
@@ -180,7 +207,7 @@ const OrderDetails: React.FC = () => {
       <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 12, alignItems: screens.xs ? 'flex-start' : 'center', gap: 16 }}>
         <Space size="small" align="center" wrap>
           <BarChartOutlined style={{ fontSize: 24, color: '#52c41a' }} />
-          <Title level={2} style={{ margin: 0, fontSize: screens.xs ? 20 : 24 }}>支付订单</Title>
+          <Title level={2} style={{ margin: 0, fontSize: screens.xs ? 20 : 24 }}>{t('finance.order_title')}</Title>
           <Text type="secondary" style={{ marginLeft: screens.xs ? 0 : 8 }}>
             (已支付) 合计: <Text strong style={{ color: '#52c41a', fontSize: 16 }}>{currencySymbol}{totalAmount.toFixed(6)}</Text>
           </Text>
@@ -216,7 +243,6 @@ const OrderDetails: React.FC = () => {
               { label: '通联微信', value: 'allinpay_wechat' },
               { label: '通联支付宝', value: 'allinpay_alipay' },
               { label: 'Stripe', value: 'stripe' },
-              { label: 'BonusPay', value: 'bonuspay' },
               { label: 'HyperBC', value: 'hyperbc' },
             ]}
           />
@@ -254,9 +280,21 @@ const OrderDetails: React.FC = () => {
                   title={<Text strong>{record.username || '-'}</Text>}
                   extra={<Tag color={statusInfo.color}>{statusInfo.label}</Tag>}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>订单号</Text>
-                    <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>{record.out_trade_no}</Text>
+                    <Text
+                      copyable
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        whiteSpace: 'nowrap',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                        fontSize: 11,
+                        letterSpacing: '-0.2px',
+                      }}
+                    >
+                      {record.out_trade_no}
+                    </Text>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
@@ -271,9 +309,21 @@ const OrderDetails: React.FC = () => {
                     <Text strong style={{ color: '#ff4d4f' }}>{currencySymbol}{record.amount.toFixed(6)}</Text>
                   </div>
                   {record.trade_no && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                       <Text type="secondary" style={{ fontSize: 12 }}>第三方交易号</Text>
-                      <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>{record.trade_no}</Text>
+                      <Text
+                        copyable
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          whiteSpace: 'nowrap',
+                          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                          fontSize: 11,
+                          letterSpacing: '-0.2px',
+                        }}
+                      >
+                        {record.trade_no}
+                      </Text>
                     </div>
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>

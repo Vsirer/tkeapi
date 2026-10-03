@@ -29,6 +29,7 @@ interface WalletDetailsViewProps {
     credit_limit?: number;
     balance?: number;
     gift_balance?: number;
+    commission_balance?: number;
   };
   recharges: any[];
   loading?: boolean;
@@ -36,6 +37,8 @@ interface WalletDetailsViewProps {
   currencySymbol?: string;
   /** 使用 team-marketing 专用 API 获取消费统计（用于推荐人查看推荐用户的消费数据） */
   useReferralApi?: boolean;
+  /** 打开时落在哪个明细页。默认系统钱包。 */
+  initialTab?: string;
 }
 
 const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
@@ -45,6 +48,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
   isLight: customIsLight,
   currencySymbol: customCurrencySymbol,
   useReferralApi = false,
+  initialTab = 'system',
 }) => {
   const { t } = useTranslation('team_marketing');
   
@@ -66,6 +70,14 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
   const [consumedSystem, setConsumedSystem] = useState<number>(0);
   const [consumedGift, setConsumedGift] = useState<number>(0);
   const [consumedLoading, setConsumedLoading] = useState<boolean>(false);
+  const [commissionLedger, setCommissionLedger] = useState<{
+    commission_balance: number;
+    period_earned: number;
+    period_clawback: number;
+    period_transfer: number;
+    data: any[];
+  } | null>(null);
+  const [commissionLoading, setCommissionLoading] = useState<boolean>(false);
   const { start_date, end_date } = toDateRangeParams(filterRange);
 
   React.useEffect(() => {
@@ -108,6 +120,40 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
       });
     }
   }, [start_date, end_date, user.id, useReferralApi]);
+
+  const ledgerUserId = user?.id || user?.user_id;
+  React.useEffect(() => {
+    if (!ledgerUserId) return;
+    let cancelled = false;
+    setCommissionLoading(true);
+    const params: Record<string, string> = {};
+    if (start_date) params.start_date = start_date;
+    if (end_date) params.end_date = end_date;
+    request.get(`/users/${ledgerUserId}/commission-ledger`, { params }).then((res: any) => {
+      if (cancelled) return;
+      setCommissionLedger({
+        commission_balance: Number(res?.commission_balance || 0),
+        period_earned: Number(res?.period_earned || 0),
+        period_clawback: Number(res?.period_clawback || 0),
+        period_transfer: Number(res?.period_transfer || 0),
+        data: Array.isArray(res?.data) ? res.data : [],
+      });
+    }).catch((e) => {
+      console.error('Failed to fetch commission ledger', e);
+      if (!cancelled) {
+        setCommissionLedger({
+          commission_balance: Number(user.commission_balance || 0),
+          period_earned: 0,
+          period_clawback: 0,
+          period_transfer: 0,
+          data: [],
+        });
+      }
+    }).finally(() => {
+      if (!cancelled) setCommissionLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [ledgerUserId, start_date, end_date, user.commission_balance]);
 
   const handlePresetChange = (preset: string) => {
     setActivePreset(preset);
@@ -201,20 +247,23 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
 
   const statisticValueStyle = {
     color: isLight ? '#1f2937' : '#fff',
-    fontSize: '18px',
-    whiteSpace: 'nowrap',
-    fontWeight: 500,
+    fontSize: '15px',
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap' as const,
+    fontWeight: 600,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   };
 
   const getCreditValueStyle = () => ({
     color: isLight ? '#1890ff' : '#69b1ff',
-    fontSize: '18px',
-    whiteSpace: 'nowrap',
-    fontWeight: 500,
+    fontSize: '15px',
+    lineHeight: 1.2,
+    whiteSpace: 'nowrap' as const,
+    fontWeight: 600,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
   });
 
   const rechargeColumns = [
-    { title: t('recharge_id', 'ID'), dataIndex: 'id', key: 'id', width: 60 },
     {
       title: t('order_no', '订单号'),
       key: 'order_no',
@@ -223,12 +272,22 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
         const orderNo = extractOrderNo(record);
         if (orderNo) {
           return (
-            <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
+            <Text
+              copyable
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                whiteSpace: 'nowrap',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 11,
+                letterSpacing: '-0.2px',
+              }}
+            >
               {orderNo}
             </Text>
           );
         }
-        return <Text type="secondary" style={{ fontSize: 12 }}>-</Text>;
+        return <Text type="secondary" style={{ fontSize: 11 }}>-</Text>;
       },
     },
     {
@@ -280,6 +339,65 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
     },
   ];
 
+  const commissionColumns = [
+    {
+      title: t('time', '时间'),
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 160,
+      render: (tVal: string) => <Text style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{formatApiDateTime(tVal, 'YYYY/MM/DD HH:mm:ss')}</Text>,
+    },
+    {
+      title: t('recharge_type', '类型'),
+      dataIndex: 'source_label',
+      key: 'source_label',
+      width: 120,
+      render: (label: string, record: any) => {
+        const color = record.source === 'transfer' ? 'gold'
+          : record.source === 'refund' || record.source === 'adjust' ? 'volcano'
+          : record.source === 'recharge' ? 'green'
+          : record.source === 'video' ? 'purple'
+          : 'blue';
+        return <Tag color={color} style={{ whiteSpace: 'nowrap' }}>{label || '其他'}</Tag>;
+      },
+    },
+    {
+      title: t('amount', '金额'),
+      dataIndex: 'amount',
+      key: 'amount',
+      width: 140,
+      render: (amount: number) => (
+        <Text style={{ color: amount > 0 ? '#52c41a' : amount < 0 ? '#ff4d4f' : undefined, fontWeight: 500, whiteSpace: 'nowrap' }}>
+          {amount > 0 ? '+' : (amount < 0 ? '-' : '')}{currencySymbol}{Math.abs(Number(amount) || 0).toFixed(6)}
+        </Text>
+      ),
+    },
+    {
+      title: '比例',
+      dataIndex: 'ratio',
+      key: 'ratio',
+      width: 80,
+      render: (ratio: number) => (Number(ratio) > 0 ? `${Math.round(Number(ratio) * 100)}%` : '-'),
+    },
+    {
+      title: '来自用户',
+      key: 'from_user',
+      width: 180,
+      render: (_: unknown, record: any) => {
+        if (!record.from_username && !record.from_uid) return <Text type="secondary">-</Text>;
+        return (
+          <span>
+            <Text style={{ whiteSpace: 'nowrap' }}>{record.from_username || '-'}</Text>
+            {record.from_uid ? <Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>{record.from_uid}</Text> : null}
+          </span>
+        );
+      },
+    },
+  ];
+
+  const commissionBalance = commissionLedger?.commission_balance ?? (user.commission_balance || 0);
+  const commissionRows = commissionLedger?.data || [];
+
   if (loading) {
     return <div style={{ padding: 40, textAlign: 'center' }}><Spin /></div>;
   }
@@ -288,9 +406,36 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
   const showCreditTab = creditRecharges.length > 0 || creditLimit > 0;
 
   return (
-    <div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+    <div className="compact-wallet-view">
+      <style>{`
+        .compact-wallet-view .ant-tabs-nav {
+          margin-bottom: 8px !important;
+        }
+        .compact-wallet-view .ant-tabs-tab {
+          padding: 5px 12px !important;
+          font-size: 13px !important;
+        }
+        .compact-wallet-view .ant-statistic-title {
+          margin-bottom: 2px !important;
+          font-size: 11px !important;
+        }
+        .compact-wallet-view .ant-card-body {
+          padding: 6px 10px !important;
+        }
+        .compact-wallet-view .ant-table-small .ant-table-thead > tr > th {
+          padding: 5px 8px !important;
+          font-size: 12px !important;
+        }
+        .compact-wallet-view .ant-table-small .ant-table-tbody > tr > td {
+          padding: 4px 8px !important;
+          font-size: 12px !important;
+        }
+        .compact-wallet-view .ant-table-small .ant-table-pagination.ant-pagination {
+          margin: 6px 0 0 !important;
+        }
+      `}</style>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
           <Radio.Group 
             value={activePreset} 
             onChange={(e) => handlePresetChange(e.target.value)} 
@@ -315,17 +460,21 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
         <DatePicker.RangePicker 
           value={filterRange} 
           onChange={handleRangeChange} 
+          size="small"
           style={{ width: '100%' }} 
         />
       </div>
 
-      <Tabs defaultActiveKey="system" items={[
+      <Tabs
+        defaultActiveKey={initialTab}
+        tabBarStyle={{ marginBottom: 8 }}
+        items={[
         {
           key: 'system',
           label: t('system_wallet_details', '系统钱包明细'),
           children: (
             <div>
-              <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
                 <Col span={6}>
                   <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
                     <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>当前系统账户余额</span>} value={user.balance || 0} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} />
@@ -351,7 +500,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={systemRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={listPagination()}
+                pagination={listPagination({ size: 'small', style: { marginTop: 6, marginBottom: 0 } })}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: t('no_system_recharges', '该期间暂无系统钱包明细') }}
@@ -364,7 +513,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
           label: t('gift_wallet_details', '赠送钱包明细'),
           children: (
             <div>
-              <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
                 <Col span={6}>
                   <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
                     <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>当前赠送账户余额</span>} value={user.gift_balance || 0} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} />
@@ -390,10 +539,50 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={giftRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={listPagination()}
+                pagination={listPagination({ size: 'small', style: { marginTop: 6, marginBottom: 0 } })}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: t('no_gift_recharges', '该期间暂无赠送钱包明细') }}
+              />
+            </div>
+          )
+        },
+        {
+          key: 'commission',
+          label: '佣金钱包明细',
+          children: (
+            <div>
+              <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
+                <Col span={6}>
+                  <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
+                    <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>当前佣金余额</span>} value={commissionBalance} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} loading={commissionLoading} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
+                    <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>{`${timePrefix}获得`}</span>} value={commissionLedger?.period_earned || 0} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} loading={commissionLoading} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
+                    <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>{`${timePrefix}回冲`}</span>} value={commissionLedger?.period_clawback || 0} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} loading={commissionLoading} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
+                    <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>{`${timePrefix}划出`}</span>} value={commissionLedger?.period_transfer || 0} precision={6} prefix={currencySymbol} valueStyle={statisticValueStyle} loading={commissionLoading} />
+                  </Card>
+                </Col>
+              </Row>
+              <Table
+                dataSource={commissionRows}
+                columns={commissionColumns}
+                rowKey="id"
+                pagination={listPagination({ size: 'small', style: { marginTop: 6, marginBottom: 0 } })}
+                scroll={{ x: 'max-content' }}
+                size="small"
+                loading={commissionLoading}
+                locale={{ emptyText: '该期间暂无佣金钱包明细' }}
               />
             </div>
           )
@@ -403,7 +592,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
           label: '💳 信控额度明细',
           children: (
             <div>
-              <Row gutter={16} style={{ marginBottom: 16 }}>
+              <Row gutter={[8, 8]} style={{ marginBottom: 8 }}>
                 <Col span={12}>
                   <Card size="small" style={{ background: isLight ? 'rgba(0,0,0,0.02)' : 'rgba(255,255,255,0.02)', border: 'none' }}>
                     <Statistic title={<span style={{ color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>当前信控额度</span>} value={creditLimit} precision={6} prefix={currencySymbol} valueStyle={getCreditValueStyle()} />
@@ -419,7 +608,7 @@ const WalletDetailsView: React.FC<WalletDetailsViewProps> = ({
                 dataSource={creditRecharges}
                 columns={rechargeColumns}
                 rowKey="id"
-                pagination={listPagination()}
+                pagination={listPagination({ size: 'small', style: { marginTop: 6, marginBottom: 0 } })}
                 scroll={{ x: 'max-content' }}
                 size="small"
                 locale={{ emptyText: '该期间暂无信控额度变更记录' }}

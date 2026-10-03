@@ -183,17 +183,17 @@ pub fn async_task_failed_body(task_id: &str, message: &str) -> String {
     .to_string()
 }
 
-/// 强制根节点对外任务号：写 `id`；若已有根 `task_id` 则同步。原位改值，避免 `Value` 重排键。
+/// 强制对外任务号：原位同步全部上游任务号（百炼 output.task_id、可灵 data.task_id 等）。避免 `Value` 重排键。
 pub fn force_json_task_id(s: &mut String, task_id: &str) {
     if task_id.is_empty() {
         return;
     }
-    let lit = json!(task_id).to_string();
-    if !json_root_set(s, "id", &lit) {
-        json_root_insert_first(s, "id", &lit);
+    if let Ok(v) = serde_json::from_str::<Value>(s) {
+        let old_id = find_id(&v);
+        if !old_id.is_empty() && old_id != task_id {
+            json_replace_str(s, &old_id, task_id);
+        }
     }
-    json_root_set(s, "task_id", &lit);
-    json_root_set(s, "TaskId", &lit);
 }
 
 #[derive(Clone, Copy)]
@@ -365,20 +365,6 @@ pub(crate) fn json_root_set(s: &mut String, key: &str, raw_val: &str) -> bool {
     true
 }
 
-fn json_root_insert_first(s: &mut String, key: &str, raw_val: &str) {
-    let Some(open) = json_root_open(s) else {
-        return;
-    };
-    let mut j = open + 1;
-    json_skip_ws(s, &mut j);
-    let empty = s.as_bytes().get(j) == Some(&b'}');
-    let piece = if empty {
-        format!("{}:{raw_val}", json!(key))
-    } else {
-        format!("{}:{raw_val},", json!(key))
-    };
-    s.insert_str(open + 1, &piece);
-}
 
 pub(crate) fn json_root_remove(s: &mut String, key: &str) {
     let Some(m) = json_find_root(s, key) else {
@@ -1302,5 +1288,55 @@ pub fn format_as_openai_error(v: &Value) -> Option<String> {
     }
     Some(to_json(&json!({ "error": openai_error_object(v) })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_force_json_task_id_all_vendors() {
+        let sys_id = "tsk_20260928_sys";
+
+        // 1. 阿里百炼 / DashScope 原生：仅替换 output.task_id，根级保持纯净无多余 id
+        let mut ali = r#"{"request_id":"req-1","output":{"task_id":"ali-up-123","task_status":"SUCCEEDED"}}"#.to_string();
+        force_json_task_id(&mut ali, sys_id);
+        let ali_v: Value = serde_json::from_str(&ali).unwrap();
+        assert_eq!(ali_v["output"]["task_id"], sys_id);
+        assert!(ali_v.get("id").is_none());
+
+        // 2. 可灵旧版原生：仅替换 data.task_id，根级无多余 id
+        let mut kling_v1 = r#"{"code":0,"data":{"task_id":"kling-up-456","task_status":"succeed"}}"#.to_string();
+        force_json_task_id(&mut kling_v1, sys_id);
+        let k1_v: Value = serde_json::from_str(&kling_v1).unwrap();
+        assert_eq!(k1_v["data"]["task_id"], sys_id);
+        assert!(k1_v.get("id").is_none());
+
+        // 3. 可灵新版 v3 轮询原生：仅替换 data[0].id，根级无多余 id
+        let mut kling_v3 = r#"{"code":0,"data":[{"id":"kling-up-789","status":"succeeded"}]}"#.to_string();
+        force_json_task_id(&mut kling_v3, sys_id);
+        let k3_v: Value = serde_json::from_str(&kling_v3).unwrap();
+        assert_eq!(k3_v["data"][0]["id"], sys_id);
+        assert!(k3_v.get("id").is_none());
+
+        // 4. 原生带根级 id 的协议（OpenAI 兼容 / 火山方舟）：原位替换为 sys_id
+        let mut openai = r#"{"id":"up-openai-001","status":"completed"}"#.to_string();
+        force_json_task_id(&mut openai, sys_id);
+        let op_v: Value = serde_json::from_str(&openai).unwrap();
+        assert_eq!(op_v["id"], sys_id);
+
+        // 5. 验证 OpenAI 兼容出口流水线：原生百炼体经 apply_format 后，必然具备标准根级 id
+        let openai_out = apply_format(
+            "/v1/video/generations",
+            "视频",
+            &ali,
+            false,
+            Some(sys_id),
+        );
+        let openai_v: Value = serde_json::from_str(&openai_out).unwrap();
+        assert_eq!(openai_v["id"], sys_id);
+        assert_eq!(openai_v["status"], "pending");
+    }
+}
+
 
 

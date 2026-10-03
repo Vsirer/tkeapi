@@ -6,18 +6,25 @@
  */
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { Link, useOutletContext } from 'react-router-dom';
+import { Link, useLocation, useOutletContext } from 'react-router-dom';
 import { getAnnouncementLabel, getAnnouncementDisplayTime } from '../../utils/announcement';
-import { Row, Col, Card, Typography, Table, Space, List, Progress, Alert, Grid, Spin, Modal, Button, Divider, Tooltip as AntTooltip, Radio, Tag } from 'antd';
-import MobileCardList, { MobileCard, CardRow } from '../../components/MobileCardList';
+import { Row, Col, Card, Typography, List, Progress, Alert, Grid, Spin, Modal, Button, Divider, Tooltip as AntTooltip, Radio, Tag } from 'antd';
 import {
-  BarChartOutlined,
-  DatabaseOutlined,
-  AccountBookOutlined,
   CloseOutlined,
   BellOutlined,
 } from '@ant-design/icons';
-import { LineChart as LineChartIcon, PieChart as PieChartIcon } from 'lucide-react';
+import {
+  LineChart as LineChartIcon,
+  PieChart as PieChartIcon,
+  Calendar as CalendarIcon,
+  ArrowRight,
+  Activity,
+  Zap,
+  User as UserIcon,
+  RefreshCw,
+  TrendingUp,
+  TrendingDown,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
@@ -25,22 +32,49 @@ import useAuthStore from '../../store/auth';
 import { useThemeStore } from '../../store/theme';
 import type { DashboardStats, RequestLog, Announcement, ModelTrend30dResponse, LiveMetricsResponse, LiveMetricsSnapshot } from '../../types';
 import dayjs from 'dayjs';
-import { toCalendarDateRangeParams } from '../../utils/dateRangeParams';
+import { timedisplayNow, toCalendarDateRangeParams } from '../../utils/dateRangeParams';
 import ModelDistribution30d from './ModelDistribution30d';
+import UsageAreaChart from './UsageAreaChart';
 
 const { Title, Text } = Typography;
+
+const getStatusMeta = (code: number, isLight: boolean) => {
+  const isSuccess = code >= 200 && code < 300;
+  return {
+    dot: isSuccess 
+      ? (isLight ? '#18181b' : '#fafafa') 
+      : (isLight ? '#71717a' : '#a1a1aa'),
+    text: isSuccess 
+      ? (isLight ? '#09090b' : '#fafafa') 
+      : (isLight ? '#71717a' : '#a1a1aa'),
+  };
+};
+
+const getEndpointTag = (endpoint?: string) => {
+  if (!endpoint) return null;
+  const lower = endpoint.toLowerCase();
+  if (lower.includes('/chat/completions')) return 'chat';
+  if (lower.includes('/completions')) return 'completion';
+  if (lower.includes('/embeddings')) return 'embed';
+  if (lower.includes('/images') || lower.includes('/image')) return 'image';
+  if (lower.includes('/audio') || lower.includes('/voice')) return 'audio';
+  if (lower.includes('/video')) return 'video';
+  if (lower.includes('/models')) return 'models';
+  const parts = endpoint.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1].slice(0, 10) : null;
+};
 
 const Dashboard: React.FC = () => {
   const { t, i18n } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
-  const adminPath = settings?.admin_path || 'admin';
   const { user } = useAuthStore();
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const currencySymbol = settings?.currency?.currency_symbol || '$';
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [liveMetrics, setLiveMetrics] = useState<LiveMetricsSnapshot | null>(null);
   const [liveMetricsReady, setLiveMetricsReady] = useState(false);
   const outletContext = useOutletContext<{
@@ -168,28 +202,36 @@ const Dashboard: React.FC = () => {
     };
   }, [pinnedAnnouncement, currentPinnedIndex, i18n.language]);
   const isAdmin = user?.role === 'admin';
-  const [dateRange, setDateRange] = useState<[any, any] | null>(() => [
-    dayjs().startOf('day'),
-    dayjs().endOf('day'),
-  ]);
+  const location = useLocation();
+  const configuredAdminPath = settings?.site?.admin_path || localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
+  const pathFirstSegment = location.pathname.split('/')[1] || '';
+  const currentAdminPath = (pathFirstSegment && pathFirstSegment !== 'dashboard') ? pathFirstSegment : configuredAdminPath;
+  const isAdminView = isAdmin || location.pathname.startsWith(`/${currentAdminPath}`);
+  const basePath = isAdminView ? `/${currentAdminPath}` : '';
+  const logsPath = `${basePath}/logs`;
+  const taskLogsPath = `${basePath}/task-logs`;
+  const [dateRange, setDateRange] = useState<[any, any] | null>(() => {
+    const now = timedisplayNow();
+    return [now.startOf('day'), now.endOf('day')];
+  });
   const [quickRange, setQuickRange] = useState<string>('today');
 
   const handleQuickRangeChange = (e: any) => {
     const val = e.target.value;
+    const now = timedisplayNow();
     setQuickRange(val);
     if (val === 'today') {
-      setDateRange([dayjs().startOf('day'), dayjs().endOf('day')]);
+      setDateRange([now.startOf('day'), now.endOf('day')]);
     } else if (val === 'yesterday') {
-      setDateRange([dayjs().subtract(1, 'day').startOf('day'), dayjs().subtract(1, 'day').endOf('day')]);
+      const y = now.subtract(1, 'day');
+      setDateRange([y.startOf('day'), y.endOf('day')]);
     } else if (val === 'week') {
-      setDateRange([dayjs().startOf('week'), dayjs().endOf('week')]);
+      setDateRange([now.startOf('week'), now.endOf('week')]);
     } else if (val === 'month') {
-      setDateRange([dayjs().startOf('month'), dayjs().endOf('month')]);
+      setDateRange([now.startOf('month'), now.endOf('month')]);
     } else if (val === 'last_month') {
-      setDateRange([
-        dayjs().subtract(1, 'month').startOf('month'),
-        dayjs().subtract(1, 'month').endOf('month'),
-      ]);
+      const prev = now.subtract(1, 'month');
+      setDateRange([prev.startOf('month'), prev.endOf('month')]);
     }
   };
 
@@ -223,7 +265,6 @@ const Dashboard: React.FC = () => {
   const scopeLabel = isAdmin
     ? t('dashboard.scope_admin')
     : t('dashboard.scope_user');
-  const modelDetailHint = t('dashboard.model_detail_recent');
   const [cardHeight, setCardHeight] = useState(580);
   const [isModel30dView, setIsModel30dView] = useState(false);
   const [modelStats30d, setModelStats30d] = useState<ModelTrend30dResponse | null>(null);
@@ -262,65 +303,67 @@ const Dashboard: React.FC = () => {
   const isDark = !_isLight;
   const textColor = isDark ? 'rgba(255, 255, 255, 0.85)' : 'rgba(0, 0, 0, 0.85)';
 
-  const getRankBadgeStyle = (index: number) => {
-    const base: React.CSSProperties = {
-      display: 'flex',
+  const getRankBadgeStyle = (index: number): React.CSSProperties => {
+    return {
+      display: 'inline-flex',
       alignItems: 'center',
       justifyContent: 'center',
-      width: 20,
-      height: 20,
-      borderRadius: '50%',
-      fontWeight: 'bold',
-      fontSize: 10,
-      marginRight: 8,
-      color: '#fff',
+      width: 18,
+      fontWeight: 600,
+      fontSize: 11,
       flexShrink: 0,
-    };
-    if (index === 0) {
-      return {
-        ...base,
-        background: 'linear-gradient(135deg, #FFE066 0%, #F5A623 100%)',
-        boxShadow: '0 1px 4px rgba(245, 166, 35, 0.3)',
-      };
-    }
-    if (index === 1) {
-      return {
-        ...base,
-        background: 'linear-gradient(135deg, #E2E8F0 0%, #94A3B8 100%)',
-        boxShadow: '0 1px 4px rgba(148, 163, 184, 0.3)',
-      };
-    }
-    if (index === 2) {
-      return {
-        ...base,
-        background: 'linear-gradient(135deg, #FDBA74 0%, #C2410C 100%)',
-        boxShadow: '0 1px 4px rgba(194, 65, 12, 0.3)',
-      };
-    }
-    return {
-      ...base,
-      background: isDark ? 'rgba(255, 255, 255, 0.15)' : '#e8e8e8',
-      color: textColor,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      color: index === 0 
+        ? (_isLight ? '#09090b' : '#fafafa') 
+        : index === 1 
+          ? (_isLight ? '#27272a' : '#e4e4e7') 
+          : index === 2 
+            ? (_isLight ? '#52525b' : '#d4d4d8') 
+            : (_isLight ? '#a1a1aa' : '#71717a'),
     };
   };
 
   const getBarColor = (index: number) => {
-    if (index === 0) return 'linear-gradient(90deg, #F5A623 0%, #FFE066 100%)';
-    if (index === 1) return 'linear-gradient(90deg, #94A3B8 0%, #CBD5E1 100%)';
-    if (index === 2) return 'linear-gradient(90deg, #C2410C 0%, #FDBA74 100%)';
-    return 'linear-gradient(90deg, #18181b 0%, #52525b 100%)';
+    if (index === 0) {
+      return _isLight ? '#18181b' : '#fafafa';
+    }
+    if (index === 1) {
+      return _isLight ? '#3f3f46' : '#d4d4d8';
+    }
+    if (index === 2) {
+      return _isLight ? '#71717a' : '#a1a1aa';
+    }
+    return _isLight 
+      ? 'rgba(24, 24, 27, 0.25)' 
+      : 'rgba(255, 255, 255, 0.25)';
   };
 
-  const fetchStats = async () => {
+  const formatTokenCount = (tokens: number): string => {
+    if (!tokens || tokens <= 0) return '0';
+    if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(2)}B`;
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+    return `${tokens}`;
+  };
+
+  const statsSeq = useRef(0);
+  const lastStatsAt = useRef(0);
+
+  const fetchStats = async (force = false) => {
+    const seq = ++statsSeq.current;
     try {
-      const params: any = {};
+      const params: Record<string, string | boolean> = {};
       Object.assign(params, toCalendarDateRangeParams(dateRange));
+      if (force) params.refresh = true;
       const data = await (request.get<DashboardStats>('/dashboard', { params }) as unknown as Promise<DashboardStats>);
+      if (seq !== statsSeq.current) return;
       setStats(data);
+      lastStatsAt.current = Date.now();
       if (data.live_metrics) {
         setLiveMetrics(data.live_metrics);
       }
     } catch (error) {
+      if (seq !== statsSeq.current) return;
       console.error(error);
       void fetchLiveMetrics();
     }
@@ -339,20 +382,41 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleManualRefresh = async () => {
+    if (refreshing || loading) return;
+    setRefreshing(true);
+    try {
+      await fetchStats(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   useEffect(() => {
-    let cancelled = false;
+    let alive = true;
     setLoading(true);
-    fetchStats().finally(() => {
-      if (!cancelled) {
+    fetchStats(false).finally(() => {
+      if (alive) {
         setLoading(false);
         setLiveMetricsReady(true);
       }
     });
-    // 与后端 dashboard SWR 缓存 TTL（180s）对齐，减轻 logs 大表聚合压力
-    const timer = setInterval(fetchStats, 180000);
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      void fetchStats(true);
+    }, 180000);
+    const onVis = () => {
+      if (document.hidden) return;
+      if (lastStatsAt.current > 0 && Date.now() - lastStatsAt.current >= 180000) {
+        void fetchStats(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
     return () => {
-      cancelled = true;
+      alive = false;
+      statsSeq.current += 1;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVis);
     };
   }, [dateRange]);
 
@@ -374,124 +438,135 @@ const Dashboard: React.FC = () => {
     notifyConsolePageReady?.();
   }, [loading, liveMetricsReady, notifyConsolePageReady]);
 
-  const columns = [
-    {
-      title: t('dashboard.recent_activity_time', { defaultValue: 'Time' }),
-      key: 'time_status',
-      align: 'center' as const,
-      render: (log: RequestLog) => (
-        <Space direction="vertical" size={2} align="center">
-          <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 13 }}>
-            {dayjs(log.created_at).format('YYYY-MM-DD HH:mm:ss')}
-          </Text>
-          <span style={{ 
-            display: 'inline-block',
-            width: 'fit-content',
-            background: log.status_code === 200 ? (_isLight ? 'rgba(82, 196, 26, 0.1)' : 'rgba(255,255,255,0.1)') : 'rgba(255,0,0,0.1)', 
-            color: log.status_code === 200 ? (_isLight ? '#52c41a' : '#ccc') : '#ff4d4f',
-            padding: '1px 6px', 
-            borderRadius: 4, 
-            fontSize: 11 
-          }}>
-            {log.status_code}
-          </span>
-        </Space>
-      ),
-    },
-    ...(isAdmin
-      ? [
-          {
-            title: t('dashboard.recent_activity_user', '用户'),
-            key: 'user',
-            render: (log: RequestLog) => {
-              const displayName = log.user_nickname || log.user_uid || log.user_id || '-';
-              return log.user_uid ? (
-                <Link to={`/${adminPath}/users/${log.user_uid}/basic`} style={{ fontSize: 13, fontWeight: 500 }}>
-                  {displayName}
-                </Link>
-              ) : (
-                <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 13 }}>
-                  {displayName}
-                </Text>
-              );
-            },
-          },
-        ]
-      : []),
-    {
-      title: t('channels.type'),
-      dataIndex: 'model',
-      key: 'model',
-      render: (text: string) => (
-        <span style={{ background: _isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 4, color: _isLight ? '#333' : '#ccc', fontSize: 13 }}>
-          {text}
-        </span>
-      ),
-    },
-    {
-      title: 'Tokens',
-      key: 'tokens',
-      render: (log: RequestLog) => (
-        <Space direction="vertical" size={0}>
-          <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>In: {log.prompt_tokens}</Text>
-          <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>Out: {log.completion_tokens}</Text>
-        </Space>
-      ),
-    },
-    {
-      title: t('dashboard.estimated_cost'),
-      dataIndex: 'cost',
-      key: 'cost',
-      render: (val: number) => <Text style={{ color: _isLight ? '#333' : '#ccc', fontSize: 13 }}>{currencySymbol}{val.toFixed(6)}</Text>,
-    },
-  ];
+  const calculateTrend = (current: number = 0, previous: number = 0) => {
+    if (previous <= 0) {
+      if (current > 0) return { pct: '+100%', isUp: true, isNeutral: false };
+      return { pct: '0.0%', isUp: true, isNeutral: true };
+    }
+    const diff = current - previous;
+    const pct = (diff / previous) * 100;
+    if (Math.abs(pct) < 0.05) {
+      return { pct: '0.0%', isUp: true, isNeutral: true };
+    }
+    const sign = pct > 0 ? '+' : '';
+    return {
+      pct: `${sign}${pct.toFixed(1)}%`,
+      isUp: pct > 0,
+      isNeutral: false,
+    };
+  };
+
+  const formatCostValue = (cost: number = 0) => {
+    if (cost >= 100) {
+      return cost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    if (cost >= 1) {
+      return cost.toFixed(4);
+    }
+    return cost.toFixed(6);
+  };
+
+  const renderTrendBadge = (trend: { pct: string; isUp: boolean; isNeutral: boolean }) => {
+    return (
+      <div
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '2px 8px',
+          borderRadius: 9999,
+          background: _isLight ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.04)',
+          border: _isLight ? '1px solid #e4e4e7' : '1px solid rgba(255, 255, 255, 0.12)',
+          fontSize: 11.5,
+          fontWeight: 500,
+          fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+          color: _isLight ? '#18181b' : '#fafafa',
+          lineHeight: '16px',
+        }}
+      >
+        {!trend.isNeutral && (
+          trend.isUp ? (
+            <TrendingUp size={11} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa' }} />
+          ) : (
+            <TrendingDown size={11} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa' }} />
+          )
+        )}
+        <span>{trend.pct}</span>
+      </div>
+    );
+  };
 
   const cardStyle: React.CSSProperties = {
-    height: screens.xs ? 180 : 210,
+    minHeight: screens.xs ? 152 : 164,
+    height: '100%',
+    borderRadius: 16,
+    overflow: 'hidden',
+    border: 'none',
+    boxShadow: 'none',
+  };
+
+  const cardTopSectionStyle: React.CSSProperties = {
+    padding: screens.xs ? '14px 16px 12px 16px' : '18px 20px 14px 20px',
+    background: _isLight ? '#ffffff' : '#0c0c0e',
     display: 'flex',
     flexDirection: 'column',
-    position: 'relative',
-    borderRadius: 12,
+    justifyContent: 'space-between',
+    flex: '1 1 auto',
   };
 
-  const metricLabelStyle: React.CSSProperties = {
-    color: _isLight ? '#666' : '#888',
-    fontSize: screens.xs ? 11 : 13,
-    fontWeight: 500,
+  const cardBottomSectionStyle: React.CSSProperties = {
+    padding: screens.xs ? '11px 16px 13px 16px' : '13px 20px 15px 20px',
+    background: _isLight ? '#fafafa' : '#141414', // 与左侧菜单同色 (Light: #fafafa / Dark: #141414)
+    borderTop: _isLight ? '1px solid #e4e4e7' : '1px solid rgba(255, 255, 255, 0.08)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    flexShrink: 0,
   };
 
-  const metricValueStyle: React.CSSProperties = {
-    margin: '4px 0 0 0',
-    color: _isLight ? '#1f2937' : '#fff',
+  const cardTitleStyle: React.CSSProperties = {
+    color: _isLight ? '#71717a' : '#a1a1aa',
+    fontSize: screens.xs ? 12.5 : 13.5,
     fontWeight: 500,
-    fontSize: screens.xs ? 18 : 26,
+    letterSpacing: '-0.01em',
+  };
+
+  const cardBigValueStyle: React.CSSProperties = {
+    margin: 0,
+    marginBottom: 0,
+    color: _isLight ? '#09090b' : '#fafafa',
+    fontWeight: 700,
+    fontSize: screens.xs ? 24 : 30,
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    fontVariantNumeric: 'tabular-nums',
+    letterSpacing: '-0.035em',
+    lineHeight: 1.15,
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    lineHeight: 1.2,
   };
 
-  const metricSubStyle: React.CSSProperties = {
-    color: _isLight ? '#666' : '#888',
-    fontSize: screens.xs ? 10 : 12,
+  const footerPrimaryStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    fontSize: screens.xs ? 12 : 13,
+    fontWeight: 500,
+    color: _isLight ? '#18181b' : '#fafafa',
+    lineHeight: '18px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   };
 
-  const liveMetricItems = [
-    { key: 'qps', label: t('dashboard.live_qps'), tip: t('dashboard.live_qps_tip'), value: liveMetrics?.qps ?? 0 },
-    { key: 'rpm', label: t('dashboard.live_rpm'), tip: t('dashboard.live_rpm_tip'), value: liveMetrics?.rpm ?? 0 },
-    { key: 'tpm', label: t('dashboard.live_tpm'), tip: t('dashboard.live_tpm_tip'), value: liveMetrics?.tpm ?? 0 },
-    { key: 'task', label: t('dashboard.live_task'), tip: t('dashboard.live_task_tip'), value: liveMetrics?.task ?? 0 },
-  ];
-
-  const backgroundIconStyle: React.CSSProperties = {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    fontSize: screens.xs ? '48px' : '64px',
-    color: _isLight ? 'rgba(0, 0, 0, 0.025)' : 'rgba(255, 255, 255, 0.03)',
-    pointerEvents: 'none',
-    zIndex: 0,
+  const footerSecondaryStyle: React.CSSProperties = {
+    fontSize: screens.xs ? 11 : 12,
+    fontWeight: 400,
+    color: _isLight ? '#71717a' : '#a1a1aa',
+    lineHeight: '16px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   };
 
 
@@ -640,7 +715,7 @@ const Dashboard: React.FC = () => {
                           sessionStorage.setItem('last_dashboard_pinned_id', String(pinnedAnnouncements[idx]?.id));
                         } catch {}
                       }}
-                      aria-label={`切换到第 ${idx + 1} 条置顶通知`}
+                      aria-label={t('dashboard.pinned_switch', { index: idx + 1 })}
                       style={{
                         padding: 0,
                         border: 'none',
@@ -711,137 +786,303 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 概览仪表盘：消耗 Token | 预估成本 | 请求+令牌 | 实时吞吐 */}
-      <Row gutter={[16, 16]}>
-        <Col xs={12} sm={12} lg={6}>
-          <Card
-            variant="borderless"
-            style={cardStyle}
-            styles={{ body: { padding: screens.xs ? 16 : 24, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' } }}
-          >
-            <DatabaseOutlined style={backgroundIconStyle} />
-            <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 12 : 14, fontWeight: 500 }}>{tokensLabel}</Text>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '8px 0 0 0' }}>
-                <Title level={2} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff', fontWeight: 500, fontSize: screens.xs ? 18 : 30, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={stats?.total_tokens?.toLocaleString() || '0'}>{stats?.total_tokens?.toLocaleString() || 0}</Title>
-                {showDayComparison && (
-                  <>
-                    <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 11 : 13 }}>{t('dashboard.today')}: {stats?.today_tokens?.toLocaleString() || 0}</Text>
-                    <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 11 : 13 }}>{t('dashboard.yesterday')}: {stats?.yesterday_tokens?.toLocaleString() || 0}</Text>
-                  </>
-                )}
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} lg={6}>
-          <Card
-            variant="borderless"
-            style={cardStyle}
-            styles={{ body: { padding: screens.xs ? 16 : 24, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' } }}
-          >
-            <AccountBookOutlined style={backgroundIconStyle} />
-            <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 12 : 14, fontWeight: 500 }}>{costLabel}</Text>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '8px 0 0 0' }}>
-                <Title level={2} style={{ margin: 0, color: _isLight ? '#1f2937' : '#fff', fontWeight: 500, fontSize: screens.xs ? 18 : 30, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${currencySymbol}${stats?.total_cost?.toFixed(6) || 0}`}>{currencySymbol}{stats?.total_cost?.toFixed(6) || 0}</Title>
-                {showDayComparison && (
-                  <>
-                    <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 11 : 13 }}>{t('dashboard.today')}: {currencySymbol}{(stats?.today_cost || 0).toFixed(6)}</Text>
-                    <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 11 : 13 }}>{t('dashboard.yesterday')}: {currencySymbol}{(stats?.yesterday_cost || 0).toFixed(6)}</Text>
-                  </>
-                )}
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} lg={6}>
-          <Card
-            variant="borderless"
-            style={cardStyle}
-            styles={{ body: { padding: screens.xs ? 14 : 20, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' } }}
-          >
-            <BarChartOutlined style={backgroundIconStyle} />
-            <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', height: '100%', gap: 10 }}>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <Text style={metricLabelStyle}>{requestsLabel}</Text>
-                <Title level={2} style={metricValueStyle} title={String(stats?.total_requests || 0)}>
-                  {stats?.total_requests || 0}
-                </Title>
-                {showDayComparison && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 10px', marginTop: 2 }}>
-                    <Text style={metricSubStyle}>{t('dashboard.today')}: {stats?.today_requests || 0}</Text>
-                    <Text style={metricSubStyle}>{t('dashboard.yesterday')}: {stats?.yesterday_requests || 0}</Text>
-                  </div>
-                )}
-              </div>
-              <Divider style={{ margin: 0, borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)' }} />
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <Text style={metricLabelStyle}>{t('dashboard.total_api_tokens', '总令牌')}</Text>
-                <Title level={2} style={{ ...metricValueStyle, fontSize: screens.xs ? 16 : 22 }} title={String(stats?.total_api_tokens || 0)}>
-                  {stats?.total_api_tokens || 0}
-                </Title>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 10px', marginTop: 2 }}>
-                  <Text style={metricSubStyle}>{t('dashboard.today_active')}: {stats?.today_active_tokens || 0}</Text>
-                  <Text style={metricSubStyle}>{t('dashboard.yesterday_active')}: {stats?.yesterday_active_tokens || 0}</Text>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </Col>
-        <Col xs={12} sm={12} lg={6}>
-          <Card
-            variant="borderless"
-            style={cardStyle}
-            styles={{ body: { padding: screens.xs ? 14 : 18, height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' } }}
-          >
-            <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
-                <Text style={{ color: _isLight ? '#666' : '#888', fontSize: screens.xs ? 12 : 13, fontWeight: 500 }}>
-                  {t('dashboard.live_throughput')}
-                </Text>
-                <Tag style={{ margin: 0, lineHeight: '18px', fontSize: 11 }}>{t('dashboard.live_tag')}</Tag>
-              </div>
-              <div
-                style={{
-                  flex: 1,
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gridTemplateRows: '1fr 1fr',
-                  gap: screens.xs ? 8 : 10,
-                }}
+      {(() => {
+        const tokensTrend = calculateTrend(stats?.today_tokens, stats?.yesterday_tokens);
+        const costTrend = calculateTrend(stats?.today_cost, stats?.yesterday_cost);
+        const requestsTrend = calculateTrend(stats?.today_requests, stats?.yesterday_requests);
+
+        return (
+          <Row gutter={[16, 16]}>
+            {/* Card 1: 消耗 Token */}
+            <Col xs={12} sm={12} lg={6} style={{ display: 'flex' }}>
+              <Card
+                variant="borderless"
+                className="shadcn-metric-card"
+                style={{ ...cardStyle, flex: 1, width: '100%' }}
+                styles={{ body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' } }}
               >
-                {liveMetricItems.map((item) => (
-                  <AntTooltip key={item.key} title={item.tip}>
-                    <div style={{ minWidth: 0 }}>
-                      <Text style={metricSubStyle}>{item.label}</Text>
-                      <Title
-                        level={4}
+                <div style={cardTopSectionStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={cardTitleStyle}>{tokensLabel}</span>
+                    {renderTrendBadge(tokensTrend)}
+                  </div>
+                  <div style={{ margin: '8px 0 0 0' }}>
+                    <Title
+                      level={2}
+                      style={cardBigValueStyle}
+                      title={stats?.total_tokens?.toLocaleString() || '0'}
+                    >
+                      {stats?.total_tokens?.toLocaleString() || 0}
+                    </Title>
+                  </div>
+                </div>
+                <div style={cardBottomSectionStyle}>
+                  <div style={footerPrimaryStyle}>
+                    <span>
+                      {showDayComparison
+                        ? (tokensTrend.isNeutral
+                            ? t('dashboard.trend_flat', '与昨日消耗持平')
+                            : `${t('dashboard.trend_compared_yesterday', '较昨日')} ${tokensTrend.pct}`)
+                        : t('dashboard.tokens_total_scope', '周期 Token 消耗总额')}
+                    </span>
+                    {showDayComparison ? (
+                      !tokensTrend.isNeutral && (
+                        tokensTrend.isUp ? (
+                          <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        ) : (
+                          <TrendingDown size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        )
+                      )
+                    ) : (
+                      <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', opacity: 0.8, flexShrink: 0 }} />
+                    )}
+                  </div>
+                  <div style={footerSecondaryStyle}>
+                    {showDayComparison
+                      ? `${t('dashboard.today')}: ${(stats?.today_tokens ?? 0).toLocaleString()} · ${t('dashboard.yesterday')}: ${(stats?.yesterday_tokens ?? 0).toLocaleString()}`
+                      : t('dashboard.scope_auto_aggregate', '输入与输出 Token 实时汇总计量')}
+                  </div>
+                </div>
+              </Card>
+            </Col>
+
+            {/* Card 2: 预估成本 */}
+            <Col xs={12} sm={12} lg={6} style={{ display: 'flex' }}>
+              <Card
+                variant="borderless"
+                className="shadcn-metric-card"
+                style={{ ...cardStyle, flex: 1, width: '100%' }}
+                styles={{ body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' } }}
+              >
+                <div style={cardTopSectionStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={cardTitleStyle}>{costLabel}</span>
+                    {renderTrendBadge(costTrend)}
+                  </div>
+                  <div style={{ margin: '8px 0 0 0' }}>
+                    <Title
+                      level={2}
+                      style={cardBigValueStyle}
+                      title={`${currencySymbol}${stats?.total_cost?.toFixed(6) || 0}`}
+                    >
+                      {currencySymbol}{formatCostValue(stats?.total_cost ?? 0)}
+                    </Title>
+                  </div>
+                </div>
+                <div style={cardBottomSectionStyle}>
+                  <div style={footerPrimaryStyle}>
+                    <span>
+                      {showDayComparison
+                        ? (costTrend.isNeutral
+                            ? t('dashboard.trend_flat', '与昨日成本持平')
+                            : `${t('dashboard.trend_compared_yesterday', '较昨日')} ${costTrend.pct}`)
+                        : t('dashboard.cost_desc', '所选范围消费金额')}
+                    </span>
+                    {showDayComparison ? (
+                      !costTrend.isNeutral && (
+                        costTrend.isUp ? (
+                          <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        ) : (
+                          <TrendingDown size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        )
+                      )
+                    ) : (
+                      <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', opacity: 0.8, flexShrink: 0 }} />
+                    )}
+                  </div>
+                  <div style={footerSecondaryStyle}>
+                    {showDayComparison
+                      ? `${t('dashboard.today')}: ${currencySymbol}${formatCostValue(stats?.today_cost ?? 0)} · ${t('dashboard.yesterday')}: ${currencySymbol}${formatCostValue(stats?.yesterday_cost ?? 0)}`
+                      : t('dashboard.billing_live_metered', '按各模型配置费率精确计量')}
+                  </div>
+                </div>
+              </Card>
+            </Col>
+
+            {/* Card 3: 请求总数 */}
+            <Col xs={12} sm={12} lg={6} style={{ display: 'flex' }}>
+              <Card
+                variant="borderless"
+                className="shadcn-metric-card"
+                style={{ ...cardStyle, flex: 1, width: '100%' }}
+                styles={{ body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' } }}
+              >
+                <div style={cardTopSectionStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={cardTitleStyle}>{requestsLabel}</span>
+                    {renderTrendBadge(requestsTrend)}
+                  </div>
+                  <div style={{ margin: '8px 0 0 0' }}>
+                    <Title
+                      level={2}
+                      style={cardBigValueStyle}
+                      title={String(stats?.total_requests || 0)}
+                    >
+                      {(stats?.total_requests ?? 0).toLocaleString()}
+                    </Title>
+                  </div>
+                </div>
+                <div style={cardBottomSectionStyle}>
+                  <div style={footerPrimaryStyle}>
+                    <span>
+                      {showDayComparison
+                        ? (requestsTrend.isNeutral
+                            ? t('dashboard.trend_requests_flat', '与昨日请求量持平')
+                            : `${t('dashboard.trend_compared_yesterday', '较昨日')} ${requestsTrend.pct}`)
+                        : t('dashboard.total_requests_desc', 'API 请求调用总数')}
+                    </span>
+                    {showDayComparison ? (
+                      !requestsTrend.isNeutral && (
+                        requestsTrend.isUp ? (
+                          <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        ) : (
+                          <TrendingDown size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
+                        )
+                      )
+                    ) : (
+                      <TrendingUp size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', opacity: 0.8, flexShrink: 0 }} />
+                    )}
+                  </div>
+                  <div style={footerSecondaryStyle}>
+                    {showDayComparison
+                      ? `${t('dashboard.today')}: ${(stats?.today_requests ?? 0).toLocaleString()} ${t('dashboard.times_unit', '次')} · ${t('dashboard.active_tokens', '活跃令牌')} ${stats?.today_active_tokens || 0}`
+                      : `${t('dashboard.today_active')}: ${stats?.today_active_tokens || 0} / ${t('dashboard.total_prefix', '共')} ${stats?.total_api_tokens || 0} ${t('dashboard.token_count_unit', '个')}`}
+                  </div>
+                </div>
+              </Card>
+            </Col>
+
+            {/* Card 4: 实时吞吐 */}
+            <Col xs={12} sm={12} lg={6} style={{ display: 'flex' }}>
+              <Card
+                variant="borderless"
+                className="shadcn-metric-card"
+                style={{ ...cardStyle, flex: 1, width: '100%' }}
+                styles={{ body: { padding: 0, height: '100%', display: 'flex', flexDirection: 'column' } }}
+              >
+                <div style={cardTopSectionStyle}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={cardTitleStyle}>{t('dashboard.live_throughput')}</span>
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        padding: '2px 8px',
+                        borderRadius: 9999,
+                        background: _isLight ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.04)',
+                        border: _isLight ? '1px solid #e4e4e7' : '1px solid rgba(255, 255, 255, 0.12)',
+                        fontSize: 11.5,
+                        fontWeight: 500,
+                        fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+                        color: _isLight ? '#16a34a' : '#4ade80',
+                        lineHeight: '16px',
+                      }}
+                    >
+                      <span
                         style={{
-                          margin: '2px 0 0 0',
-                          color: _isLight ? '#1f2937' : '#fff',
-                          fontWeight: 500,
-                          fontSize: screens.xs ? 15 : 20,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          backgroundColor: '#22c55e',
+                          boxShadow: '0 0 6px #22c55e',
+                          display: 'inline-block',
                         }}
-                      >
-                        {Number(item.value).toLocaleString()}
-                      </Title>
+                      />
+                      <span>LIVE</span>
+                    </div>
+                  </div>
+                  <div style={{ margin: '8px 0 0 0', display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <Title
+                      level={2}
+                      style={{ ...cardBigValueStyle, display: 'inline-block' }}
+                      title={`${liveMetrics?.qps ?? 0} QPS`}
+                    >
+                      {liveMetrics?.qps ?? 0}
+                    </Title>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                      QPS
+                    </span>
+                  </div>
+                </div>
+                <div style={cardBottomSectionStyle}>
+                  <AntTooltip title={`${t('dashboard.live_rpm')}: ${liveMetrics?.rpm ?? 0} · ${t('dashboard.live_tpm')}: ${liveMetrics?.tpm ?? 0}`}>
+                    <div style={footerPrimaryStyle}>
+                      <span>
+                        {(liveMetrics?.rpm ?? 0).toLocaleString()} RPM · ${formatTokenCount(liveMetrics?.tpm ?? 0)} TPM
+                      </span>
+                      <Zap size={13} strokeWidth={2.2} style={{ color: _isLight ? '#18181b' : '#fafafa', flexShrink: 0 }} />
                     </div>
                   </AntTooltip>
-                ))}
-              </div>
-            </div>
-          </Card>
-        </Col>
-      </Row>
+                  <div style={footerSecondaryStyle}>
+                    {`${t('dashboard.live_task', '排队任务')}: ${liveMetrics?.task ?? 0} · ${t('dashboard.live_tag', '实时流控计量')}`}
+                  </div>
+                </div>
+              </Card>
+            </Col>
+          </Row>
+        );
+      })()}
+
+      <UsageAreaChart />
 
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
         <Col lg={14} xs={24}>
           <div style={{ height: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-            <Title level={5} style={{ color: _isLight ? '#1f2937' : '#fff', fontWeight: 500, margin: 0 }}>{t('dashboard.recent_activity')}</Title>
-            <Text type="secondary" style={{ color: _isLight ? '#999' : '#666', fontSize: 13 }}>{t('dashboard.auto_refresh')}</Text>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              <AntTooltip title={t('dashboard.view_all_logs', '查看全部日志')}>
+                <Link 
+                  to={logsPath} 
+                  style={{ 
+                    display: 'inline-flex', 
+                    alignItems: 'center', 
+                    gap: 6, 
+                    textDecoration: 'none',
+                    cursor: 'pointer',
+                  }}
+                  className="hover:opacity-80 transition-opacity"
+                >
+                  <Title level={5} style={{ color: _isLight ? '#1f2937' : '#fff', fontWeight: 500, margin: 0, cursor: 'pointer' }}>
+                    {t('dashboard.recent_activity')}
+                  </Title>
+                  <ArrowRight size={15} className="shadcn-icon-btn" style={{ color: _isLight ? '#1f2937' : '#ffffff', cursor: 'pointer' }} />
+                </Link>
+              </AntTooltip>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span
+                className="inline-flex h-2 w-2 rounded-full"
+                style={{
+                  background: '#10b981',
+                  boxShadow: '0 0 6px rgba(16, 185, 129, 0.6)',
+                }}
+              />
+              <Text type="secondary" style={{ color: _isLight ? '#999' : '#666', fontSize: 12 }}>
+                {t('dashboard.auto_refresh')}
+              </Text>
+              <AntTooltip title={t('dashboard.refresh_now', '立即刷新')}>
+                <button
+                  type="button"
+                  onClick={handleManualRefresh}
+                  disabled={refreshing || loading}
+                  aria-label={t('dashboard.refresh_now')}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 2,
+                    cursor: refreshing || loading ? 'default' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    color: _isLight ? '#71717a' : '#a1a1aa',
+                    lineHeight: 1,
+                    transition: 'color 0.15s ease',
+                  }}
+                  className="hover:text-foreground"
+                >
+                  <RefreshCw size={12} className={refreshing || loading ? 'animate-spin' : ''} />
+                </button>
+              </AntTooltip>
+            </div>
           </div>
           <Card 
             variant="borderless" 
@@ -850,223 +1091,595 @@ const Dashboard: React.FC = () => {
               height: screens.xs ? 'auto' : cardHeight, 
               display: 'flex', 
               flexDirection: 'column',
-              background: screens.xs ? 'transparent' : undefined,
-              boxShadow: screens.xs ? 'none' : undefined
+              background: _isLight ? '#ffffff' : '#141414',
+              border: 'none',
+              boxShadow: 'none',
             }} 
-            styles={{ body: { padding: 0, flex: 1, overflowY: screens.xs ? 'auto' : 'hidden' } }}
+            styles={{ body: { padding: '14px 16px', flex: 1, overflowY: 'hidden', display: 'flex', flexDirection: 'column' } }}
           >
-            {screens.xs ? (
-              <MobileCardList
-                dataSource={stats?.recent_logs || []}
-                loading={loading}
-                rowKey="id"
-                compact={true}
-                gap={4}
-                renderCard={(item) => (
-                  <MobileCard
-                    compact={true}
-                    style={{ background: _isLight ? '#fff' : '#141414', border: 'none' }}
-                    title={
-                      <span style={{ background: _isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 4, color: _isLight ? '#333' : '#ccc', fontSize: 11 }}>
-                        {item.model}
-                      </span>
-                    }
-                    extra={
-                      <span style={{ 
-                        background: item.status_code === 200 ? (_isLight ? 'rgba(82, 196, 26, 0.1)' : 'rgba(255,255,255,0.1)') : 'rgba(255,0,0,0.1)', 
-                        color: item.status_code === 200 ? (_isLight ? '#52c41a' : '#ccc') : '#ff4d4f',
-                        padding: '1px 6px', 
-                        borderRadius: 4, 
-                        fontSize: 11 
-                      }}>
-                        {item.status_code}
-                      </span>
-                    }
+            <Spin spinning={loading} wrapperClassName="flex-1 flex flex-col min-h-0" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                {/* Top Header Summary Strip */}
+                <div 
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    paddingBottom: 10,
+                    marginBottom: 8,
+                    borderBottom: _isLight ? '1px solid #f4f4f5' : '1px solid rgba(255, 255, 255, 0.08)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                    <Activity size={12} style={{ opacity: 0.7 }} />
+                    <span style={{ fontWeight: 500 }}>{t('dashboard.recent_requests', '最新请求')}</span>
+                    <span style={{ opacity: 0.4 }}>·</span>
+                    <span>
+                      {t('dashboard.recent_logs_count', { count: stats?.recent_logs?.length || 0, defaultValue: `展示最近 ${stats?.recent_logs?.length || 0} 条记录` })}
+                    </span>
+                  </div>
+                  <div>
+                    <Link 
+                      to={logsPath} 
+                      style={{ 
+                        fontSize: 11, 
+                        color: _isLight ? '#71717a' : '#a1a1aa', 
+                        display: 'inline-flex', 
+                        alignItems: 'center', 
+                        gap: 3, 
+                        transition: 'color 0.15s ease',
+                        cursor: 'pointer',
+                        textDecoration: 'none',
+                      }}
+                      className="hover:text-foreground"
+                    >
+                      <span>{t('dashboard.all_logs', '全部日志')}</span>
+                      <ArrowRight size={11} />
+                    </Link>
+                  </div>
+                </div>
+
+                {stats?.recent_logs && stats.recent_logs.length > 0 ? (
+                  <div 
+                    className="custom-scrollbar"
+                    style={{ 
+                      height: screens.xs ? 'auto' : cardHeight - 100, 
+                      overflowY: 'auto', 
+                      paddingRight: 4 
+                    }}
                   >
-                    <CardRow compact={true} label={t('dashboard.recent_activity_time', { defaultValue: 'Time' })}>
-                      <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>{dayjs(item.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>
-                    </CardRow>
-                    {isAdmin && (
-                      <CardRow compact={true} label={t('dashboard.recent_activity_user', '用户')}>
-                        {item.user_uid ? (
-                          <Link to={`/${adminPath}/users/${item.user_uid}/basic`} style={{ fontSize: 12, fontWeight: 500 }}>
-                            {item.user_nickname || item.user_uid || item.user_id || '-'}
-                          </Link>
-                        ) : (
-                          <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>
-                            {item.user_nickname || item.user_uid || item.user_id || '-'}
-                          </Text>
-                        )}
-                      </CardRow>
-                    )}
-                    <CardRow compact={true} label={t('dashboard.recent_activity_tokens', 'Tokens (In / Out)')}>
-                      <Text style={{ color: _isLight ? '#666' : '#888', fontSize: 12 }}>{item.prompt_tokens} / {item.completion_tokens}</Text>
-                    </CardRow>
-                    <CardRow compact={true} label={t('dashboard.estimated_cost')}>
-                      <Text style={{ color: _isLight ? '#333' : '#ccc', fontSize: 12, fontWeight: 500 }}>{currencySymbol}{(item.cost || 0).toFixed(6)}</Text>
-                    </CardRow>
-                  </MobileCard>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      {stats.recent_logs.map((log, index) => {
+                        const displayName = log.user_nickname || log.user_uid || (log.user_id ? String(log.user_id) : '');
+                        const fullDateTime = dayjs(log.created_at).format('YYYY-MM-DD HH:mm:ss');
+                        const dateMatch = fullDateTime.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})(.*)$/);
+                        const dateStr = dateMatch ? dateMatch[1].slice(5) : dayjs(log.created_at).format('MM-DD');
+                        const timeStr = dateMatch ? dateMatch[2] : dayjs(log.created_at).format('HH:mm:ss');
+                        const statusMeta = getStatusMeta(log.status_code, _isLight);
+                        const endpointTag = getEndpointTag(log.endpoint);
+                        const latency = log.latency_ms ?? 0;
+                        const latencyText = latency > 0 ? (latency < 1000 ? `${latency}ms` : `${(latency / 1000).toFixed(2)}s`) : null;
+                        const latencyColor = _isLight ? '#71717a' : '#a1a1aa';
+                        const promptTokens = log.prompt_tokens || 0;
+                        const completionTokens = log.completion_tokens || 0;
+                        const cachedTokens = log.cached_tokens || 0;
+                        const costFormatted = (log.cost || 0).toFixed(6);
+
+                        return (
+                          <div 
+                            key={log.id} 
+                            className="shadcn-activity-row"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: screens.xs ? 8 : 12,
+                              padding: '8px 6px',
+                              borderRadius: 6,
+                              borderBottom: index === stats.recent_logs.length - 1 
+                                ? 'none' 
+                                : (_isLight ? '1px solid #f4f4f5' : '1px solid rgba(255, 255, 255, 0.05)'),
+                            }}
+                          >
+                            {/* Left: Status + Time + Divider + Model + Endpoint + User */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: screens.xs ? 8 : 10, minWidth: 0, flex: 1 }}>
+                              {/* Status code */}
+                              <span 
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                  fontVariantNumeric: 'tabular-nums',
+                                  color: statusMeta.text,
+                                  flexShrink: 0,
+                                  minWidth: 32,
+                                }}
+                              >
+                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: statusMeta.dot, flexShrink: 0 }} />
+                                <span>{log.status_code}</span>
+                              </span>
+
+                              {/* Time (Stacked HH:mm:ss / MM-DD) */}
+                              <AntTooltip title={fullDateTime}>
+                                <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, minWidth: 54 }}>
+                                  <span 
+                                    style={{
+                                      fontSize: 12,
+                                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                      fontVariantNumeric: 'tabular-nums',
+                                      color: _isLight ? '#27272a' : '#e4e4e7',
+                                      fontWeight: 500,
+                                      lineHeight: 1.2,
+                                    }}
+                                  >
+                                    {timeStr}
+                                  </span>
+                                  <span 
+                                    style={{
+                                      fontSize: 10,
+                                      color: _isLight ? '#a1a1aa' : '#71717a',
+                                      lineHeight: 1.2,
+                                      marginTop: 2,
+                                    }}
+                                  >
+                                    {dateStr}
+                                  </span>
+                                </div>
+                              </AntTooltip>
+
+                              {/* Subtle Vertical Divider */}
+                              <div 
+                                style={{
+                                  width: 1,
+                                  height: 20,
+                                  background: _isLight ? '#e4e4e7' : 'rgba(255, 255, 255, 0.08)',
+                                  flexShrink: 0,
+                                }}
+                              />
+
+                              {/* Model info + Endpoint + User chip */}
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                                  <span 
+                                    title={log.model}
+                                    style={{
+                                      minWidth: 0,
+                                      fontWeight: 600,
+                                      fontSize: 13,
+                                      color: _isLight ? '#09090b' : '#fafafa',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      letterSpacing: '-0.01em',
+                                    }}
+                                  >
+                                    {log.model}
+                                  </span>
+                                  {endpointTag && (
+                                    <span 
+                                      style={{
+                                        flexShrink: 0,
+                                        fontSize: 10,
+                                        lineHeight: '14px',
+                                        color: _isLight ? '#a1a1aa' : '#71717a',
+                                        textTransform: 'uppercase',
+                                        fontWeight: 500,
+                                        letterSpacing: '0.02em',
+                                      }}
+                                    >
+                                      · {endpointTag}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {isAdmin && displayName && (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                    <span 
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 3,
+                                        fontSize: 10,
+                                        color: _isLight ? '#a1a1aa' : '#71717a',
+                                        maxWidth: 160,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        whiteSpace: 'nowrap',
+                                      }}
+                                    >
+                                      <UserIcon size={10} style={{ opacity: 0.6, flexShrink: 0 }} />
+                                      <span>{displayName}</span>
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Right: Latency + Tokens + Cost */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: screens.xs ? 6 : 10, flexShrink: 0 }}>
+                              {/* Latency */}
+                              {latencyText && (
+                                <AntTooltip title={t('dashboard.latency_tip', { ms: latency })}>
+                                  <span 
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: 2,
+                                      fontSize: 11,
+                                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                      fontVariantNumeric: 'tabular-nums',
+                                      color: latencyColor,
+                                    }}
+                                  >
+                                    <Zap size={11} style={{ opacity: 0.8 }} />
+                                    <span>{latencyText}</span>
+                                  </span>
+                                </AntTooltip>
+                              )}
+
+                              {/* Tokens (Prompt / Completion) */}
+                              <AntTooltip title={`${t('dashboard.tokens_tip', { prompt: promptTokens.toLocaleString(), completion: completionTokens.toLocaleString() })}${cachedTokens > 0 ? ` · ${t('dashboard.tokens_cache', { count: cachedTokens.toLocaleString() })}` : ''}`}>
+                                <span 
+                                  style={{
+                                    fontSize: 11,
+                                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                    fontVariantNumeric: 'tabular-nums',
+                                    color: _isLight ? '#71717a' : '#a1a1aa',
+                                    whiteSpace: 'nowrap',
+                                    display: screens.xs ? 'none' : 'inline-block',
+                                  }}
+                                >
+                                  {promptTokens.toLocaleString()}
+                                  <span style={{ margin: '0 2px', color: _isLight ? '#d4d4d8' : '#52525b' }}>/</span>
+                                  {completionTokens.toLocaleString()}
+                                </span>
+                              </AntTooltip>
+
+                              {/* Cost */}
+                              <span 
+                                style={{
+                                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                  fontVariantNumeric: 'tabular-nums',
+                                  fontWeight: 600,
+                                  fontSize: 13,
+                                  color: _isLight ? '#09090b' : '#fafafa',
+                                  whiteSpace: 'nowrap',
+                                  textAlign: 'right',
+                                  minWidth: 70,
+                                }}
+                              >
+                                {currencySymbol}{costFormatted}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div 
+                    style={{ 
+                      height: '100%', 
+                      minHeight: screens.xs ? 200 : cardHeight - 120, 
+                      display: 'flex', 
+                      flexDirection: 'column', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      gap: 8,
+                      color: _isLight ? '#a1a1aa' : '#71717a',
+                      flex: 1,
+                    }}
+                  >
+                    <div 
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: '50%',
+                        background: _isLight ? '#f4f4f5' : 'rgba(255, 255, 255, 0.05)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        border: _isLight ? '1px solid #e4e4e7' : '1px solid rgba(255, 255, 255, 0.08)',
+                      }}
+                    >
+                      <Activity size={20} style={{ opacity: 0.6 }} />
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>
+                      {t('dashboard.no_data')}
+                    </span>
+                  </div>
                 )}
-              />
-            ) : (
-              <Table
-                dataSource={stats?.recent_logs || []}
-                columns={columns}
-                rowKey="id"
-                pagination={false}
-                size="middle"
-                loading={loading}
-                locale={{ emptyText: <Text style={{ color: _isLight ? '#999' : '#888' }}>{t('dashboard.no_data')}</Text> }}
-                scroll={{ y: cardHeight - 48, x: 'max-content' }}
-                style={{ borderRadius: 12, overflow: 'hidden', border: 'none' }}
-              />
-            )}
+              </div>
+            </Spin>
           </Card>
         </Col>
         
         <Col lg={10} xs={24}>
-          <div style={{ height: 24, display: 'flex', alignItems: 'center', marginBottom: 16, gap: 8 }}>
+          <div style={{ height: 24, display: 'flex', alignItems: 'center', marginBottom: 16 }}>
             <Title level={5} style={{ color: _isLight ? '#1f2937' : '#fff', fontWeight: 500, margin: 0 }}>{t('dashboard.model_distribution')}</Title>
-            <Text type="secondary" style={{ color: _isLight ? '#999' : '#666', fontSize: 12 }}>{modelDetailHint}</Text>
-            <AntTooltip title="查看最近 30 天分布详细数据">
-              <PieChartIcon 
-                size={18}
-                strokeWidth={2}
-                className="shadcn-icon-btn"
-                style={{ 
-                  marginLeft: 2, 
-                  color: _isLight ? '#000000' : '#ffffff', 
-                  cursor: 'pointer' 
-                }} 
-                onClick={() => setIsModel30dView(true)}
-              />
-            </AntTooltip>
           </div>
           <Card 
             variant="borderless" 
-            style={{ borderRadius: 12, height: screens.xs ? 'auto' : cardHeight, display: 'flex', flexDirection: 'column' }} 
-            styles={{ body: { padding: '16px 20px', flex: 1, overflowY: 'hidden' } }}
+            style={{ 
+              borderRadius: 12, 
+              height: screens.xs ? 'auto' : cardHeight, 
+              display: 'flex', 
+              flexDirection: 'column',
+              background: _isLight ? '#ffffff' : '#141414',
+              border: 'none',
+              boxShadow: 'none',
+            }} 
+            styles={{ body: { padding: '14px 16px', flex: 1, overflowY: 'hidden', display: 'flex', flexDirection: 'column' } }}
           >
-            <Spin spinning={loading}>
-              <div 
-                className="custom-scrollbar"
-                style={{ 
-                  height: screens.xs ? 'auto' : cardHeight - 64, 
-                  overflowY: 'auto', 
-                  paddingRight: 8 
-                }}
-              >
-                {stats?.model_stats && stats.model_stats.length > 0 ? (
-                  (() => {
-                    const maxCost = stats.model_stats.reduce((max, item) => Math.max(max, item.total_cost), 0) || 1;
-                    return stats.model_stats.map((item, index) => {
-                      const percentage = (item.total_cost / maxCost) * 100;
-                      return (
-                        <div 
-                          key={item.model} 
+            <Spin spinning={loading} wrapperClassName="flex-1 flex flex-col min-h-0" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              {(() => {
+                const todayKey = timedisplayNow().format('YYYY-MM-DD');
+                const rangeStart = dateRange?.[0];
+                const rangeEnd = dateRange?.[1];
+                const costDateLabel = rangeStart && rangeEnd
+                  ? (rangeStart.format('YYYY-MM-DD') === rangeEnd.format('YYYY-MM-DD')
+                    ? rangeStart.format('MM-DD')
+                    : `${rangeStart.format('MM-DD')}~${rangeEnd.format('MM-DD')}`)
+                  : todayKey.slice(5);
+                const modelStats = stats?.model_stats || [];
+                const maxCost = modelStats.reduce((max, item) => Math.max(max, item.total_cost), 0) || 1;
+                const totalModelCost = modelStats.reduce((sum, item) => sum + item.total_cost, 0);
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+                    {/* Top Header Summary Strip (Shadcn style) */}
+                    <div 
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingBottom: 8,
+                        marginBottom: 6,
+                        borderBottom: _isLight ? '1px solid #f4f4f5' : '1px solid rgba(255, 255, 255, 0.08)',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                        <CalendarIcon size={12} style={{ opacity: 0.7 }} />
+                        <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontWeight: 500 }}>
+                          {costDateLabel}
+                        </span>
+                        <span style={{ opacity: 0.4 }}>·</span>
+                        <span>
+                          {t('dashboard.model_count', { count: modelStats.length, defaultValue: `共 ${modelStats.length} 个模型` })}
+                        </span>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <Link 
+                          to={taskLogsPath} 
                           style={{ 
-                            display: 'flex', 
-                            flexDirection: 'column',
-                            padding: '10px 2px',
-                            borderBottom: index === stats.model_stats.length - 1 
-                              ? 'none' 
-                              : (_isLight ? '1px dashed #e8e8e8' : '1px dashed rgba(255, 255, 255, 0.08)'),
-                            transition: 'all 0.3s ease',
+                            fontSize: 11, 
+                            color: _isLight ? '#71717a' : '#a1a1aa', 
+                            display: 'inline-flex', 
+                            alignItems: 'center', 
+                            gap: 3, 
+                            transition: 'color 0.15s ease',
+                            cursor: 'pointer',
+                            textDecoration: 'none',
                           }}
+                          className="hover:text-foreground"
                         >
-                          {/* Main Row */}
-                          <div style={{ display: 'flex', alignItems: 'center' }}>
-                            {/* Rank Badge */}
-                            <div style={getRankBadgeStyle(index)}>{index + 1}</div>
-                            
-                            {/* Info & Progress bar */}
-                            <div style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2, alignItems: 'center' }}>
-                                <span style={{ fontWeight: 600, color: _isLight ? '#1f2937' : '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 13 }}>
-                                  {item.model}
-                                </span>
-                                <span style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', flexShrink: 0 }}>
-                                  {t('dashboard.count_times', { count: item.count })}
-                                </span>
-                              </div>
-                              {/* Progress Bar Container */}
-                              <div style={{ 
-                                height: 4, 
-                                borderRadius: 2, 
-                                background: _isLight ? '#f5f5f5' : 'rgba(255,255,255,0.06)', 
-                                overflow: 'hidden' 
-                              }}>
-                                <div style={{ 
-                                  height: '100%', 
-                                  width: `${percentage}%`, 
-                                  borderRadius: 2, 
-                                  background: getBarColor(index),
-                                  transition: 'width 0.8s cubic-bezier(0.4, 0, 0.2, 1)' 
-                                }} />
-                              </div>
-                            </div>
+                          <span>{t('menu.task_logs', '任务列表')}</span>
+                          <ArrowRight size={11} />
+                        </Link>
+                      </div>
+                    </div>
 
-                            {/* Cost Display */}
-                            <div style={{ width: 110, textAlign: 'right', flexShrink: 0 }}>
-                              <span style={{ 
-                                fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace', 
-                                fontWeight: 700, 
-                                color: index === 0 ? '#F5A623' : (_isLight ? '#1f2937' : '#fff'),
-                                fontSize: 14 
-                              }}>
-                                {currencySymbol}{Number(item.total_cost).toFixed(6)}
-                              </span>
-                            </div>
-                          </div>
+                    {modelStats.length > 0 ? (
+                      <div 
+                        className="custom-scrollbar"
+                        style={{ 
+                          height: screens.xs ? 'auto' : cardHeight - 100, 
+                          overflowY: 'auto', 
+                          paddingRight: 4 
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          {modelStats.map((item, index) => {
+                            const recentDays = (item.last_three_days || []).filter((day) => day.date !== todayKey);
+                            const barPercentage = Math.max(3, Math.min(100, (item.total_cost / maxCost) * 100));
+                            const sharePercentage = totalModelCost > 0 
+                              ? ((item.total_cost / totalModelCost) * 100).toFixed(1) 
+                              : '0.0';
 
-                          {/* Last 3 Days Row */}
-                          {item.last_three_days && item.last_three_days.length > 0 && (
-                            <div style={{ 
-                              display: 'flex', 
-                              gap: 6, 
-                              marginTop: 6, 
-                              paddingLeft: 28, 
-                              flexWrap: 'wrap' 
-                            }}>
-                              {item.last_three_days.map((day) => {
-                                const dateLabel = day.date.slice(5);
-                                return (
-                                  <div 
-                                    key={day.date} 
-                                    style={{ 
-                                      background: !_isLight ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.03)',
-                                      borderRadius: 4,
-                                      padding: '1px 6px',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: 4,
-                                      fontSize: 10,
-                                    }}
-                                  >
-                                    <span style={{ color: !_isLight ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)', fontWeight: 500 }}>
-                                      {dateLabel}
+                            return (
+                              <div 
+                                key={item.model} 
+                                className="shadcn-model-row"
+                                style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 4,
+                                  padding: '5px 6px',
+                                  borderRadius: 6,
+                                  borderBottom: index === modelStats.length - 1 
+                                    ? 'none' 
+                                    : (_isLight ? '1px solid #f4f4f5' : '1px solid rgba(255, 255, 255, 0.05)'),
+                                }}
+                              >
+                                {/* Row Top: Rank + Model Name + Share tag | Cost + Times/Tokens */}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                                    <div style={getRankBadgeStyle(index)}>
+                                      {index < 9 ? `0${index + 1}` : index + 1}
+                                    </div>
+                                    <span 
+                                      title={item.model}
+                                      style={{
+                                        minWidth: 0,
+                                        fontWeight: 600,
+                                        color: _isLight ? '#09090b' : '#fafafa',
+                                        whiteSpace: 'nowrap',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        fontSize: 13,
+                                        letterSpacing: '-0.01em',
+                                      }}
+                                    >
+                                      {item.model}
                                     </span>
-                                    <span style={{ color: index === 0 ? '#faad14' : textColor, fontFamily: 'monospace', fontWeight: 600 }}>
-                                      {currencySymbol}{day.total_cost.toFixed(6)}
-                                    </span>
-                                    <span style={{ color: !_isLight ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)', fontSize: 9 }}>
-                                      ({t('dashboard.times', { count: day.count })})
+                                    <span 
+                                      style={{
+                                        flexShrink: 0,
+                                        fontSize: 11,
+                                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                        color: _isLight ? '#a1a1aa' : '#71717a',
+                                      }}
+                                    >
+                                      {sharePercentage}%
                                     </span>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          )}
+
+                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1, flexShrink: 0, textAlign: 'right' }}>
+                                    <span 
+                                      style={{
+                                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                                        fontVariantNumeric: 'tabular-nums',
+                                        fontWeight: 600,
+                                        fontSize: 13,
+                                        color: _isLight ? '#09090b' : '#fafafa',
+                                        letterSpacing: '-0.02em',
+                                      }}
+                                    >
+                                      {currencySymbol}{Number(item.total_cost).toFixed(6)}
+                                    </span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: _isLight ? '#71717a' : '#a1a1aa' }}>
+                                      {item.total_tokens > 0 && (
+                                        <span 
+                                          title={`${item.total_tokens.toLocaleString()} Tokens`}
+                                          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 10, opacity: 0.85 }}
+                                        >
+                                          {formatTokenCount(item.total_tokens)}
+                                        </span>
+                                      )}
+                                      {item.total_tokens > 0 && <span style={{ opacity: 0.4 }}>·</span>}
+                                      <span>{t('dashboard.count_times', { count: item.count })}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Row Middle: Progress Bar */}
+                                <div 
+                                  style={{ 
+                                    width: '100%',
+                                    height: 3, 
+                                    borderRadius: 9999, 
+                                    background: _isLight ? '#f4f4f5' : 'rgba(255, 255, 255, 0.06)', 
+                                    overflow: 'hidden' 
+                                  }}
+                                >
+                                  <div 
+                                    style={{ 
+                                      height: '100%', 
+                                      width: `${barPercentage}%`, 
+                                      borderRadius: 9999, 
+                                      background: getBarColor(index),
+                                      transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)' 
+                                    }} 
+                                  />
+                                </div>
+
+                                {/* Row Bottom: Recent Days Breakdown */}
+                                {recentDays.length > 0 && (
+                                  <div 
+                                    style={{ 
+                                      display: 'grid',
+                                      gridTemplateColumns: screens.xs 
+                                        ? '1fr' 
+                                        : (recentDays.length > 1 ? '215px minmax(0, 1fr)' : '1fr'),
+                                      alignItems: 'center',
+                                      columnGap: 12,
+                                      rowGap: 2,
+                                      paddingLeft: 26,
+                                      fontSize: 10.5,
+                                      lineHeight: 1.25,
+                                    }}
+                                  >
+                                    {[...recentDays].reverse().map((day) => {
+                                      const dateLabel = day.date.slice(5);
+                                      return (
+                                        <div 
+                                          key={day.date} 
+                                          style={{ 
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: 6,
+                                            whiteSpace: 'nowrap',
+                                            minWidth: 0,
+                                          }}
+                                        >
+                                          <span style={{ color: _isLight ? '#71717a' : '#a1a1aa', fontWeight: 500, flexShrink: 0 }}>
+                                            {dateLabel}
+                                          </span>
+                                          <span 
+                                            style={{ 
+                                              color: _isLight ? '#27272a' : '#d4d4d8', 
+                                              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', 
+                                              fontVariantNumeric: 'tabular-nums', 
+                                              fontWeight: 500,
+                                              whiteSpace: 'nowrap',
+                                            }}
+                                          >
+                                            {currencySymbol}{day.total_cost.toFixed(6)}
+                                          </span>
+                                          <span style={{ color: _isLight ? '#a1a1aa' : '#71717a', fontSize: 10, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                            ({day.count})
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                      );
-                    });
-                  })()
-                ) : (
-                  <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: _isLight ? '#999' : '#888', minHeight: 400 }}>
-                    {t('dashboard.no_data')}
+                      </div>
+                    ) : (
+                      <div 
+                        style={{ 
+                          height: '100%', 
+                          minHeight: screens.xs ? 200 : cardHeight - 120, 
+                          display: 'flex', 
+                          flexDirection: 'column', 
+                          alignItems: 'center', 
+                          justifyContent: 'center', 
+                          gap: 8,
+                          color: _isLight ? '#a1a1aa' : '#71717a',
+                          flex: 1,
+                        }}
+                      >
+                        <div 
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: '50%',
+                            background: _isLight ? '#f4f4f5' : 'rgba(255, 255, 255, 0.05)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            border: _isLight ? '1px solid #e4e4e7' : '1px solid rgba(255, 255, 255, 0.08)',
+                          }}
+                        >
+                          <PieChartIcon size={20} style={{ opacity: 0.6 }} />
+                        </div>
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>
+                          {t('dashboard.no_data')}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </Spin>
           </Card>
         </Col>
@@ -1095,6 +1708,18 @@ const Dashboard: React.FC = () => {
         }
         .shadcn-icon-btn:active {
           transform: scale(0.95);
+        }
+        .shadcn-model-row,
+        .shadcn-activity-row {
+          transition: background-color 0.15s ease;
+        }
+        .shadcn-model-row:hover,
+        .shadcn-activity-row:hover {
+          background-color: ${_isLight ? 'rgba(0, 0, 0, 0.025)' : 'rgba(255, 255, 255, 0.035)'} !important;
+        }
+        .shadcn-metric-card {
+          border: none !important;
+          box-shadow: none !important;
         }
         .ant-progress-text {
           color: ${_isLight ? '#666' : '#888'} !important;

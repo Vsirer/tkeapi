@@ -22,6 +22,10 @@ pub struct Announcement {
     pub popup_expires_at: Option<DbTs>,
     pub active_expires_at: Option<DbTs>,
     pub display_time_mode: String,
+    /// 逗号分隔，可多选：console,playground_2026,portal_pro
+    pub target_module: String,
+    pub playground_banner_bg: Option<String>,
+    pub portal_banner_bg: Option<String>,
     pub created_at: DbTs,
     pub updated_at: DbTs,
 }
@@ -38,6 +42,9 @@ pub struct CreateAnnouncementReq {
     pub popup_expires_at: Option<String>,
     pub active_expires_at: Option<String>,
     pub display_time_mode: Option<String>,
+    pub target_module: Option<String>,
+    pub playground_banner_bg: Option<String>,
+    pub portal_banner_bg: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,4 +59,7 @@ pub struct UpdateAnnouncementReq {
     pub popup_expires_at: Option<String>,
     pub active_expires_at: Option<String>,
     pub display_time_mode: Option<String>,
+    pub target_module: Option<String>,
+    pub playground_banner_bg: Option<String>,
+    pub portal_banner_bg: Option<String>,
 }

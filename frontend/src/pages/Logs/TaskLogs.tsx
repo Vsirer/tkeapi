@@ -74,18 +74,34 @@ interface TaskLog {
 }
 
 // ── 工具函数：从记录中获取任务类型（直接读取后端返回的 action_type） ──────────────────────────
-const getTaskType = (r: TaskLog) => {
-  // eslint-disable-next-line
-  const t = (key: string, def: string) => def; // A quick polyfill if t is not available in top level. But wait, it's better to translate in component. Let's fix this in another chunk.
-  if (r.action_type === '聊天') return { label: '聊天', color: 'blue', icon: <MessageSquare size={14} /> };
-  if (r.action_type === '图片') return { label: '图片', color: 'purple', icon: <ImageIcon size={14} /> };
-  if (r.action_type === '视频') return { label: '视频', color: 'orange', icon: <Video size={14} /> };
-  if (r.action_type === '视频增强') return { label: '视频增强', color: 'volcano', icon: <Video size={14} /> };
-  if (r.action_type === '图像增强') return { label: '图像增强', color: 'purple', icon: <ImageIcon size={14} /> };
-  if (r.action_type === '音频') return { label: '音频', color: 'green', icon: <Mic size={14} /> };
-  if (r.action_type === '向量') return { label: '向量', color: 'cyan', icon: <Cuboid size={14} /> };
-  if (r.action_type === '排序') return { label: '排序', color: 'geekblue', icon: <ListOrdered size={14} /> };
-  return { label: r.action_type || '其它', color: 'default', icon: <Wrench size={14} /> };
+const getTaskType = (r: TaskLog, t?: (key: string, def: string) => string) => {
+  const tr = t || ((_k: string, def: string) => def || _k);
+  const actionType = r.action_type || '';
+  if (actionType === '聊天' || actionType === 'chat') {
+    return { label: tr('logs.type_chat', '聊天'), color: 'blue', icon: <MessageSquare size={14} /> };
+  }
+  if (actionType === '图片' || actionType === '图像' || actionType === 'image') {
+    return { label: tr('logs.type_image', '图片'), color: 'purple', icon: <ImageIcon size={14} /> };
+  }
+  if (actionType === '视频' || actionType === 'video') {
+    return { label: tr('logs.type_video', '视频'), color: 'orange', icon: <Video size={14} /> };
+  }
+  if (actionType === '视频增强' || actionType === 'video_enhancement') {
+    return { label: tr('logs.type_video_enhancement', '视频增强'), color: 'volcano', icon: <Video size={14} /> };
+  }
+  if (actionType === '图像增强' || actionType === '画质增强' || actionType === 'image_enhancement') {
+    return { label: tr('logs.type_image_enhancement', '图像增强'), color: 'purple', icon: <ImageIcon size={14} /> };
+  }
+  if (actionType === '音频' || actionType === 'audio') {
+    return { label: tr('logs.type_audio', '音频'), color: 'green', icon: <Mic size={14} /> };
+  }
+  if (actionType === '向量' || actionType === 'embedding') {
+    return { label: tr('logs.type_embedding', '向量'), color: 'cyan', icon: <Cuboid size={14} /> };
+  }
+  if (actionType === '排序' || actionType === 'rerank') {
+    return { label: tr('logs.type_rerank', '排序'), color: 'geekblue', icon: <ListOrdered size={14} /> };
+  }
+  return { label: actionType || tr('logs.type_other', '其它'), color: 'default', icon: <Wrench size={14} /> };
 };
 
 // ── 工具函数：判断是否异步任务（后端 task_id 非空即为异步） ─────────────────
@@ -414,6 +430,7 @@ const TaskLogs: React.FC = () => {
         </div>
       );
     }
+    const { cascadeS1TaskId, upstreamTaskId } = parsePluginTagMeta(merged.plugin_tag);
     return (
       <div style={{ padding: '8px 0' }}>
         <Descriptions size="small" column={1} bordered
@@ -436,21 +453,30 @@ const TaskLogs: React.FC = () => {
               </Text>
             </Descriptions.Item>
           )}
-          {isSuperAdmin && (() => {
-            const s1 = parsePluginTagMeta(merged.plugin_tag).cascadeS1TaskId;
-            return s1 ? (
-              <Descriptions.Item label={
-                <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                  {t('logs.cascade_s1_task_id', '底座任务ID')}
-                  <Tooltip title={t('logs.cascade_s1_task_id_tip', '级联底座原始任务号，用于上游控制台查单')}>
-                    <QuestionCircleOutlined style={{ marginLeft: 4, color: labelColor, cursor: 'help' }} />
-                  </Tooltip>
-                </span>
-              }>
-                <Text copyable={{ text: s1 }} style={{ fontFamily: 'monospace', fontSize: 12 }}>{s1}</Text>
-              </Descriptions.Item>
-            ) : null;
-          })()}
+          {upstreamTaskId && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.upstream_task_id', '上游任务ID')}
+                <Tooltip title={t('logs.upstream_task_id_tip', '上游返回的真实任务号，用于到厂商控制台查单')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: labelColor, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Text copyable={{ text: upstreamTaskId }} style={{ fontFamily: 'monospace', fontSize: 12 }}>{upstreamTaskId}</Text>
+            </Descriptions.Item>
+          )}
+          {isSuperAdmin && cascadeS1TaskId && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.cascade_s1_task_id', '底座任务ID')}
+                <Tooltip title={t('logs.cascade_s1_task_id_tip', '级联底座原始任务号，用于上游控制台查单')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: labelColor, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Text copyable={{ text: cascadeS1TaskId }} style={{ fontFamily: 'monospace', fontSize: 12 }}>{cascadeS1TaskId}</Text>
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label={t('task_logs.token_usage', 'Token 用量')}>
             {t('logs.input', '输入')} {record.prompt_tokens} / {t('logs.output', '输出')} {record.completion_tokens}{record.action_type === '视频' && (record.has_video === 1 ? ` ${t('logs.with_video_short', '含视')}` : ` ${t('logs.without_video_short', '无视')}`)}{(record.cached_tokens ?? 0) > 0 ? ` / ${t('logs.cache_read', '缓存读取')} ${record.cached_tokens}` : ''}
           </Descriptions.Item>
@@ -489,7 +515,7 @@ const TaskLogs: React.FC = () => {
       render: (v: string, r: TaskLog) => {
         return (
           <Space vertical size={0}>
-            <Text style={{ fontSize: 13 }}>{formatApiDateTime(v)}</Text>
+            <Text style={{ fontSize: 12 }}>{formatApiDateTime(v)}</Text>
             {r.log_id && (
               <Text 
                 type="secondary" 
@@ -555,7 +581,7 @@ const TaskLogs: React.FC = () => {
       filterMultiple: false,
       filteredValue: subTypeFilter ? [subTypeFilter] : null,
       render: (_: any, r: TaskLog) => {
-        const typeInfo = getTaskType(r);
+        const typeInfo = getTaskType(r, t);
         return (
           <Tag color={typeInfo.color} style={{ borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px' }}>
             {typeInfo.icon}
@@ -702,9 +728,9 @@ const TaskLogs: React.FC = () => {
 
   // ── 筛选栏 ───────────────────────────────────────────────────
   const filterBar = (
-    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-      <Form form={form} initialValues={{ dateRange: defaultLogDayRange() }} onFinish={() => fetchLogs(1, pageSize)}>
-        <Space wrap size={[8, 8]}>
+    <div style={{ width: '100%' }}>
+      <Form form={form} style={{ width: '100%' }} initialValues={{ dateRange: defaultLogDayRange() }} onFinish={() => fetchLogs(1, pageSize)}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, width: '100%' }}>
           {isAdmin && (
             <>
               <Form.Item name="user_id" noStyle>
@@ -716,7 +742,7 @@ const TaskLogs: React.FC = () => {
                   allowClear
                   showSearch
                   optionFilterProp="label"
-                  style={{ width: 180, fontSize: 12, height: 32 }}
+                  style={{ width: 130, fontSize: 12, height: 32 }}
                   popupMatchSelectWidth={false}
                   options={userLevels.map((l: any) => ({ value: l.group_key, label: `${l.name} (${l.discount}x)` }))}
                 />
@@ -724,34 +750,30 @@ const TaskLogs: React.FC = () => {
             </>
           )}
           <Form.Item name="search_keyword" noStyle>
-            <Input placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID/上游YID')} prefix={<Search size={16} />} allowClear style={{ width: 320, fontSize: 12, height: 32 }} />
+            <Input placeholder={t('logs.search_keyword', '日志ID/任务ID/渠道AID/密钥KID/上游YID')} prefix={<Search size={16} />} allowClear style={{ width: 270, fontSize: 12, height: 32 }} />
           </Form.Item>
           <Form.Item name="model" noStyle>
-            <Input placeholder={t('logs.model_name', '模型名称')} prefix={<Search size={16} />} allowClear style={{ width: 180, fontSize: 12, height: 32 }} />
+            <Input placeholder={t('logs.model_name', '模型名称')} prefix={<Search size={16} />} allowClear style={{ width: 220, fontSize: 12, height: 32 }} />
           </Form.Item>
           <Form.Item name="dateRange" noStyle>
             <LogDateTimeRangePicker isAdmin={isAdmin} className="font-size-12" />
           </Form.Item>
-          {!isAdmin && (
-            <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
-              {t('logs.user_date_range_hint', '近1年可查，单次最长1个月，支持精确到秒')}
-            </Text>
-          )}
-          <Button type="primary" htmlType="submit" icon={<Search size={14} />} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('task_logs.query', '查询')}</Button>
-          <Button icon={<RefreshCw size={14} />} onClick={() => fetchLogs(page, pageSize)} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('common.refresh', '刷新')}</Button>
-          {isAdmin && (
-            <Tooltip title={t('logs.export_tooltip', '根据当前筛选条件导出 CSV（上限10万条）')}>
-              <Button icon={<Download size={14} />} loading={exporting} disabled={loading} onClick={handleExport} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('task_logs.export', '导出')}</Button>
-            </Tooltip>
-          )}
-        </Space>
+          <Space size={8} style={{ marginLeft: screens.xs ? 0 : 'auto' }}>
+            <Button type="primary" htmlType="submit" icon={<Search size={14} />} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('task_logs.query', '查询')}</Button>
+            {isAdmin && (
+              <Tooltip title={t('logs.export_tooltip', '根据当前筛选条件导出 CSV（上限10万条）')}>
+                <Button icon={<Download size={14} />} loading={exporting} disabled={loading} onClick={handleExport} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('task_logs.export', '导出')}</Button>
+              </Tooltip>
+            )}
+          </Space>
+        </div>
       </Form>
     </div>
   );
 
   // ── 移动端卡片 ───────────────────────────────────────────────
   const renderMobileCard = (record: TaskLog) => {
-    const tp = getTaskType(record);
+    const tp = getTaskType(record, t);
     const tid = getTaskId(record);
     const status = getAsyncFinalStatus(record);
     return (
@@ -875,12 +897,11 @@ const TaskLogs: React.FC = () => {
         maxWidth: '100%',
         overflow: 'hidden'
       }} 
-      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px', maxWidth: '100%', overflowX: 'hidden' } }}
+      styles={{ body: { padding: screens.xs ? 0 : '12px 20px 16px', maxWidth: '100%', overflowX: 'hidden' } }}
     >
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <Typography.Title level={4} style={{ margin: 0, fontSize: 18, display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <RefreshCw size={20} />
+          <Typography.Title level={4} style={{ margin: 0, fontSize: 18 }}>
             {t('menu.task_logs', '任务日志')}
           </Typography.Title>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -919,7 +940,7 @@ const TaskLogs: React.FC = () => {
         </div>
       </div>
 
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 12 }}>
         {filterBar}
       </div>
 
@@ -936,6 +957,7 @@ const TaskLogs: React.FC = () => {
       ) : (
         <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%' }}>
           <Table
+            className="compact-table"
             columns={columns.map((c: any) => c ? { ...c, align: 'center' } : null).filter(Boolean) as any}
             dataSource={data}
             rowKey="id"
@@ -969,7 +991,7 @@ const TaskLogs: React.FC = () => {
               }
             }}
             scroll={{ x: 1200 }}
-            size="middle"
+            size="small"
           />
         </div>
       )}

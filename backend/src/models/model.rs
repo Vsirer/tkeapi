@@ -795,6 +795,13 @@ pub struct ClassificationCount {
     pub count: i64,
 }
 
+/// 运营模型 / 模型仓库在当前分类筛选下的条数，与列表接口同一口径。
+#[derive(Debug, Serialize)]
+pub struct SourceModelCounts {
+    pub custom: i64,
+    pub library: i64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ClassificationsResponse {
     pub providers: Vec<ClassificationCount>,
@@ -806,6 +813,7 @@ pub struct ClassificationsResponse {
     pub unclassified_api_providers: i64,
     #[serde(default)]
     pub unclassified_types: i64,
+    pub source_counts: SourceModelCounts,
 }
 
 #[derive(Debug, Deserialize)]

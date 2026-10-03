@@ -87,18 +87,33 @@ pub async fn list_models(
     }))
 }
 
-/// 插件关闭时，运营模型与模型仓库都不展示 MediaKit 预置 mid。
-/// 插件开启时，只展示其中 `is_active = 1` 的预置 mid。
-pub(crate) async fn volc_preset_hide_sql(state: &AppState, col: &str) -> String {
+/// 插件关闭时，运营模型与模型仓库都不展示 MediaKit 预置 mid 及其上架副本。
+/// 插件开启时，这些行都展示，不因 `is_active` 被拿掉。
+/// `track_copies` 为真时额外看 `library_mid`，只用于 `models` 表。
+pub(crate) async fn volc_preset_hide_sql(
+    state: &AppState,
+    col: &str,
+    track_copies: bool,
+) -> String {
     #[cfg(feature = "plugin_volcengine_enhance")]
     {
-        crate::api::plugins::volc_inactive_filter_sql(state, col).await
+        crate::api::plugins::volc_inactive_filter_sql(state, col, track_copies).await
     }
     #[cfg(not(feature = "plugin_volcengine_enhance"))]
     {
         let _ = state;
+        let hidden = format!(
+            "({col} IS NULL OR {col} NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg'))"
+        );
+        if !track_copies {
+            return format!(" AND {hidden}");
+        }
+        let lib = match col.rsplit_once('.') {
+            Some((alias, _)) if !alias.is_empty() => format!("{alias}.library_mid"),
+            _ => "library_mid".to_string(),
+        };
         format!(
-            " AND ({col} IS NULL OR {col} NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg'))"
+            " AND {hidden} AND ({lib} IS NULL OR {lib} = '' OR {lib} NOT IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg'))"
         )
     }
 }
@@ -108,7 +123,7 @@ async fn fetch_listed_models(
     query: &ModelQuery,
     class_sql: &str,
 ) -> AppResult<Vec<Model>> {
-    let volc_filter = volc_preset_hide_sql(state, "mid").await;
+    let volc_filter = volc_preset_hide_sql(state, "mid", true).await;
 
     let where_sql = format!(
         "{class_sql}{volc_filter}{}",
@@ -128,11 +143,12 @@ async fn fetch_library_models(
     query: &ModelQuery,
     class_sql: &str,
 ) -> AppResult<Vec<Model>> {
-    let volc_filter = volc_preset_hide_sql(state, "mid").await;
+    let catalog_filter = volc_preset_hide_sql(state, "mid", false).await;
+    let copy_filter = volc_preset_hide_sql(state, "mid", true).await;
 
     // 1. 系统预置目录（model_library 表）
     let catalog_sql = format!(
-        "SELECT {} FROM model_library m{class_sql}{volc_filter} AND {} ORDER BY sort_order DESC, id DESC",
+        "SELECT {} FROM model_library m{class_sql}{catalog_filter} AND {} ORDER BY sort_order DESC, id DESC",
         crate::db::preset_models::LIBRARY_MODEL_COLUMNS,
         crate::db::preset_models::LIBRARY_CATALOG_FREE
     );
@@ -149,7 +165,7 @@ async fn fetch_library_models(
 
     // 2. 不在运营列表的模型行。进仓库即表示未上架，不再单独标「已下架」。
     let unlisted_sql = format!(
-        "SELECT * FROM models{class_sql}{volc_filter} AND is_listed = 0 AND is_system = 0 ORDER BY sort_order DESC, id DESC"
+        "SELECT * FROM models{class_sql}{copy_filter} AND is_listed = 0 AND is_system = 0 ORDER BY sort_order DESC, id DESC"
     );
     let formatted_unlisted_sql = state.db.format_query(&unlisted_sql);
     let mut uq = sqlx::query_as::<_, Model>(&formatted_unlisted_sql);
@@ -164,6 +180,67 @@ async fn fetch_library_models(
     // 3. 合并：catalog 在前，unlisted 在后
     catalog.extend(unlisted);
     Ok(catalog)
+}
+
+async fn scalar_count(state: &AppState, sql: &str, ids: &[i64]) -> AppResult<i64> {
+    let formatted = state.db.format_query(sql);
+    let mut q = sqlx::query_scalar::<_, i64>(&formatted);
+    for id in ids {
+        q = q.bind(*id);
+    }
+    Ok(q.fetch_one(&state.db.pool).await?)
+}
+
+/// 与 [`fetch_listed_models`] / [`fetch_library_models`] 同一 WHERE，只返回条数。
+pub(crate) async fn count_source_models(
+    state: &AppState,
+    library: bool,
+    provider_id: Option<i64>,
+    api_provider_id: Option<i64>,
+    type_id: Option<i64>,
+) -> AppResult<i64> {
+    let query = ModelQuery {
+        provider_id,
+        api_provider_id,
+        type_id,
+        page_size: None,
+        source: None,
+    };
+    let class_sql = model_list_where(&query);
+    let ids: Vec<i64> = model_filter_ids(&query).collect();
+    let catalog_filter = volc_preset_hide_sql(state, "mid", false).await;
+    let copy_filter = volc_preset_hide_sql(state, "mid", true).await;
+
+    if !library {
+        return scalar_count(
+            state,
+            &format!(
+                "SELECT COUNT(*) FROM models{class_sql}{copy_filter}{}",
+                crate::db::preset_models::LISTED_ONLY
+            ),
+            &ids,
+        )
+        .await;
+    }
+
+    let catalog = scalar_count(
+        state,
+        &format!(
+            "SELECT COUNT(*) FROM model_library m{class_sql}{catalog_filter} AND {}",
+            crate::db::preset_models::LIBRARY_CATALOG_FREE
+        ),
+        &ids,
+    )
+    .await?;
+    let unlisted = scalar_count(
+        state,
+        &format!(
+            "SELECT COUNT(*) FROM models{class_sql}{copy_filter} AND is_listed = 0 AND is_system = 0"
+        ),
+        &ids,
+    )
+    .await?;
+    Ok(catalog + unlisted)
 }
 
 async fn allocate_listed_mid(state: &AppState) -> AppResult<String> {
@@ -221,7 +298,7 @@ pub async fn create_model(
         None
     };
 
-    let pre_deduction = req.pre_deduction.unwrap_or(0.0);
+    let pre_deduction = req.pre_deduction.unwrap_or(1.0);
     let site_discount = req.site_discount.unwrap_or(1.0);
     let site_discount_enabled = req.site_discount_enabled.unwrap_or(1);
     if site_discount_enabled == 1 && site_discount <= 0.0 {
@@ -303,6 +380,28 @@ pub async fn publish_library_model(
         .fetch_optional(&state.db.pool)
         .await?
         .ok_or_else(|| crate::error::AppError::NotFound("模型库中未找到该模型".to_string()))?;
+
+    let existing: Option<(i64, i32)> = sqlx::query_as(
+        &state.db.format_query(
+            "SELECT id, is_listed FROM models WHERE (library_mid = ? AND library_mid <> '') OR mid = ? ORDER BY is_listed DESC, id DESC LIMIT 1"
+        )
+    )
+    .bind(&src.mid)
+    .bind(&src.mid)
+    .fetch_optional(&state.db.pool)
+    .await?;
+
+    if let Some((_existing_id, is_listed)) = existing {
+        if is_listed == 1 {
+            return Err(crate::error::AppError::BadRequest(
+                "该模型已在运营模型中上架，不能重复上架".to_string(),
+            ));
+        } else {
+            return Err(crate::error::AppError::BadRequest(
+                "该模型已存在于仓库（已下架状态），请在仓库中直接点击重新上架".to_string(),
+            ));
+        }
+    }
 
     let mid = allocate_listed_mid(&state).await?;
     let group_ratios = if src.group_ratios.trim().is_empty() {
@@ -1056,6 +1155,26 @@ pub async fn delete_model(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let origin: Option<(Option<String>, i32)> = sqlx::query_as(
+        &state
+            .db
+            .format_query("SELECT library_mid, is_listed FROM models WHERE id = ?"),
+    )
+    .bind(id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    if let Some((library_mid, is_listed)) = origin {
+        let from_library = library_mid
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|mid| !mid.is_empty());
+        if is_listed == 1 && from_library {
+            return Err(crate::error::AppError::BadRequest(
+                "来自模型仓库的运营模型不能删除，请下架".to_string(),
+            ));
+        }
+    }
+
     sqlx::query(&state.db.format_query("DELETE FROM models WHERE id = ?"))
         .bind(id)
         .execute(&state.db.pool)

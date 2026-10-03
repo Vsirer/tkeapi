@@ -202,6 +202,7 @@ pub async fn generic_relay(
                     db_model: db_model.as_ref(),
                     forward_eid: Some(&resolved.eid),
                     requested_log_id: Some(&log_id),
+                    task_id: None,
                 })
                 .await,
             );

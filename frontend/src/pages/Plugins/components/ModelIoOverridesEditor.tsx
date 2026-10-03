@@ -11,6 +11,7 @@
  */
 import React, { useMemo } from 'react';
 import { Typography } from 'antd';
+import { useTranslation } from 'react-i18next';
 import type { SchemeIoOverrides, SchemePort } from './scheme/types';
 import { applySchemePortPatches, defaultAcceptAssetKinds } from './scheme/schemeIo';
 import SchemeIoEditor from './SchemeIoEditor';
@@ -113,6 +114,7 @@ export type ModelIoOverridesEditorProps = {
   schemeId?: string;
   schemeType?: string;
   schemeParams?: { key: string; label?: string }[];
+  localizeLabels?: boolean;
 };
 
 const ModelIoOverridesEditor: React.FC<ModelIoOverridesEditorProps> = ({
@@ -124,7 +126,9 @@ const ModelIoOverridesEditor: React.FC<ModelIoOverridesEditorProps> = ({
   schemeId,
   schemeType = 'video',
   schemeParams = [],
+  localizeLabels = false,
 }) => {
+  const { t } = useTranslation('playground_2026');
   const muted = isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)';
   const inputs = useMemo(
     () => applySchemePortPatches(schemeInputs || [], overrides?.inputs?.modify),
@@ -136,13 +140,13 @@ const ModelIoOverridesEditor: React.FC<ModelIoOverridesEditorProps> = ({
   );
 
   if (!schemeInputs?.length && !schemeOutputs?.length) {
-    return <Text type="secondary">该方案未配置工作流 IO</Text>;
+    return <Text type="secondary">{t('admin_io_no_workflow', '该方案未配置工作流 IO')}</Text>;
   }
 
   return (
     <div>
       <Text style={{ color: muted, fontSize: 12, display: 'block', marginBottom: 4 }}>
-        布局与方案 IO 配置相同；只写入与方案基线不同的字段。
+        {t('admin_scheme_io_model_notice', '布局与方案 IO 配置相同；只写入与方案基线不同的字段。')}
       </Text>
       <SchemeIoEditor
         standalone
@@ -156,6 +160,7 @@ const ModelIoOverridesEditor: React.FC<ModelIoOverridesEditorProps> = ({
           onChange(overridesFromPorts(schemeInputs || [], schemeOutputs || [], nextIn, nextOut));
         }}
         isLight={isLight}
+        localizeLabels={localizeLabels}
       />
     </div>
   );

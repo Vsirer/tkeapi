@@ -38,6 +38,8 @@ import {
   PlaygroundSkillConfigTab,
   PlaygroundChatConfigTab,
   PlaygroundPromptOptimizeConfigTab,
+  PlaygroundImageEditConfigTab,
+  PlaygroundVideoEditConfigTab,
   PlaygroundDemoImageConfig,
   PlaygroundUserNavConfig,
 } from '../../plugins-registry';
@@ -49,7 +51,7 @@ import SchemeIoEditor, { ensureSchemeIoDefaults } from './components/SchemeIoEdi
 import ModelIoOverridesEditor from './components/ModelIoOverridesEditor';
 import { validateSchemeIoForSave } from './components/scheme/schemeIo';
 import { SCHEME_QUICK_BAR_HELP, SCHEME_QUICK_BAR_MAX, countQuickBarEnabled, isQuickBarEligible } from './components/scheme/schemeQuickBar';
-import { isCountParam, isSingleCountParam } from './components/scheme/schemeParamUtils';
+import { formatChoiceLabel, formatParamLabel, isCountParam, isSingleCountParam } from './components/scheme/schemeParamUtils';
 import { CHAT_UNDERSTAND_ATTRS, featureKindFromTypeName, parseFeatureAttrList, videoGenerationModesFromScheme } from './components/scheme/modelFeatures';
 import { CHAT_INPUT_PROTOCOLS, CHAT_THINKING_PROFILES } from './components/scheme/chatProtocol';
 import { chatProtocolSelectLabel } from './components/scheme/ChatProtocolHelpMark';
@@ -435,11 +437,33 @@ const MpLevelSelectCell: React.FC<{
 });
 
 const PluginConfigInner: React.FC = () => {
-  const { t } = useTranslation();
+  const { t } = useTranslation(['translation', 'playground_2026']);
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
   const { message } = App.useApp();
   const { name } = useParams<{ name: string }>();
+  const isPg2026 = name === 'playground_2026';
+  const pg2026T = (k: string, fb: string, opt?: Record<string, any>) =>
+    isPg2026 ? t(`playground_2026:${k}`, { defaultValue: fb, ...opt }) : fb;
+  const renderPgOptionPreview = (param: any) => {
+    if (!isPg2026 || !Array.isArray(param?.options) || param.options.length === 0) return null;
+    const labels = param.options.map((opt: string | number) => formatChoiceLabel(param, opt)).join(' / ');
+    const key = String(param?.key || '').toLowerCase();
+    const builtin = key === 'background' || key === 'optimize_prompt_mode';
+    const hintColor = _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)';
+    return (
+      <>
+        <Text style={{ fontSize: 11, display: 'block', marginTop: 4, color: hintColor }}>
+          {pg2026T('admin_option_preview', '用户端显示：{{labels}}', { labels })}
+        </Text>
+        {builtin ? (
+          <Text style={{ fontSize: 11, display: 'block', marginTop: 2, color: hintColor }}>
+            {pg2026T('admin_builtin_option_hint', '内置文案（不透明、透明、标准、快速）会随界面语言切换。写成其它文字则固定显示。')}
+          </Text>
+        ) : null}
+      </>
+    );
+  };
   const navigate = useNavigate();
   const location = useLocation();
   const { settings } = useSettingsStore();
@@ -467,8 +491,8 @@ const PluginConfigInner: React.FC = () => {
   const workflowNav = userNavModules.find((m) => m.id === 'workflow');
   const workflowEnabled = !!workflowNav?.enabled;
   const workflowMenuTitle = workflowNav?.title || '';
-  const [imageEditEnabled, setImageEditEnabled] = useState(false);
-  const [videoEditWorkbenchEnabled, setVideoEditWorkbenchEnabled] = useState(false);
+  /** 创作中心2026：登录后进入创作中心主页 */
+  const [siteDefaultEnabled, setSiteDefaultEnabled] = useState(false);
   const [showInPlaygroundPrompt, setShowInPlaygroundPrompt] = useState<boolean>(false);
   const [docsApiAllowGuest, setDocsApiAllowGuest] = useState<boolean>(false);
   const [showInAdminMenu, setShowInAdminMenu] = useState(false);
@@ -493,7 +517,7 @@ const PluginConfigInner: React.FC = () => {
   const [savingStorage, setSavingStorage] = useState(false);
   const [activeTabKey, setActiveTabKey] = useState(() => {
     const hash = window.location.hash.replace('#', '');
-    const tabs = getPluginAdminTabs(name || '', name ? dynamicPlugins[name] : undefined);
+    const tabs = getPluginAdminTabs(name || '', name ? dynamicPlugins[name] : undefined, (k, fb) => t(k, { defaultValue: fb }));
     if (tabs.some((t) => t.key === hash)) return hash;
     return tabs[0]?.key ?? 'basic';
   });
@@ -501,13 +525,13 @@ const PluginConfigInner: React.FC = () => {
   useEffect(() => {
     if (!name) return;
     const hash = location.hash.replace('#', '');
-    const tabs = getPluginAdminTabs(name, dynamicPlugins[name]);
+    const tabs = getPluginAdminTabs(name, dynamicPlugins[name], (k, fb) => t(k, { defaultValue: fb }));
     if (tabs.some((t) => t.key === hash)) {
       setActiveTabKey(hash);
       return;
     }
     setActiveTabKey(tabs[0]?.key ?? 'basic');
-  }, [name, location.hash]);
+  }, [name, location.hash, t]);
 
   const handleTabChange = (key: string) => {
     setActiveTabKey(key);
@@ -1147,7 +1171,7 @@ const PluginConfigInner: React.FC = () => {
     const next = pgModels.map(m => m.id === id ? { ...m, pg_enabled: enabled } : m);
     setPgModels(next);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: enabled ? '已启用创作' : '已关闭创作' });
+      const ok = await persistPlaygroundModels(next, { successMessage: enabled ? pg2026T('admin_creation_enabled', '已启用创作') : pg2026T('admin_creation_disabled', '已关闭创作') });
       if (!ok) setPgModels(pgModels);
     }
   };
@@ -1158,10 +1182,10 @@ const PluginConfigInner: React.FC = () => {
     setPgModels(next);
     try {
       await persistModelPageSort(id, sort);
-      message.success('排序已保存');
+      message.success(name === 'playground_2026' ? pg2026T('admin_sort_saved', '排序已保存') : '排序已保存');
     } catch (e) {
       console.error(e);
-      message.error('保存失败');
+      message.error(name === 'playground_2026' ? pg2026T('admin_sort_save_failed', '保存失败') : '保存失败');
       setPgModels(prev);
     }
   };
@@ -1188,7 +1212,7 @@ const PluginConfigInner: React.FC = () => {
       : m);
     if (name === 'playground_2026') {
       const ok = await persistPlaygroundModels(next, {
-        successMessage: nextSchemeId ? '方案已绑定' : '已取消绑定',
+        successMessage: nextSchemeId ? pg2026T('admin_bind_succ', '方案已绑定') : pg2026T('admin_unbind_succ', '已取消绑定'),
       });
       if (!ok) return;
     }
@@ -1208,7 +1232,7 @@ const PluginConfigInner: React.FC = () => {
         }
       : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '已取消绑定方案' });
+      const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_unbind_succ', '已取消绑定方案') });
       if (!ok) return;
     }
     setPgModels(next);
@@ -1259,7 +1283,7 @@ const PluginConfigInner: React.FC = () => {
       ? { ...m, pg_param_overrides: towardDefault, ...ispPatch, ...(name === 'playground_2026' && (boundScheme?.type === 'image' || boundScheme?.type === 'video') ? { pg_prompt_optimize: null } : {}), ...(name === 'playground_2026' && boundScheme?.type === 'audio' ? { pg_voice_library: null } : {}) }
       : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为系统默认方案' });
+      const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_reset_system_succ', '已重置为系统默认方案') });
       if (!ok) return;
     }
     setPgOverrideData(towardDefault || { modify: {}, remove: [], add: [] });
@@ -1298,7 +1322,7 @@ const PluginConfigInner: React.FC = () => {
     if (name === 'playground_2026' && (ovScheme?.type === 'image' || ovScheme?.type === 'video' || ovScheme?.type === 'audio')) {
       const quickCount = countQuickBarEnabled(ovScheme?.params || [], cleaned);
       if (quickCount > SCHEME_QUICK_BAR_MAX) {
-        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        message.error(pg2026T('admin_override_quick_bar_tip', `快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`, { max: SCHEME_QUICK_BAR_MAX }));
         return;
       }
     }
@@ -1327,7 +1351,7 @@ const PluginConfigInner: React.FC = () => {
       ? { ...m, pg_param_overrides: hasOverrides ? cleaned : null, ...ispPatch, ...poPatch, ...vlPatch }
       : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '参数已保存' });
+      const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_saved', '参数已保存') });
       if (!ok) return;
     }
     setPgModels(next);
@@ -1339,7 +1363,7 @@ const PluginConfigInner: React.FC = () => {
   const handleResetIoOverrides = async () => {
     const next = pgModels.map(m => m.id === pgIoOverrideModelId ? { ...m, pg_io_overrides: null } : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: '已重置为方案默认 IO' });
+      const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_reset_io_succ', '已重置为方案默认 IO') });
       if (!ok) return;
     }
     setPgIoOverrideData(null);
@@ -1351,7 +1375,7 @@ const PluginConfigInner: React.FC = () => {
   const handleConfirmIoOverrides = async () => {
     const next = pgModels.map(m => m.id === pgIoOverrideModelId ? { ...m, pg_io_overrides: pgIoOverrideData || null } : m);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundModels(next, { successMessage: 'IO 配置已保存' });
+      const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_io_saved', 'IO 配置已保存') });
       if (!ok) return;
     }
     setPgModels(next);
@@ -1493,7 +1517,7 @@ const PluginConfigInner: React.FC = () => {
   const handleDeleteScheme = async (index: number) => {
     const next = schemeList.filter((_, i) => i !== index);
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundSchemes(next, { successMessage: '方案已删除' });
+      const ok = await persistPlaygroundSchemes(next, { successMessage: pg2026T('admin_scheme_deleted', '方案已删除') });
       if (!ok) return;
     }
     setSchemeList(next);
@@ -1502,10 +1526,12 @@ const PluginConfigInner: React.FC = () => {
 
   const handleResetScheme = (id: string, idx: number) => {
     Modal.confirm({
-      title: '确认重置',
+      title: name === 'playground_2026' ? pg2026T('admin_reset_confirm_title', '确认重置') : '确认重置',
       content: name === 'playground_2026'
-        ? '是否将该内置方案重置为初始默认（含参数配置与 IO 配置）？确认后立即生效。'
+        ? pg2026T('admin_reset_confirm_content', '是否将该内置方案重置为初始默认（含参数配置与 IO 配置）？确认后立即生效。')
         : '是否将该内置方案重置为初始默认（含参数配置与 IO 配置）？该操作将在您点击「保存全部方案」后生效。',
+      okText: name === 'playground_2026' ? pg2026T('admin_confirm', '确认') : undefined,
+      cancelText: name === 'playground_2026' ? pg2026T('admin_cancel', '取消') : undefined,
       onOk: async () => {
         const def = defaultSchemeList.find(s => s.id === id);
         if (!def) {
@@ -1515,7 +1541,7 @@ const PluginConfigInner: React.FC = () => {
         const newList = [...schemeList];
         newList[idx] = ensureSchemeIoDefaults(JSON.parse(JSON.stringify(def)));
         if (name === 'playground_2026') {
-          const ok = await persistPlaygroundSchemes(newList, { successMessage: '已重置为默认参数与 IO' });
+          const ok = await persistPlaygroundSchemes(newList, { successMessage: pg2026T('admin_reset_scheme_succ', '已重置为默认参数与 IO') });
           if (!ok) return Promise.reject();
         }
         setSchemeList(newList);
@@ -1534,7 +1560,7 @@ const PluginConfigInner: React.FC = () => {
     if (name === 'playground_2026' && (next.type === 'image' || next.type === 'video' || next.type === 'audio')) {
       const quickCount = (next.params || []).filter((p: any) => p?.quick).length;
       if (quickCount > SCHEME_QUICK_BAR_MAX) {
-        message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+        message.error(pg2026T('admin_override_quick_bar_tip', `快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`, { max: SCHEME_QUICK_BAR_MAX }));
         return;
       }
     }
@@ -1573,7 +1599,7 @@ const PluginConfigInner: React.FC = () => {
       : [...schemeList, normalized];
     if (name === 'playground_2026') {
       const ok = await persistPlaygroundSchemes(nextList, {
-        successMessage: editingSchemeIndex >= 0 ? '方案已保存' : '方案已创建',
+        successMessage: editingSchemeIndex >= 0 ? pg2026T('admin_scheme_saved', '方案已保存') : pg2026T('admin_scheme_created', '方案已创建'),
       });
       if (!ok) return;
     }
@@ -1606,7 +1632,7 @@ const PluginConfigInner: React.FC = () => {
     };
     const nextList = schemeList.map((s, i) => (i === editingIoSchemeIndex ? normalized : s));
     if (name === 'playground_2026') {
-      const ok = await persistPlaygroundSchemes(nextList, { successMessage: 'IO 配置已保存' });
+      const ok = await persistPlaygroundSchemes(nextList, { successMessage: pg2026T('admin_io_saved', 'IO 配置已保存') });
       if (!ok) return;
     }
     setSchemeList(nextList);
@@ -1951,8 +1977,7 @@ function formatOptionLabelsDisplay(
             workflowEnabled: storageRes.workflow_enabled,
             workflowMenuTitle: storageRes.workflow_menu_title,
           }));
-          setImageEditEnabled(storageRes.image_edit_enabled === true);
-          setVideoEditWorkbenchEnabled(storageRes.video_edit_workbench_enabled === true);
+          setSiteDefaultEnabled(storageRes.site_default_enabled === true);
         } else if (storageRes.workflow_enabled != null) {
           setUserNavModules(patchUserNavModule(defaultUserNavModules(), 'workflow', {
             enabled: !!storageRes.workflow_enabled,
@@ -2078,8 +2103,7 @@ function formatOptionLabelsDisplay(
               volc_enhance_enabled: pgAdvancedNodeVolcEnhanceEnabled,
               director_enabled: pgAdvancedNodeDirectorEnabled,
               audio_enabled: userNavModules.some((m) => m.id === 'audio' && m.enabled),
-              image_edit_enabled: imageEditEnabled,
-              video_edit_workbench_enabled: videoEditWorkbenchEnabled,
+              site_default_enabled: siteDefaultEnabled,
               user_nav_modules: userNavModules,
             }
           : {}),
@@ -2108,6 +2132,7 @@ function formatOptionLabelsDisplay(
         ),
       } : prev));
       invalidateAdminPluginsCache();
+      if (name === 'playground_2026') invalidateActivePluginsCache();
       message.success('配置已保存');
     } catch (error) {
       // 全局拦截器已统一弹出错误提示
@@ -2219,7 +2244,7 @@ function formatOptionLabelsDisplay(
               <Select
                 value={resolvePluginAdminDefaultTab(plugin.name, adminMenuDefaultTab, dynamicPlugins[plugin.name])}
                 onChange={setAdminMenuDefaultTab}
-                options={getPluginAdminTabs(plugin.name, dynamicPlugins[plugin.name]).map((tab) => ({
+                options={getPluginAdminTabs(plugin.name, dynamicPlugins[plugin.name], (k, fb) => t(k, { defaultValue: fb })).map((tab) => ({
                   value: tab.key,
                   label: tab.label,
                 }))}
@@ -2241,6 +2266,27 @@ function formatOptionLabelsDisplay(
       </div>
 
       {name === 'playground_2026' && (
+        <div style={{
+          background: _isLight ? '#fff' : '#141414', borderRadius: 8,
+          border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
+          padding: '16px 20px', marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_site_default', '站点默认创作中心')}</Text><br />
+              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
+                {pg2026T('admin_site_default_desc', '开启后，普通用户登录成功会自动进入创作中心 2026 主页。插件未启用，或该用户等级未开放时，仍进入控制台。默认关闭。')}
+              </Text>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Tag color={siteDefaultEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{siteDefaultEnabled ? pg2026T('admin_enabled', '已开启') : pg2026T('admin_disabled', '已关闭')}</Tag>
+              <Switch checked={siteDefaultEnabled} onChange={setSiteDefaultEnabled} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {name === 'playground_2026' && (
         <PluginModule>
           <PlaygroundUserNavConfig
             items={userNavModules}
@@ -2248,48 +2294,6 @@ function formatOptionLabelsDisplay(
             isLight={_isLight}
           />
         </PluginModule>
-      )}
-
-      {name === 'playground_2026' && (
-        <div style={{
-          background: _isLight ? '#fff' : '#141414', borderRadius: 8,
-          border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
-          padding: '16px 20px', marginBottom: 16,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片编辑</Text><br />
-              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-                开启后，用户端图片工具中显示「编辑图片」。默认关闭。
-              </Text>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Tag color={imageEditEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{imageEditEnabled ? '已开启' : '已关闭'}</Tag>
-              <Switch checked={imageEditEnabled} onChange={setImageEditEnabled} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {name === 'playground_2026' && (
-        <div style={{
-          background: _isLight ? '#fff' : '#141414', borderRadius: 8,
-          border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)',
-          padding: '16px 20px', marginBottom: 16,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>视频编辑工作台</Text><br />
-              <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-                开启后，侧栏飞出层「编辑视频」进入播放器工作台。生成页轮盘里的编辑视频模式不受影响。默认关闭。
-              </Text>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Tag color={videoEditWorkbenchEnabled ? 'success' : 'default'} style={{ margin: 0 }}>{videoEditWorkbenchEnabled ? '已开启' : '已关闭'}</Tag>
-              <Switch checked={videoEditWorkbenchEnabled} onChange={setVideoEditWorkbenchEnabled} />
-            </div>
-          </div>
-        </div>
       )}
 
       {/* 模型创作中心提示词输入窗口加载显示 (仅限素材资产管理插件) */}
@@ -2733,25 +2737,23 @@ function formatOptionLabelsDisplay(
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                   <InfoCircleOutlined style={{ color: '#1677ff', fontSize: 14 }} />
-                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13 }}>前端直传所需的 CORS 配置</Text>
-                  <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>可选但推荐</Tag>
+                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 13 }}>{pg2026T('admin_cors_title', '前端直传所需的 CORS 配置')}</Text>
+                  <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>{pg2026T('admin_cors_tag', '可选但推荐')}</Tag>
                 </div>
                 <Text style={{ color: _isLight ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: '20px', display: 'block', marginBottom: 10 }}>
-                  创作中心支持浏览器直接上传文件到对象存储（无需经过服务器中转，显著节省服务器带宽）。
-                  直传请求发往官方域名（与自定义域名 / CDN 解耦，避免签名 Host 不一致）；上传成功后的访问地址仍可使用自定义域名。
-                  若需启用此功能，请在 TOS 或 COS 控制台完成以下 CORS 配置，否则上传将自动降级为服务器中转模式。
+                  {pg2026T('admin_cors_desc', '创作中心支持浏览器直接上传文件到对象存储（无需经过服务器中转，显著节省服务器带宽）。直传请求发往官方域名（与自定义域名 / CDN 解耦，避免签名 Host 不一致）；上传成功后的访问地址仍可使用自定义域名。若需启用此功能，请在 TOS 或 COS 控制台完成以下 CORS 配置，否则上传将自动降级为服务器中转模式。')}
                 </Text>
                 <div style={{ background: _isLight ? '#f8fafc' : '#1a1a2e', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
                   <div style={{ marginBottom: 6 }}>
-                    <Text style={{ color: '#1677ff', fontSize: 12 }}>操作路径：</Text>
-                    <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 12 }}>对象存储控制台 → 选择 Bucket → 权限管理 / 安全管理 → CORS 设置 → 添加规则</Text>
+                    <Text style={{ color: '#1677ff', fontSize: 12 }}>{pg2026T('admin_cors_path_label', '操作路径：')}</Text>
+                    <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 12 }}>{pg2026T('admin_cors_path_val', '对象存储控制台 → 选择 Bucket → 权限管理 / 安全管理 → CORS 设置 → 添加规则')}</Text>
                   </div>
                   {[
-                    { label: '允许来源 AllowedOrigin', value: '本站完整域名，如 https://your-domain.com（请勿填写 *，存在安全风险）' },
-                    { label: '允许方法 AllowedMethod', value: 'PUT、GET、HEAD' },
-                    { label: '允许请求头 AllowedHeader', value: 'Content-Type、Content-Length' },
-                    { label: '暴露响应头 ExposeHeader', value: 'ETag' },
-                    { label: '预检缓存 MaxAgeSeconds', value: '3600' },
+                    { label: pg2026T('admin_cors_rule_origin', '允许来源 AllowedOrigin'), value: pg2026T('admin_cors_rule_origin_val', '本站完整域名，如 https://your-domain.com（请勿填写 *，存在安全风险）') },
+                    { label: pg2026T('admin_cors_rule_methods', '允许方法 AllowedMethod'), value: 'PUT、GET、HEAD' },
+                    { label: pg2026T('admin_cors_rule_headers', '允许请求头 AllowedHeader'), value: 'Content-Type、Content-Length' },
+                    { label: pg2026T('admin_cors_rule_expose', '暴露响应头 ExposeHeader'), value: 'ETag' },
+                    { label: pg2026T('admin_cors_rule_maxage', '预检缓存 MaxAgeSeconds'), value: '3600' },
                   ].map(item => (
                     <div key={item.label} style={{ display: 'flex', gap: 8, marginBottom: 3, alignItems: 'flex-start' }}>
                       <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.4)', fontSize: 11, whiteSpace: 'nowrap', minWidth: 160 }}>{item.label}:</Text>
@@ -2760,7 +2762,7 @@ function formatOptionLabelsDisplay(
                   ))}
                 </div>
                 <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.3)', fontSize: 11, marginTop: 8, display: 'block' }}>
-                  💡 配置后用户上传文件将直接传输到 TOS，不再经过服务器，大幅降低带宽消耗。未配置时自动降级为服务器中转，功能不受影响。
+                  {pg2026T('admin_cors_hint', '💡 配置后用户上传文件将直接传输到 TOS，不再经过服务器，大幅降低带宽消耗。未配置时自动降级为服务器中转，功能不受影响。')}
                 </Text>
               </div>
             ) : null
@@ -3628,7 +3630,7 @@ function formatOptionLabelsDisplay(
       }
     },
     {
-      title: '类型',
+      title: name === 'playground_2026' ? pg2026T('admin_col_type', '类型') : '类型',
       dataIndex: 'type_name',
       key: 'type_name',
       width: 100,
@@ -3640,7 +3642,7 @@ function formatOptionLabelsDisplay(
       ) : <Text type="secondary">-</Text>
     },
     {
-      title: '启用创作',
+      title: name === 'playground_2026' ? pg2026T('admin_col_enable_creation', '启用创作') : '启用创作',
       key: 'pg_enabled',
       width: 90,
       align: 'center' as const,
@@ -3652,14 +3654,14 @@ function formatOptionLabelsDisplay(
       )
     },
     {
-      title: '绑定方案',
+      title: name === 'playground_2026' ? pg2026T('admin_col_bound_scheme', '绑定方案') : '绑定方案',
       key: 'pg_scheme_id',
       width: name === 'playground_2026' ? 220 : 180,
       render: (_: any, record: any) => {
         const scheme = pgSchemes.find(s => s.id === record.pg_scheme_id);
         if (!scheme) {
           return (
-            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 12 }}>未绑定</Text>
+            <Text style={{ color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', fontSize: 12 }}>{pg2026T('admin_unbound', '未绑定')}</Text>
           );
         }
         return (
@@ -3667,9 +3669,9 @@ function formatOptionLabelsDisplay(
             <Tag color="blue" style={{ borderRadius: 12, fontSize: 12, marginInlineEnd: 0 }}>{scheme.name}</Tag>
             {name === 'playground_2026' && (
               <Popconfirm
-                title="确定取消绑定该方案？"
-                okText="删除"
-                cancelText="取消"
+                title={pg2026T('admin_unbind_confirm', '确定取消绑定该方案？')}
+                okText={pg2026T('admin_scheme_delete', '删除')}
+                cancelText={pg2026T('admin_cancel', '取消')}
                 onConfirm={() => handleUnbindScheme(record.id)}
               >
                 <Button
@@ -3679,7 +3681,7 @@ function formatOptionLabelsDisplay(
                   icon={<DeleteOutlined />}
                   disabled={savingPlayground}
                   style={{ padding: '0 4px', height: 22, minWidth: 22 }}
-                  title="删除绑定"
+                  title={pg2026T('admin_unbind_btn', '删除绑定')}
                 />
               </Popconfirm>
             )}
@@ -3689,8 +3691,8 @@ function formatOptionLabelsDisplay(
     },
     {
       title: (
-        <Tooltip title="与模型列表「页面排序」同步，数值越大越靠前">
-          <span>页面排序</span>
+        <Tooltip title={name === 'playground_2026' ? pg2026T('admin_col_page_sort_tip', '与模型列表「页面排序」同步，数值越大越靠前') : '与模型列表「页面排序」同步，数值越大越靠前'}>
+          <span>{name === 'playground_2026' ? pg2026T('admin_col_page_sort', '页面排序') : '页面排序'}</span>
         </Tooltip>
       ),
       key: 'pg_sort_order',
@@ -3723,7 +3725,7 @@ function formatOptionLabelsDisplay(
                 icon={<CheckOutlined style={{ color: '#52c41a', fontSize: 12 }} />}
                 onClick={() => handleSaveInlineSort(record.id)}
                 style={{ padding: '0 4px', height: 22, minWidth: 22 }}
-                title="保存"
+                title={name === 'playground_2026' ? pg2026T('admin_save', '保存') : '保存'}
               />
               <Button
                 type="text"
@@ -3731,7 +3733,7 @@ function formatOptionLabelsDisplay(
                 icon={<CloseOutlined style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12 }} />}
                 onClick={() => setEditingSortModelId(null)}
                 style={{ padding: '0 4px', height: 22, minWidth: 22 }}
-                title="取消"
+                title={name === 'playground_2026' ? pg2026T('admin_cancel', '取消') : '取消'}
               />
             </div>
           );
@@ -3750,20 +3752,20 @@ function formatOptionLabelsDisplay(
                 setEditingSortValue(record.pg_sort_order || 0);
               }}
               style={{ padding: '0 4px', height: 22, minWidth: 22 }}
-              title="修改页面排序"
+              title={name === 'playground_2026' ? pg2026T('admin_sort_edit_tip', '修改页面排序') : '修改页面排序'}
             />
           </div>
         );
       }
     },
     {
-      title: '默认展示',
+      title: name === 'playground_2026' ? pg2026T('admin_col_default_display', '默认展示') : '默认展示',
       key: 'pg_default',
       width: 100,
       align: 'center' as const,
       filters: [
-        { text: '已设默认', value: 'default' },
-        { text: '未设默认', value: 'not_default' },
+        { text: name === 'playground_2026' ? pg2026T('admin_filter_default_set', '已设默认') : '已设默认', value: 'default' },
+        { text: name === 'playground_2026' ? pg2026T('admin_filter_default_unset', '未设默认') : '未设默认', value: 'not_default' },
       ],
       filterMultiple: false,
       onFilter: (value: any, record: any) => {
@@ -3785,7 +3787,7 @@ function formatOptionLabelsDisplay(
                 : prevList.filter(mid => mid !== record.mid);
               setPgDefaultModelMids(nextList);
               if (name === 'playground_2026') {
-                const ok = await persistPlaygroundModels(pgModels, { defaultModelMids: nextList, successMessage: checked ? '已设为默认展示' : '已取消默认展示' });
+                const ok = await persistPlaygroundModels(pgModels, { defaultModelMids: nextList, successMessage: checked ? pg2026T('admin_default_set_toast', '已设为默认展示') : pg2026T('admin_default_unset_toast', '已取消默认展示') });
                 if (!ok) setPgDefaultModelMids(prevList);
               }
             }}
@@ -3795,7 +3797,7 @@ function formatOptionLabelsDisplay(
       }
     },
     {
-      title: '操作',
+      title: name === 'playground_2026' ? pg2026T('admin_col_action', '操作') : '操作',
       key: 'action',
       width: name === 'playground_2026' ? 340 : 200,
       render: (_: any, record: any) => {
@@ -3808,7 +3810,7 @@ function formatOptionLabelsDisplay(
             onClick={() => handleOpenSchemeDrawer(record.id, record.pg_scheme_id)}
             style={{ color: '#1677ff', padding: '0 4px' }}
           >
-            方案
+            {name === 'playground_2026' ? pg2026T('admin_act_scheme', '方案') : '方案'}
           </Button>
         );
         return (
@@ -3837,7 +3839,7 @@ function formatOptionLabelsDisplay(
                 }}
                 style={{ color: '#faad14', padding: '0 4px' }}
               >
-                调参
+                {name === 'playground_2026' ? pg2026T('admin_act_tune', '调参') : '调参'}
               </Button>
               <Button
                 type="text"
@@ -3850,7 +3852,7 @@ function formatOptionLabelsDisplay(
                 }}
                 style={{ color: '#13c2c2', padding: '0 4px' }}
               >
-                IO配置
+                {name === 'playground_2026' ? pg2026T('admin_act_io', 'IO配置') : 'IO配置'}
               </Button>
             </>
           )}
@@ -3868,7 +3870,7 @@ function formatOptionLabelsDisplay(
               }}
               style={{ color: '#722ed1', padding: '0 4px' }}
             >
-              特性配置
+              {name === 'playground_2026' ? pg2026T('admin_act_feature', '特性配置') : '特性配置'}
             </Button>
           )}
           {name === 'playground_2026' && schemeBtn}
@@ -3883,21 +3885,21 @@ function formatOptionLabelsDisplay(
       <div style={{ background: _isLight ? '#fff' : '#141414', borderRadius: 8, padding: '20px', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>可创作模型列表</Text>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_models_title', '可创作模型列表')}</Text>
             <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginTop: 4 }}>
               {name === 'playground_2026'
-                ? '开启启用开关并绑定方案后即可使用。方案、调参、IO、特性点击确认后立即生效；图片模型可在调参中开关专用参数。选中「默认展示」可将模型设为默认（支持多选）。'
+                ? pg2026T('admin_models_desc', '开启启用开关并绑定方案后即可使用。方案、调参、IO、特性点击确认后立即生效；图片模型可在调参中开关专用参数。选中「默认展示」可将模型设为默认（支持多选）。')
                 : '开启启用开关并绑定方案后，用户即可在模型创作中心使用该模型。选中"默认展示"列后，可将模型设为默认展示（支持多选）。'}
             </Text>
           </div>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <Radio.Group value={pgEnabledFilter} onChange={e => setPgEnabledFilter(e.target.value)}>
-              <Radio.Button value="all">全部</Radio.Button>
-              <Radio.Button value="enabled">已开启</Radio.Button>
-              <Radio.Button value="disabled">未开启</Radio.Button>
+              <Radio.Button value="all">{pg2026T('admin_filter_all', '全部')}</Radio.Button>
+              <Radio.Button value="enabled">{pg2026T('admin_filter_enabled', '已开启')}</Radio.Button>
+              <Radio.Button value="disabled">{pg2026T('admin_filter_disabled', '未开启')}</Radio.Button>
             </Radio.Group>
             <Input
-              placeholder="搜索模型..."
+              placeholder={pg2026T('admin_search_models', '搜索模型...')}
               value={pgSearchKeyword}
               onChange={e => setPgSearchKeyword(e.target.value)}
               style={{ width: 220 }}
@@ -3952,7 +3954,7 @@ function formatOptionLabelsDisplay(
           name === 'playground_2026' ? (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 28, gap: 12 }}>
               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {`参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`}
+                {pg2026T('admin_override_title', `参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`, { name: pgModels.find(m => m.id === pgOverrideModelId)?.name || '' })}
               </span>
               <Button
                 size="small"
@@ -3960,7 +3962,7 @@ function formatOptionLabelsDisplay(
                 loading={savingPlayground}
                 onClick={handleResetParamOverrides}
               >
-                重置
+                {pg2026T('admin_override_reset', '重置')}
               </Button>
             </div>
           ) : `参数调整 — ${pgModels.find(m => m.id === pgOverrideModelId)?.name || ''}`
@@ -3974,8 +3976,8 @@ function formatOptionLabelsDisplay(
         footer={
           name === 'playground_2026' ? (
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Button onClick={() => { setPgOverrideModalVisible(false); setPgIspModalVisible(false); }} disabled={savingPlayground}>取消</Button>
-              <Button type="primary" loading={savingPlayground} onClick={handleConfirmParamOverrides}>确认</Button>
+              <Button onClick={() => { setPgOverrideModalVisible(false); setPgIspModalVisible(false); }} disabled={savingPlayground}>{pg2026T('admin_cancel', '取消')}</Button>
+              <Button type="primary" loading={savingPlayground} onClick={handleConfirmParamOverrides}>{pg2026T('admin_confirm', '确认')}</Button>
             </div>
           ) : (
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -3991,9 +3993,9 @@ function formatOptionLabelsDisplay(
         {(() => {
           const model = pgModels.find(m => m.id === pgOverrideModelId);
           const scheme = pgSchemes.find(s => s.id === model?.pg_scheme_id);
-          if (!scheme) return <Text type="secondary">该模型未绑定方案</Text>;
+          if (!scheme) return <Text type="secondary">{name === 'playground_2026' ? pg2026T('admin_override_no_scheme', '该模型未绑定方案') : '该模型未绑定方案'}</Text>;
           if (!scheme?.params && !(name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video' || scheme.type === 'audio'))) {
-            return <Text type="secondary">该模型未绑定方案或方案无参数</Text>;
+            return <Text type="secondary">{name === 'playground_2026' ? pg2026T('admin_override_no_params', '该模型未绑定方案或方案无参数') : '该模型未绑定方案或方案无参数'}</Text>;
           }
           const overrides = pgOverrideData || { modify: {}, remove: [], add: [] };
           const removes = new Set(overrides.remove || []);
@@ -4001,11 +4003,11 @@ function formatOptionLabelsDisplay(
           const showQuickBar = name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video' || scheme.type === 'audio');
           const tryEnableQuick = (merged: any, skip: { key?: string; addIndex?: number }) => {
             if (!isQuickBarEligible(merged)) {
-              message.error('快捷栏仅支持已配置选项的单选或下拉参数');
+              message.error(name === 'playground_2026' ? pg2026T('admin_override_quick_bar_ineligible', '快捷栏仅支持已配置选项的单选或下拉参数') : '快捷栏仅支持已配置选项的单选或下拉参数');
               return false;
             }
             if (countQuickBarEnabled(scheme.params || [], overrides, skip) >= SCHEME_QUICK_BAR_MAX) {
-              message.error(`快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
+              message.error(name === 'playground_2026' ? pg2026T('admin_override_quick_bar_tip', `快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`, { max: SCHEME_QUICK_BAR_MAX }) : `快捷栏最多开启 ${SCHEME_QUICK_BAR_MAX} 个参数`);
               return false;
             }
             return true;
@@ -4015,7 +4017,7 @@ function formatOptionLabelsDisplay(
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12 }}>
                 {name === 'playground_2026'
-                  ? `基于系统方案「${scheme.name}」的模型级调参，控件类型、选项与默认值以此面板为准（仅对本模型生效）`
+                  ? pg2026T('admin_override_notice', `基于系统方案「${scheme.name}」的模型级调参，控件类型、选项与默认值以此面板为准（仅对本模型生效）`, { name: scheme.name })
                   : `基于方案「${scheme.name}」的参数个性化调整（仅对此模型生效）`}
               </Text>
               {name === 'playground_2026' && (scheme.type === 'image' || scheme.type === 'video') && (
@@ -4051,9 +4053,9 @@ function formatOptionLabelsDisplay(
                 <>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                     <div style={{ minWidth: 0 }}>
-                      <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片专用参数配置</Text>
+                      <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_isp_title', '图片专用参数配置')}</Text>
                       <Text style={{ display: 'block', fontSize: 12, marginTop: 2, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
-                        对本模型生效。开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件
+                        {pg2026T('admin_isp_desc_model', '对本模型生效。开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件')}
                       </Text>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -4068,11 +4070,11 @@ function formatOptionLabelsDisplay(
                             setPgIspModalVisible(true);
                           }}
                         >
-                          配置
+                          {pg2026T('admin_isp_btn_config', '配置')}
                         </Button>
                       )}
                       <Tooltip
-                        title={isImageSpecialForcedOn(scheme?.id) ? 'GPT-Image-2 按官方规则必须开启图片专用参数' : undefined}
+                        title={isImageSpecialForcedOn(scheme?.id) ? pg2026T('admin_isp_tip_forced', 'GPT-Image-2 按官方规则必须开启图片专用参数') : undefined}
                       >
                         <Switch
                           checked={isImageSpecialForcedOn(scheme?.id) || !!pgIspDraft?.enabled}
@@ -4142,7 +4144,7 @@ function formatOptionLabelsDisplay(
                   }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: isParamOn ? 8 : 0 }}>
                       <div>
-                        <Text strong style={{ fontSize: 13, color: _isLight ? '#1f2937' : '#fff' }}>{p.label}</Text>
+                        <Text strong style={{ fontSize: 13, color: _isLight ? '#1f2937' : '#fff' }}>{isPg2026 ? formatParamLabel(mergedParam) : p.label}</Text>
                         <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)', marginLeft: 8 }}>{p.key}</Text>
                       </div>
                       <Switch
@@ -4177,19 +4179,19 @@ function formatOptionLabelsDisplay(
                           alignItems: 'end',
                         }}>
                           <div>
-                            <Text style={fieldHint}>控件类型</Text>
+                            <Text style={fieldHint}>{pg2026T('admin_override_field_control', '控件类型')}</Text>
                             <Select
                               size="small"
                               value={effectiveType}
                               style={{ width: '100%' }}
-                              options={SCHEME_CONTROL_TYPE_OPTIONS}
+                              options={SCHEME_CONTROL_TYPE_OPTIONS.map(opt => ({ ...opt, label: pg2026T(`admin_ctrl_${opt.value}`, opt.label) }))}
                               onChange={(v) => applyModPatch(patchForControlTypeChange(p, mod, v))}
                             />
                           </div>
                           {effectiveType === 'slider' && ([
-                            { field: 'min', label: `最小值${p.unit ? ` (${p.unit})` : ''}`, fallback: 0 },
-                            { field: 'max', label: `最大值${p.unit ? ` (${p.unit})` : ''}`, fallback: 100 },
-                            { field: 'step', label: '步长', fallback: 1 },
+                            { field: 'min', label: `${pg2026T('admin_override_field_min', '最小值')}${p.unit ? ` (${p.unit})` : ''}`, fallback: 0 },
+                            { field: 'max', label: `${pg2026T('admin_override_field_max', '最大值')}${p.unit ? ` (${p.unit})` : ''}`, fallback: 100 },
+                            { field: 'step', label: pg2026T('admin_override_field_step', '步长'), fallback: 1 },
                           ] as const).map(({ field, label, fallback }) => {
                             const original = p[field] ?? fallback;
                             return (
@@ -4205,7 +4207,7 @@ function formatOptionLabelsDisplay(
                             );
                           })}
                           <div>
-                            <Text style={fieldHint}>默认值</Text>
+                            <Text style={fieldHint}>{pg2026T('admin_override_field_default', '默认值')}</Text>
                             {effectiveType === 'switch' ? (
                               <Switch
                                 size="small"
@@ -4235,11 +4237,11 @@ function formatOptionLabelsDisplay(
                         {effectiveType !== 'switch' && effectiveType !== 'slider' && (
                           <>
                             <div>
-                              <Text style={fieldHint}>选项列表</Text>
+                              <Text style={fieldHint}>{pg2026T('admin_override_field_options', '选项列表')}</Text>
                               <Input
                                 size="small"
                                 value={Array.isArray(mergedParam.options) ? mergedParam.options.join(', ') : ''}
-                                placeholder="用英文逗号分隔，例如 Low,Medium,High"
+                                placeholder={pg2026T('admin_override_field_options_ph', '用英文逗号分隔，例如 Low,Medium,High')}
                                 onChange={(e) => {
                                   const { options, option_labels: parsedLabels } = parseOptionsAndLabels(e.target.value);
                                   const srcOpts = p.options || [];
@@ -4257,11 +4259,11 @@ function formatOptionLabelsDisplay(
                               />
                             </div>
                             <div>
-                              <Text style={fieldHint}>选项中文映射</Text>
+                              <Text style={fieldHint}>{pg2026T('admin_override_field_mapping', '选项中文映射')}</Text>
                               <Input
                                 size="small"
                                 value={formatOptionLabelsDisplay(mergedParam.option_labels, mergedParam.options)}
-                                placeholder="可选，例如 Low:常用画质,Medium:高画质,High:高精细画质"
+                                placeholder={pg2026T('admin_override_field_mapping_ph', '可选，例如 Low:常用画质,Medium:高画质,High:高精细画质')}
                                 onChange={(e) => {
                                   const newLabels = parseOptionLabelsMapping(e.target.value, mergedParam.options || []);
                                   applyModPatch({
@@ -4269,14 +4271,15 @@ function formatOptionLabelsDisplay(
                                   });
                                 }}
                               />
+                              {renderPgOptionPreview(mergedParam)}
                             </div>
                           </>
                         )}
                         {showQuickBar && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
-                              <Tooltip title={SCHEME_QUICK_BAR_HELP}>
+                              <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>{pg2026T('admin_override_quick_bar', '快捷栏')}</Text>
+                              <Tooltip title={pg2026T('admin_quick_bar_help', SCHEME_QUICK_BAR_HELP)}>
                                 <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
                               </Tooltip>
                             </div>
@@ -4365,12 +4368,12 @@ function formatOptionLabelsDisplay(
               {/* 新增参数 */}
               <Divider style={{ margin: '4px 0', borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>自定义新增参数</Text>
+                <Text style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{pg2026T('admin_custom_param', '自定义新增参数')}</Text>
                 <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={() => {
                   const adds = [...(overrides.add || [])];
                   adds.push({ key: '', label: '', type: 'select', options: [], default: '' });
                   setPgOverrideData({ ...overrides, add: adds });
-                }}>添加</Button>
+                }}>{pg2026T('admin_scheme_add_param', '添加')}</Button>
               </div>
               {(overrides.add || []).map((ap: any, idx: number) => {
                 const updateAdd = (patch: any) => {
@@ -4386,11 +4389,11 @@ function formatOptionLabelsDisplay(
                         <Input size="small" value={ap.key} onChange={e => updateAdd({ key: e.target.value })} />
                       </div>
                       <div style={{ flex: 1 }}>
-                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>标签</Text>
+                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_label', '标签')}</Text>
                         <Input size="small" value={ap.label} onChange={e => updateAdd({ label: e.target.value })} />
                       </div>
                       <div style={{ width: 100 }}>
-                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>类型</Text>
+                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_control', '类型')}</Text>
                         <Select size="small" value={ap.type} onChange={v => updateAdd({ type: v, options: (v === 'select' || v === 'radio') ? (ap.options || []) : undefined, min: v === 'slider' ? (ap.min ?? 0) : undefined, max: v === 'slider' ? (ap.max ?? 1) : undefined, step: v === 'slider' ? (ap.step ?? 0.1) : undefined, quick: (v === 'select' || v === 'radio') ? ap.quick : false })} style={{ width: '100%' }}
                           options={[{ label: 'Select', value: 'select' }, { label: 'Radio', value: 'radio' }, { label: 'Switch', value: 'switch' }, { label: 'Slider', value: 'slider' }]} />
                       </div>
@@ -4405,13 +4408,13 @@ function formatOptionLabelsDisplay(
                       <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                         <div style={{ flex: 1 }}>
                           <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>
-                            {name === 'playground_2026' ? '选项列表' : '选项 (逗号分隔)'}
+                            {name === 'playground_2026' ? pg2026T('admin_override_field_options', '选项列表') : '选项 (逗号分隔)'}
                           </Text>
                           {name === 'playground_2026' ? (
                             <Input
                               size="small"
                               value={Array.isArray(ap.options) ? ap.options.join(',') : ''}
-                              placeholder="例如: opaque,transparent 或 16:9,9:16"
+                              placeholder={pg2026T('admin_override_field_options_ph', '例如: opaque,transparent 或 16:9,9:16')}
                               onChange={(e) => {
                                 const { options, option_labels: parsedLabels } = parseOptionsAndLabels(e.target.value);
                                 const isNumeric = options.length > 0 && options.every((x) => !Number.isNaN(Number(x)));
@@ -4435,7 +4438,7 @@ function formatOptionLabelsDisplay(
                           )}
                         </div>
                         <div style={{ width: 100 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>默认值</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_default', '默认值')}</Text>
                           <Input size="small" value={String(ap.default || '')} onChange={e => {
                             const rawVal = e.target.value;
                             let val: any = rawVal;
@@ -4450,17 +4453,18 @@ function formatOptionLabelsDisplay(
                       {name === 'playground_2026' && (
                         <div style={{ marginBottom: 6 }}>
                           <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>
-                            选项中文映射
+                            {pg2026T('admin_override_field_mapping', '选项中文映射')}
                           </Text>
                           <Input
                             size="small"
                             value={formatOptionLabelsDisplay(ap.option_labels, ap.options)}
-                            placeholder="可选，例如 opaque:不透明,transparent:透明"
+                            placeholder={pg2026T('admin_override_field_mapping_ph', '可选，例如 opaque:不透明,transparent:透明')}
                             onChange={(e) => {
                               const newLabels = parseOptionLabelsMapping(e.target.value, ap.options || []);
                               updateAdd({ option_labels: Object.keys(newLabels).length > 0 ? newLabels : undefined });
                             }}
                           />
+                          {renderPgOptionPreview(ap)}
                         </div>
                       )}
                       </>
@@ -4468,37 +4472,37 @@ function formatOptionLabelsDisplay(
                     {ap.type === 'slider' && (
                       <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                         <div style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>最小值</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_min', '最小值')}</Text>
                           <Input size="small" type="number" value={ap.min ?? 0} onChange={e => updateAdd({ min: Number(e.target.value) })} />
                         </div>
                         <div style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>最大值</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_max', '最大值')}</Text>
                           <Input size="small" type="number" value={ap.max ?? 1} onChange={e => updateAdd({ max: Number(e.target.value) })} />
                         </div>
                         <div style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>步长</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_step', '步长')}</Text>
                           <Input size="small" type="number" value={ap.step ?? 0.1} onChange={e => updateAdd({ step: Number(e.target.value) })} />
                         </div>
                         <div style={{ flex: 1 }}>
-                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>默认值</Text>
+                          <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_default', '默认值')}</Text>
                           <Input size="small" type="number" value={ap.default ?? 0} onChange={e => updateAdd({ default: Number(e.target.value) })} />
                         </div>
                       </div>
                     )}
                     {ap.type === 'switch' && (
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>默认值</Text>
+                        <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_default', '默认值')}</Text>
                         <Switch size="small" checked={!!ap.default} onChange={v => updateAdd({ default: v })} />
                       </div>
                     )}
                     <div>
-                      <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>提示 (选填)</Text>
-                      <Input size="small" value={ap.hint || ''} onChange={e => updateAdd({ hint: e.target.value || undefined })} placeholder="参数说明" />
+                      <Text style={{ fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)', display: 'block', marginBottom: 2 }}>{pg2026T('admin_override_field_unit_ph', '提示 (选填)')}</Text>
+                      <Input size="small" value={ap.hint || ''} onChange={e => updateAdd({ hint: e.target.value || undefined })} placeholder={pg2026T('admin_param_hint_placeholder', '参数说明')} />
                     </div>
                     {showQuickBar && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                        <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
-                        <Tooltip title={SCHEME_QUICK_BAR_HELP}>
+                        <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>{pg2026T('admin_override_quick_bar', '快捷栏')}</Text>
+                        <Tooltip title={pg2026T('admin_quick_bar_help', SCHEME_QUICK_BAR_HELP)}>
                           <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
                         </Tooltip>
                         <Switch
@@ -4522,7 +4526,7 @@ function formatOptionLabelsDisplay(
 
       {/* IO 覆写 Modal */}
       <Modal
-        title={`IO配置 — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}`}
+        title={name === 'playground_2026' ? `${pg2026T('admin_act_io', 'IO配置')} — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}` : `IO配置 — ${pgModels.find(m => m.id === pgIoOverrideModelId)?.name || ''}`}
         open={pgIoOverrideModalVisible}
         onCancel={() => setPgIoOverrideModalVisible(false)}
         width={780}
@@ -4530,10 +4534,10 @@ function formatOptionLabelsDisplay(
         bodyStyle={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto' }}
         footer={
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <Button danger loading={savingPlayground} onClick={handleResetIoOverrides}>重置为方案默认</Button>
+            <Button danger loading={savingPlayground} onClick={handleResetIoOverrides}>{name === 'playground_2026' ? pg2026T('admin_reset_preset', '重置为方案默认') : '重置为方案默认'}</Button>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button onClick={() => setPgIoOverrideModalVisible(false)} disabled={savingPlayground}>取消</Button>
-              <Button type="primary" loading={savingPlayground} onClick={handleConfirmIoOverrides}>确认</Button>
+              <Button onClick={() => setPgIoOverrideModalVisible(false)} disabled={savingPlayground}>{name === 'playground_2026' ? pg2026T('admin_cancel', '取消') : '取消'}</Button>
+              <Button type="primary" loading={savingPlayground} onClick={handleConfirmIoOverrides}>{name === 'playground_2026' ? pg2026T('admin_confirm', '确认') : '确认'}</Button>
             </div>
           </div>
         }
@@ -4541,12 +4545,12 @@ function formatOptionLabelsDisplay(
         {(() => {
           const model = pgModels.find(m => m.id === pgIoOverrideModelId);
           const scheme = pgSchemes.find(s => s.id === model?.pg_scheme_id);
-          if (!scheme) return <Text type="secondary">该模型未绑定方案</Text>;
+          if (!scheme) return <Text type="secondary">{name === 'playground_2026' ? pg2026T('admin_override_no_scheme', '该模型未绑定方案') : '该模型未绑定方案'}</Text>;
           const seeded = ensureSchemeIoDefaults(scheme);
           return (
             <div>
               <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12, display: 'block', marginBottom: 12 }}>
-                基于方案「{scheme.name}」个性化调整（仅对此模型生效），页面与方案 IO 配置一致
+                {name === 'playground_2026' ? pg2026T('admin_scheme_io_model_notice', `基于方案「${scheme.name}」个性化调整（仅对此模型生效），页面与方案 IO 配置一致`, { name: scheme.name }) : `基于方案「${scheme.name}」个性化调整（仅对此模型生效），页面与方案 IO 配置一致`}
               </Text>
               <ModelIoOverridesEditor
                 schemeId={scheme.id}
@@ -4557,6 +4561,7 @@ function formatOptionLabelsDisplay(
                 overrides={pgIoOverrideData}
                 onChange={setPgIoOverrideData}
                 isLight={_isLight}
+                localizeLabels={isPg2026}
               />
             </div>
           );
@@ -4565,7 +4570,7 @@ function formatOptionLabelsDisplay(
 
       {name === 'playground_2026' && (
         <Modal
-          title={`特性配置 — ${pgModels.find(m => m.id === pgFeatureModelId)?.name || ''}`}
+          title={pg2026T('admin_feature_title', `特性配置 — ${pgModels.find(m => m.id === pgFeatureModelId)?.name || ''}`, { name: pgModels.find(m => m.id === pgFeatureModelId)?.name || '' })}
           open={pgFeatureModalVisible}
           onCancel={() => { if (!pgFeatureSaving) setPgFeatureModalVisible(false); }}
           confirmLoading={pgFeatureSaving}
@@ -4587,19 +4592,19 @@ function formatOptionLabelsDisplay(
               } : {}),
             } : m);
             setPgFeatureSaving(true);
-            const ok = await persistPlaygroundModels(next, { successMessage: '特性配置已保存' });
+            const ok = await persistPlaygroundModels(next, { successMessage: pg2026T('admin_feature_saved', '特性配置已保存') });
             setPgFeatureSaving(false);
             if (!ok) return;
             setPgModels(next);
             setPgFeatureModalVisible(false);
           }}
-          okText="确认"
-          cancelText="取消"
+          okText={pg2026T('admin_confirm', '确认')}
+          cancelText={pg2026T('admin_cancel', '取消')}
         >
           {(() => {
             const model = pgModels.find(m => m.id === pgFeatureModelId);
             if (!model || !featureKindFromTypeName(model.type_name)) {
-              return <Text type="secondary">该模型类型未配置二级功能属性</Text>;
+              return <Text type="secondary">{pg2026T('admin_feature_no_options', '该模型类型未配置二级功能属性')}</Text>;
             }
             const fromType = pgModelTypes.find((t) => t.id === model.type_id)?.default_features;
             const kind = featureKindFromTypeName(model.type_name);
@@ -4620,10 +4625,10 @@ function formatOptionLabelsDisplay(
                 {kind === 'chat' ? (
                   <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div>
-                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>输入协议</Text>
+                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>{pg2026T('admin_input_protocol', '输入协议')}</Text>
                       <Select
                         value={pgInputProtocolDraft || undefined}
-                        placeholder="未设置（沿用内置规则）"
+                        placeholder={pg2026T('admin_input_protocol_ph', '未设置（沿用内置规则）')}
                         style={{ width: '100%' }}
                         optionLabelProp="label"
                         popupMatchSelectWidth
@@ -4635,10 +4640,10 @@ function formatOptionLabelsDisplay(
                       />
                     </div>
                     <div>
-                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>思考预设</Text>
+                      <Text style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>{pg2026T('admin_thinking_profile', '思考预设')}</Text>
                       <Select
                         value={pgThinkingProfileDraft || undefined}
-                        placeholder="未设置（沿用内置规则）"
+                        placeholder={pg2026T('admin_thinking_profile_ph', '未设置（沿用内置规则）')}
                         style={{ width: '100%' }}
                         optionLabelProp="label"
                         popupMatchSelectWidth
@@ -4659,7 +4664,7 @@ function formatOptionLabelsDisplay(
 
       {name === 'playground_2026' && (
         <Modal
-          title="图片专用参数配置"
+          title={pg2026T('admin_isp_title', '图片专用参数配置')}
           open={pgIspModalVisible}
           onCancel={() => {
             setPgIspDraft(pgIspBaseline);
@@ -4676,7 +4681,7 @@ function formatOptionLabelsDisplay(
                   setPgIspDraft(officialImageSpecialParams(scheme?.id));
                 }}
               >
-                重置
+                {pg2026T('admin_reset', '重置')}
               </Button>
               <Button
                 onClick={() => {
@@ -4684,9 +4689,9 @@ function formatOptionLabelsDisplay(
                   setPgIspModalVisible(false);
                 }}
               >
-                取消
+                {pg2026T('admin_cancel', '取消')}
               </Button>
-              <Button type="primary" onClick={() => setPgIspModalVisible(false)}>完成</Button>
+              <Button type="primary" onClick={() => setPgIspModalVisible(false)}>{pg2026T('admin_done', '完成')}</Button>
             </div>
           }
         >
@@ -4714,20 +4719,20 @@ function formatOptionLabelsDisplay(
 
       {/* 方案选择 Drawer */}
       <Drawer
-        title="选择创作方案"
+        title={pg2026T('admin_drawer_bind_scheme', '选择创作方案')}
         open={pgSchemeDrawerVisible}
         onClose={() => setPgSchemeDrawerVisible(false)}
         width={580}
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button loading={savingPlayground} onClick={() => handleConfirmScheme('')}>取消绑定</Button>
-            <Button type="primary" loading={savingPlayground} onClick={() => handleConfirmScheme()}>确认绑定</Button>
+            <Button loading={savingPlayground} onClick={() => handleConfirmScheme('')}>{pg2026T('admin_btn_unbind', '取消绑定')}</Button>
+            <Button type="primary" loading={savingPlayground} onClick={() => handleConfirmScheme()}>{pg2026T('admin_btn_bind_confirm', '确认绑定')}</Button>
           </div>
         }
       >
         <div style={{ marginBottom: 16 }}>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 13 }}>
-            为模型 <Text strong style={{ color: '#1677ff' }}>{pgModels.find(m => m.id === pgCurrentId)?.name}</Text> 选择一个创作方案
+            {pg2026T('admin_drawer_bind_scheme_to', '为模型 {{name}} 选择一个创作方案', { name: pgModels.find(m => m.id === pgCurrentId)?.name || '' })}
           </Text>
         </div>
         {(() => {
@@ -4776,7 +4781,7 @@ function formatOptionLabelsDisplay(
                             border: _isLight ? '1px solid #fde68a' : '1px solid rgba(245,158,11,0.3)'
                           }}
                         >
-                          内置
+                          {pg2026T('admin_scheme_builtin', '内置')}
                         </Tag>
                       )}
                       <span
@@ -4802,7 +4807,7 @@ function formatOptionLabelsDisplay(
                 );
               })}
               {filteredSchemes.length === 0 && (
-                <div style={{ textAlign: 'center', padding: '24px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>暂无匹配类型的方案</div>
+                <div style={{ textAlign: 'center', padding: '24px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>{pg2026T('admin_no_matching_schemes', '暂无匹配类型的方案')}</div>
               )}
             </div>
           );
@@ -4818,32 +4823,32 @@ function formatOptionLabelsDisplay(
       <div style={{ background: _isLight ? '#fff' : '#141414', borderRadius: schemeListDense ? 6 : 8, padding: schemeListDense ? '8px 10px' : '16px 20px', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: schemeListDense ? 4 : 12, marginBottom: schemeListDense ? 6 : 16 }}>
           <div style={{ minWidth: schemeListDense ? 0 : 200, flex: '1 1 auto' }}>
-            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: schemeListDense ? 13 : 14 }}>创作方案列表</Text>
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: schemeListDense ? 13 : 14 }}>{pg2026T('admin_schemes_title', '创作方案列表')}</Text>
             {!schemeListDense && (
               <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, display: 'block', marginTop: 2 }}>
-                管理内置和自定义的创作方案。每个方案定义了参数与 IO 管道，绑定到模型后生效。
+                {pg2026T('admin_schemes_desc', '管理内置和自定义的创作方案。每个方案定义了参数与 IO 管道，绑定到模型后生效。')}
               </Text>
             )}
           </div>
           <div style={{ display: 'flex', gap: schemeListDense ? 6 : 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Radio.Group value={pgSchemeTypeFilter} onChange={e => setPgSchemeTypeFilter(e.target.value)} size="small" style={{ flexShrink: 0 }}>
-              <Radio.Button value="all">全部</Radio.Button>
-              <Radio.Button value="chat">对话</Radio.Button>
-              <Radio.Button value="image">图片</Radio.Button>
-              <Radio.Button value="video">视频</Radio.Button>
-              {name === 'playground_2026' && <Radio.Button value="audio">音频</Radio.Button>}
+              <Radio.Button value="all">{pg2026T('admin_filter_all', '全部')}</Radio.Button>
+              <Radio.Button value="chat">{pg2026T('admin_chat_title', '对话')}</Radio.Button>
+              <Radio.Button value="image">{pg2026T('admin_io_asset_image', '图片')}</Radio.Button>
+              <Radio.Button value="video">{pg2026T('admin_io_asset_video', '视频')}</Radio.Button>
+              {name === 'playground_2026' && <Radio.Button value="audio">{pg2026T('admin_io_asset_audio', '音频')}</Radio.Button>}
             </Radio.Group>
-            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddScheme} style={{ flexShrink: 0 }}>新增方案</Button>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddScheme} style={{ flexShrink: 0 }}>{pg2026T('admin_scheme_new', '新增方案')}</Button>
           </div>
         </div>
 
         {(() => {
           const typeGroups: Record<string, { label: string; icon: React.ReactNode; color: string; schemes: { scheme: any; idx: number }[] }> = {
-            video: { label: '视频生成方案', icon: <VideoCameraOutlined />, color: '#1677ff', schemes: [] },
-            image: { label: '图片生成方案', icon: <PictureOutlined />, color: '#52c41a', schemes: [] },
-            chat: { label: '聊天对话方案', icon: <MessageOutlined />, color: '#722ed1', schemes: [] },
-            audio: { label: '音频生成方案', icon: <AudioOutlined />, color: '#13c2c2', schemes: [] },
-            other: { label: '其他方案', icon: <AppstoreOutlined />, color: '#faad14', schemes: [] }
+            video: { label: pg2026T('admin_scheme_group_video', '视频生成方案'), icon: <VideoCameraOutlined />, color: '#1677ff', schemes: [] },
+            image: { label: pg2026T('admin_scheme_group_image', '图片生成方案'), icon: <PictureOutlined />, color: '#52c41a', schemes: [] },
+            chat: { label: pg2026T('admin_scheme_group_chat', '聊天对话方案'), icon: <MessageOutlined />, color: '#722ed1', schemes: [] },
+            audio: { label: pg2026T('admin_scheme_group_audio', '音频生成方案'), icon: <AudioOutlined />, color: '#13c2c2', schemes: [] },
+            other: { label: pg2026T('admin_scheme_group_other', '其他方案'), icon: <AppstoreOutlined />, color: '#faad14', schemes: [] }
           };
           schemeList.forEach((scheme, idx) => {
             if (pgSchemeTypeFilter !== 'all') {
@@ -4857,7 +4862,7 @@ function formatOptionLabelsDisplay(
           });
           const activeGroups = Object.entries(typeGroups).filter(([, g]) => g.schemes.length > 0);
           if (activeGroups.length === 0) {
-            return <div style={{ textAlign: 'center', padding: schemeListDense ? '16px 0' : '36px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>暂无方案，点击「新增方案」创建</div>;
+            return <div style={{ textAlign: 'center', padding: schemeListDense ? '16px 0' : '36px 0', color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 13 }}>{pg2026T('admin_scheme_empty', '暂无方案，点击「新增方案」创建')}</div>;
           }
           return activeGroups.map(([key, group]) => (
             <div key={key} style={{ marginBottom: schemeListDense ? 6 : 16 }}>
@@ -4914,7 +4919,7 @@ function formatOptionLabelsDisplay(
                                 border: _isLight ? '1px solid #fde68a' : '1px solid rgba(245,158,11,0.3)'
                               }}
                             >
-                              内置
+                              {pg2026T('admin_scheme_builtin', '内置')}
                             </Tag>
                           )}
                           <span
@@ -4936,8 +4941,8 @@ function formatOptionLabelsDisplay(
 
                         {/* 右侧操作按钮 */}
                         <div style={{ display: 'flex', gap: 0, flexShrink: 0, alignItems: 'center', marginLeft: 'auto' }}>
-                          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEditScheme(scheme, idx)} style={{ color: '#2563eb', padding: '0 4px', height: actionBtnH }}>编辑</Button>
-                          <Tooltip title={scheme.type === 'image' || scheme.type === 'video' || (name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat')) ? '' : (name === 'playground_2026' ? '仅图片、视频、音频、聊天方案支持 IO 配置' : '仅图片、视频方案支持 IO 配置')}>
+                          <Button size="small" type="text" icon={<EditOutlined />} onClick={() => handleEditScheme(scheme, idx)} style={{ color: '#2563eb', padding: '0 4px', height: actionBtnH }}>{pg2026T('admin_scheme_edit', '编辑')}</Button>
+                          <Tooltip title={scheme.type === 'image' || scheme.type === 'video' || (name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat')) ? '' : pg2026T('admin_scheme_io_tip', (name === 'playground_2026' ? '仅图片、视频、音频、聊天方案支持 IO 配置' : '仅图片、视频方案支持 IO 配置'))}>
                             <span>
                               <Button
                                 size="small"
@@ -4947,14 +4952,14 @@ function formatOptionLabelsDisplay(
                                 onClick={() => handleOpenSchemeIo(scheme, idx)}
                                 style={{ color: scheme.type === 'image' || scheme.type === 'video' || (name === 'playground_2026' && (scheme.type === 'audio' || scheme.type === 'chat')) ? '#0d9488' : undefined, padding: '0 4px', height: actionBtnH }}
                               >
-                                IO配置
+                                {pg2026T('admin_act_io', 'IO配置')}
                               </Button>
                             </span>
                           </Tooltip>
                           {scheme.is_system && (
-                            <Button size="small" type="text" icon={<ReloadOutlined />} onClick={() => handleResetScheme(scheme.id, idx)} style={{ color: '#d97706', padding: '0 4px', height: actionBtnH }}>重置</Button>
+                            <Button size="small" type="text" icon={<ReloadOutlined />} onClick={() => handleResetScheme(scheme.id, idx)} style={{ color: '#d97706', padding: '0 4px', height: actionBtnH }}>{pg2026T('admin_scheme_reset', '重置')}</Button>
                           )}
-                          <Button size="small" type="text" icon={<DeleteOutlined />} onClick={() => handleDeleteScheme(idx)} danger disabled={!!scheme.is_system} style={{ padding: '0 4px', height: actionBtnH }}>删除</Button>
+                          <Button size="small" type="text" icon={<DeleteOutlined />} onClick={() => handleDeleteScheme(idx)} danger disabled={!!scheme.is_system} style={{ padding: '0 4px', height: actionBtnH }}>{pg2026T('admin_scheme_delete', '删除')}</Button>
                         </div>
                       </div>
 
@@ -4999,7 +5004,7 @@ function formatOptionLabelsDisplay(
 
       {/* 方案编辑 Drawer */}
       <Drawer
-        title={editingSchemeIndex >= 0 ? '编辑创作方案' : '新建创作方案'}
+        title={editingSchemeIndex >= 0 ? pg2026T('admin_scheme_drawer_edit', '编辑创作方案') : pg2026T('admin_scheme_drawer_new', '新建创作方案')}
         open={schemeEditVisible}
         onClose={() => {
           setSchemeEditVisible(false);
@@ -5008,8 +5013,8 @@ function formatOptionLabelsDisplay(
         size="large"
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={() => setSchemeEditVisible(false)}>取消</Button>
-            <Button type="primary" loading={savingSchemes} onClick={handleSaveEditingScheme}>确认</Button>
+            <Button onClick={() => setSchemeEditVisible(false)}>{pg2026T('admin_cancel', '取消')}</Button>
+            <Button type="primary" loading={savingSchemes} onClick={handleSaveEditingScheme}>{pg2026T('admin_confirm', '确认')}</Button>
           </div>
         }
       >
@@ -5017,16 +5022,16 @@ function formatOptionLabelsDisplay(
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {/* 基本信息 */}
             <div>
-              <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>方案名称</Text>
+              <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{pg2026T('admin_scheme_name', '方案名称')}</Text>
               <Input value={editingScheme.name} onChange={e => setEditingScheme({ ...editingScheme, name: e.target.value })} />
             </div>
             <div style={{ display: 'flex', gap: 12 }}>
               <div style={{ flex: 1 }}>
-                <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>方案 ID</Text>
+                <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{pg2026T('admin_scheme_id', '方案 ID')}</Text>
                 <Input value={editingScheme.id} onChange={e => setEditingScheme({ ...editingScheme, id: e.target.value })} disabled={!!editingScheme.is_system} />
               </div>
               <div style={{ flex: 1 }}>
-                <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>类型</Text>
+                <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{pg2026T('admin_scheme_type', '类型')}</Text>
                 <Select
                   value={editingScheme.type}
                   onChange={v => {
@@ -5051,16 +5056,16 @@ function formatOptionLabelsDisplay(
                   }}
                   style={{ width: '100%' }}
                   options={[
-                    { label: '视频 (video)', value: 'video' },
-                    { label: '图片 (image)', value: 'image' },
-                    { label: '聊天 (chat)', value: 'chat' },
-                    ...(name === 'playground_2026' ? [{ label: '音频 (audio)', value: 'audio' }] : []),
+                    { label: pg2026T('admin_scheme_type_video', '视频 (video)'), value: 'video' },
+                    { label: pg2026T('admin_scheme_type_image', '图片 (image)'), value: 'image' },
+                    { label: pg2026T('admin_scheme_type_chat', '聊天 (chat)'), value: 'chat' },
+                    ...(name === 'playground_2026' ? [{ label: pg2026T('admin_scheme_type_audio', '音频 (audio)'), value: 'audio' }] : []),
                   ]}
                 />
               </div>
             </div>
             <div>
-              <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>描述</Text>
+              <Text style={{ display: 'block', marginBottom: 6, fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>{pg2026T('admin_scheme_desc', '描述')}</Text>
               <Input.TextArea value={editingScheme.description} onChange={e => setEditingScheme({ ...editingScheme, description: e.target.value })} autoSize={{ minRows: 2, maxRows: 4 }} />
             </div>
 
@@ -5097,9 +5102,9 @@ function formatOptionLabelsDisplay(
               <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                 <div style={{ minWidth: 0 }}>
-                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>图片专用参数配置</Text>
+                  <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_isp_title', '图片专用参数配置')}</Text>
                   <Text style={{ display: 'block', fontSize: 12, marginTop: 2, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
-                    开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件
+                    {pg2026T('admin_isp_desc_scheme', '开启后，图片生成页属性选择器展示比例、尺寸与分辨率专用控件')}
                   </Text>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -5117,11 +5122,11 @@ function formatOptionLabelsDisplay(
                         setImageSpecialModalOpen(true);
                       }}
                     >
-                      配置
+                      {pg2026T('admin_isp_btn_config', '配置')}
                     </Button>
                   )}
                   <Tooltip
-                    title={isImageSpecialForcedOn(editingScheme.id) ? 'GPT-Image-2 按官方规则必须开启图片专用参数' : undefined}
+                    title={isImageSpecialForcedOn(editingScheme.id) ? pg2026T('admin_isp_tip_forced', 'GPT-Image-2 按官方规则必须开启图片专用参数') : undefined}
                   >
                     <Switch
                       checked={isImageSpecialForcedOn(editingScheme.id) || !!editingScheme.image_special_params?.enabled}
@@ -5145,17 +5150,17 @@ function formatOptionLabelsDisplay(
 
             {/* 参数列表 */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>参数配置</Text>
-              <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={handleAddParam}>添加参数</Button>
+              <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_scheme_params_config', '参数配置')}</Text>
+              <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={handleAddParam}>{pg2026T('admin_scheme_add_param', '添加参数')}</Button>
             </div>
 
             {editingScheme.params?.map((param: any, pIdx: number) => {
               return (
               <div key={pIdx} style={{ background: _isLight ? '#fafafa' : '#1a1a1a', borderRadius: 8, padding: 14, border: _isLight ? '1px solid rgba(0,0,0,0.06)' : '1px solid rgba(255,255,255,0.06)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12 }}>参数 #{pIdx + 1}</Text>
+                  <Text style={{ color: _isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', fontSize: 12 }}>{pg2026T('admin_scheme_param_index', `参数 #${pIdx + 1}`, { index: pIdx + 1 })}</Text>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Tooltip title="上移">
+                    <Tooltip title={pg2026T('image_edit_layer_up', '上移')}>
                       <Button
                         type="text"
                         size="small"
@@ -5164,7 +5169,7 @@ function formatOptionLabelsDisplay(
                         onClick={() => handleMoveParam(pIdx, 'up')}
                       />
                     </Tooltip>
-                    <Tooltip title="下移">
+                    <Tooltip title={pg2026T('image_edit_layer_down', '下移')}>
                       <Button
                         type="text"
                         size="small"
@@ -5173,32 +5178,39 @@ function formatOptionLabelsDisplay(
                         onClick={() => handleMoveParam(pIdx, 'down')}
                       />
                     </Tooltip>
-                    <Tooltip title="删除">
+                    <Tooltip title={pg2026T('admin_scheme_delete', '删除')}>
                       <Button type="text" size="small" icon={<DeleteOutlined />} danger onClick={() => handleRemoveParam(pIdx)} />
                     </Tooltip>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                   <div style={{ flex: 1 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>Key</Text>
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_key', 'Key')}</Text>
                     <Input size="small" value={param.key} onChange={e => handleEditingSchemeParamChange(pIdx, 'key', e.target.value)} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>显示标签</Text>
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_label', '显示标签')}</Text>
                     <Input size="small" value={param.label} onChange={e => handleEditingSchemeParamChange(pIdx, 'label', e.target.value)} />
+                    {isPg2026 && formatParamLabel(param) !== (param.label || '').trim() ? (
+                      <Text style={{ fontSize: 11, display: 'block', marginTop: 4, color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)' }}>
+                        {pg2026T('admin_option_preview', '用户端显示：{{labels}}', { labels: formatParamLabel(param) })}
+                      </Text>
+                    ) : null}
                   </div>
                   <div style={{ width: 140 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>控件类型</Text>
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_control', '控件类型')}</Text>
                     <Select size="small" value={param.type} onChange={v => handleEditingSchemeParamChange(pIdx, 'type', v)} style={{ width: '100%' }}
                       options={name === 'playground_2026'
-                        ? SCHEME_CONTROL_TYPE_OPTIONS
+                        ? SCHEME_CONTROL_TYPE_OPTIONS.map(opt => ({ ...opt, label: pg2026T(`admin_ctrl_${opt.value}`, opt.label) }))
                         : [{ label: 'Input 文本', value: 'input' }, { label: 'Radio 单选', value: 'radio' }, { label: 'Select 下拉', value: 'select' }, { label: 'Switch 开关', value: 'switch' }, { label: 'Slider 滑块', value: 'slider' }]}
                     />
                   </div>
                   <div style={{ width: 120 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>数据类型</Text>
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_datatype', '数据类型')}</Text>
                     <Select size="small" value={param.data_type || 'string'} onChange={v => handleEditingSchemeParamChange(pIdx, 'data_type', v)} style={{ width: '100%' }}
-                      options={[{ label: 'String 字符串', value: 'string' }, { label: 'Number 数字', value: 'number' }, { label: 'Integer 整数', value: 'integer' }, { label: 'Boolean 布尔', value: 'boolean' }]}
+                      options={name === 'playground_2026'
+                        ? [{ label: 'String', value: 'string' }, { label: 'Number', value: 'number' }, { label: 'Integer', value: 'integer' }, { label: 'Boolean', value: 'boolean' }]
+                        : [{ label: 'String 字符串', value: 'string' }, { label: 'Number 数字', value: 'number' }, { label: 'Integer 整数', value: 'integer' }, { label: 'Boolean 布尔', value: 'boolean' }]}
                     />
                   </div>
                 </div>
@@ -5206,7 +5218,7 @@ function formatOptionLabelsDisplay(
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <div style={{ flex: 1 }}>
                       <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>
-                        选项列表（用英文逗号分隔）
+                        {pg2026T('admin_override_field_options_comma', '选项列表（用英文逗号分隔）')}
                       </Text>
                       <Input
                         size="small"
@@ -5219,12 +5231,12 @@ function formatOptionLabelsDisplay(
                             option_labels: Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined,
                           });
                         }}
-                        placeholder="例如: opaque,transparent 或 16:9,9:16"
+                        placeholder={pg2026T('admin_override_field_options_ph', '例如: opaque,transparent 或 16:9,9:16')}
                       />
                     </div>
                     <div style={{ flex: 1 }}>
                       <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>
-                        选项中文映射（可选，例如 opaque:不透明,transparent:透明 或 不透明,透明）
+                        {pg2026T('admin_override_field_mapping', '选项中文映射（可选，例如 opaque:不透明,transparent:透明 或 不透明,透明）')}
                       </Text>
                       <Input
                         size="small"
@@ -5237,27 +5249,28 @@ function formatOptionLabelsDisplay(
                             Object.keys(newLabels).length > 0 ? newLabels : undefined,
                           );
                         }}
-                        placeholder="例如: opaque:不透明,transparent:透明 或 不透明,透明"
+                        placeholder={pg2026T('admin_override_field_mapping_ph', '例如: opaque:不透明,transparent:透明 或 不透明,透明')}
                       />
+                      {renderPgOptionPreview(param)}
                     </div>
                   </div>
                 )}
                 {param.type === 'slider' && (
                   <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <div style={{ flex: 1 }}>
-                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>最小值</Text>
+                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_min', '最小值')}</Text>
                       <InputNumber size="small" style={{ width: '100%' }} value={param.min ?? 0}
                         onChange={v => handleEditingSchemeParamChange(pIdx, 'min', v ?? 0)}
                       />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>最大值</Text>
+                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_max', '最大值')}</Text>
                       <InputNumber size="small" style={{ width: '100%' }} value={param.max ?? 100}
                         onChange={v => handleEditingSchemeParamChange(pIdx, 'max', v ?? 100)}
                       />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>步长</Text>
+                      <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_step', '步长')}</Text>
                       <InputNumber size="small" style={{ width: '100%' }} value={param.step ?? 1} min={0.001}
                         onChange={v => handleEditingSchemeParamChange(pIdx, 'step', v ?? 1)}
                       />
@@ -5266,7 +5279,7 @@ function formatOptionLabelsDisplay(
                 )}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <div style={{ flex: 1 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>默认值</Text>
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_default', '默认值')}</Text>
                     {param.type === 'switch' ? (
                       <Switch checked={!!param.default} onChange={v => handleEditingSchemeParamChange(pIdx, 'default', v)} />
                     ) : param.type === 'slider' ? (
@@ -5280,13 +5293,13 @@ function formatOptionLabelsDisplay(
                     )}
                   </div>
                   <div style={{ width: 100 }}>
-                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>单位</Text>
-                    <Input size="small" value={param.unit || ''} onChange={e => handleEditingSchemeParamChange(pIdx, 'unit', e.target.value)} placeholder="可选" />
+                    <Text style={{ display: 'block', marginBottom: 4, fontSize: 11, color: _isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>{pg2026T('admin_override_field_unit', '单位')}</Text>
+                    <Input size="small" value={param.unit || ''} onChange={e => handleEditingSchemeParamChange(pIdx, 'unit', e.target.value)} placeholder={pg2026T('admin_override_field_unit_ph', '可选')} />
                   </div>
                 </div>
                 {name === 'playground_2026' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>模型默认启用</Text>
+                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>{pg2026T('admin_override_param_on', '模型默认启用')}</Text>
                     <Switch
                       size="small"
                       checked={param.enabled !== false}
@@ -5296,9 +5309,9 @@ function formatOptionLabelsDisplay(
                 )}
                 {name === 'playground_2026' && (editingScheme.type === 'image' || editingScheme.type === 'video' || editingScheme.type === 'audio') && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>快捷栏</Text>
+                    <Text style={{ fontSize: 12, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)' }}>{pg2026T('admin_override_quick_bar', '快捷栏')}</Text>
                     <Tooltip
-                      title={SCHEME_QUICK_BAR_HELP}
+                      title={pg2026T('admin_quick_bar_help', SCHEME_QUICK_BAR_HELP)}
                     >
                       <QuestionCircleOutlined style={{ fontSize: 13, color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', cursor: 'help' }} />
                     </Tooltip>
@@ -5319,7 +5332,7 @@ function formatOptionLabelsDisplay(
 
       {/* 方案 IO 配置 Modal */}
       <Modal
-        title={`IO配置 — ${editingIoScheme?.name || ''}`}
+        title={pg2026T('admin_scheme_io_title', `IO配置 — ${editingIoScheme?.name || ''}`, { name: editingIoScheme?.name || '' })}
         open={schemeIoEditVisible}
         onCancel={() => setSchemeIoEditVisible(false)}
         width={780}
@@ -5327,14 +5340,15 @@ function formatOptionLabelsDisplay(
         bodyStyle={{ maxHeight: 'calc(80vh - 120px)', overflowY: 'auto' }}
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={() => setSchemeIoEditVisible(false)}>取消</Button>
-            <Button type="primary" loading={savingSchemes} onClick={handleSaveSchemeIo}>确认</Button>
+            <Button onClick={() => setSchemeIoEditVisible(false)}>{pg2026T('admin_cancel', '取消')}</Button>
+            <Button type="primary" loading={savingSchemes} onClick={handleSaveSchemeIo}>{pg2026T('admin_confirm', '确认')}</Button>
           </div>
         }
       >
         {editingIoScheme && (
           <SchemeIoEditor
             standalone
+            localizeLabels={isPg2026}
             schemeId={editingIoScheme.id}
             schemeType={editingIoScheme.type}
             params={editingIoScheme.params || []}
@@ -5348,7 +5362,7 @@ function formatOptionLabelsDisplay(
 
       {name === 'playground_2026' && (
         <Modal
-          title="图片专用参数配置"
+          title={pg2026T('admin_isp_title', '图片专用参数配置')}
           open={imageSpecialModalOpen}
           onCancel={() => {
             setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: imageSpecialBaseline } : prev));
@@ -5362,7 +5376,7 @@ function formatOptionLabelsDisplay(
                   setEditingScheme((prev: any) => (prev ? { ...prev, image_special_params: officialImageSpecialParams(prev.id) } : prev));
                 }}
               >
-                重置
+                {pg2026T('admin_reset', '重置')}
               </Button>
               <Button
                 onClick={() => {
@@ -5370,9 +5384,9 @@ function formatOptionLabelsDisplay(
                   setImageSpecialModalOpen(false);
                 }}
               >
-                取消
+                {pg2026T('admin_cancel', '取消')}
               </Button>
-              <Button type="primary" onClick={() => setImageSpecialModalOpen(false)}>完成</Button>
+              <Button type="primary" onClick={() => setImageSpecialModalOpen(false)}>{pg2026T('admin_done', '完成')}</Button>
             </div>
           }
         >
@@ -6120,9 +6134,9 @@ function formatOptionLabelsDisplay(
       } catch (e) {
         console.error('sync playground-config failed', e);
       }
-      message.success('工作流配置已保存');
+      message.success(pg2026T('admin_wf_save_ok', '工作流配置已保存'));
     } catch (e: any) {
-      message.error('保存失败: ' + (e?.message || '未知错误'));
+      message.error(name === 'playground_2026' ? `${pg2026T('admin_sort_save_failed', '保存失败')}: ${e?.message || ''}` : ('保存失败: ' + (e?.message || '未知错误')));
     } finally {
       setSavingWorkflowConfig(false);
     }
@@ -6136,14 +6150,14 @@ function formatOptionLabelsDisplay(
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>工作流管理</Text><br />
+            <Text strong style={{ color: _isLight ? '#1f2937' : '#fff', fontSize: 14 }}>{pg2026T('admin_wf_title', '工作流管理')}</Text><br />
             <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-              控制是否开放工作流功能、单个工作流画布上的节点数量上限，以及是否开放「火山增强」「导演台」节点
+              {pg2026T('admin_wf_desc', '控制是否开放工作流功能、单个工作流画布上的节点数量上限，以及是否开放「火山增强」「导演台」节点')}
             </Text>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, color: workflowEnabled ? '#1677ff' : (_isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)') }}>
-              {workflowEnabled ? '已开启工作流' : '未开启工作流'}
+              {workflowEnabled ? pg2026T('admin_wf_status_on', '已开启工作流') : pg2026T('admin_wf_status_off', '未开启工作流')}
             </span>
             <Switch
               checked={workflowEnabled}
@@ -6162,30 +6176,30 @@ function formatOptionLabelsDisplay(
             fontSize: 12,
             color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)',
           }}>
-            💡 当前工作流总开关处于关闭状态，前台用户端侧栏将隐藏「工作流」菜单与额度入口。
+            {pg2026T('admin_wf_disabled_tip', '💡 当前工作流总开关处于关闭状态，前台用户端侧栏将隐藏「工作流」菜单与额度入口。')}
           </div>
         )}
 
         <Divider style={{ borderColor: _isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.06)', margin: '14px 0' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
-            用户端菜单名称
+            {pg2026T('admin_wf_menu_name', '用户端菜单名称')}
           </Text>
           <Input
             size="small"
-            placeholder="工作流"
+            placeholder={pg2026T('admin_wf_menu_ph', '工作流')}
             value={workflowMenuTitle}
             onChange={(e) => setUserNavModules((prev) => patchUserNavModule(prev, 'workflow', { title: e.target.value }))}
             style={{ width: 160 }}
             allowClear
           />
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-            自定义用户端创作中心 2026 侧边栏及页面展示的菜单名称，留空默认为「工作流」
+            {pg2026T('admin_wf_menu_hint', '自定义用户端创作中心 2026 侧边栏及页面展示的菜单名称，留空默认为「工作流」')}
           </Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
-            单个工作流节点上限
+            {pg2026T('admin_wf_node_limit', '单个工作流节点上限')}
           </Text>
           <InputNumber
             size="small"
@@ -6194,14 +6208,14 @@ function formatOptionLabelsDisplay(
             value={workflowNodeLimit}
             onChange={(val) => setWorkflowNodeLimit(val ?? 200)}
             style={{ width: 160 }}
-            addonAfter="个"
+            addonAfter={pg2026T('admin_wf_node_unit', '个')}
           />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
-            火山画质增强
+            {pg2026T('admin_wf_volc', '火山画质增强')}
           </Text>
-          <Tooltip title={!volcEnhancePluginActive ? '依赖的「AI MediaKit 火山引擎画质增强」插件未开启' : '关闭后工作流添加列表不显示该节点，画布上已有节点也不可提交'}>
+          <Tooltip title={!volcEnhancePluginActive ? pg2026T('admin_wf_volc_tip_disabled', '依赖的「AI MediaKit 火山引擎画质增强」插件未开启') : pg2026T('admin_wf_volc_tip_enabled', '关闭后工作流添加列表不显示该节点，画布上已有节点也不可提交')}>
             <Switch
               checked={pgAdvancedNodeVolcEnhanceEnabled}
               onChange={(checked) => setPgAdvancedNodeVolcEnhanceEnabled(checked)}
@@ -6211,15 +6225,15 @@ function formatOptionLabelsDisplay(
           </Tooltip>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
             {volcEnhancePluginActive
-              ? '关闭后不显示、不可用火山画质增强节点'
-              : '请先启用火山引擎画质增强插件'}
+              ? pg2026T('admin_wf_volc_hint_on', '关闭后不显示、不可用火山画质增强节点')
+              : pg2026T('admin_wf_volc_hint_off', '请先启用火山引擎画质增强插件')}
           </Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginTop: 14 }}>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 13, minWidth: 140 }}>
-            导演台
+            {pg2026T('admin_wf_director', '导演台')}
           </Text>
-          <Tooltip title="关闭后工作流添加列表不显示导演台节点">
+          <Tooltip title={pg2026T('admin_wf_director_tip', '关闭后工作流添加列表不显示导演台节点')}>
             <Switch
               checked={pgAdvancedNodeDirectorEnabled}
               onChange={(checked) => setPgAdvancedNodeDirectorEnabled(checked)}
@@ -6227,7 +6241,7 @@ function formatOptionLabelsDisplay(
             />
           </Tooltip>
           <Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)', fontSize: 12 }}>
-            默认关闭；开启后才可在工作流中添加导演台节点
+            {pg2026T('admin_wf_director_hint', '默认关闭；开启后才可在工作流中添加导演台节点')}
           </Text>
         </div>
       </div>
@@ -6243,7 +6257,7 @@ function formatOptionLabelsDisplay(
           onClick={handleSaveWorkflowConfig}
           icon={<SaveOutlined />}
         >
-          保存工作流配置
+          {pg2026T('admin_wf_save_btn', '保存工作流配置')}
         </Button>
       </div>
     </div>
@@ -6734,11 +6748,11 @@ function formatOptionLabelsDisplay(
               ]
             : plugin.name === 'playground_2026'
               ? [
-                { key: 'basic', label: '基本配置', children: basicTab },
-                { key: 'pg_storage', label: '存储配置', children: storageTab },
-                { key: 'playground_models', label: '创作模型管理', children: playgroundModelTab },
-                { key: 'playground_schemes', label: '创作方案配置', children: playgroundSchemeTab },
-                { key: 'playground_chat_config', label: '聊天功能配置', children: (
+                { key: 'basic', label: pg2026T('admin_tab_basic', '基本配置'), children: basicTab },
+                { key: 'pg_storage', label: pg2026T('admin_tab_storage', '存储配置'), children: storageTab },
+                { key: 'playground_models', label: pg2026T('admin_tab_models', '创作模型管理'), children: playgroundModelTab },
+                { key: 'playground_schemes', label: pg2026T('admin_tab_schemes', '创作方案配置'), children: playgroundSchemeTab },
+                { key: 'playground_chat_config', label: pg2026T('admin_tab_chat', '聊天配置'), children: (
                   <PluginModule>
                     <PlaygroundChatConfigTab
                       items={userNavModules}
@@ -6747,9 +6761,11 @@ function formatOptionLabelsDisplay(
                     />
                   </PluginModule>
                 ) },
-                { key: 'playground_workflow_config', label: '工作流配置', children: playgroundWorkflowConfigTab },
-                { key: 'playground_skill_config', label: 'Skill 配置', children: <PluginModule><PlaygroundSkillConfigTab /></PluginModule> },
-                { key: 'playground_prompt_optimize', label: 'AI 优化提示词', children: <PluginModule><PlaygroundPromptOptimizeConfigTab isLight={_isLight} /></PluginModule> },
+                { key: 'playground_workflow_config', label: pg2026T('admin_tab_workflow', '工作流配置'), children: playgroundWorkflowConfigTab },
+                { key: 'playground_image_edit', label: pg2026T('admin_image_edit', '图片编辑'), children: <PluginModule><PlaygroundImageEditConfigTab isLight={_isLight} /></PluginModule> },
+                { key: 'playground_video_edit', label: pg2026T('admin_video_workbench', '视频编辑'), children: <PluginModule><PlaygroundVideoEditConfigTab isLight={_isLight} /></PluginModule> },
+                { key: 'playground_skill_config', label: pg2026T('admin_tab_skill', 'Skill 配置'), children: <PluginModule><PlaygroundSkillConfigTab /></PluginModule> },
+                { key: 'playground_prompt_optimize', label: pg2026T('admin_tab_prompt_optimize', 'AI 优化提示词'), children: <PluginModule><PlaygroundPromptOptimizeConfigTab isLight={_isLight} /></PluginModule> },
               ]
             : plugin.name === 'playground'
               ? [

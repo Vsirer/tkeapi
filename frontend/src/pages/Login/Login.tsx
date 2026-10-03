@@ -29,6 +29,7 @@ import type { AuthMethodOption } from '../../layouts/AuthLayout';
 import WechatQR from '../../components/WechatQR';
 import GoogleIcon from '../../components/GoogleIcon';
 import { sanitizeRedirectPath, stripAuthParamsFromUrl } from '../../utils/safeRedirect';
+import { playground2026LoginLanding } from '../../utils/siteDefaultLanding';
 import { browserTimezone } from '../../utils/timedisplay';
 import AccountPickModal from './AccountPickModal';
 
@@ -65,17 +66,26 @@ const Login: React.FC = () => {
     }
   }, [searchParams]);
 
-  // 如果用户已登录，直接跳转到对应的控制台页面
+  // 已登录访问登录页：管理员进管理台；普通用户在站点默认创作中心开启时进创作中心主页
   useEffect(() => {
-    if (token && user) {
+    if (!(token && user)) return;
+    let cancelled = false;
+    (async () => {
       if (user.role === 'admin') {
         const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
-        navigate(`/${adminPath}/dashboard`, { replace: true });
-      } else {
-        navigate('/dashboard', { replace: true });
+        if (!cancelled) navigate(`/${adminPath}/dashboard`, { replace: true });
+        return;
       }
-    }
-  }, [token, user, navigate]);
+      const explicit = searchParams.get('redirect');
+      if (explicit) {
+        if (!cancelled) navigate(sanitizeRedirectPath(explicit), { replace: true });
+        return;
+      }
+      const landing = await playground2026LoginLanding(user);
+      if (!cancelled) navigate(landing || '/dashboard', { replace: true });
+    })();
+    return () => { cancelled = true; };
+  }, [token, user, navigate, searchParams]);
 
   useEffect(() => { 
     if (!settings) fetchSettings(); 
@@ -106,14 +116,26 @@ const Login: React.FC = () => {
     const legacyToken = searchParams.get('token');
     const handoffKey = searchParams.get('handoff');
     const isImpersonate = searchParams.get('impersonate') === '1';
-    const redirectTo = sanitizeRedirectPath(searchParams.get('redirect') || '/dashboard');
+    const explicitRedirect = searchParams.get('redirect');
 
-    const goAfterAuth = () => {
+    const goAfterAuth = async (profile?: { role?: string; user_group?: string; level_id?: string | number | null }) => {
       if (isImpersonate) {
+        const redirectTo = sanitizeRedirectPath(explicitRedirect || '/dashboard');
         window.location.replace(redirectTo.startsWith('/') ? redirectTo : '/dashboard');
-      } else {
-        navigate(redirectTo, { replace: true });
+        return;
       }
+      if (explicitRedirect) {
+        navigate(sanitizeRedirectPath(explicitRedirect), { replace: true });
+        return;
+      }
+      if (profile?.role !== 'admin') {
+        const landing = await playground2026LoginLanding(profile);
+        if (landing) {
+          navigate(landing, { replace: true });
+          return;
+        }
+      }
+      navigate('/dashboard', { replace: true });
     };
 
     const finishWithToken = (tok: string) => {
@@ -122,11 +144,11 @@ const Login: React.FC = () => {
       request.get('/user/profile')
         .then((res: any) => {
           setUser(res, isImpersonate);
-          goAfterAuth();
+          void goAfterAuth(res);
         })
         .catch((e) => {
           console.error('Auto login failed:', e);
-          goAfterAuth();
+          void goAfterAuth();
         });
     };
 
@@ -260,7 +282,7 @@ const Login: React.FC = () => {
     }
   };
 
-  const finishLogin = (res: any) => {
+  const finishLogin = async (res: any) => {
     setSelectOpen(false);
     setToken(res.token); 
     setUser(res.user);
@@ -268,9 +290,15 @@ const Login: React.FC = () => {
     if (res.user?.role === 'admin') {
       const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
       navigate(`/${adminPath}/dashboard`);
-    } else {
-      navigate('/dashboard');
+      return;
     }
+    const explicit = searchParams.get('redirect');
+    if (explicit) {
+      navigate(sanitizeRedirectPath(explicit));
+      return;
+    }
+    const landing = await playground2026LoginLanding(res.user);
+    navigate(landing || '/dashboard');
   };
 
   const handleSelectAccount = async (uid: string) => {

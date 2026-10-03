@@ -1304,3 +1304,19 @@ tr.ant-table-measure-row .ant-table-cell {
 .task-preview-modal-root .ant-modal-header {
   display: none !important;
 }
+
+/* 移除 Recharts 图表点击选中时出现的外边框高亮 */
+.recharts-responsive-container,
+.recharts-responsive-container:focus,
+.recharts-responsive-container:focus-visible,
+.recharts-wrapper,
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-wrapper *:focus,
+.recharts-wrapper *:focus-visible,
+.recharts-surface,
+.recharts-surface:focus,
+.recharts-surface:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}

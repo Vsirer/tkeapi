@@ -21,6 +21,7 @@ import {
   FileText,
 } from 'lucide-react';
 import type { UserKyc } from '../types';
+import { maskDocNumber } from '../utils/maskDocNumber';
 
 const ID_DOC_LABEL_MAP: Record<string, string> = {
   id_card: '居民身份证',
@@ -181,13 +182,13 @@ const UserKycDetailViewer: React.FC<UserKycDetailViewerProps> = ({
                   <span>{isEnterprise ? (isEn ? 'Tax ID / Doc No.' : '纳税人识别号/信用代码') : (isEn ? 'ID Number' : '证件号码')}</span>
                 </div>
                 <div className="text-sm font-mono font-semibold text-zinc-900 dark:text-zinc-100">
-                  {docNumber || '-'}
+                  {docNumber ? maskDocNumber(docNumber) : '-'}
                 </div>
               </div>
               {docNumber && (
                 <Tooltip title={isEn ? 'Copy' : '复制'}>
                   <button
-                    onClick={() => handleCopy(docNumber, 'doc_num')}
+                    onClick={() => handleCopy(maskDocNumber(docNumber), 'doc_num')}
                     className="p-1.5 rounded-md text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-800 transition-colors"
                   >
                     {copiedKey === 'doc_num' ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}

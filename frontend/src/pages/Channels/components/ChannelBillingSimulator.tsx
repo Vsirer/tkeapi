@@ -155,8 +155,8 @@ const DEFAULT_PRESET_FIELDS: PresetFields = {
 
 const SCENARIO_PRESETS: Record<ScenarioType, { modality: ModalityType; fields: Partial<PresetFields> }> = {
   chat: { modality: 'text', fields: { prompt_tokens: 1500, completion_tokens: 800, cached_tokens: 300 } },
-  image: { modality: 'image', fields: { resolution: '1k', image_count: 1 } },
-  video: { modality: 'video', fields: { duration_seconds: 5.0, resolution: '720p' } },
+  image: { modality: 'image', fields: { resolution: '1k', image_count: 1, prompt_tokens: 500, completion_tokens: 10000 } },
+  video: { modality: 'video', fields: { duration_seconds: 5.0, resolution: '720p', prompt_tokens: 1000, completion_tokens: 45000 } },
   audio: { modality: 'audio', fields: { audio_tokens: 1000, text_characters: 500, duration_seconds: 15.0, prompt_tokens: 200 } },
   embedding: { modality: 'embedding', fields: { prompt_tokens: 800 } },
 };
@@ -370,7 +370,7 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
   };
 
   const getTraceItemDisplay = (trace: PipelineTraceStep) => {
-    const title = t(`channels.simulator.stage_${trace.stage}_title`, trace.title);
+    const title = trace.title.includes('按秒') ? trace.title : t(`channels.simulator.stage_${trace.stage}_title`, trace.title);
     let formula = trace.formula;
     let description = trace.description;
 
@@ -393,12 +393,8 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
           break;
         }
         case 'pre_deduct':
-          formula = `${t('channels.simulator.pre_deducted', '预扣冻结')}: ${simResult.settlement.pre_deducted.toFixed(6)} ${currencyUnit}`;
-          description = simResult.settlement.pre_deducted <= 0
-            ? t('channels.simulator.desc_pre_deduct_none', '该模型未配置固定预扣金额，请求前免冻结直接透传')
-            : trace.status === 'pass'
-            ? t('channels.simulator.desc_pre_deduct_pass', '模拟账户钱包可用余额充足，预扣冻结校验通过')
-            : t('channels.simulator.desc_pre_deduct_fail', '模拟账户可用余额不足，无法满足预扣要求，生产环境将被拦截');
+          formula = trace.formula || `${t('channels.simulator.pre_deducted', '预扣冻结')}: ${simResult.settlement.pre_deducted.toFixed(6)} ${currencyUnit}`;
+          description = trace.description;
           break;
         case 'base_cost': {
           formula = `${t('channels.simulator.formula_base_cost', '基础算力原价')} = ${(trace.value ?? 0).toFixed(6)} ${currencyUnit}`;
@@ -823,7 +819,7 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                         label={t('channels.simulator.image_resolution', '分辨率 / 尺寸')}
                         name="resolution"
                         tooltip={t('channels.simulator.image_resolution_tip', '可选 1k/2k/4k 或自定义输入尺寸')}
-                        style={{ marginBottom: 4 }}
+                        style={{ marginBottom: 10 }}
                       >
                         <AutoComplete
                           allowClear
@@ -856,9 +852,31 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                         label={t('channels.simulator.image_count', '生成张数')}
                         name="image_count"
                         tooltip={t('channels.simulator.image_count_tip', '图片张数 (默认 1)')}
-                        style={{ marginBottom: 4 }}
+                        style={{ marginBottom: 10 }}
                       >
                         <InputNumber min={1} max={10} style={{ width: '100%' }} onChange={executeSimulation} />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                  <Row gutter={8}>
+                    <Col span={12}>
+                      <Form.Item
+                        label={t('channels.simulator.prompt_tokens', '提示词 (Prompt)')}
+                        name="prompt_tokens"
+                        tooltip={t('channels.simulator.image_prompt_tokens_tip', '用于 GPT-Image-2 / FLUX 等按 Token 计费的图像模型')}
+                        style={{ marginBottom: 4 }}
+                      >
+                        <InputNumber min={0} step={100} style={{ width: '100%' }} onChange={executeSimulation} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item
+                        label={t('channels.simulator.completion_tokens', '生成/补全 (Completion)')}
+                        name="completion_tokens"
+                        tooltip={t('channels.simulator.image_completion_tokens_tip', '图片生成 Token 消耗（如 GPT-Image-2 生成 1K 图片通常约 10,000 Tokens）')}
+                        style={{ marginBottom: 4 }}
+                      >
+                        <InputNumber min={0} step={1000} style={{ width: '100%' }} onChange={executeSimulation} />
                       </Form.Item>
                     </Col>
                   </Row>
@@ -872,8 +890,8 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                       <Form.Item
                         label={t('channels.simulator.duration_seconds', '视频时长 (秒)')}
                         name="duration_seconds"
-                        tooltip={t('channels.simulator.duration_seconds_tip', '视频秒数 (默认 5 秒)')}
-                        style={{ marginBottom: 4 }}
+                        tooltip={t('channels.simulator.duration_seconds_tip', '视频秒数 (默认 5 秒，按秒预扣与时长计费)')}
+                        style={{ marginBottom: 10 }}
                       >
                         <InputNumber min={0.5} max={600} step={1} addonAfter="秒" style={{ width: '100%' }} onChange={executeSimulation} />
                       </Form.Item>
@@ -883,7 +901,7 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                         label={t('channels.simulator.video_resolution', '视频清晰度')}
                         name="resolution"
                         tooltip={t('channels.simulator.video_resolution_tip', '支持 720p/1080p/4k 或自定义')}
-                        style={{ marginBottom: 4 }}
+                        style={{ marginBottom: 10 }}
                       >
                         <AutoComplete
                           allowClear
@@ -905,6 +923,28 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                             void executeSimulation();
                           }}
                         />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                  <Row gutter={8}>
+                    <Col span={12}>
+                      <Form.Item
+                        label={t('channels.simulator.prompt_tokens', '提示词 (Prompt)')}
+                        name="prompt_tokens"
+                        tooltip={t('channels.simulator.video_prompt_tokens_tip', '用于 Seedance / MiniMax 等按 Token 计费的视频模型')}
+                        style={{ marginBottom: 4 }}
+                      >
+                        <InputNumber min={0} step={500} style={{ width: '100%' }} onChange={executeSimulation} />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item
+                        label={t('channels.simulator.completion_tokens', '生成/补全 (Completion)')}
+                        name="completion_tokens"
+                        tooltip={t('channels.simulator.video_completion_tokens_tip', '视频生成 Token 消耗（如 5 秒 720p 视频通常约 45,000 Tokens）')}
+                        style={{ marginBottom: 4 }}
+                      >
+                        <InputNumber min={0} step={5000} style={{ width: '100%' }} onChange={executeSimulation} />
                       </Form.Item>
                     </Col>
                   </Row>
@@ -1040,7 +1080,14 @@ export const ChannelBillingSimulator: React.FC<ChannelBillingSimulatorProps> = (
                 <Row gutter={[16, 16]}>
                   <Col span={8}>
                     <Statistic
-                      title={<span style={{ fontSize: 12 }}>{t('channels.simulator.pre_deducted', '预扣冻结金额')}</span>}
+                      title={
+                        <span style={{ fontSize: 12 }}>
+                          {t('channels.simulator.pre_deducted', '预扣冻结金额')}
+                          {simResult.pipeline_trace.some((p) => p.stage === 'pre_deduct' && p.title.includes('按秒'))
+                            ? ' (按秒预扣)'
+                            : ''}
+                        </span>
+                      }
                       value={simResult.settlement.pre_deducted}
                       precision={6}
                       suffix={currencyUnit}

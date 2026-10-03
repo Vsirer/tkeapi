@@ -2608,15 +2608,24 @@ pub(crate) async fn get_playground_public_config(
         body["feature_catalog"] = pg2026_feature_catalog(&types);
         #[cfg(feature = "commercial_plugins")]
         {
-            let preferred = configs
-                .get(crate::api::plugins::playground_2026::prompt_optimize::CONFIG_KEY)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            body["prompt_optimize_llm"] =
+            let po_enabled = crate::api::plugins::playground_2026::prompt_optimize::config_enabled(
+                configs
+                    .get(crate::api::plugins::playground_2026::prompt_optimize::ENABLED_KEY)
+                    .map(|s| s.as_str()),
+            );
+            body["prompt_optimize_enabled"] = json!(po_enabled);
+            body["prompt_optimize_llm"] = if po_enabled {
+                let preferred = configs
+                    .get(crate::api::plugins::playground_2026::prompt_optimize::CONFIG_KEY)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 crate::api::plugins::playground_2026::prompt_optimize::public_llm_json(
                     &state, preferred,
                 )
-                .await;
+                .await
+            } else {
+                serde_json::Value::Null
+            };
             body["voice_catalogs"] =
                 crate::api::plugins::playground_2026::voice_library::catalogs_json();
         }

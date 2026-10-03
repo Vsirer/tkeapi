@@ -8,6 +8,7 @@
 import React, { useMemo, useState } from 'react';
 import { Button, Input, Modal, Select, Switch, Typography } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 import {
   VOICE_CATALOG_DOUBAO_TTS_2,
   seedVoiceLibrary,
@@ -29,8 +30,6 @@ type Props = {
   onChange: (next: VoiceLibraryBinding | null) => void;
 };
 
-const CATALOG_OPTIONS = [{ value: VOICE_CATALOG_DOUBAO_TTS_2, label: '豆包语音合成 2.0' }];
-
 const SchemeVoiceLibraryField: React.FC<Props> = ({
   mode,
   schemeType,
@@ -41,6 +40,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
   isLight,
   onChange,
 }) => {
+  const { t } = useTranslation('playground_2026');
   const muted = isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)';
   const label = isLight ? '#1f2937' : '#fff';
   const inherit = useMemo(
@@ -53,6 +53,11 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
   const [draft, setDraft] = useState<VoiceLibraryBinding>(current);
   const [baseline, setBaseline] = useState<VoiceLibraryBinding>(current);
   const [customDraft, setCustomDraft] = useState('');
+
+  const catalogOptions = useMemo(
+    () => [{ value: VOICE_CATALOG_DOUBAO_TTS_2, label: t('admin_scheme_voice_catalog_doubao', '豆包语音合成 2.0') }],
+    [t],
+  );
 
   if (schemeType !== 'audio') return null;
 
@@ -79,7 +84,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
     const extras = (draft.custom || []).map((c) => ({
       id: c.id,
       name: c.name,
-      scene: '通用',
+      scene: t('admin_scheme_voice_general', '通用'),
     }));
     const byId = new Map(stock.map((v) => [v.id, v]));
     extras.forEach((v) => {
@@ -89,23 +94,23 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
       value: v.id,
       label: `${v.name} · ${v.scene}`,
     }));
-  }, [catalogs, draft.catalog, draft.custom]);
+  }, [catalogs, draft.catalog, draft.custom, t]);
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <Text strong style={{ color: label, fontSize: 14 }}>音色</Text>
+          <Text strong style={{ color: label, fontSize: 14 }}>{t('admin_vl_title', '音色')}</Text>
           <Text style={{ display: 'block', fontSize: 12, marginTop: 2, color: muted }}>
             {mode === 'scheme'
-              ? '开启后，音频生成页展示音色库。目录来自官方 2.0 公版音色，不写进方案参数。'
-              : `对本模型生效。未改时继承方案${inheritSchemeName ? `「${inheritSchemeName}」` : ''}。`}
+              ? t('admin_vl_desc_scheme', '开启后，音频生成页展示音色库。目录来自官方 2.0 公版音色，不写进方案参数。')
+              : t('admin_vl_desc_model', '对本模型生效。未改时继承方案{{name}}。', { name: inheritSchemeName ? `「${inheritSchemeName}」` : '' })}
           </Text>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {current.enabled && (
             <Button size="small" icon={<SettingOutlined />} onClick={openConfig}>
-              配置
+              {t('admin_isp_btn_config', '配置')}
             </Button>
           )}
           <Switch
@@ -118,7 +123,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
         </div>
       </div>
       <Modal
-        title="音色"
+        title={t('admin_vl_title', '音色')}
         open={open}
         zIndex={1100}
         width={640}
@@ -134,7 +139,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
                 setDraft(next);
               }}
             >
-              重置
+              {t('admin_reset', '重置')}
             </Button>
             <Button
               onClick={() => {
@@ -142,7 +147,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
                 setOpen(false);
               }}
             >
-              取消
+              {t('admin_cancel', '取消')}
             </Button>
             <Button
               type="primary"
@@ -151,23 +156,23 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
                 setOpen(false);
               }}
             >
-              完成
+              {t('admin_done', '完成')}
             </Button>
           </div>
         }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>音色目录</Text>
+            <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>{t('admin_scheme_voice_catalog', '音色目录')}</Text>
             <Select
               value={draft.catalog}
-              options={CATALOG_OPTIONS}
+              options={catalogOptions}
               style={{ width: '100%' }}
               onChange={(catalog) => setDraft(seedVoiceLibrary({ ...draft, catalog }, catalogs))}
             />
           </div>
           <div>
-            <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>默认音色</Text>
+            <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>{t('admin_scheme_voice_default', '默认音色')}</Text>
             <Select
               showSearch
               optionFilterProp="label"
@@ -179,7 +184,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
           </div>
           <div>
             <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>
-              可选白名单（空=目录全部）
+              {t('admin_scheme_voice_allowlist', '可选白名单（空=目录全部）')}
             </Text>
             <Select
               mode="multiple"
@@ -189,13 +194,13 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
               value={draft.allowlist || []}
               options={voiceOptions}
               style={{ width: '100%' }}
-              placeholder="不限制"
+              placeholder={t('admin_scheme_voice_unlimited', '不限制')}
               onChange={(allowlist) => setDraft({ ...draft, allowlist: allowlist.length ? allowlist : undefined })}
             />
           </div>
           <div>
             <Text style={{ display: 'block', fontSize: 12, marginBottom: 6, color: muted }}>
-              追加自定义 speaker（仅 2.0 uranus / saturn）
+              {t('admin_scheme_voice_custom_speaker', '追加自定义 speaker（仅 2.0 uranus / saturn）')}
             </Text>
             <div style={{ display: 'flex', gap: 8 }}>
               <Input
@@ -213,7 +218,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
                   setCustomDraft('');
                 }}
               >
-                添加
+                {t('admin_scheme_voice_add', '添加')}
               </Button>
             </div>
             {(draft.custom || []).length > 0 && (
@@ -229,7 +234,7 @@ const SchemeVoiceLibraryField: React.FC<Props> = ({
                         setDraft(seedVoiceLibrary({ ...draft, custom }, catalogs));
                       }}
                     >
-                      移除
+                      {t('admin_scheme_voice_remove', '移除')}
                     </Button>
                   </div>
                 ))}

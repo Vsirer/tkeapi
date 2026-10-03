@@ -630,31 +630,26 @@ pub(crate) async fn cascade_s2_poll(
     }
 }
 
-/// 写入 `cascade.s1_task_id`（仅内部），返回对外 cgt（由调用方写入响应体 `id` / `logs.task_id`）
-pub(crate) fn cascade_seal_s1_task_id(
-    plugin_tag: &mut Option<String>,
-    upstream_s1_id: &str,
-) -> Option<String> {
+/// 写入 `cascade.s1_task_id`（仅内部）。对外任务号沿用 POST 受理时的系统号。
+pub(crate) fn cascade_remember_s1(plugin_tag: &mut Option<String>, upstream_s1_id: &str) {
     let upstream_s1_id = upstream_s1_id.trim();
     if upstream_s1_id.is_empty() {
-        return None;
+        return;
     }
-    let ts = chrono::Local::now().format("%Y%m%d%H%M%S");
-    let u = ulid::Ulid::new().to_string().to_lowercase();
-    let cgt = format!("cgt-{}-{}", ts, &u[21..26]);
     let mut v: serde_json::Value = plugin_tag
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    let cascade = v
-        .as_object_mut()?
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    let cascade = obj
         .entry("cascade")
         .or_insert_with(|| serde_json::json!({}));
-    cascade
-        .as_object_mut()?
-        .insert("s1_task_id".into(), serde_json::json!(upstream_s1_id));
-    *plugin_tag = Some(v.to_string());
-    Some(cgt)
+    if let Some(c) = cascade.as_object_mut() {
+        c.insert("s1_task_id".into(), serde_json::json!(upstream_s1_id));
+        *plugin_tag = Some(v.to_string());
+    }
 }
 
 /// 级联成功对外：S1 原文骨架叠 S2 产物 URL / 分辨率 / 帧率 / 尾帧；原位改字符串
@@ -1094,6 +1089,7 @@ pub(crate) fn cascade_prepare_poll<'a>(
         }
     } else {
         let poll_task_id = cascade_json_ptr(plugin_tag, "/cascade/s1_task_id", false)
+            .or_else(|| cascade_json_ptr(plugin_tag, "/upstream_task", false))
             .map(std::borrow::Cow::Owned)
             .unwrap_or(std::borrow::Cow::Borrowed(task_id));
         CascadePollTarget {

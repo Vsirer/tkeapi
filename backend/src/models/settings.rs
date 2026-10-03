@@ -14,6 +14,9 @@ pub struct SiteSettings {
     pub name: String,
     #[serde(default = "default_site_name")]
     pub title: String,
+    /// 站点简介，用于系统定位与管理后台悬停提示
+    #[serde(default)]
+    pub intro: String,
     #[serde(default)]
     pub keywords: String,
     #[serde(default)]
@@ -76,16 +79,6 @@ pub struct SiteSettings {
     /// 注册 IP 白名单。默认放行 10.0.0.0/24、192.168.1.0/24、172.16.0.0/24
     #[serde(default = "default_registration_ip_whitelist")]
     pub ip_whitelist: Vec<String>,
-}
-
-impl SiteSettings {
-    /// 名单为空时补上内置白名单并开启。已关闭且名单非空的配置保持不动。
-    pub fn apply_builtin_ip_whitelist(&mut self) {
-        if self.ip_whitelist.is_empty() {
-            self.ip_whitelist_enabled = true;
-            self.ip_whitelist = default_registration_ip_whitelist();
-        }
-    }
 }
 
 pub fn default_registration_ip_whitelist() -> Vec<String> {

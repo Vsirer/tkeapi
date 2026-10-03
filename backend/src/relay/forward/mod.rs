@@ -86,7 +86,7 @@ pub struct ResolvedForward {
     pub content_to_prompt: bool,
     /// 级联分辨率倍率表（config_json.res_mul）；阶段二：有 usage 则乘入 token，否则乘费用；空表=1.0
     pub res_mul: HashMap<String, f64>,
-    /// 级联：目标分辨率 → 增强版本（fast|standard|pro|ai）；ai 仅 720p/1080p/2k；缺 key/非法 → 标准版
+    /// 级联：目标分辨率 → 增强版本（fast|standard|pro|ai）；ai 支持 720p/1080p/2k/4k；缺 key/非法 → 标准版
     pub res_enhance: HashMap<String, String>,
     /// 级联：目标分辨率 → 阶段一座底分辨率；缺 key / 非法则用默认一级底座
     pub res_base: HashMap<String, String>,

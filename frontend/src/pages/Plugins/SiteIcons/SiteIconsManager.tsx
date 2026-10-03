@@ -5,7 +5,7 @@
  * @license        MIT (https://www.tkeapi.com/)
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Typography, Input, Button, Space, Spin, message, Tag, Modal, Form, Select, Upload, Tooltip, Empty, Popconfirm, Progress, ColorPicker, InputNumber } from 'antd';
 import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, CloudDownloadOutlined, HistoryOutlined, InboxOutlined, CloseOutlined, ClearOutlined } from '@ant-design/icons';
 import request from '../../../utils/request';
@@ -14,6 +14,9 @@ import { formatApiDateTime } from '../../../utils/timedisplay';
 import PluginLogRetentionCard from '../components/PluginLogRetentionCard';
 import ListPagination, { useListPager } from '../../../components/ListPagination';
 import { applySvgEdits, fitSvgPreview, readSvgMeta, type SvgEdits } from './svgEdit';
+
+const ICON_PAGE_SIZE = 100;
+const NAME_INITIALS = 'abcdefghijklmnopqrstuvwxyz'.split('');
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -41,13 +44,13 @@ interface StorageStatus {
 const SiteIconsManager: React.FC = () => {
   const { themeMode } = useThemeStore();
   const _isLight = themeMode === 'light';
-  const [icons, setIcons] = useState<SiteIcon[]>([]);
-  const [total, setTotal] = useState(0);
-  const { page, pageSize, setPage, setPageSize } = useListPager();
+  const [allIcons, setAllIcons] = useState<SiteIcon[]>([]);
+  const { page, pageSize, setPage, setPageSize } = useListPager(ICON_PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSource, setFilterSource] = useState('');
+  const [nameInitial, setNameInitial] = useState('');
   const [storageInfo, setStorageInfo] = useState<StorageStatus | null>(null);
 
   // 同步状态
@@ -96,23 +99,48 @@ const SiteIconsManager: React.FC = () => {
     fetchStorageStatus();
   }, [fetchStorageStatus]);
 
-  const fetchIcons = useCallback(async (p = page, size = pageSize) => {
+  const fetchIcons = useCallback(async () => {
     try {
       setLoading(true);
-      const params: any = { page: p, size };
-      if (searchKeyword) params.q = searchKeyword;
-      if (filterCategory) params.category = filterCategory;
-      if (filterSource) params.source = filterSource;
-      const res = await (request.get('/plugins/site-icons', { params }) as any);
-      if (res.data) setIcons(res.data);
-      if (res.total != null) setTotal(res.total);
-      setPage(res.page || p);
-      setPageSize(size);
+      const batchSize = 200;
+      let reqPage = 1;
+      let loaded: SiteIcon[] = [];
+      let totalCount = 0;
+      for (;;) {
+        const params: any = { page: reqPage, size: batchSize };
+        if (searchKeyword) params.q = searchKeyword;
+        if (filterCategory) params.category = filterCategory;
+        if (filterSource) params.source = filterSource;
+        const res = await (request.get('/plugins/site-icons', { params }) as any);
+        const batch: SiteIcon[] = res.data || [];
+        totalCount = res.total ?? loaded.length + batch.length;
+        loaded = loaded.concat(batch);
+        if (batch.length === 0 || loaded.length >= totalCount || reqPage >= 50) break;
+        reqPage += 1;
+      }
+      loaded.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
+      setAllIcons(loaded);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, [searchKeyword, filterCategory, filterSource, page, pageSize]);
+  }, [searchKeyword, filterCategory, filterSource]);
 
-  useEffect(() => { fetchIcons(1); }, [searchKeyword, filterCategory, filterSource]);
+  useEffect(() => { fetchIcons(); }, [fetchIcons]);
+
+  useEffect(() => { setPage(1); }, [searchKeyword, filterCategory, filterSource, setPage]);
+
+  const filteredIcons = useMemo(() => {
+    if (!nameInitial) return allIcons;
+    if (nameInitial === '#') {
+      return allIcons.filter(icon => !/^[a-z]/i.test(icon.name || ''));
+    }
+    const letter = nameInitial.toLowerCase();
+    return allIcons.filter(icon => (icon.name || '').toLowerCase().startsWith(letter));
+  }, [allIcons, nameInitial]);
+
+  const pagedIcons = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredIcons.slice(start, start + pageSize);
+  }, [filteredIcons, page, pageSize]);
 
   // ── 同步轮询 ──
   const pollProgress = useCallback(async () => {
@@ -137,7 +165,7 @@ const SiteIconsManager: React.FC = () => {
         setSyncFinished(true);
         setSyncing(false);
         if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = undefined; }
-        fetchIcons(1);
+        fetchIcons();
       }
     } catch { /* silent */ }
   }, [fetchIcons]);
@@ -181,9 +209,8 @@ const SiteIconsManager: React.FC = () => {
           } else {
             message.success('图标库已全部清空');
           }
-          setIcons([]);
-          setTotal(0);
-          fetchIcons(1);
+          setAllIcons([]);
+          fetchIcons();
         } catch (e) {
           console.error(e);
           return Promise.reject(e);
@@ -423,42 +450,59 @@ const SiteIconsManager: React.FC = () => {
         </Space>
       </div>
 
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 12 }}>
+        <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, marginRight: 4 }}>首字母</Text>
+        <Button size="small" type={nameInitial === '' ? 'primary' : 'default'} onClick={() => { setNameInitial(''); setPage(1); }}>全部</Button>
+        {NAME_INITIALS.map(ch => (
+          <Button key={ch} size="small" type={nameInitial === ch ? 'primary' : 'default'} onClick={() => { setNameInitial(ch); setPage(1); }} style={{ width: 28, padding: 0 }}>
+            {ch.toUpperCase()}
+          </Button>
+        ))}
+        <Button size="small" type={nameInitial === '#' ? 'primary' : 'default'} onClick={() => { setNameInitial('#'); setPage(1); }}>#</Button>
+      </div>
+
       <Text style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 13, display: 'block', marginBottom: 16 }}>
-        共 <span style={{ color: _isLight ? '#1f2937' : '#fff', fontWeight: 500 }}>{total}</span> 个图标
+        共 <span style={{ color: _isLight ? '#1f2937' : '#fff', fontWeight: 500 }}>{filteredIcons.length}</span> 个图标
       </Text>
 
       {/* ════ 图标网格 ════ */}
-      {loading && icons.length === 0 ? (
+      {loading && allIcons.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>
-      ) : icons.length === 0 ? (
-        <Empty description={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)' }}>暂无图标，点击「在线更新」从 Lobe Icons 同步</Text>} style={{ padding: 60 }} />
+      ) : filteredIcons.length === 0 ? (
+        <Empty description={<Text style={{ color: _isLight ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.35)' }}>{nameInitial ? '该首字母下暂无图标' : '暂无图标，点击「在线更新」从 Lobe Icons 同步'}</Text>} style={{ padding: 60 }} />
       ) : (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 12 }}>
-            {icons.map(icon => (
+            {pagedIcons.map(icon => (
               <div key={icon.id} style={{
                 background: _isLight ? '#fff' : '#141414', border: _isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
                 padding: '14px 10px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center',
                 cursor: 'pointer', transition: 'border-color 0.2s, box-shadow 0.2s', position: 'relative' }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = icon.source === 'custom' ? 'rgba(82,196,26,0.5)' : 'rgba(22,119,255,0.5)'; e.currentTarget.style.boxShadow = '0 0 12px rgba(22,119,255,0.08)'; const a = e.currentTarget.querySelector('.icon-actions') as HTMLElement; if (a) a.style.opacity = '1'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; const a = e.currentTarget.querySelector('.icon-actions') as HTMLElement; if (a) a.style.opacity = '0'; }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = icon.source === 'custom' ? 'rgba(82,196,26,0.5)' : 'rgba(22,119,255,0.5)'; e.currentTarget.style.boxShadow = '0 0 12px rgba(22,119,255,0.08)'; const a = e.currentTarget.querySelector('.icon-actions') as HTMLElement; if (a) { a.style.opacity = '1'; a.style.width = 'auto'; a.style.overflow = 'visible'; a.style.pointerEvents = 'auto'; } }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; const a = e.currentTarget.querySelector('.icon-actions') as HTMLElement; if (a) { a.style.opacity = '0'; a.style.width = '0'; a.style.overflow = 'hidden'; a.style.pointerEvents = 'none'; } }}
                 onClick={() => setPreviewIcon(icon)}
               >
                 {icon.source === 'custom' && <Tag style={{ position: 'absolute', top: 4, right: 4, fontSize: 10, lineHeight: '16px', padding: '0 4px', background: 'rgba(82,196,26,0.1)', border: '1px solid rgba(82,196,26,0.3)', color: '#52c41a', borderRadius: 3 }}>自定义</Tag>}
                 <div style={{ ...iconTileStyle, marginBottom: 8 }}>
                   <img src={getSvgUrl(icon)} alt={icon.title || icon.name} style={iconImgStyle} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                 </div>
-                <Text style={{ color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'center', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }} title={icon.title || icon.name}>{icon.title || icon.name}</Text>
-                <div className="icon-actions" style={{ position: 'absolute', bottom: 4, right: 4, display: 'flex', gap: 2, opacity: 0, transition: 'opacity 0.15s' }} onClick={e => e.stopPropagation()}>
-                  <Tooltip title="编辑"><Button type="text" size="small" icon={<EditOutlined />} style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12 }} onClick={() => handleOpenEdit(icon)} /></Tooltip>
-                  <Popconfirm title="确定删除？" onConfirm={() => handleDelete(icon.id)} okText="删除" cancelText="取消">
-                    <Tooltip title="删除"><Button type="text" size="small" danger icon={<DeleteOutlined />} style={{ fontSize: 12 }} /></Tooltip>
-                  </Popconfirm>
+                <div style={{ display: 'flex', alignItems: 'center', width: '100%', gap: 2, minHeight: 24 }}>
+                  <Text style={{ flex: '1 1 auto', minWidth: 0, color: _isLight ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.65)', fontSize: 11, textAlign: 'center', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={icon.title || icon.name}>{icon.title || icon.name}</Text>
+                  <div className="icon-actions" style={{ display: 'flex', flex: '0 0 auto', gap: 0, width: 0, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }} onClick={e => e.stopPropagation()}>
+                    <Tooltip title="编辑"><Button type="text" size="small" icon={<EditOutlined />} style={{ color: _isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', fontSize: 12, width: 22, height: 22 }} onClick={() => handleOpenEdit(icon)} /></Tooltip>
+                    <Popconfirm title="确定删除？" onConfirm={() => handleDelete(icon.id)} okText="删除" cancelText="取消">
+                      <Tooltip title="删除"><Button type="text" size="small" danger icon={<DeleteOutlined />} style={{ fontSize: 12, width: 22, height: 22 }} /></Tooltip>
+                    </Popconfirm>
+                  </div>
                 </div>
               </div>
             ))}
           </div>
-          {total > 0 && <div style={{ textAlign: 'center', marginTop: 20 }}><ListPagination current={page} total={total} pageSize={pageSize} onChange={(p, s) => fetchIcons(p, s)} /></div>}
+          {filteredIcons.length > 0 && (
+            <div style={{ textAlign: 'center', marginTop: 20 }}>
+              <ListPagination current={page} total={filteredIcons.length} pageSize={pageSize} onChange={(p, s) => { setPage(p); setPageSize(s); }} />
+            </div>
+          )}
         </>
       )}
 

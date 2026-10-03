@@ -62,6 +62,35 @@ pub fn settlement_delta(cost: f64, pre_deducted: f64) -> (f64, f64) {
     (settled, apply)
 }
 
+/// 一笔已完成结算里，邀请返佣可计入的系统钱包消费。
+/// 赠送钱包消费返回 0 侧差额，冻结阶段返回 0。`gift_balance_before_extra` 只在补扣（apply > 0）时使用。
+#[inline]
+pub fn paid_consumption_for_commission(
+    settled_cost: f64,
+    pre_deducted: f64,
+    pre_deduct_gift: f64,
+    gift_balance_before_extra: f64,
+    is_freeze: bool,
+) -> f64 {
+    if is_freeze {
+        return 0.0;
+    }
+    let settled = round_money(settled_cost);
+    if settled <= 0.0 {
+        return 0.0;
+    }
+    let pre = round_money(pre_deducted).max(0.0);
+    let pre_gift = round_money(pre_deduct_gift).clamp(0.0, pre);
+    let apply = round_money(settled - pre);
+    let gift_total = if apply > 0.0 {
+        let extra_gift = round_money(apply.min(gift_balance_before_extra.max(0.0)));
+        round_money(pre_gift + extra_gift)
+    } else {
+        round_money(settled.min(pre_gift))
+    };
+    round_money((settled - gift_total).max(0.0))
+}
+
 /// 格式化预扣结算文案留痕（统一收口异步/同步任务的预扣结算说明）
 /// 支持传入已有货币单位（Some）；未传入（None）且 pre_deducted > 0 时内部自动从 state 查询，避免外部到处重复查库
 pub async fn format_settlement_note(
@@ -104,4 +133,41 @@ pub async fn format_settlement_note(
         unit,
         action
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::paid_consumption_for_commission;
+
+    #[test]
+    fn commission_skips_freeze_and_gift_only() {
+        assert_eq!(
+            paid_consumption_for_commission(8.0, 8.0, 0.0, 0.0, true),
+            0.0
+        );
+        assert_eq!(
+            paid_consumption_for_commission(5.0, 0.0, 0.0, 9.0, false),
+            0.0
+        );
+    }
+
+    #[test]
+    fn commission_counts_only_system_wallet() {
+        assert_eq!(
+            paid_consumption_for_commission(10.0, 0.0, 0.0, 3.0, false),
+            7.0
+        );
+        assert_eq!(
+            paid_consumption_for_commission(8.0, 8.0, 2.0, 0.0, false),
+            6.0
+        );
+        assert_eq!(
+            paid_consumption_for_commission(4.0, 10.0, 6.0, 0.0, false),
+            0.0
+        );
+        assert_eq!(
+            paid_consumption_for_commission(12.0, 10.0, 4.0, 1.0, false),
+            7.0
+        );
+    }
 }

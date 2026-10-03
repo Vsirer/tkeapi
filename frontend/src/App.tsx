@@ -6,7 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useParams, Outlet } from 'react-router-dom';
 import { Spin } from 'antd';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
@@ -31,10 +31,10 @@ import Tokens from './pages/Tokens/Tokens';
 import Upstreams from './pages/Upstreams/Upstreams';
 
 import Users from './pages/Users/Users';
+import UserAnalytics from './pages/Users/UserAnalytics';
 import UserInvoices from './pages/Users/UserInvoices';
-import UserLevels from './pages/Users/UserLevels';
+import UserLevelCenter from './pages/Users/UserLevelCenter';
 import UserLevelEdit from './pages/Users/UserLevelEdit';
-import AdminGroups from './pages/Users/AdminGroups';
 import AdminGroupEdit from './pages/Users/AdminGroupEdit';
 import Logs from './pages/Logs/Logs';
 import TaskLogs from './pages/Logs/TaskLogs';
@@ -61,6 +61,7 @@ import Invoices from './pages/Invoices/Invoices';
 import Wallet from './pages/Wallet/Wallet';
 import RechargeRecords from './pages/Finance/RechargeRecords';
 import GiftRecords from './pages/Finance/GiftRecords';
+import CommissionRecords from './pages/Finance/CommissionRecords';
 import FinanceDataAnalysis from './pages/Finance/FinanceDataAnalysis';
 import OrderDetails from './pages/Finance/OrderDetails';
 import InvoiceAudit from './pages/Finance/InvoiceAudit';
@@ -269,7 +270,10 @@ const PluginRoute = ({
         if (cancelled) return;
         const plugins: any[] = response?.active_plugins || [];
         const matched = plugins.find((p: any) => p.name === pluginName);
-        const ok = resolveAccess(matched);
+        let ok = resolveAccess(matched);
+        if (ok && pluginName === 'asset_manager' && matched?.user_asset_menu_enabled !== true) {
+          ok = false;
+        }
         setIsActive(ok);
         setPhase(ok ? 'ready' : 'denied');
         if (timer) {
@@ -446,327 +450,65 @@ const App: React.FC = () => {
             </PrivateRoute>
           }
         />
+        {/* 创作中心 2026 统一路由架构：
+            1. 顶部使用唯一的 PrivateRoute + PluginRoute 保护，子路径切换无需重复鉴权重载
+            2. 首页常驻外壳（PlaygroundHome2026）作为所有子 Tab 的共享实例，包含粒子背景、左侧侧栏与顶栏
+            3. 切换图片/视频/聊天/工作流等子 Tab 时，仅平滑切换内部工作区，外壳绝不卸载、不闪屏、不丢失菜单与状态
+        */}
         <Route
           path="/playground-2026"
           element={
             <PrivateRoute>
               <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/images" replace />
+                <Outlet />
               </PluginRoute>
             </PrivateRoute>
           }
-        />
-        <Route
-          path="/playground-2026/assets/all"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/assets/works"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/assets/uploads"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/assets/favorites"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/assets/albums/:albumId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/resources/works"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/works" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/resources/uploads"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/uploads" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/resources/favorites"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/favorites" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/resources/albums/:albumId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Playground2026WorksAlbumRedirect />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/works"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/works" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/works/favorites"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/assets/favorites" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/works/albums/:albumId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Playground2026WorksAlbumRedirect />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/projects"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/workflows" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/projects/:projectId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/workflows" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/images"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/images/generate"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/images" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/videos"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/audios"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/audio"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/audios" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/audios/generate"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/audios" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/chats"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/chats/:conversationId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/skills"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/skills/:skillId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/workflows"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <PlaygroundHome2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/workflows/create"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <WorkflowCreateBootstrap2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/workflows/:workflowId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Playground2026 />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/videos/generate"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/videos" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/generate-image"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/images" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/playground-2026/generate-video"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Navigate to="/playground-2026/videos" replace />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
-        {/* 兼容旧路径 /playground-2026/:projectId */}
-        <Route
-          path="/playground-2026/:projectId"
-          element={
-            <PrivateRoute>
-              <PluginRoute pluginName="playground_2026">
-                <Playground2026LegacyRedirect />
-              </PluginRoute>
-            </PrivateRoute>
-          }
-        />
+        >
+          <Route index element={<Navigate to="/playground-2026/images" replace />} />
+
+          {/* 快捷与历史路径兼容跳转 */}
+          <Route path="images/generate" element={<Navigate to="/playground-2026/images" replace />} />
+          <Route path="generate-image" element={<Navigate to="/playground-2026/images" replace />} />
+          <Route path="videos/generate" element={<Navigate to="/playground-2026/videos" replace />} />
+          <Route path="generate-video" element={<Navigate to="/playground-2026/videos" replace />} />
+          <Route path="audio" element={<Navigate to="/playground-2026/audios" replace />} />
+          <Route path="audios/generate" element={<Navigate to="/playground-2026/audios" replace />} />
+          <Route path="resources/works" element={<Navigate to="/playground-2026/assets/works" replace />} />
+          <Route path="resources/uploads" element={<Navigate to="/playground-2026/assets/uploads" replace />} />
+          <Route path="resources/favorites" element={<Navigate to="/playground-2026/assets/favorites" replace />} />
+          <Route path="resources/albums/:albumId" element={<Playground2026WorksAlbumRedirect />} />
+          <Route path="works" element={<Navigate to="/playground-2026/assets/works" replace />} />
+          <Route path="works/favorites" element={<Navigate to="/playground-2026/assets/favorites" replace />} />
+          <Route path="works/albums/:albumId" element={<Playground2026WorksAlbumRedirect />} />
+          <Route path="projects" element={<Navigate to="/playground-2026/workflows" replace />} />
+          <Route path="projects/:projectId" element={<Navigate to="/playground-2026/workflows" replace />} />
+
+          {/* 独立全屏画布编辑页（无需常驻首页外壳） */}
+          <Route path="workflows/create" element={<WorkflowCreateBootstrap2026 />} />
+          <Route path="workflows/:workflowId" element={<Playground2026 />} />
+
+          {/* 创作中心首页常驻外壳：所有子 Tab 共享同一实例，切换时不卸载、不闪屏、不丢失菜单。
+              子路径只匹配地址，页面由外壳按地址切换。element 显式为 null，避免叶子路由没有组件的警告。 */}
+          <Route element={<PlaygroundHome2026 />}>
+            <Route path="images" element={null} />
+            <Route path="videos" element={null} />
+            <Route path="audios" element={null} />
+            <Route path="chats" element={null} />
+            <Route path="chats/:conversationId" element={null} />
+            <Route path="skills" element={null} />
+            <Route path="skills/:skillId" element={null} />
+            <Route path="workflows" element={null} />
+            <Route path="assets/all" element={null} />
+            <Route path="assets/works" element={null} />
+            <Route path="assets/uploads" element={null} />
+            <Route path="assets/favorites" element={null} />
+            <Route path="assets/albums/:albumId" element={null} />
+          </Route>
+
+          {/* 兼容旧路径 /playground-2026/:projectId */}
+          <Route path=":projectId" element={<Playground2026LegacyRedirect />} />
+        </Route>
 
         {/* Model Marketplace Routes (Full Screen, Independent) */}
         <Route
@@ -854,6 +596,7 @@ const App: React.FC = () => {
           <Route path="task-logs/:logType" element={<TaskLogs />} />
 
           <Route path="wallet" element={<Wallet />} />
+          <Route path="affiliate" element={<Navigate to="/wallet?tab=referrals" replace />} />
           <Route path="assets" element={<PluginRoute pluginName="asset_manager"><UserAssets key="asset_manager" pluginNs="asset_manager" /></PluginRoute>} />
           <Route path="assets-intl" element={<PluginRoute pluginName="asset_manager_intl"><UserAssets key="asset_manager_intl" pluginNs="asset_manager_intl" /></PluginRoute>} />
           <Route path="advanced-marketing" element={<PluginRoute pluginName="team_marketing"><AdvancedMarketing /></PluginRoute>} />
@@ -908,6 +651,7 @@ const App: React.FC = () => {
 
             <Route path="redemptions" element={<Redemptions />} />
             <Route path="users" element={<Users />} />
+            <Route path="users/analytics" element={<UserAnalytics />} />
             <Route path="users/:userId/invoices" element={<UserInvoices />} />
             <Route path="users/:actionId" element={<Users />} />
             <Route path="users/:actionId/:tab" element={<Users />} />
@@ -918,12 +662,13 @@ const App: React.FC = () => {
             <Route path="admins/:actionId/:tab" element={<Users />} />
             <Route path="admins/edit/:actionId" element={<Users />} />
             <Route path="admins/edit/:actionId/:tab" element={<Users />} />
-            <Route path="user-levels" element={<UserLevels />} />
+            <Route path="user-levels" element={<UserLevelCenter />} />
             <Route path="user-levels/:actionId" element={<UserLevelEdit />} />
-            <Route path="admin-groups" element={<AdminGroups />} />
+            <Route path="admin-groups" element={<UserLevelCenter />} />
             <Route path="admin-groups/:actionId" element={<AdminGroupEdit />} />
             <Route path="finance/recharges" element={<RechargeRecords />} />
             <Route path="finance/gifts" element={<GiftRecords />} />
+            <Route path="finance/commissions" element={<CommissionRecords />} />
             <Route path="finance/orders" element={<OrderDetails />} />
             <Route path="finance/invoices" element={<InvoiceAudit />} />
             <Route path="finance/analysis" element={<FinanceDataAnalysis />} />

@@ -37,7 +37,7 @@ pub fn users_write_perm(role: &str) -> &'static str {
     }
 }
 
-async fn load_admin_context(state: &Arc<AppState>, user_id: &str) -> AppResult<AdminContext> {
+pub(crate) async fn load_admin_context(state: &Arc<AppState>, user_id: &str) -> AppResult<AdminContext> {
     let row: Option<(String, Option<i64>, Option<String>)> = sqlx::query_as(
         &state.db.format_query(
             "SELECT u.role, u.admin_group_id, g.permissions \

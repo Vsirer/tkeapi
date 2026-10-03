@@ -24,6 +24,7 @@ import UserKycFormFields, {
   formValuesToKycPayload,
 } from '../../components/UserKycFormFields';
 import UserKycDetailViewer from '../../components/UserKycDetailViewer';
+import { maskDocNumber } from '../../utils/maskDocNumber';
 
 const { Title, Text } = Typography;
 
@@ -693,12 +694,12 @@ const Profile: React.FC = () => {
 
         const items = isEnterprise ? [
           { key: 'company_name', label: isEn ? 'Company Name' : '企业名称', value: enterpriseKyc?.company_name },
-          { key: 'company_doc_number', label: isEn ? 'Tax ID / Doc No.' : '纳税人识别号/税号', value: enterpriseKyc?.company_doc_number },
+          { key: 'company_doc_number', label: isEn ? 'Tax ID / Doc No.' : '纳税人识别号/税号', value: maskDocNumber(enterpriseKyc?.company_doc_number) },
           { key: 'company_email', label: isEn ? 'Contact Email' : '企业联系邮箱', value: enterpriseKyc?.company_email },
           { key: 'company_phone', label: isEn ? 'Contact Phone' : '企业联系电话', value: enterpriseKyc?.company_phone },
         ] : [
           { key: 'real_name', label: isEn ? 'Real Name' : '真实姓名', value: personalKyc?.real_name },
-          { key: 'id_doc_number', label: isEn ? 'ID / Doc No.' : '证件号码', value: personalKyc?.id_doc_number },
+          { key: 'id_doc_number', label: isEn ? 'ID / Doc No.' : '证件号码', value: maskDocNumber(personalKyc?.id_doc_number) },
           { key: 'personal_email', label: isEn ? 'Contact Email' : '联系邮箱', value: personalKyc?.personal_email },
           { key: 'personal_phone', label: isEn ? 'Contact Phone' : '联系电话', value: personalKyc?.personal_phone },
         ];

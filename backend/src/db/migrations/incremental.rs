@@ -1482,6 +1482,184 @@ pub async fn run(pool: &PgPool, done: &mut HashSet<String>) -> anyhow::Result<()
           AND NOT (extended_config::jsonb -> 'resolution_rates' ? '1080p')"#
     );
 
+    once_migration!(pool, done, "announcements_target_module_v1",
+        "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS target_module VARCHAR(32) NOT NULL DEFAULT 'console'",
+        "COMMENT ON COLUMN announcements.target_module IS '通知模块：console=控制台，playground_2026=创作中心2026，portal_pro=站点门户增强版'"
+    );
+
+    once_migration!(pool, done, "announcements_target_modules_color_v1",
+        "ALTER TABLE announcements ALTER COLUMN target_module TYPE TEXT",
+        "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS banner_bg_color VARCHAR(16)",
+        "COMMENT ON COLUMN announcements.target_module IS '通知模块，逗号分隔可多选：console,playground_2026,portal_pro'",
+        "COMMENT ON COLUMN announcements.banner_bg_color IS '创作中心与门户顶栏背景色，#RRGGBB，空为默认背景'"
+    );
+
+    once_migration!(pool, done, "announcements_split_banner_bg_v1",
+        "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS playground_banner_bg VARCHAR(16)",
+        "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS portal_banner_bg VARCHAR(16)",
+        "COMMENT ON COLUMN announcements.playground_banner_bg IS '创作中心顶栏背景色，#RRGGBB，空为默认'",
+        "COMMENT ON COLUMN announcements.portal_banner_bg IS '门户顶栏背景色，#RRGGBB，空为默认'",
+        r#"UPDATE announcements SET playground_banner_bg = banner_bg_color
+           WHERE playground_banner_bg IS NULL AND banner_bg_color IS NOT NULL AND banner_bg_color <> ''
+             AND position('playground_2026' in target_module) > 0"#,
+        r#"UPDATE announcements SET portal_banner_bg = banner_bg_color
+           WHERE portal_banner_bg IS NULL AND banner_bg_color IS NOT NULL AND banner_bg_color <> ''
+             AND position('portal_pro' in target_module) > 0"#
+    );
+
+    once_migration!(pool, done, "playground_2026_site_default_enabled_default_off_v1",
+        r#"INSERT INTO plugin_configs (plugin_name, config_key, config_value, created_at, updated_at)
+           VALUES ('playground_2026', 'site_default_enabled', 'false', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (plugin_name, config_key) DO NOTHING"#
+    );
+
+    once_migration!(pool, done, "user_level_commission_basis_v1",
+        "ALTER TABLE user_levels ADD COLUMN IF NOT EXISTS commission_basis TEXT NOT NULL DEFAULT 'consumption'",
+        "COMMENT ON COLUMN user_levels.commission_basis IS '返佣发放基准: consumption=按系统钱包实际消费, recharge=按充值入账'",
+        "ALTER TABLE commissions ADD COLUMN IF NOT EXISTS source_key TEXT",
+        "COMMENT ON COLUMN commissions.source_key IS '返佣幂等键: log:{logs.id} | recharge:{recharge_records.id} | ark:{id} | arkrefund:{id}'",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uidx_commissions_source_key ON commissions (source_key) WHERE source_key IS NOT NULL"
+    );
+
+    once_migration!(pool, done, "playground_2026_dedicated_token_unique_v1",
+        r#"DELETE FROM api_tokens a
+           WHERE a.only_playground_2026 = 1
+             AND a.name = '创作中心2026'
+             AND EXISTS (
+               SELECT 1 FROM api_tokens b
+               WHERE b.only_playground_2026 = 1
+                 AND b.name = '创作中心2026'
+                 AND b.user_id = a.user_id
+                 AND b.id < a.id
+             )"#,
+        r#"CREATE UNIQUE INDEX IF NOT EXISTS uidx_api_tokens_pg2026_dedicated
+           ON api_tokens (user_id)
+           WHERE only_playground_2026 = 1 AND name = '创作中心2026'"#
+    );
+
+    once_migration!(
+        pool,
+        done,
+        "volcengine_enhance_default_off_v1",
+        r#"UPDATE plugins SET is_enabled = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE name = 'volcengine_enhance'
+             AND NOT EXISTS (
+                 SELECT 1 FROM plugin_configs
+                 WHERE plugin_name = 'volcengine_enhance'
+                   AND config_key = 'keys'
+                   AND config_value IS NOT NULL
+                   AND config_value <> ''
+                   AND config_value <> '[]'
+             )"#
+    );
+
+    once_migration!(
+        pool,
+        done,
+        "playground_2026_default_off_v1",
+        r#"UPDATE plugins SET is_enabled = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE name = 'playground_2026'"#
+    );
+
+    once_migration!(
+        pool,
+        done,
+        "remove_seedance_cascade_enhance_models_v1",
+        "DELETE FROM model_library WHERE mid IN ('dbs-sr', 'dbs-fs') OR model_id IN ('Doubao-seedance-2-0-sr', 'Doubao-seedance-2-0-fast-sr')",
+        "DELETE FROM models WHERE mid IN ('dbs-sr', 'dbs-fs') OR model_id IN ('Doubao-seedance-2-0-sr', 'Doubao-seedance-2-0-fast-sr')"
+    );
+
+    // 八条 MediaKit 预置模型录入模型仓库目录，默认保持关闭（is_active = 0），由管理员在插件配置中按需激活。
+    if !done.contains("volc_mediakit_preset_library_catalog_v1") {
+        match crate::db::migrations::helpers::volc_mediakit_image::ensure_enhance_library_catalog(pool).await {
+            Ok(()) => {
+                let _ = sqlx::query(
+                    "INSERT INTO sys_migration_history (id) VALUES ('volc_mediakit_preset_library_catalog_v1')",
+                )
+                .execute(pool)
+                .await;
+                done.insert("volc_mediakit_preset_library_catalog_v1".into());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "volc_mediakit_preset_library_catalog_v1 写入目录失败，未标记完成以便重试: {e}"
+                );
+            }
+        }
+    }
+
+    once_migration!(
+        pool,
+        done,
+        "volc_mediakit_preset_models_default_off_v1",
+        r#"UPDATE model_library
+           SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE mid IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg')"#,
+        r#"UPDATE models
+           SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE mid IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg')
+              OR library_mid IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg')"#
+    );
+
+    // 画质增强模型默认全部留在模型仓库，不可预先塞入运营模型列表。未绑渠道/令牌/日志的预置行与重复上架副本全部清除。
+    once_migration!(
+        pool,
+        done,
+        "volc_mediakit_models_library_only_by_default_v1",
+        r#"DELETE FROM models m
+           WHERE (
+               m.mid IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg')
+               OR (m.library_mid IN ('vve-sd', 'vve-pf', 'vve-ft', 'vve-gt', 'vvs-er', 'vvs-ep', 'vie-en', 'vir-bg') AND m.is_listed = 1)
+           )
+             AND NOT EXISTS (
+               SELECT 1 FROM channels c
+               WHERE position(m.mid in c.models) > 0
+                  OR position(m.mid in c.model_mapping) > 0
+                  OR position(m.model_id in c.models) > 0
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM api_tokens t
+               WHERE position(m.mid in t.allowed_models) > 0
+                  OR position(m.model_id in t.allowed_models) > 0
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM logs l
+               WHERE l.model = m.model_id OR l.model = m.mid
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM logs_archive l
+               WHERE l.model = m.model_id OR l.model = m.mid
+             )"#
+    );
+
+    // 用户端资产素材菜单默认关闭；已保存的菜单文案「资产充值」改为「资产素材」
+    once_migration!(pool, done, "asset_manager_user_menu_default_off_v1",
+        r#"INSERT INTO plugin_configs (plugin_name, config_key, config_value, created_at, updated_at)
+           VALUES ('asset_manager', 'user_asset_menu_enabled', 'false', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT (plugin_name, config_key) DO NOTHING"#,
+        r#"UPDATE settings SET value = replace(
+            replace(value, '"label_zh":"资产充值"', '"label_zh":"资产素材"'),
+            '"label_zh": "资产充值"', '"label_zh": "资产素材"'
+        ) WHERE key = 'menu_config_settings'"#
+    );
+
+    once_migration!(pool, done, "commission_transfer_limits_daily_v1",
+        "ALTER TABLE user_levels ADD COLUMN IF NOT EXISTS commission_transfer_min DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE user_levels ADD COLUMN IF NOT EXISTS commission_transfer_max DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "COMMENT ON COLUMN user_levels.commission_transfer_min IS '佣金钱包单次划转下限，0 为不限制'",
+        "COMMENT ON COLUMN user_levels.commission_transfer_max IS '佣金钱包单次划转上限，0 为不限制'",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS commission_posted INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE recharge_records ADD COLUMN IF NOT EXISTS commission_posted INTEGER NOT NULL DEFAULT 0",
+        "COMMENT ON COLUMN logs.commission_posted IS '消费返佣是否已计入当日汇总，1 为已计入'",
+        "COMMENT ON COLUMN recharge_records.commission_posted IS '该流水的返佣是否已计入当日汇总，1 为已计入'"
+    );
+
+    once_migration!(pool, done, "commission_wallet_unmirror_gift_v1",
+        "COMMENT ON COLUMN users.commission_balance IS '佣金钱包。返佣只进此余额。调用扣费不使用它，用户可划转到系统钱包。'",
+        r#"UPDATE users SET commission_balance = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE commission_balance <> 0"#
+    );
+
     Ok(())
 }
 

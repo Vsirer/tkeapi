@@ -25,6 +25,7 @@ const LegalPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [content, setContent] = useState('');
   const [title, setTitle] = useState('');
+  const [copyright, setCopyright] = useState('');
 
   useEffect(() => {
     if (legalLanguage && i18n.language !== legalLanguage) {
@@ -46,6 +47,7 @@ const LegalPage: React.FC = () => {
       try {
         const response = await (request.get('/settings') as any);
         const agreement = response?.agreement;
+        setCopyright(String(response?.site?.copyright || '').trim());
         
         if (!agreement) {
           setTitle(type === 'terms' ? (isEn ? 'Terms of Service' : '服务条款 (Terms of Service)') : (isEn ? 'Privacy Policy' : '隐私政策 (Privacy Policy)'));
@@ -142,6 +144,18 @@ const LegalPage: React.FC = () => {
             dangerouslySetInnerHTML={{ __html: sanitizeHtml(content) }} 
           />
         </div>
+        {copyright ? (
+          <div style={{
+            textAlign: 'center',
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: 'rgba(255, 255, 255, 0.45)',
+            padding: '24px 24px 32px',
+            userSelect: 'none',
+          }}>
+            {copyright}
+          </div>
+        ) : null}
       </div>
     </ConfigProvider>
   );

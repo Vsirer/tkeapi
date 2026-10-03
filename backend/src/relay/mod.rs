@@ -61,6 +61,45 @@ pub mod simulation;
 pub mod tos_persist;
 
 use std::future::Future;
+use std::sync::Arc;
+
+/// 视频受理后的后台提交计数。生产关闭等到这些任务落账，不随 HTTP 连接取消。
+pub struct VideoSubmitDrain {
+    tx: tokio::sync::watch::Sender<usize>,
+}
+
+pub struct VideoSubmitGuard {
+    tx: tokio::sync::watch::Sender<usize>,
+}
+
+impl VideoSubmitDrain {
+    pub fn new() -> Arc<Self> {
+        let (tx, _rx) = tokio::sync::watch::channel(0);
+        Arc::new(Self { tx })
+    }
+
+    pub fn enter(self: &Arc<Self>) -> VideoSubmitGuard {
+        self.tx.send_modify(|n| *n += 1);
+        VideoSubmitGuard {
+            tx: self.tx.clone(),
+        }
+    }
+
+    pub async fn wait_idle(&self) {
+        let mut rx = self.tx.subscribe();
+        while *rx.borrow() > 0 {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+impl Drop for VideoSubmitGuard {
+    fn drop(&mut self) {
+        self.tx.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
 
 /// 连接保护任务产出：上游原文 + 头（格式转换 / 拼 Response 在 task 外）
 pub struct UpstreamRaw {

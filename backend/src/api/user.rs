@@ -13,17 +13,21 @@ use crate::models::{
 };
 use crate::AppState;
 use axum::{
-    extract::{Extension, Path, Query, State},
+    extract::{ConnectInfo, Extension, Path, Query, State},
     response::{IntoResponse, Redirect, Response},
     Json,
 };
+use chrono::Datelike;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+const PROFILE_USER_SQL: &str = "SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config, ul.marketing_enabled, ul.commission_ratio FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?";
 
 pub(crate) async fn load_profile_user(
     state: &Arc<AppState>,
     claims: &auth::Claims,
 ) -> AppResult<User> {
-    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
+    let mut user: User = sqlx::query_as(&state.db.format_query(PROFILE_USER_SQL))
         .bind(&claims.sub)
         .fetch_optional(&state.db.pool)
         .await?
@@ -51,7 +55,7 @@ pub async fn update_profile(
     Extension(claims): Extension<auth::Claims>,
     Json(request): Json<ProfileUpdateRequest>,
 ) -> AppResult<Json<User>> {
-    let mut user: User = sqlx::query_as(&state.db.format_query("SELECT u.*, ul.name as level_name, ul.id as level_id, ul.allow_view_log_details, ul.invoice_enabled, ul.invoice_mode, ul.invoice_config FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"))
+    let mut user: User = sqlx::query_as(&state.db.format_query(PROFILE_USER_SQL))
         .bind(&claims.sub)
         .fetch_optional(&state.db.pool)
         .await?
@@ -116,12 +120,25 @@ pub async fn update_profile(
     Ok(Json(user))
 }
 
+async fn ensure_client_ip_allowed(
+    state: &Arc<AppState>,
+    headers: &axum::http::HeaderMap,
+    addr: std::net::SocketAddr,
+) -> AppResult<()> {
+    let settings = crate::api::settings::load_all_settings(state).await?;
+    let ip = crate::api::auth::extract_client_ip(headers, &addr);
+    crate::api::auth::check_ip_blacklist(&settings.site, &ip)
+}
+
 /// 绑定/换绑手机号
 pub async fn bind_mobile(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Extension(claims): Extension<auth::Claims>,
     Json(request): Json<BindMobileRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
+    ensure_client_ip_allowed(&state, &headers, addr).await?;
     let user: User = sqlx::query_as(&state.db.format_query("SELECT * FROM users WHERE id = ?"))
         .bind(&claims.sub)
         .fetch_one(&state.db.pool)
@@ -174,9 +191,12 @@ pub async fn bind_mobile(
 /// 绑定/换绑邮箱
 pub async fn bind_email(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Extension(claims): Extension<auth::Claims>,
     Json(request): Json<BindEmailRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
+    ensure_client_ip_allowed(&state, &headers, addr).await?;
     let user: User = sqlx::query_as(&state.db.format_query("SELECT * FROM users WHERE id = ?"))
         .bind(&claims.sub)
         .fetch_one(&state.db.pool)
@@ -540,19 +560,27 @@ pub async fn get_wallet_stats(
     .await?;
 
     // 查询该用户等级的推广配置
-    let level_marketing: Option<(i64, f64, f64, f64)> = sqlx::query_as(
+    let level_marketing: Option<(i64, f64, f64, f64, String, f64, f64)> = sqlx::query_as(
         &state.db.format_query(
-            "SELECT COALESCE(ul.marketing_enabled, 0), COALESCE(ul.commission_ratio, 0), COALESCE(ul.invite_reward_inviter, 0), COALESCE(ul.invite_reward_invitee, 0) FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
+            "SELECT COALESCE(ul.marketing_enabled, 0), COALESCE(ul.commission_ratio, 0), COALESCE(ul.invite_reward_inviter, 0), COALESCE(ul.invite_reward_invitee, 0), COALESCE(NULLIF(ul.commission_basis, ''), 'consumption'), COALESCE(ul.commission_transfer_min, 0)::float8, COALESCE(ul.commission_transfer_max, 0)::float8 FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?"
         )
     )
     .bind(user_id)
     .fetch_optional(&state.db.pool)
     .await?;
 
-    let (marketing_enabled, commission_ratio, invite_reward_inviter, invite_reward_invitee) =
+    let (marketing_enabled, commission_ratio, invite_reward_inviter, invite_reward_invitee, commission_basis, commission_transfer_min, commission_transfer_max) =
         match level_marketing {
-            Some((m, c, ri, re)) => (m == 1, c, ri, re),
-            None => (false, 0.0, 0.0, 0.0),
+            Some((m, c, ri, re, basis, tmin, tmax)) => (
+                m == 1,
+                c,
+                ri,
+                re,
+                crate::services::affiliate::normalize_commission_basis(&basis).to_string(),
+                tmin.max(0.0),
+                tmax.max(0.0),
+            ),
+            None => (false, 0.0, 0.0, 0.0, "consumption".to_string(), 0.0, 0.0),
         };
 
     Ok(Json(WalletStats {
@@ -568,13 +596,22 @@ pub async fn get_wallet_stats(
         commission_ratio,
         invite_reward_inviter,
         invite_reward_invitee,
+        commission_basis,
+        commission_transfer_min,
+        commission_transfer_max,
         pay_enabled: pay_enabled == 1,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TransferCommissionRequest {
+    pub amount: f64,
 }
 
 pub async fn transfer_commission(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<auth::Claims>,
+    Json(request): Json<TransferCommissionRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
     let user_id = &claims.sub;
     let mut tx = state.db.pool.begin().await?;
@@ -582,41 +619,476 @@ pub async fn transfer_commission(
     let commission_balance: f64 = sqlx::query_scalar(
         &state
             .db
-            .format_query("SELECT commission_balance FROM users WHERE id = ?"),
+            .format_query("SELECT commission_balance FROM users WHERE id = ? FOR UPDATE"),
     )
     .bind(user_id)
     .fetch_one(&mut *tx)
     .await?;
 
-    if commission_balance <= 0.0 {
-        return Err(AppError::BadRequest(
-            "Commission balance is zero".to_string(),
-        ));
+    let limits: Option<(f64, f64)> = sqlx::query_as(&state.db.format_query(
+        "SELECT COALESCE(ul.commission_transfer_min, 0), COALESCE(ul.commission_transfer_max, 0) \
+         FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?",
+    ))
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (transfer_min, transfer_max) = limits.unwrap_or((0.0, 0.0));
+    if request.amount.is_nan() || request.amount.is_infinite() {
+        return Err(AppError::BadRequest("请输入划转金额".to_string()));
     }
+    let amount = match crate::services::affiliate::transfer_amount(
+        request.amount,
+        commission_balance,
+        transfer_min,
+        transfer_max,
+    ) {
+        Ok(amount) => amount,
+        Err("below_min") => {
+            return Err(AppError::BadRequest(format!(
+                "单次最少划转 {}，且佣金钱包余额需达到该金额",
+                crate::money::round_money(transfer_min)
+            )));
+        }
+        Err("above_max") => {
+            return Err(AppError::BadRequest(format!(
+                "单次最多划转 {}",
+                crate::money::round_money(transfer_max)
+            )));
+        }
+        Err("over_balance") => {
+            return Err(AppError::BadRequest(
+                "划转金额不能超过佣金钱包余额".to_string(),
+            ));
+        }
+        Err("conflict") => {
+            return Err(AppError::BadRequest(
+                "佣金钱包划转上限低于下限，请联系管理员".to_string(),
+            ));
+        }
+        Err(_) => {
+            return Err(AppError::BadRequest("请输入划转金额".to_string()));
+        }
+    };
 
     sqlx::query(&state.db.format_query(
         r#"UPDATE users SET 
             balance = balance + ?, 
-            commission_balance = 0.0, 
+            commission_balance = GREATEST(commission_balance - ?, 0), 
             updated_at = CURRENT_TIMESTAMP 
          WHERE id = ?"#,
     ))
-    .bind(commission_balance)
+    .bind(amount)
+    .bind(amount)
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
 
     sqlx::query(
         &state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark) VALUES (?, ?, 'transfer', ?)")
-    ).bind(user_id).bind(commission_balance).bind("Commission Transfer")
+    ).bind(user_id).bind(amount).bind("佣金钱包划转到系统钱包")
     .execute(&mut *tx).await?;
 
     tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "amount": commission_balance
+        "amount": amount
     })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AffiliateOverviewQuery {
+    pub referral_page: Option<i64>,
+    pub referral_page_size: Option<i64>,
+    pub ledger_page: Option<i64>,
+    pub ledger_page_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AffiliateSummary {
+    pub total_referred: i64,
+    pub active_referred: i64,
+    pub today_referred: i64,
+    pub month_referred: i64,
+    pub commission_earned: f64,
+    pub commission_clawback: f64,
+    pub commission_net: f64,
+    pub today_net: f64,
+    pub month_net: f64,
+    pub source_consumption: f64,
+    pub source_recharge: f64,
+    pub source_video: f64,
+    pub source_refund: f64,
+    pub signup_reward: f64,
+    pub signup_reward_count: i64,
+    pub today_signup_reward: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AffiliateReferral {
+    pub uid: String,
+    pub username: String,
+    pub is_active: i64,
+    pub created_at: String,
+    pub recharge_total: f64,
+    pub commission_net: f64,
+    pub commission_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AffiliateLedgerItem {
+    pub id: i32,
+    pub created_at: String,
+    pub from_username: String,
+    pub from_uid: String,
+    pub source: String,
+    pub ratio: f64,
+    pub amount: f64,
+    pub order_no: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AffiliatePage<T> {
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub items: Vec<T>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AffiliateOverview {
+    pub enabled: bool,
+    pub marketing_enabled: bool,
+    pub commission_ratio: f64,
+    pub commission_basis: String,
+    pub invite_reward_inviter: f64,
+    pub invite_reward_invitee: f64,
+    pub daily_invite_limit: i64,
+    pub link_clicks: i64,
+    pub commission_balance: f64,
+    pub summary: AffiliateSummary,
+    pub referrals: AffiliatePage<AffiliateReferral>,
+    pub ledger: AffiliatePage<AffiliateLedgerItem>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AffiliateReferralRow {
+    uid: String,
+    username: String,
+    is_active: i64,
+    created_at: crate::time_system::DbTs,
+    recharge_total: f64,
+    commission_net: f64,
+    commission_count: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct AffiliateLedgerRow {
+    id: i32,
+    amount: f64,
+    ratio: f64,
+    source_key: Option<String>,
+    created_at: crate::time_system::DbTs,
+    from_username: Option<String>,
+    from_uid: Option<String>,
+    order_no: Option<String>,
+}
+
+fn commission_source_kind(source_key: &str, amount: f64) -> &'static str {
+    if source_key.starts_with("arkrefund:") || (amount < 0.0 && source_key.starts_with("ark")) {
+        "refund"
+    } else if source_key.starts_with("ark:") {
+        "video"
+    } else if source_key.starts_with("recharge:") {
+        "recharge"
+    } else if source_key.starts_with("log:") || source_key.starts_with("daycons:") {
+        if source_key.starts_with("daycons:") && amount < 0.0 {
+            "refund"
+        } else {
+            "consumption"
+        }
+    } else if amount < 0.0 {
+        "refund"
+    } else {
+        "other"
+    }
+}
+
+fn empty_affiliate_overview() -> AffiliateOverview {
+    AffiliateOverview {
+        enabled: false,
+        marketing_enabled: false,
+        commission_ratio: 0.0,
+        commission_basis: "consumption".to_string(),
+        invite_reward_inviter: 0.0,
+        invite_reward_invitee: 0.0,
+        daily_invite_limit: 0,
+        link_clicks: 0,
+        commission_balance: 0.0,
+        summary: AffiliateSummary {
+            total_referred: 0,
+            active_referred: 0,
+            today_referred: 0,
+            month_referred: 0,
+            commission_earned: 0.0,
+            commission_clawback: 0.0,
+            commission_net: 0.0,
+            today_net: 0.0,
+            month_net: 0.0,
+            source_consumption: 0.0,
+            source_recharge: 0.0,
+            source_video: 0.0,
+            source_refund: 0.0,
+            signup_reward: 0.0,
+            signup_reward_count: 0,
+            today_signup_reward: 0.0,
+        },
+        referrals: AffiliatePage {
+            total: 0,
+            page: 1,
+            page_size: 20,
+            items: Vec::new(),
+        },
+        ledger: AffiliatePage {
+            total: 0,
+            page: 1,
+            page_size: 20,
+            items: Vec::new(),
+        },
+    }
+}
+
+fn page_params(page: Option<i64>, page_size: Option<i64>) -> (i64, i64, i64) {
+    let page = page.unwrap_or(1).max(1);
+    let page_size = page_size.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * page_size;
+    (page, page_size, offset)
+}
+
+/// 邀请返利统计。等级开启专属推广，或返利比例大于 0 时才返回明细。
+pub async fn get_affiliate_overview(
+    State(state): State<Arc<AppState>>,
+    Extension(claims): Extension<auth::Claims>,
+    Query(query): Query<AffiliateOverviewQuery>,
+) -> AppResult<Json<AffiliateOverview>> {
+    let user_id = &claims.sub;
+    let (referral_page, referral_page_size, referral_offset) =
+        page_params(query.referral_page, query.referral_page_size);
+    let (ledger_page, ledger_page_size, ledger_offset) =
+        page_params(query.ledger_page, query.ledger_page_size);
+
+    let identity: Option<(String, f64)> = sqlx::query_as(&state.db.format_query(
+        "SELECT uid, commission_balance FROM users WHERE id = ?",
+    ))
+    .bind(user_id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    let Some((uid, commission_balance)) = identity else {
+        return Ok(Json(empty_affiliate_overview()));
+    };
+
+    let level: Option<(i64, f64, f64, f64, i64, String)> = sqlx::query_as(&state.db.format_query(
+        "SELECT COALESCE(ul.marketing_enabled, 0)::bigint, COALESCE(ul.commission_ratio, 0)::float8, COALESCE(ul.invite_reward_inviter, 0)::float8, COALESCE(ul.invite_reward_invitee, 0)::float8, COALESCE(ul.daily_invite_limit, 0)::bigint, COALESCE(NULLIF(ul.commission_basis, ''), 'consumption') FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ?",
+    ))
+    .bind(user_id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+    let Some((marketing_flag, ratio, reward_inviter, reward_invitee, daily_limit, basis_raw)) = level
+    else {
+        return Ok(Json(empty_affiliate_overview()));
+    };
+    let marketing_enabled = marketing_flag == 1;
+    let commission_ratio = ratio.max(0.0);
+    if !marketing_enabled && commission_ratio <= 0.0 {
+        return Ok(Json(empty_affiliate_overview()));
+    }
+    let commission_basis =
+        crate::services::affiliate::normalize_commission_basis(&basis_raw).to_string();
+
+    let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+    let timedisplay =
+        crate::api::date_helper::resolve_user_timedisplay_name(&state.db, user_id, &site_tz).await;
+    let tz: chrono_tz::Tz = timedisplay.parse().unwrap_or(chrono_tz::Asia::Shanghai);
+    let now = chrono::Utc::now().with_timezone(&tz);
+    let today = now.date_naive();
+    let offset = now.format("%z").to_string();
+    let stamp = |day: chrono::NaiveDate| format!("{} 00:00:00{}", day.format("%Y-%m-%d"), offset);
+    let today_start = stamp(today);
+    let tomorrow_start = stamp(today + chrono::Duration::days(1));
+    let month_day = chrono::NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
+    let month_start = stamp(month_day);
+
+    let (total_referred, active_referred, today_referred, month_referred): (i64, i64, i64, i64) =
+        sqlx::query_as(&state.db.format_query(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE is_active = 1), COUNT(*) FILTER (WHERE created_at >= ?::timestamptz AND created_at < ?::timestamptz), COUNT(*) FILTER (WHERE created_at >= ?::timestamptz AND created_at < ?::timestamptz) FROM users WHERE referred_by = ? OR referred_by = ?",
+        ))
+        .bind(&today_start)
+        .bind(&tomorrow_start)
+        .bind(&month_start)
+        .bind(&tomorrow_start)
+        .bind(user_id)
+        .bind(&uid)
+        .fetch_one(&state.db.pool)
+        .await?;
+
+    let (
+        commission_earned,
+        commission_clawback,
+        commission_net,
+        today_net,
+        month_net,
+        source_consumption,
+        source_recharge,
+        source_video,
+        source_refund,
+    ): (f64, f64, f64, f64, f64, f64, f64, f64, f64) = sqlx::query_as(&state.db.format_query(
+        "SELECT \
+            COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(amount), 0)::float8, \
+            COALESCE(SUM(CASE WHEN created_at >= ?::timestamptz AND created_at < ?::timestamptz THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN created_at >= ?::timestamptz AND created_at < ?::timestamptz THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN source_key LIKE 'log:%' THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN source_key LIKE 'recharge:%' THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN source_key LIKE 'ark:%' THEN amount ELSE 0 END), 0)::float8, \
+            COALESCE(SUM(CASE WHEN source_key LIKE 'arkrefund:%' THEN amount ELSE 0 END), 0)::float8 \
+         FROM commissions WHERE user_id = ?",
+    ))
+    .bind(&today_start)
+    .bind(&tomorrow_start)
+    .bind(&month_start)
+    .bind(&tomorrow_start)
+    .bind(user_id)
+    .fetch_one(&state.db.pool)
+    .await?;
+
+    let (signup_reward, signup_reward_count, today_signup_reward): (f64, i64, f64) =
+        sqlx::query_as(&state.db.format_query(
+            "SELECT COALESCE(SUM(amount), 0)::float8, COUNT(*), COALESCE(SUM(CASE WHEN created_at >= ?::timestamptz AND created_at < ?::timestamptz THEN amount ELSE 0 END), 0)::float8 FROM recharge_records WHERE user_id = ? AND recharge_type = 'commission'",
+        ))
+        .bind(&today_start)
+        .bind(&tomorrow_start)
+        .bind(user_id)
+        .fetch_one(&state.db.pool)
+        .await?;
+
+    let link_clicks: i64 = sqlx::query_scalar(&state.db.format_query(
+        "SELECT COALESCE(SUM(click_count), 0)::bigint FROM marketing_link_click_stats WHERE link_type = 'invite' AND promoter_uid = ?",
+    ))
+    .bind(&uid)
+    .fetch_one(&state.db.pool)
+    .await?;
+
+    let paid_recharge = "amount > 0 AND COALESCE(wallet_type, 'system') = 'system' AND recharge_type NOT IN ('gift', 'registration', 'commission', 'redemption', 'ark_video_consume', 'ark_video_refund')";
+    let referrals: Vec<AffiliateReferralRow> = sqlx::query_as(&state.db.format_query(&format!(
+        "SELECT u.uid, u.username, u.is_active, u.created_at, \
+            COALESCE((SELECT SUM(rr.amount) FROM recharge_records rr WHERE rr.user_id = u.id AND {paid_recharge}), 0)::float8 AS recharge_total, \
+            COALESCE((SELECT SUM(c.amount) FROM commissions c WHERE c.user_id = ? AND c.from_user_id = u.id), 0)::float8 AS commission_net, \
+            COALESCE((SELECT COUNT(*) FROM commissions c WHERE c.user_id = ? AND c.from_user_id = u.id), 0) AS commission_count \
+         FROM users u \
+         WHERE u.referred_by = ? OR u.referred_by = ? \
+         ORDER BY u.created_at DESC \
+         LIMIT ? OFFSET ?"
+    )))
+    .bind(user_id)
+    .bind(user_id)
+    .bind(user_id)
+    .bind(&uid)
+    .bind(referral_page_size)
+    .bind(referral_offset)
+    .fetch_all(&state.db.pool)
+    .await?;
+
+    let ledger_rows: Vec<AffiliateLedgerRow> = sqlx::query_as(&state.db.format_query(
+        "SELECT c.id, c.amount, c.ratio, c.source_key, c.created_at, fu.username AS from_username, fu.uid AS from_uid, rr.order_no \
+         FROM commissions c \
+         LEFT JOIN users fu ON fu.id = c.from_user_id \
+         LEFT JOIN recharge_records rr ON rr.id = c.recharge_id \
+         WHERE c.user_id = ? \
+         ORDER BY c.created_at DESC, c.id DESC \
+         LIMIT ? OFFSET ?",
+    ))
+    .bind(user_id)
+    .bind(ledger_page_size)
+    .bind(ledger_offset)
+    .fetch_all(&state.db.pool)
+    .await?;
+
+    let ledger_total: i64 = sqlx::query_scalar(&state.db.format_query(
+        "SELECT COUNT(*) FROM commissions WHERE user_id = ?",
+    ))
+    .bind(user_id)
+    .fetch_one(&state.db.pool)
+    .await?;
+
+    let money = crate::money::round_money;
+    Ok(Json(AffiliateOverview {
+        enabled: true,
+        marketing_enabled,
+        commission_ratio,
+        commission_basis,
+        invite_reward_inviter: money(reward_inviter),
+        invite_reward_invitee: money(reward_invitee),
+        daily_invite_limit: daily_limit,
+        link_clicks,
+        commission_balance: money(commission_balance),
+        summary: AffiliateSummary {
+            total_referred,
+            active_referred,
+            today_referred,
+            month_referred,
+            commission_earned: money(commission_earned),
+            commission_clawback: money(commission_clawback),
+            commission_net: money(commission_net),
+            today_net: money(today_net),
+            month_net: money(month_net),
+            source_consumption: money(source_consumption),
+            source_recharge: money(source_recharge),
+            source_video: money(source_video),
+            source_refund: money(source_refund),
+            signup_reward: money(signup_reward),
+            signup_reward_count,
+            today_signup_reward: money(today_signup_reward),
+        },
+        referrals: AffiliatePage {
+            total: total_referred,
+            page: referral_page,
+            page_size: referral_page_size,
+            items: referrals
+                .into_iter()
+                .map(|row| AffiliateReferral {
+                    uid: row.uid,
+                    username: row.username,
+                    is_active: row.is_active,
+                    created_at: row.created_at.into_string(),
+                    recharge_total: money(row.recharge_total),
+                    commission_net: money(row.commission_net),
+                    commission_count: row.commission_count,
+                })
+                .collect(),
+        },
+        ledger: AffiliatePage {
+            total: ledger_total,
+            page: ledger_page,
+            page_size: ledger_page_size,
+            items: ledger_rows
+                .into_iter()
+                .map(|row| {
+                    let key = row.source_key.unwrap_or_default();
+                    AffiliateLedgerItem {
+                        id: row.id,
+                        created_at: row.created_at.into_string(),
+                        from_username: row.from_username.unwrap_or_default(),
+                        from_uid: row.from_uid.unwrap_or_default(),
+                        source: commission_source_kind(&key, row.amount).to_string(),
+                        ratio: row.ratio,
+                        amount: money(row.amount),
+                        order_no: row.order_no.unwrap_or_default(),
+                    }
+                })
+                .collect(),
+        },
+    }))
 }
 
 pub async fn list_recharge_records(
@@ -632,4 +1104,21 @@ pub async fn list_recharge_records(
         .await?;
 
     Ok(Json(records))
+}
+
+#[cfg(test)]
+mod affiliate_overview_tests {
+    use super::commission_source_kind;
+
+    #[test]
+    fn classifies_commission_sources() {
+        assert_eq!(commission_source_kind("log:12", 1.0), "consumption");
+        assert_eq!(commission_source_kind("daycons:u1:2026-10-03", 1.0), "consumption");
+        assert_eq!(commission_source_kind("daycons:u1:2026-10-03", -1.0), "refund");
+        assert_eq!(commission_source_kind("recharge:9", 1.0), "recharge");
+        assert_eq!(commission_source_kind("ark:3", 1.0), "video");
+        assert_eq!(commission_source_kind("arkrefund:4", -1.0), "refund");
+        assert_eq!(commission_source_kind("manual", -0.5), "refund");
+        assert_eq!(commission_source_kind("", 1.0), "other");
+    }
 }

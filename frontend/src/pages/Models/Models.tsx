@@ -612,6 +612,7 @@ const Models: React.FC = () => {
       : 'custom'
   ));
   const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [sourceCounts, setSourceCounts] = useState<{ custom: number; library: number } | null>(null);
   const isLibrary = sourceFilter === 'library';
   type ActiveRightPanel = 'billing' | 'forwarding' | 'provider' | 'api_provider' | 'type' | 'billing_rule' | 'forward_rules';
   const [activeRightPanel, setActiveRightPanel] = useState<ActiveRightPanel | null>('provider');
@@ -657,6 +658,13 @@ const Models: React.FC = () => {
       setProvidersStats([...(resp.providers || []), unclassifiedChip(resp.unclassified_providers)]);
       setApiProvidersStats([...(resp.api_providers || []), unclassifiedChip(resp.unclassified_api_providers)]);
       setTypesStats([...(resp.types || []), unclassifiedChip(resp.unclassified_types)]);
+      const counts = resp.source_counts;
+      if (counts) {
+        setSourceCounts({
+          custom: Number(counts.custom) || 0,
+          library: Number(counts.library) || 0,
+        });
+      }
     } catch (e) {
       if (isRequestAborted(e)) return;
       console.error(e);
@@ -773,6 +781,7 @@ const Models: React.FC = () => {
       is_active: record.is_active === 1,
       enable_log_content: record.enable_log_content === 1,
       site_discount_enabled: record.site_discount_enabled === 1,
+      pre_deduction: record.pre_deduction ?? 1,
       site_discount: record.site_discount ?? 1.0,
       global_discount_enabled: record.global_discount_enabled === 1,
       global_discount: record.global_discount ?? 1.0,
@@ -826,6 +835,9 @@ const Models: React.FC = () => {
       handleCloseEditor();
     }
   }, [routeEditId, models, loading, classificationsReady, isLibraryEditRoute, isEditRoute, sourceFilter, searchParams]);
+
+  const isFromLibrary = (record: ModelModel) =>
+    typeof record.library_mid === 'string' && record.library_mid.trim() !== '';
 
   const handleDelete = async (record: ModelModel) => {
     try {
@@ -1047,17 +1059,28 @@ const Models: React.FC = () => {
 
   const handleBatchDelete = async () => {
     const targetModels = getSelectedModels();
-    if (targetModels.length === 0) return;
+    const deletable = isLibrary ? targetModels : targetModels.filter(m => !isFromLibrary(m));
+    const kept = targetModels.length - deletable.length;
+    if (deletable.length === 0) {
+      if (kept > 0) {
+        message.warning('来自模型仓库的模型不能删除，请下架');
+      }
+      return;
+    }
     setBatchLoading(true);
     try {
       await Promise.all(
-        targetModels.map(m => {
+        deletable.map(m => {
           const url = m.library_kind === 'catalog' ? `/models/library/${m.id}` : `/models/${m.id}`;
           return request.delete(url);
         })
       );
-      message.success(`已成功删除 ${targetModels.length} 个模型`);
-      const targetRowKeySet = new Set(targetModels.map(modelRowKey));
+      message.success(
+        kept > 0
+          ? `已删除 ${deletable.length} 个模型，${kept} 个来自模型仓库的模型已保留，请下架`
+          : `已成功删除 ${deletable.length} 个模型`
+      );
+      const targetRowKeySet = new Set(deletable.map(modelRowKey));
       setModels(prev => prev.filter(m => !targetRowKeySet.has(modelRowKey(m))));
       setSelectedRowKeys([]);
       fetchClassificationsStats();
@@ -1579,9 +1602,11 @@ const Models: React.FC = () => {
                   onClick={() => handleUnlist(record)}
                 />
               </Tooltip>
-              <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
-                <Button icon={<DeleteOutlined />} danger />
-              </Popconfirm>
+              {!isFromLibrary(record) && (
+                <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                  <Button icon={<DeleteOutlined />} danger />
+                </Popconfirm>
+              )}
             </>
           )}
         </Space>
@@ -1891,8 +1916,28 @@ const Models: React.FC = () => {
                   setSearchParams(next === 'library' ? { source: 'library' } : {}, { replace: true });
                 }}
                 options={[
-                  { label: t('models.source_custom'), value: 'custom' },
-                  { label: t('models.source_system'), value: 'library' },
+                  {
+                    label: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {t('models.source_custom')}
+                        {sourceCounts && (
+                          <span style={{ opacity: 0.65, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{sourceCounts.custom}</span>
+                        )}
+                      </span>
+                    ),
+                    value: 'custom',
+                  },
+                  {
+                    label: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {t('models.source_system')}
+                        {sourceCounts && (
+                          <span style={{ opacity: 0.65, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{sourceCounts.library}</span>
+                        )}
+                      </span>
+                    ),
+                    value: 'library',
+                  },
                 ]}
               />
             </Space>
@@ -2291,9 +2336,11 @@ const Models: React.FC = () => {
                       >
                         {t('models.unlist_model')}
                       </Button>
-                      <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
-                        <Button size="small" icon={<DeleteOutlined />} danger />
-                      </Popconfirm>
+                      {!isFromLibrary(record) && (
+                        <Popconfirm title={t('common.confirm_delete')} onConfirm={() => handleDelete(record)}>
+                          <Button size="small" icon={<DeleteOutlined />} danger />
+                        </Popconfirm>
+                      )}
                     </>
                   )}
                 </CardActions>
@@ -2447,7 +2494,7 @@ const Models: React.FC = () => {
                   message.error(info.errorFields[0].errors[0]);
                 }
               }} 
-              initialValues={{ is_active: true, enable_log_content: 0, pre_deduction: 0 }}
+              initialValues={{ is_active: true, enable_log_content: 0, pre_deduction: 1 }}
             >
               {/* Hidden inputs to preserve form data for the custom fields */}
               <Form.Item name="provider_id" hidden><Input /></Form.Item>
@@ -2680,10 +2727,11 @@ const Models: React.FC = () => {
                                 <Form.Item
                                   name="pre_deduction"
                                   label={<Text strong>{`预扣费 (${settings?.currency?.default_currency || 'USD'})`}</Text>}
-                                  initialValue={0.0}
+                                  initialValue={1}
+                                  rules={[{ required: true, message: '请填写预扣费' }]}
                                   extra={isVideo ? <span style={{ fontSize: 11, color: '#faad14' }}>提示：视频模型按「预扣费 × 视频秒数」进行预扣冻结，防止透支</span> : undefined}
                                 >
-                                  <InputNumber style={{ width: '100%' }} precision={6} min={0} />
+                                  <InputNumber style={{ width: '100%' }} precision={6} min={0} placeholder="1" />
                                 </Form.Item>
                               );
                             }}

@@ -44,6 +44,7 @@ pub struct AppState {
     #[cfg(feature = "plugin_site_icons")]
     pub icon_sync_progress: api::plugins::site_icons::SyncProgress,
     pub dashboard_cache: dashmap::DashMap<String, DashboardCacheEntry>,
+    pub model_trend_cache: dashmap::DashMap<String, api::dashboard::ModelTrendCacheEntry>,
     /// 高可用运行时熔断表（配置在 relay_settings HA_RULES）
     pub failed_channels: dashmap::DashMap<String, std::time::Instant>,
     /// 级联阶段二进行中互斥（log_id → ()），防并发轮询重复裁剪/超分
@@ -54,6 +55,8 @@ pub struct AppState {
     pub billing_ingress: relay::billing_pipeline::BillingIngress,
     /// 令牌最后使用时间节流表（token_id -> 上次写库 Instant，防高并发行锁争夺）
     pub token_last_used_throttle: dashmap::DashMap<i64, std::time::Instant>,
+    /// 视频 POST 受理后仍在跑的上游提交（关闭时排空，避免素材转换被掐断）
+    pub video_submit_drain: std::sync::Arc<relay::VideoSubmitDrain>,
 }
 
 #[tokio::main]
@@ -122,11 +125,13 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "plugin_site_icons")]
         icon_sync_progress: api::plugins::site_icons::SyncProgress::new(),
         dashboard_cache: dashmap::DashMap::new(),
+        model_trend_cache: dashmap::DashMap::new(),
         failed_channels: dashmap::DashMap::new(),
         cascade_s2_inflight: dashmap::DashMap::new(),
         quota_memory: relay::quota_memory::MemoryQuotaGuard::new(),
         billing_ingress,
         token_last_used_throttle: dashmap::DashMap::new(),
+        video_submit_drain: relay::VideoSubmitDrain::new(),
     });
 
     let mut bg_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -178,11 +183,11 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
-    // 4. 启动孤儿日志清理定时任务（每 5 分钟检查 status_code=0 超过 30 分钟的日志）
+    // 4. 启动孤儿日志清理定时任务（每 10 分钟检查 status_code=0 超过 1 小时的日志）
     bg_handles.push(spawn_cron_task(
         state.clone(),
         shutdown_rx.clone(),
-        300,
+        600,
         "OrphanLogsCleanup",
         |s| async move {
             relay::proxy::cleanup_orphan_pending_logs(&s).await;
@@ -407,6 +412,15 @@ async fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 tracing::warn!("⚠️ HTTP 服务未在 30 秒内优雅关闭，强制结束连接");
             } => {}
+        }
+
+        // 视频提交已脱离 HTTP 连接；时限覆盖素材转换与上游超时，不用下面 30 秒的后台上限
+        let video_budget = crate::services::http_client::upstream_timeout_duration()
+            + std::time::Duration::from_secs(180);
+        tracing::info!("⏳ 等待进行中的视频提交落账...");
+        match tokio::time::timeout(video_budget, state.video_submit_drain.wait_idle()).await {
+            Ok(()) => tracing::info!("✅ 视频提交已落账"),
+            Err(_) => tracing::warn!("⚠️ 视频提交未在上游时限内结束"),
         }
 
         // HTTP 服务已关闭，等待后台任务完成（包括正在轮询中的异步任务）
@@ -684,6 +698,7 @@ impl AppState {
     pub async fn reset_runtime_after_db_wipe(&self) {
         self.login_codes.clear();
         self.dashboard_cache.clear();
+        self.model_trend_cache.clear();
         self.failed_channels.clear();
         self.cascade_s2_inflight.clear();
         self.quota_memory.clear_all();

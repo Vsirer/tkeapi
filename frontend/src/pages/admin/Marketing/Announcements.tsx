@@ -27,6 +27,8 @@ import {
   Alert,
   Segmented,
   Tooltip,
+  Checkbox,
+  ColorPicker,
 } from 'antd';
 import {
   PlusOutlined,
@@ -43,9 +45,10 @@ import 'react-quill-new/dist/quill.snow.css';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import request from '../../../utils/request';
+import { fetchAdminPlugins } from '../../../utils/adminPlugins';
 import { listPagination } from '../../../components/ListPagination';
 import { apiErrMsg, SKIP_ERR } from '../../../utils/apiErr';
-import type { Announcement } from '../../../types';
+import type { Announcement, Plugin } from '../../../types';
 import { formatApiDateTime } from '../../../utils/timedisplay';
 
 const DEFAULT_EXPIRE_DAYS = 5;
@@ -662,12 +665,61 @@ const InlineSortCell: React.FC<{
   );
 };
 
+const NOTICE_MODULES = [
+  { label: '控制台通知', value: 'console' },
+  { label: '创作中心通知', value: 'playground_2026', plugin: 'playground_2026' },
+  { label: '门户通知', value: 'portal_pro', plugin: 'site_portal_pro' },
+] as const;
+
+function noticeModuleLabel(module?: string): string {
+  return NOTICE_MODULES.find((item) => item.value === module)?.label || module || '控制台通知';
+}
+
+function parseNoticeModules(raw?: string | null): string[] {
+  const list = String(raw || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return list.length ? list : ['console'];
+}
+
+function bannerHex(color?: { cleared?: boolean; toHexString: () => string } | null): string {
+  if (!color || color.cleared) return '';
+  const hex = color.toHexString();
+  return hex.length > 7 ? hex.slice(0, 7) : hex;
+}
+
 const Announcements: React.FC = () => {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [plugins, setPlugins] = useState<Plugin[]>([]);
+  const [pluginsLoaded, setPluginsLoaded] = useState(false);
   const [form] = Form.useForm();
+  const targetModules = Form.useWatch('target_modules', form) as string[] | undefined;
+  const playgroundBg = Form.useWatch('playground_banner_bg', form) as string | undefined;
+  const portalBg = Form.useWatch('portal_banner_bg', form) as string | undefined;
+  const selectedModules = Array.isArray(targetModules) ? targetModules : [];
+
+  const pluginOn = (name: string) => plugins.some((item) => item.name === name && item.is_enabled === 1);
+  const playgroundOn = pluginsLoaded && pluginOn('playground_2026');
+  const portalOn = pluginsLoaded && pluginOn('site_portal_pro');
+
+  useEffect(() => {
+    if (!pluginsLoaded) return;
+    const current = form.getFieldValue('target_modules');
+    if (!Array.isArray(current)) return;
+    const next = current.filter((module: string) => {
+      if (module === 'playground_2026') return pluginOn('playground_2026');
+      if (module === 'portal_pro') return pluginOn('site_portal_pro');
+      return module === 'console';
+    });
+    const normalized = next.length ? next : ['console'];
+    if (normalized.join(',') !== current.join(',')) {
+      form.setFieldValue('target_modules', normalized);
+    }
+  }, [pluginsLoaded, plugins, form]);
 
   const fetchAnnouncements = async () => {
     setLoading(true);
@@ -683,6 +735,14 @@ const Announcements: React.FC = () => {
 
   useEffect(() => {
     fetchAnnouncements();
+    fetchAdminPlugins()
+      .then((data) => {
+        if (Array.isArray(data?.plugins)) setPlugins(data.plugins);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch plugins:', error);
+      })
+      .finally(() => setPluginsLoaded(true));
   }, []);
 
   const handleInlineSortSave = async (id: number, newSortOrder: number) => {
@@ -710,6 +770,9 @@ const Announcements: React.FC = () => {
       is_popup: false,
       is_active: true,
       sort_order: 0,
+      target_modules: ['console'],
+      playground_banner_bg: '',
+      portal_banner_bg: '',
       display_time_mode: 'created',
       pin_expire_mode: 'date',
       popup_expire_mode: 'date',
@@ -729,6 +792,9 @@ const Announcements: React.FC = () => {
       is_popup: record.is_popup === 1,
       is_active: record.is_active === 1,
       sort_order: record.sort_order ?? 0,
+      target_modules: parseNoticeModules(record.target_module),
+      playground_banner_bg: record.playground_banner_bg || '',
+      portal_banner_bg: record.portal_banner_bg || '',
       pin_expire_mode: expireModeFromRecord(record.pin_expires_at),
       popup_expire_mode: expireModeFromRecord(record.popup_expires_at),
       active_expire_mode: expireModeFromRecord(record.active_expires_at),
@@ -753,6 +819,11 @@ const Announcements: React.FC = () => {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      const chosenModules = (Array.isArray(values.target_modules) ? values.target_modules : ['console']).filter((module: string) => {
+        if (module === 'playground_2026') return playgroundOn;
+        if (module === 'portal_pro') return portalOn;
+        return module === 'console';
+      });
       const payload = {
         title: values.title,
         content: values.content,
@@ -760,6 +831,9 @@ const Announcements: React.FC = () => {
         is_popup: values.is_popup ? 1 : 0,
         is_active: values.is_active ? 1 : 0,
         sort_order: Number(values.sort_order) || 0,
+        target_module: (chosenModules.length ? chosenModules : ['console']).join(','),
+        playground_banner_bg: values.playground_banner_bg || '',
+        portal_banner_bg: values.portal_banner_bg || '',
         pin_expires_at: expireToPayload(values.pin_expire_mode, values.pin_expires_at),
         popup_expires_at: expireToPayload(values.popup_expire_mode, values.popup_expires_at),
         active_expires_at: expireToPayload(values.active_expire_mode, values.active_expires_at),
@@ -793,6 +867,24 @@ const Announcements: React.FC = () => {
       dataIndex: 'title',
       key: 'title',
       ellipsis: true,
+    },
+    {
+      title: '模块',
+      dataIndex: 'target_module',
+      key: 'target_module',
+      width: 220,
+      render: (val: string) => (
+        <Space size={[4, 4]} wrap>
+          {parseNoticeModules(val).filter((module) => {
+            if (!pluginsLoaded) return true;
+            if (module === 'playground_2026') return pluginOn('playground_2026');
+            if (module === 'portal_pro') return pluginOn('site_portal_pro');
+            return true;
+          }).map((module) => (
+            <Tag key={module} style={{ margin: 0 }}>{noticeModuleLabel(module)}</Tag>
+          ))}
+        </Space>
+      ),
     },
     {
       title: '排序',
@@ -938,6 +1030,55 @@ const Announcements: React.FC = () => {
         <Form form={form} layout="vertical">
           <Form.Item name="title" label="通知标题" rules={[{ required: true, message: '请输入标题' }]} style={{ marginBottom: 14 }}>
             <Input placeholder="请输入通知标题" />
+          </Form.Item>
+
+          <Form.Item
+            name="target_modules"
+            label="通知模块"
+            rules={[{ required: true, type: 'array', min: 1, message: '请至少选择一个通知模块' }]}
+            style={{ marginBottom: 16 }}
+          >
+            <Checkbox.Group
+              options={NOTICE_MODULES.filter((item) => !('plugin' in item) || (item.plugin === 'playground_2026' ? playgroundOn : portalOn)).map((item) => ({
+                label: item.label,
+                value: item.value,
+              }))}
+            />
+          </Form.Item>
+
+          {playgroundOn && selectedModules.includes('playground_2026') && (
+            <Form.Item label="创作中心顶栏背景色" style={{ marginBottom: 16 }}>
+              <Space size={12} align="center">
+                <ColorPicker
+                  disabledAlpha
+                  allowClear
+                  showText
+                  value={playgroundBg || undefined}
+                  onChange={(color) => form.setFieldValue('playground_banner_bg', bannerHex(color))}
+                />
+                <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>留空为创作中心默认背景</span>
+              </Space>
+            </Form.Item>
+          )}
+          {portalOn && selectedModules.includes('portal_pro') && (
+            <Form.Item label="门户顶栏背景色" style={{ marginBottom: 16 }}>
+              <Space size={12} align="center">
+                <ColorPicker
+                  disabledAlpha
+                  allowClear
+                  showText
+                  value={portalBg || undefined}
+                  onChange={(color) => form.setFieldValue('portal_banner_bg', bannerHex(color))}
+                />
+                <span style={{ fontSize: 12, color: 'var(--ant-color-text-secondary)' }}>留空为门户默认背景</span>
+              </Space>
+            </Form.Item>
+          )}
+          <Form.Item name="playground_banner_bg" hidden>
+            <Input />
+          </Form.Item>
+          <Form.Item name="portal_banner_bg" hidden>
+            <Input />
           </Form.Item>
 
           <Form.Item

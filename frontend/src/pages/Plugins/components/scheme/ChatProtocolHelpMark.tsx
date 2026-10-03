@@ -56,3 +56,6 @@ export function chatProtocolSelectLabel(
     </span>
   );
 }
+
+export default ChatProtocolHelpMark;
+

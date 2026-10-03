@@ -12,7 +12,7 @@ use crate::models::{
 };
 use crate::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,7 @@ pub async fn list_users(
         .await?
     } else {
         sqlx::query_as(&state.db.format_query(
-            "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key ORDER BY u.created_at DESC"
+            "SELECT u.*, ul.name as level_name, ul.id as level_id FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key ORDER BY u.created_at DESC"
         ))
         .fetch_all(&state.db.pool)
         .await?
@@ -109,11 +109,14 @@ pub async fn list_users(
 
 pub async fn create_user(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
     axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Json(request): Json<CreateUserRequest>,
 ) -> AppResult<Json<User>> {
     let operator_name = claims.username.clone();
+    let register_ip = crate::api::auth::extract_client_ip(&headers, &addr);
     crate::api::auth::validate_username(&request.username, false)?;
     let mut actual_email = request.email.clone();
     if actual_email.is_empty() {
@@ -164,8 +167,8 @@ pub async fn create_user(
                 return Err(AppError::BadRequest("不能设置自己为推荐人".to_string()));
             }
 
-            let resolved_id: Option<String> = sqlx::query_scalar(&state.db.format_query(
-                "SELECT id FROM users WHERE id = ? OR uid = ? OR username = ? LIMIT 1",
+            let resolved: Option<(String, String)> = sqlx::query_as(&state.db.format_query(
+                "SELECT id, role FROM users WHERE id = ? OR uid = ? OR username = ? LIMIT 1",
             ))
             .bind(ref_val)
             .bind(ref_val)
@@ -173,7 +176,10 @@ pub async fn create_user(
             .fetch_optional(&state.db.pool)
             .await?;
 
-            if let Some(id) = resolved_id {
+            if let Some((id, ref_role)) = resolved {
+                if role == "user" && ref_role == "admin" {
+                    return Err(AppError::BadRequest("上级推荐人不能是管理员".to_string()));
+                }
                 referred_by = Some(id);
             }
         }
@@ -213,8 +219,8 @@ pub async fn create_user(
     }
 
     sqlx::query(
-        &state.db.format_query(r#"INSERT INTO users (id, uid, username, email, mobile, password_hash, role, user_group, admin_group_id, balance, gift_balance, pay_enabled, is_active, referred_by, referral_history)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"#)
+        &state.db.format_query(r#"INSERT INTO users (id, uid, username, email, mobile, password_hash, role, user_group, admin_group_id, balance, gift_balance, pay_enabled, is_active, referred_by, referral_history, register_ip)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"#)
     )
     .bind(&user_id)
     .bind(&uid)
@@ -230,6 +236,7 @@ pub async fn create_user(
     .bind(pay_enabled)
     .bind(&referred_by)
     .bind(&referral_history)
+    .bind(&register_ip)
     .execute(&mut *tx)
     .await?;
 
@@ -439,8 +446,8 @@ pub async fn update_user(
 
         // Resolve referred_by to ID if it's a UID or Username
         if let Some(ref ref_val) = new_ref {
-            let resolved_id: Option<String> = sqlx::query_scalar(&state.db.format_query(
-                "SELECT id FROM users WHERE id = ? OR uid = ? OR username = ? LIMIT 1",
+            let resolved: Option<(String, String)> = sqlx::query_as(&state.db.format_query(
+                "SELECT id, role FROM users WHERE id = ? OR uid = ? OR username = ? LIMIT 1",
             ))
             .bind(ref_val)
             .bind(ref_val)
@@ -448,7 +455,10 @@ pub async fn update_user(
             .fetch_optional(&state.db.pool)
             .await?;
 
-            if let Some(id) = resolved_id {
+            if let Some((id, ref_role)) = resolved {
+                if user.role == "user" && ref_role == "admin" {
+                    return Err(AppError::BadRequest("上级推荐人不能是管理员".to_string()));
+                }
                 new_ref = Some(id);
             }
         }
@@ -914,7 +924,7 @@ pub async fn recharge_user(
     axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
     axum::extract::Extension(ctx): axum::extract::Extension<crate::admin_permission::AdminContext>,
     Json(request): Json<RechargeRequest>,
-) -> AppResult<Json<User>> {
+) -> AppResult<Json<RechargeOutcome>> {
     if request.amount.is_nan() || request.amount.is_infinite() {
         return Err(AppError::BadRequest("无效的金额数值".to_string()));
     }
@@ -1002,9 +1012,13 @@ pub async fn recharge_user(
         .fetch_one(&mut *tx)
         .await?;
 
-    // 系统钱包且为正金额时才奖励佣金，赠送钱包和扣减操作不计入佣金范围
-    if !is_gift && request_amount > 0.0 {
-        if let Err(e) = crate::services::affiliate::award_commission(
+    let is_system = !is_gift && !is_credit;
+    let mut commission_applied = 0.0;
+    let commission_capped = false;
+    let mut commission_from_wallet = 0.0;
+    let mut commission_from_system = 0.0;
+    if is_system && request_amount > 0.0 && request.apply_commission.unwrap_or(true) {
+        match crate::services::affiliate::award_recharge_commission(
             &state.db,
             &mut tx,
             &user.id,
@@ -1013,11 +1027,44 @@ pub async fn recharge_user(
         )
         .await
         {
-            tracing::warn!(
-                "Failed to award commission for recharge {}: {}",
-                recharge_id,
-                e
-            );
+            Ok(credited) => commission_applied = credited,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to award commission for recharge {}: {}",
+                    recharge_id,
+                    e
+                );
+            }
+        }
+    }
+    if is_system && request_amount < 0.0 && request.apply_commission.unwrap_or(false) {
+        let system_order_no = crate::api::plugins::finance::generate_system_order_no();
+        match crate::services::affiliate::clawback_admin_commission(
+            &state.db,
+            &mut tx,
+            &user.id,
+            recharge_id,
+            -request_amount,
+            &operator_name,
+            &user.username,
+            &system_order_no,
+        )
+        .await
+        {
+            Ok(cut) => {
+                commission_from_wallet = cut.from_commission;
+                commission_from_system = cut.from_system;
+                commission_applied = crate::money::round_money(
+                    -(cut.from_commission + cut.from_system),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to claw back commission for recharge {}: {}",
+                    recharge_id,
+                    e
+                );
+            }
         }
     }
 
@@ -1033,7 +1080,330 @@ pub async fn recharge_user(
     .fetch_one(&state.db.pool)
     .await?;
 
-    Ok(Json(updated_user))
+    Ok(Json(RechargeOutcome {
+        user: updated_user,
+        commission_applied,
+        commission_capped,
+        commission_from_wallet,
+        commission_from_system,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct RechargeOutcome {
+    #[serde(flatten)]
+    pub user: User,
+    pub commission_applied: f64,
+    pub commission_capped: bool,
+    /// 本次从上级佣金钱包扣回的正数。
+    pub commission_from_wallet: f64,
+    /// 本次从上级系统钱包扣回的正数。
+    pub commission_from_system: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommissionPreviewQuery {
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommissionPreviewResponse {
+    pub eligible: bool,
+    pub direction: String,
+    pub inviter_username: String,
+    pub inviter_uid: String,
+    pub ratio: f64,
+    pub basis: String,
+    pub suggested: f64,
+    pub inviter_commission_balance: f64,
+    pub inviter_system_balance: f64,
+    pub from_commission: f64,
+    pub from_system: f64,
+    pub actual: f64,
+    pub default_apply: bool,
+}
+
+pub async fn preview_commission_adjust(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<CommissionPreviewQuery>,
+    axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+) -> AppResult<Json<CommissionPreviewResponse>> {
+    if query.amount.is_nan() || query.amount.is_infinite() {
+        return Err(AppError::BadRequest("无效的金额数值".to_string()));
+    }
+    let user: User = sqlx::query_as(&state.db.format_query(
+        "SELECT u.*, ul.name as level_name FROM users u LEFT JOIN user_levels ul ON u.user_group = ul.group_key WHERE u.id = ? OR u.uid = ?",
+    ))
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    let ctx = crate::admin_permission::load_admin_context(&state, &claims.sub).await?;
+    crate::admin_permission::require_edit(
+        &ctx,
+        crate::admin_permission::users_write_perm(&user.role),
+    )?;
+
+    let row: Option<(String, String, f64, f64, f64, String)> = sqlx::query_as(&state.db.format_query(
+        "SELECT inv.username, inv.uid, inv.commission_balance, inv.balance, ul.commission_ratio, COALESCE(NULLIF(ul.commission_basis, ''), 'consumption') \
+         FROM users u \
+         JOIN users inv ON (inv.id = u.referred_by OR inv.uid = u.referred_by) \
+         JOIN user_levels ul ON ul.group_key = inv.user_group \
+         WHERE u.id = ? \
+         ORDER BY CASE WHEN inv.id = u.referred_by THEN 0 ELSE 1 END \
+         LIMIT 1",
+    ))
+    .bind(&user.id)
+    .fetch_optional(&state.db.pool)
+    .await?;
+
+    let Some((username, uid, commission_balance, system_balance, ratio, basis)) = row else {
+        return Ok(Json(CommissionPreviewResponse {
+            eligible: false,
+            direction: "none".to_string(),
+            inviter_username: String::new(),
+            inviter_uid: String::new(),
+            ratio: 0.0,
+            basis: "consumption".to_string(),
+            suggested: 0.0,
+            inviter_commission_balance: 0.0,
+            inviter_system_balance: 0.0,
+            from_commission: 0.0,
+            from_system: 0.0,
+            actual: 0.0,
+            default_apply: false,
+        }));
+    };
+    let quote = crate::services::affiliate::quote_adjust(
+        query.amount,
+        ratio,
+        &basis,
+        commission_balance,
+    );
+    Ok(Json(CommissionPreviewResponse {
+        eligible: quote.eligible,
+        direction: quote.direction.to_string(),
+        inviter_username: username,
+        inviter_uid: uid,
+        ratio,
+        basis: crate::services::affiliate::normalize_commission_basis(&basis).to_string(),
+        suggested: quote.suggested,
+        inviter_commission_balance: crate::money::round_money(commission_balance),
+        inviter_system_balance: crate::money::round_money(system_balance),
+        from_commission: quote.from_commission,
+        from_system: quote.from_system,
+        actual: quote.actual,
+        default_apply: quote.default_apply,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommissionLedgerQuery {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommissionLedgerItem {
+    pub id: String,
+    pub created_at: String,
+    pub amount: f64,
+    pub ratio: f64,
+    pub source: String,
+    pub source_label: String,
+    pub from_username: String,
+    pub from_uid: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommissionLedgerResponse {
+    pub commission_balance: f64,
+    pub period_earned: f64,
+    pub period_clawback: f64,
+    pub period_transfer: f64,
+    pub data: Vec<CommissionLedgerItem>,
+}
+
+fn commission_ledger_label(source_key: &str, amount: f64) -> (&'static str, &'static str) {
+    if source_key.starts_with("adjustclaw:") {
+        ("adjust", "余额调减扣回")
+    } else if source_key.starts_with("arkrefund:")
+        || (amount < 0.0 && source_key.starts_with("ark:"))
+    {
+        ("refund", "退款回冲")
+    } else if source_key.starts_with("ark:") {
+        ("video", "视频返佣")
+    } else if source_key.starts_with("recharge:") {
+        ("recharge", "充值返佣")
+    } else if source_key.starts_with("log:") {
+        ("consumption", "消费返佣")
+    } else if amount < 0.0 {
+        ("refund", "回冲")
+    } else {
+        ("other", "其他")
+    }
+}
+
+fn append_ledger_range(
+    sql: &mut String,
+    binds: &mut Vec<String>,
+    field: &str,
+    start: Option<&str>,
+    end: Option<&str>,
+    tz: chrono_tz::Tz,
+) {
+    if let Some(start) = start.filter(|s| !s.trim().is_empty()) {
+        crate::api::date_helper::push_timestamptz_bound(sql, binds, field, start, false, tz);
+    }
+    if let Some(end) = end.filter(|s| !s.trim().is_empty()) {
+        crate::api::date_helper::push_timestamptz_bound(sql, binds, field, end, true, tz);
+    }
+}
+
+/// 管理端钱包明细：佣金入账、回冲，以及划转到系统钱包的流出。
+pub async fn list_user_commission_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<CommissionLedgerQuery>,
+    axum::extract::Extension(claims): axum::extract::Extension<crate::auth::Claims>,
+) -> AppResult<Json<CommissionLedgerResponse>> {
+    crate::admin_permission::load_admin_context(&state, &claims.sub).await?;
+    let user_id: String = sqlx::query_scalar(&state.db.format_query(
+        "SELECT id FROM users WHERE id = ? OR uid = ? LIMIT 1",
+    ))
+    .bind(&id)
+    .bind(&id)
+    .fetch_optional(&state.db.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let commission_balance: f64 = sqlx::query_scalar(&state.db.format_query(
+        "SELECT commission_balance FROM users WHERE id = ?",
+    ))
+    .bind(&user_id)
+    .fetch_one(&state.db.pool)
+    .await?;
+
+    let site_tz = crate::relay::relay_settings::get_cached_site_timezone(&state.db).await;
+    let tz = crate::time_system::parse_timedisplay(&site_tz);
+    let start = query.start_date.as_deref();
+    let end = query.end_date.as_deref();
+
+    let mut comm_where = " WHERE c.user_id = ?".to_string();
+    let mut comm_binds = vec![user_id.clone()];
+    append_ledger_range(&mut comm_where, &mut comm_binds, "c.created_at", start, end, tz);
+
+    let sum_sql = state.db.format_query(&format!(
+        "SELECT COALESCE(SUM(CASE WHEN c.amount > 0 THEN c.amount ELSE 0 END), 0)::float8, \
+         COALESCE(SUM(CASE WHEN c.amount < 0 THEN -c.amount ELSE 0 END), 0)::float8 \
+         FROM commissions c{comm_where}"
+    ));
+    let mut sum_q = sqlx::query_as::<_, (f64, f64)>(&sum_sql);
+    for val in &comm_binds {
+        sum_q = sum_q.bind(val);
+    }
+    let (period_earned, period_clawback) = sum_q.fetch_one(&state.db.pool).await?;
+
+    #[derive(sqlx::FromRow)]
+    struct CommissionRow {
+        id: i32,
+        amount: f64,
+        ratio: f64,
+        source_key: Option<String>,
+        created_at: crate::time_system::DbTs,
+        from_username: Option<String>,
+        from_uid: Option<String>,
+    }
+    let list_sql = state.db.format_query(&format!(
+        "SELECT c.id, c.amount, c.ratio, c.source_key, c.created_at, fu.username AS from_username, fu.uid AS from_uid \
+         FROM commissions c \
+         LEFT JOIN users fu ON fu.id = c.from_user_id \
+         {comm_where} \
+         ORDER BY c.created_at DESC, c.id DESC \
+         LIMIT 500"
+    ));
+    let mut list_q = sqlx::query_as::<_, CommissionRow>(&list_sql);
+    for val in &comm_binds {
+        list_q = list_q.bind(val);
+    }
+    let commission_rows = list_q.fetch_all(&state.db.pool).await?;
+
+    let mut xfer_where =
+        " WHERE rr.user_id = ? AND rr.recharge_type = 'transfer'".to_string();
+    let mut xfer_binds = vec![user_id.clone()];
+    append_ledger_range(
+        &mut xfer_where,
+        &mut xfer_binds,
+        "rr.created_at",
+        start,
+        end,
+        tz,
+    );
+    let xfer_sum_sql = state.db.format_query(&format!(
+        "SELECT COALESCE(SUM(rr.amount), 0)::float8 FROM recharge_records rr{xfer_where}"
+    ));
+    let mut xfer_sum_q = sqlx::query_scalar::<_, f64>(&xfer_sum_sql);
+    for val in &xfer_binds {
+        xfer_sum_q = xfer_sum_q.bind(val);
+    }
+    let period_transfer = xfer_sum_q.fetch_one(&state.db.pool).await?;
+
+    #[derive(sqlx::FromRow)]
+    struct TransferRow {
+        id: i64,
+        amount: f64,
+        created_at: crate::time_system::DbTs,
+    }
+    let xfer_sql = state.db.format_query(&format!(
+        "SELECT rr.id, rr.amount, rr.created_at FROM recharge_records rr{xfer_where} \
+         ORDER BY rr.created_at DESC, rr.id DESC LIMIT 500"
+    ));
+    let mut xfer_q = sqlx::query_as::<_, TransferRow>(&xfer_sql);
+    for val in &xfer_binds {
+        xfer_q = xfer_q.bind(val);
+    }
+    let transfer_rows = xfer_q.fetch_all(&state.db.pool).await?;
+
+    let money = crate::money::round_money;
+    let mut data: Vec<CommissionLedgerItem> = commission_rows
+        .into_iter()
+        .map(|row| {
+            let key = row.source_key.unwrap_or_default();
+            let (source, source_label) = commission_ledger_label(&key, row.amount);
+            CommissionLedgerItem {
+                id: format!("c:{}", row.id),
+                created_at: row.created_at.into_string(),
+                amount: money(row.amount),
+                ratio: row.ratio,
+                source: source.to_string(),
+                source_label: source_label.to_string(),
+                from_username: row.from_username.unwrap_or_default(),
+                from_uid: row.from_uid.unwrap_or_default(),
+            }
+        })
+        .collect();
+    data.extend(transfer_rows.into_iter().map(|row| CommissionLedgerItem {
+        id: format!("t:{}", row.id),
+        created_at: row.created_at.into_string(),
+        amount: money(-row.amount),
+        ratio: 0.0,
+        source: "transfer".to_string(),
+        source_label: "划转到系统钱包".to_string(),
+        from_username: String::new(),
+        from_uid: String::new(),
+    }));
+    data.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    data.truncate(500);
+
+    Ok(Json(CommissionLedgerResponse {
+        commission_balance: money(commission_balance),
+        period_earned: money(period_earned),
+        period_clawback: money(period_clawback),
+        period_transfer: money(period_transfer),
+        data,
+    }))
 }
 
 pub async fn impersonate_user(
@@ -1349,7 +1719,19 @@ pub async fn delete_contact_bind(
 
 #[cfg(test)]
 mod tests {
-    use super::collect_kyc_list_statuses;
+    use super::{collect_kyc_list_statuses, commission_ledger_label};
+
+    #[test]
+    fn commission_ledger_label_splits_adjust_and_sources() {
+        assert_eq!(
+            commission_ledger_label("adjustclaw:9", -5.0).0,
+            "adjust"
+        );
+        assert_eq!(commission_ledger_label("log:3", 1.2).0, "consumption");
+        assert_eq!(commission_ledger_label("recharge:4", 2.0).0, "recharge");
+        assert_eq!(commission_ledger_label("ark:8", 1.0).0, "video");
+        assert_eq!(commission_ledger_label("arkrefund:8", -1.0).0, "refund");
+    }
 
     #[test]
     fn collect_kyc_list_statuses_keeps_pending_review() {

@@ -7,7 +7,9 @@
 
 use crate::api::models::{class_filter_bind, class_filter_sql};
 use crate::error::AppResult;
-use crate::models::{ClassificationRequest, ClassificationsResponse, ModelProvider, ModelType};
+use crate::models::{
+    ClassificationRequest, ClassificationsResponse, ModelProvider, ModelType, SourceModelCounts,
+};
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -522,7 +524,8 @@ pub async fn get_classifications_stats(
     axum::extract::Query(query): axum::extract::Query<StatsQuery>,
 ) -> AppResult<Json<ClassificationsResponse>> {
     let volc_active = is_volcengine_enhance_active(&state).await;
-    let volc_hide = crate::api::models::volc_preset_hide_sql(&state, "m.mid").await;
+    let track_copies = !crate::db::preset_models::is_library_source(query.source.as_deref());
+    let volc_hide = crate::api::models::volc_preset_hide_sql(&state, "m.mid", track_copies).await;
     let volc_hide_pred = {
         let pred = volc_hide.trim_start_matches(" AND ");
         if pred.is_empty() {
@@ -678,6 +681,23 @@ pub async fn get_classifications_stats(
     )
     .await?;
 
+    let custom = crate::api::models::count_source_models(
+        &state,
+        false,
+        query.provider_id,
+        query.api_provider_id,
+        query.type_id,
+    )
+    .await?;
+    let library = crate::api::models::count_source_models(
+        &state,
+        true,
+        query.provider_id,
+        query.api_provider_id,
+        query.type_id,
+    )
+    .await?;
+
     Ok(Json(ClassificationsResponse {
         providers,
         api_providers,
@@ -685,5 +705,6 @@ pub async fn get_classifications_stats(
         unclassified_providers,
         unclassified_api_providers,
         unclassified_types,
+        source_counts: SourceModelCounts { custom, library },
     }))
 }

@@ -76,6 +76,12 @@ export const PlaygroundChatConfigTab = loadPluginComponent(
 export const PlaygroundPromptOptimizeConfigTab = loadPluginComponent(
   'Playground_2026/components/PlaygroundPromptOptimizeConfigTab.tsx',
 );
+export const PlaygroundImageEditConfigTab = loadPluginComponent(
+  'Playground_2026/components/PlaygroundImageEditConfigTab.tsx',
+);
+export const PlaygroundVideoEditConfigTab = loadPluginComponent(
+  'Playground_2026/components/PlaygroundVideoEditConfigTab.tsx',
+);
 export const PlaygroundDemoImageConfig = loadPluginComponent(
   'Playground_2026/components/PlaygroundDemoImageConfig.tsx',
 );

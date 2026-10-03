@@ -439,7 +439,7 @@ const TrendingPage: React.FC<TrendingPageProps> = ({
       );
     }
 
-    // 2. 统一通过 lobeIconSrc 解析图标，支持 kimi 双模高保真图标及自适应滤镜
+    // 2. 统一通过 lobeIconSrc 解析图标，使用站点图标库里的原文件
     const src = lobeIconSrc(logo, lab.name, lab.name);
     const filter = getLogoFilter(logo || lab.name, isLight, src);
     return (

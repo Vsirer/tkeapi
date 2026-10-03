@@ -60,4 +60,6 @@ pub struct SiteIconQuery {
     pub source: Option<String>,
     pub page: Option<i64>,
     pub size: Option<i64>,
+    /// 文件名首字母：a-z，或 # 表示非字母开头
+    pub initial: Option<String>,
 }

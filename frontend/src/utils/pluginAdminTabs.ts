@@ -20,9 +20,15 @@ const BASIC: PluginAdminTabOption = { key: 'basic', label: '基本配置' };
 export function getPluginAdminTabs(
   pluginName: string,
   dynamic?: DynamicPluginTabMeta,
+  t?: (key: string, fallback: string) => string,
 ): PluginAdminTabOption[] {
+  const basic: PluginAdminTabOption = {
+    key: 'basic',
+    label: t ? t('playground_2026:admin_tab_basic', '基本配置') : '基本配置',
+  };
+
   if (dynamic) {
-    const tabs: PluginAdminTabOption[] = [BASIC];
+    const tabs: PluginAdminTabOption[] = [basic];
     if (dynamic.tabs && dynamic.tabs.length > 0) {
       tabs.push(...dynamic.tabs.map((t) => ({ key: t.key, label: t.label })));
     } else if (dynamic.component) {
@@ -37,19 +43,19 @@ export function getPluginAdminTabs(
   switch (pluginName) {
     case 'high_availability_channel':
       return [
-        BASIC,
+        basic,
         { key: 'ha_config', label: '高可用参数配置' },
         { key: 'ha_logs', label: '使用日志记录' },
       ];
     case 'team_marketing':
       return [
-        BASIC,
+        basic,
         { key: 'team_config', label: '团队配置' },
         { key: 'theme_promo', label: '主题推广' },
       ];
     case 'playground':
       return [
-        BASIC,
+        basic,
         { key: 'pg_storage', label: '存储配置' },
         { key: 'playground_models', label: '创作模型管理' },
         { key: 'playground_schemes', label: '创作方案配置' },
@@ -58,14 +64,16 @@ export function getPluginAdminTabs(
       ];
     case 'playground_2026':
       return [
-        BASIC,
-        { key: 'pg_storage', label: '存储配置' },
-        { key: 'playground_models', label: '创作模型管理' },
-        { key: 'playground_schemes', label: '创作方案配置' },
-        { key: 'playground_chat_config', label: '聊天功能配置' },
-        { key: 'playground_workflow_config', label: '工作流配置' },
-        { key: 'playground_skill_config', label: 'Skill 配置' },
-        { key: 'playground_prompt_optimize', label: 'AI 优化提示词' },
+        basic,
+        { key: 'pg_storage', label: t ? t('playground_2026:admin_tab_storage', '存储配置') : '存储配置' },
+        { key: 'playground_models', label: t ? t('playground_2026:admin_tab_models', '创作模型管理') : '创作模型管理' },
+        { key: 'playground_schemes', label: t ? t('playground_2026:admin_tab_schemes', '创作方案配置') : '创作方案配置' },
+        { key: 'playground_chat_config', label: t ? t('playground_2026:admin_tab_chat', '聊天配置') : '聊天配置' },
+        { key: 'playground_workflow_config', label: t ? t('playground_2026:admin_tab_workflow', '工作流配置') : '工作流配置' },
+        { key: 'playground_image_edit', label: t ? t('playground_2026:admin_image_edit', '图片编辑') : '图片编辑' },
+        { key: 'playground_video_edit', label: t ? t('playground_2026:admin_video_workbench', '视频编辑') : '视频编辑' },
+        { key: 'playground_skill_config', label: t ? t('playground_2026:admin_tab_skill', 'Skill 配置') : 'Skill 配置' },
+        { key: 'playground_prompt_optimize', label: t ? t('playground_2026:admin_tab_prompt_optimize', 'AI 优化提示词') : 'AI 优化提示词' },
       ];
     case 'model_marketplace':
       return [

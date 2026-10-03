@@ -32,8 +32,8 @@ const ENHANCE_OPTIONS = [
   { value: 'ai', label: '大模型' },
 ] as const;
 
-/** 大模型增强仅允许的目标分辨率（与后端 cascade_resolve_enhance 对齐） */
-const AI_ENHANCE_RES = new Set<ResKey>(['720p', '1080p', '2k']);
+/** 大模型增强允许的目标分辨率（与后端 resolve_volc_enhance 对齐） */
+const AI_ENHANCE_RES = new Set<ResKey>(['720p', '1080p', '2k', '4k']);
 
 /** 标准版场景（仅 standard 生效），默认 common */
 const SCENE_OPTIONS = [
@@ -1196,7 +1196,7 @@ const ForwardRules: React.FC = () => {
                       )}
                     </>
                   <Form.Item
-                    label={<Space>级联分辨率配置 <Popover content={<div style={{ maxWidth: 320 }}>每档可设：倍率、增强（默认标准；大模型仅 720p/1080p/2k）、场景（仅标准版，默认 common）、底座（默认一级；480p 锁定 480p，720p 可选 480p/720p，1080p 可选 720p/480p/1080p；2k/4k 不变）。阶段二成功：有 usage 时 tokens×倍率，否则底座费用×倍率。</div>}><QuestionCircleOutlined /></Popover></Space>}
+                    label={<Space>级联分辨率配置 <Popover content={<div style={{ maxWidth: 320 }}>每档可设：倍率、增强（默认标准；大模型支持 720p/1080p/2k/4k）、场景（仅标准版，默认 common）、底座（默认一级；480p 锁定 480p，720p 可选 480p/720p，1080p 可选 720p/480p/1080p；2k/4k 不变）。阶段二成功：有 usage 时 tokens×倍率，否则底座费用×倍率。</div>}><QuestionCircleOutlined /></Popover></Space>}
                     style={{ marginBottom: 8 }}
                   >
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

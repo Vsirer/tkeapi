@@ -652,7 +652,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
     const upstreamReqJson = user?.role === 'admin' ? prettyJson(merged.upstream_req_content) : null;
 
     const costFormula = t('logs.cost_formula_dynamic', '由绑定的计费模板动态结算');
-    const { clientCt, cascadeS1TaskId } = parsePluginTagMeta(merged.plugin_tag);
+    const { clientCt, cascadeS1TaskId, upstreamTaskId } = parsePluginTagMeta(merged.plugin_tag);
 
     // 使用 antd theme token 来适配深色/浅色主题
     const panelBg = themeToken.colorBgElevated;
@@ -706,6 +706,23 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 style={{ fontSize: 12, fontFamily: 'monospace' }}
               >
                 {merged.upstream_request_id}
+              </Typography.Text>
+            </Descriptions.Item>
+          )}
+          {upstreamTaskId && (
+            <Descriptions.Item label={
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {t('logs.upstream_task_id', '上游任务ID')}
+                <Tooltip title={t('logs.upstream_task_id_tip', '上游返回的真实任务号，用于到厂商控制台查单')}>
+                  <QuestionCircleOutlined style={{ marginLeft: 4, color: themeToken.colorTextTertiary, cursor: 'help' }} />
+                </Tooltip>
+              </span>
+            }>
+              <Typography.Text
+                copyable={{ text: upstreamTaskId, tooltips: [t('logs.copy', '复制'), t('logs.copy_success', '已复制')] }}
+                style={{ fontSize: 12, fontFamily: 'monospace' }}
+              >
+                {upstreamTaskId}
               </Typography.Text>
             </Descriptions.Item>
           )}
@@ -867,13 +884,12 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         maxWidth: '100%',
         overflow: 'hidden'
       }} 
-      styles={{ body: { padding: screens.xs ? 0 : '16px 24px 24px', maxWidth: '100%', overflowX: 'hidden' } }}
+      styles={{ body: { padding: screens.xs ? 0 : '12px 20px 16px', maxWidth: '100%', overflowX: 'hidden' } }}
     >
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-            <Typography.Title level={4} style={{ margin: 0, fontSize: 18, display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <RefreshCw size={20} />
+            <Typography.Title level={4} style={{ margin: 0, fontSize: 18 }}>
               {t('menu.usage_logs', '使用日志')}
             </Typography.Title>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -970,7 +986,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
         )}
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 12, width: '100%' }}>
           {user?.role === 'admin' && (
             <>
               <Input
@@ -987,7 +1003,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 value={userGroupFilter}
                 onChange={(v) => setUserGroupFilter(v ?? undefined)}
                 options={userLevels.map((l: any) => ({ value: l.group_key, label: `${l.name} (${l.discount}x)` }))}
-                style={{ width: screens.xs ? '100%' : 180, fontSize: 12, height: 32 }}
+                style={{ width: screens.xs ? '100%' : 130, fontSize: 12, height: 32 }}
                 popupMatchSelectWidth={false}
                 allowClear
                 showSearch
@@ -1008,7 +1024,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             value={searchKeyword}
             onChange={e => setSearchKeyword(e.target.value)}
             onPressEnter={() => fetchLogs()}
-            style={{ width: screens.xs ? '100%' : 320, fontSize: 12, height: 32 }}
+            style={{ width: screens.xs ? '100%' : 270, fontSize: 12, height: 32 }}
             allowClear
           />
           <Input
@@ -1017,14 +1033,15 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             value={modelFilter}
             onChange={e => setModelFilter(e.target.value)}
             onPressEnter={() => fetchLogs()}
-            style={{ width: screens.xs ? '100%' : 140, fontSize: 12, height: 32 }}
+            style={{ width: screens.xs ? '100%' : 220, fontSize: 12, height: 32 }}
           />
           <Select
             placeholder={t('logs.search_status_code', '错误码')}
             value={statusCodeFilter}
             onChange={(v) => setStatusCodeFilter(v ?? undefined)}
             options={statusCodeOptions}
-            style={{ width: screens.xs ? '100%' : 160, fontSize: 12, height: 32 }}
+            style={{ width: screens.xs ? '100%' : 120, fontSize: 12, height: 32 }}
+            popupMatchSelectWidth={false}
             allowClear
             showSearch
             optionFilterProp="label"
@@ -1035,14 +1052,8 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
             isAdmin={isAdmin}
             className="font-size-12"
           />
-          {!isAdmin && (
-            <Text type="secondary" style={{ fontSize: 12, lineHeight: '32px' }}>
-              {t('logs.user_date_range_hint', '近1年可查，单次最长1个月，支持精确到秒')}
-            </Text>
-          )}
           <Space size={8} style={{ marginLeft: screens.xs ? 0 : 'auto' }}>
             <Button type="primary" icon={<Search size={14} />} onClick={() => fetchLogs()} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('logs.query', '查询')}</Button>
-            <Button icon={<RefreshCw size={14} />} onClick={() => fetchLogs()} loading={loading} disabled={loading} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('common.refresh', '刷新')}</Button>
             {user?.role === 'admin' && (
               <Tooltip title={t('logs.export_tooltip', '按当前筛选与列表顺序导出 CSV，可勾选字段（上限10万条）')}>
                 <Button icon={<Download size={14} />} loading={exporting} disabled={loading} onClick={openExportModal} style={{ height: 32, borderRadius: 6, fontSize: 12, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{t('logs.export', '导出')}</Button>
@@ -1181,6 +1192,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
       ) : (
         <div ref={dragScrollRef} style={{ width: '100%', maxWidth: '100%' }}>
           <Table
+            className="compact-table"
             dataSource={logs}
             columns={columns}
             rowKey="id"
@@ -1212,7 +1224,7 @@ const Logs: React.FC<{ routerEp?: string }> = ({ routerEp }) => {
                 setPage(1);
               }
             }}
-            size="middle"
+            size="small"
             locale={{ emptyText: t('dashboard.no_data') }}
             scroll={{ x: 1200 }}
           />

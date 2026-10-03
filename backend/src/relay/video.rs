@@ -27,6 +27,12 @@ use axum::{
 };
 use std::sync::Arc;
 
+const KLING_NATIVE_PREFIXES: [&str; 3] = [
+    "/text-to-video/",
+    "/image-to-video/",
+    "/omni-video/",
+];
+
 /// POST /v1/video/generations — Submit a video generation task
 
 pub async fn video_generations(
@@ -36,6 +42,36 @@ pub async fn video_generations(
     headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> AppResult<Response> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // 计数在任务入队前加上，关闭流程不会把「已受理、还没跑到第一行」的提交看成空闲
+    let guard = state.video_submit_drain.enter();
+    tokio::spawn(async move {
+        let _guard = guard;
+        video_generations_job(state, token, uri, headers, body, tx).await;
+    });
+    match rx.await {
+        Ok(r) => r,
+        Err(_) => Err(AppError::Internal("视频受理中断".into())),
+    }
+}
+
+async fn video_generations_job(
+    state: Arc<AppState>,
+    token: ApiToken,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    mut body: serde_json::Value,
+    ack_tx: tokio::sync::oneshot::Sender<AppResult<Response>>,
+) {
+    let mut ack_tx = Some(ack_tx);
+    macro_rules! bail {
+        ($e:expr) => {{
+            if let Some(tx) = ack_tx.take() {
+                let _ = tx.send(Err($e));
+            }
+            return;
+        }};
+    }
     let start_time = std::time::Instant::now();
     let log_id = headers
         .get("x-log-id")
@@ -45,9 +81,7 @@ pub async fn video_generations(
         .map(|s| s.to_string())
         .unwrap_or_else(|| upstream_headers::resolve_request_log_id(Some("视频")));
     let raw_path = uri.path();
-    let is_kling_native = raw_path.starts_with("/text-to-video/")
-        || raw_path.starts_with("/image-to-video/")
-        || raw_path.starts_with("/omni-video/");
+    let is_kling_native = KLING_NATIVE_PREFIXES.iter().any(|p| raw_path.starts_with(p));
 
     // 归一化到兼容入口，便于匹配转发规则 path_rewrite.old=/v1/video/generations：
     // - OpenAI Videos：/v1/videos
@@ -58,7 +92,6 @@ pub async fn video_generations(
     } else {
         raw_path.to_string()
     };
-    let mut body = body;
     let mut model_opt = body["model"]
         .as_str()
         .or_else(|| body["model_name"].as_str())
@@ -66,11 +99,7 @@ pub async fn video_generations(
 
     // 当访问可灵官方原生路由时，自动从 URL 路径中提取可变模型 ID (${model_id})
     if model_opt.is_none() && is_kling_native {
-        for prefix in [
-            "/text-to-video/",
-            "/image-to-video/",
-            "/omni-video/",
-        ] {
+        for prefix in KLING_NATIVE_PREFIXES {
             if let Some(rest) = raw_path.strip_prefix(prefix) {
                 let m = rest.split('/').next().unwrap_or("").trim();
                 if !m.is_empty() {
@@ -88,29 +117,42 @@ pub async fn video_generations(
 
     #[cfg(feature = "plugin_volcengine_enhance")]
     if model_opt.is_none() {
-        if let Some(model_data) = resolve_volc_video_model(
+        match resolve_volc_video_model(
             &state,
             &token,
             raw_path,
             body["tool_version"].as_str(),
         )
-        .await?
+        .await
         {
-            model_opt = Some(model_data.model_id.clone());
-            db_model_from_mid = Some(model_data);
-            category = "视频增强";
+            Ok(Some(model_data)) => {
+                model_opt = Some(model_data.model_id.clone());
+                db_model_from_mid = Some(model_data);
+                category = "视频增强";
+            }
+            Ok(None) => {}
+            Err(e) => bail!(e),
         }
     }
 
-    let model_str = model_opt
-        .ok_or_else(|| AppError::BadRequest("Missing required parameter: model".to_string()))?;
+    let Some(model_str) = model_opt else {
+        bail!(AppError::BadRequest(
+            "Missing required parameter: model".to_string()
+        ));
+    };
     let model = model_str.as_str();
 
     // 1. Token 模型权限校验（渠道选择前快速拦截）
-    proxy::check_model_permission(&state, &token, model, &entry_path, Some(category))
-        .await?;
+    if let Err(e) =
+        proxy::check_model_permission(&state, &token, model, &entry_path, Some(category)).await
+    {
+        bail!(e);
+    }
 
-    let ctx = proxy::get_user_context(&state, &token.user_id).await?;
+    let ctx = match proxy::get_user_context(&state, &token.user_id).await {
+        Ok(v) => v,
+        Err(e) => bail!(e),
+    };
 
     let mut billing_rule_cache = None;
     let mut access_cache = None;
@@ -418,65 +460,8 @@ pub async fn video_generations(
                     }
                 }
             }
-            if db_rule
-                .as_ref()
-                .is_some_and(|r| r.billing_rule == "volc_enhance_cascade")
-            {
-                let video_urls = proxy::extract_request_video_urls(&body);
-                if !video_urls.is_empty() {
-                    match proxy::sum_remote_media_duration(&state.http_client, &video_urls).await {
-                        Ok(dur) if dur > 0.0 => {
-                            cascade_val["input_duration"] = serde_json::json!(dur);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            log_video_pre_err!(&e);
-                            ha.on_access_err(AppError::BadRequest(e));
-                            break;
-                        }
-                    }
-                }
-            }
             cascade_tag_json = Some(cascade_val);
         }
-
-        // 预提取特征并预探测多媒体实际时长（供各规则入库快照）
-        let pre_features = if db_rule
-            .as_ref()
-            .is_some_and(|r| {
-                r.billing_rule == "fal_ref_video"
-                    || r.billing_rule == "minimax_h3"
-                    || r.billing_rule == "video_seconds_io"
-                    || r.billing_rule == "video_seconds_ref"
-            })
-        {
-            let mut feat = crate::relay::usage_extractor::extract_request_features(&upstream_body);
-            let video_urls = proxy::extract_request_video_urls(&upstream_body);
-            let audio_urls = proxy::extract_request_audio_urls(&upstream_body);
-            if !video_urls.is_empty() || !audio_urls.is_empty() {
-                match tokio::try_join!(
-                    proxy::sum_remote_media_duration(&state.http_client, &video_urls),
-                    proxy::sum_remote_media_duration(&state.http_client, &audio_urls)
-                ) {
-                    Ok((v_dur, a_dur)) => {
-                        if v_dur > 0.0 {
-                            feat.video_ref_seconds = Some(v_dur);
-                        }
-                        if a_dur > 0.0 {
-                            feat.audio_ref_seconds = Some(a_dur);
-                        }
-                    }
-                    Err(e) => {
-                        log_video_pre_err!(&e);
-                        ha.on_access_err(AppError::BadRequest(e));
-                        break;
-                    }
-                }
-            }
-            Some(feat)
-        } else {
-            None
-        };
 
         // 可灵动态路径：根据请求体内容调整实际端点（text2video/image2video）
         forward::resolve_kling_dynamic_path(&mut resolved, &upstream_body);
@@ -502,40 +487,44 @@ pub async fn video_generations(
         let client_cb = super::vendor_callback::extract_client_callback_url(&upstream_body);
         let plugin_tag: Option<String> = {
             let mut tag_json = serde_json::json!({});
+            tag_json["la"] = serde_json::json!(1);
             if let Some(cascade_val) = cascade_tag_json {
                 tag_json["cascade"] = cascade_val;
             }
             if let Some(ref u) = client_cb {
                 super::vendor_callback::stash_cb_in_plugin_tag(&mut tag_json, u);
             }
-            let s = tag_json.to_string();
-            if s == "{}" || s == "null" {
-                None
-            } else {
-                Some(s)
-            }
+            Some(tag_json.to_string())
         };
 
-        let mut pending_pk: Option<i64> = ha.pending_log_id;
+        if resolved.upstream_asset_convert && resolved.upstream_asset_binding_id.is_none() {
+            let msg = "转发规则缺少 upstream_asset_binding_id";
+            log_video_pre_err!(msg);
+            ha.on_access_err(AppError::BadRequest(msg.to_string()));
+            break;
+        }
+
         if ha.pending_log_id.is_none() {
-            pending_pk = proxy::record_pending_log(proxy::PendingLog {
-                state: &state,
-                user_id: &token.user_id,
-                token_id: token.id,
-                model,
-                endpoint: &ep,
-                is_stream: 0,
-                request_content: Some(&request_content_str),
-                upstream_url: Some(&url),
-                channel: &channel,
-                plugin_tag: plugin_tag.as_deref(),
-                category: Some(resolved_cat.as_str()),
-                db_model: db_model.as_ref(),
-                forward_eid: Some(&resolved.eid),
-                requested_log_id: Some(&log_id),
-            })
-            .await;
-            ha.set_pending(pending_pk);
+            ha.set_pending(
+                proxy::record_pending_log(proxy::PendingLog {
+                    state: &state,
+                    user_id: &token.user_id,
+                    token_id: token.id,
+                    model,
+                    endpoint: &ep,
+                    is_stream: 0,
+                    request_content: Some(&request_content_str),
+                    upstream_url: Some(&url),
+                    channel: &channel,
+                    plugin_tag: plugin_tag.as_deref(),
+                    category: Some(resolved_cat.as_str()),
+                    db_model: db_model.as_ref(),
+                    forward_eid: Some(&resolved.eid),
+                    requested_log_id: Some(&log_id),
+                    task_id: Some(&log_id),
+                })
+                .await,
+            );
             #[cfg(feature = "plugin_volcengine_enhance")]
             if resolved.target_type == "volcengine_media_enhance" {
                 if let Some(pk) = ha.pending_log_id {
@@ -544,16 +533,25 @@ pub async fn video_generations(
             }
         }
 
-        if resolved.upstream_asset_convert && resolved.upstream_asset_binding_id.is_none() {
-            return Err(AppError::BadRequest(
-                "转发规则缺少 upstream_asset_binding_id".into(),
-            ));
-        }
-
         // 上游体根级有 callback_url：改写为系统地址（logs 主键 id）；原地址已存 plugin_tag.cb
-        if let (Some(_), Some(pk)) = (&client_cb, pending_pk.or(ha.pending_log_id)) {
+        if let (Some(_), Some(pk)) = (&client_cb, ha.pending_log_id) {
             let sys = super::vendor_callback::system_callback_url(pk, &headers);
             super::vendor_callback::rewrite_upstream_callback(&mut upstream_body, &sys);
+        }
+
+        if ha.pending_log_id.is_some() {
+            if let Some(tx) = ack_tx.take() {
+                let ack_body = super::forward::route_accept_body(raw_path, &log_id, model);
+                let ack = upstream_headers::with_request_id(
+                    axum::response::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(axum::body::Body::from(ack_body))
+                        .unwrap(),
+                    &log_id,
+                );
+                let _ = tx.send(Ok(ack));
+            }
         }
 
         // 【连接保护】素材转换+上游请求+预扣+落库放独立 task，客户端断开后仍能完成
@@ -581,7 +579,96 @@ pub async fn video_generations(
             let request_content_str = request_content_str.clone();
             let dm = db_model.clone();
             let resolved = resolved.clone();
+            let db_rule = db_rule.clone();
+            let body = body.clone();
+            let log_id = log_id.clone();
             async move {
+                macro_rules! open_fail {
+                    ($status:expr, $body:expr, $detail:expr) => {{
+                        let _ = proxy::record_zero_cost_fail(proxy::ZeroCostUpstreamFail {
+                            state: &state,
+                            token: &token,
+                            channel: &channel,
+                            model: &model,
+                            prefer_http_status: Some($status),
+                            endpoint: &ep,
+                            latency_ms: start_time.elapsed().as_millis() as u32,
+                            is_stream: 0,
+                            request_content: request_content_str.clone(),
+                            response_body: $body,
+                            response_content: None,
+                            upstream_req_content: None,
+                            billing_detail: $detail,
+                            hint_category: Some(resolved_cat.as_str()),
+                            pending_log_id,
+                            db_model: dm.as_ref(),
+                            client_msg: None,
+                            pre_deducted: 0.0,
+                            pre_deduct_gift: 0.0,
+                            upstream_request_id: None,
+                        })
+                        .await;
+                    }};
+                }
+                if resolved.is_cascade
+                    && db_rule
+                        .as_ref()
+                        .is_some_and(|r| r.billing_rule == "volc_enhance_cascade")
+                {
+                    let video_urls = proxy::extract_request_video_urls(&body);
+                    if !video_urls.is_empty() {
+                        match proxy::sum_remote_media_duration(&state.http_client, &video_urls).await {
+                            Ok(dur) if dur > 0.0 => {
+                                if let Some(ref mut tag) = plugin_tag {
+                                    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(tag) {
+                                        if let Some(c) = v.get_mut("cascade") {
+                                            c["input_duration"] = serde_json::json!(dur);
+                                        }
+                                        *tag = v.to_string();
+                                    }
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                open_fail!(400, e.clone(), None);
+                                return Err(AppError::BadRequest(e));
+                            }
+                        }
+                    }
+                }
+                let pre_features = if db_rule.as_ref().is_some_and(|r| {
+                    r.billing_rule == "fal_ref_video"
+                        || r.billing_rule == "minimax_h3"
+                        || r.billing_rule == "video_seconds_io"
+                        || r.billing_rule == "video_seconds_ref"
+                }) {
+                    let mut feat =
+                        crate::relay::usage_extractor::extract_request_features(&upstream_body);
+                    let video_urls = proxy::extract_request_video_urls(&upstream_body);
+                    let audio_urls = proxy::extract_request_audio_urls(&upstream_body);
+                    if !video_urls.is_empty() || !audio_urls.is_empty() {
+                        match tokio::try_join!(
+                            proxy::sum_remote_media_duration(&state.http_client, &video_urls),
+                            proxy::sum_remote_media_duration(&state.http_client, &audio_urls)
+                        ) {
+                            Ok((v_dur, a_dur)) => {
+                                if v_dur > 0.0 {
+                                    feat.video_ref_seconds = Some(v_dur);
+                                }
+                                if a_dur > 0.0 {
+                                    feat.audio_ref_seconds = Some(a_dur);
+                                }
+                            }
+                            Err(e) => {
+                                open_fail!(400, e.clone(), None);
+                                return Err(AppError::BadRequest(e));
+                            }
+                        }
+                    }
+                    Some(feat)
+                } else {
+                    None
+                };
                 // 素材转换：上游渠道转换优先；否则走现有插件凭证转换
                 let mut asset_convert_log: Option<String> = None;
                 if resolved.upstream_asset_convert {
@@ -605,31 +692,8 @@ pub async fn video_generations(
                                 .map(|e| proxy::extract_error_message(e))
                                 .collect::<Vec<_>>()
                                 .join("; ");
-                            let latency_ms = start_time.elapsed().as_millis() as u32;
                             let status_code = proxy::infer_error_status_code_from_str(&full_err);
-                            let _ = proxy::record_zero_cost_fail(proxy::ZeroCostUpstreamFail {
-                                state: &state,
-                                token: &token,
-                                channel: &channel,
-                                model: &model,
-                                prefer_http_status: Some(status_code),
-                                endpoint: &ep,
-                                latency_ms,
-                                is_stream: 0,
-                                request_content: request_content_str.clone(),
-                                response_body: full_err,
-                                response_content: None,
-                                upstream_req_content: None,
-                                billing_detail: asset_convert_log.clone(),
-                                hint_category: Some(resolved_cat.as_str()),
-                                pending_log_id,
-                                db_model: dm.as_ref(),
-                                client_msg: None,
-                                pre_deducted: 0.0,
-                                pre_deduct_gift: 0.0,
-                                upstream_request_id: None,
-                            })
-                            .await;
+                            open_fail!(status_code, full_err, asset_convert_log.clone());
                             return Err(AppError::BadRequest(user_msg));
                         }
                     }
@@ -652,38 +716,15 @@ pub async fn video_generations(
                             .map(|e| proxy::extract_error_message(e))
                             .collect::<Vec<_>>()
                             .join("; ");
-                        let latency_ms = start_time.elapsed().as_millis() as u32;
                         let status_code = proxy::infer_error_status_code_from_str(&full_err);
-                        let _ = proxy::record_zero_cost_fail(proxy::ZeroCostUpstreamFail {
-                            state: &state,
-                            token: &token,
-                            channel: &channel,
-                            model: &model,
-                            prefer_http_status: Some(status_code),
-                            endpoint: &ep,
-                            latency_ms,
-                            is_stream: 0,
-                            request_content: request_content_str.clone(),
-                            response_body: full_err,
-                            response_content: None,
-                            upstream_req_content: None,
-                            billing_detail: asset_convert_log.clone(),
-                            hint_category: Some(resolved_cat.as_str()),
-                            pending_log_id,
-                            db_model: dm.as_ref(),
-                            client_msg: None,
-                            pre_deducted: 0.0,
-                            pre_deduct_gift: 0.0,
-                            upstream_request_id: None,
-                        })
-                        .await;
+                        open_fail!(status_code, full_err, asset_convert_log.clone());
                         return Err(AppError::BadRequest(format!("素材转换失败: {}", user_msg)));
                     }
                 }
 
                 #[cfg(feature = "plugin_comfyui")]
                 let mut comfy_prompt_json: Option<String> = None;
-                let (mut response_content_str, mut upstream_hdrs) = if resolved.target_type == "comfyui"
+                let (mut response_content_str, upstream_hdrs) = if resolved.target_type == "comfyui"
                 {
                     #[cfg(feature = "plugin_comfyui")]
                     {
@@ -875,23 +916,16 @@ pub async fn video_generations(
                 if let Some(ref md) = mapping_detail {
                     billing_detail.push_str(&format!(" | {}", md));
                 }
-                if resolved.is_cascade {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&response_content_str) {
-                        let mut tid = crate::relay::response_formatter::extract_async_task_id(&v);
-                        if let Some(cgt) = crate::relay::cascade::cascade_seal_s1_task_id(
-                            &mut plugin_tag,
-                            &tid,
-                        ) {
-                            upstream_headers::replace_header_if_present(
-                                &mut upstream_hdrs,
-                                "x-request-id",
-                                &cgt,
-                            );
-                            tid = cgt;
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&response_content_str) {
+                    let tid = crate::relay::response_formatter::extract_async_task_id(&v);
+                    if !tid.is_empty() {
+                        super::forward::remember_upstream_task(&mut plugin_tag, &tid);
+                        if resolved.is_cascade {
+                            crate::relay::cascade::cascade_remember_s1(&mut plugin_tag, &tid);
                         }
                         crate::relay::response_formatter::force_json_task_id(
                             &mut response_content_str,
-                            &tid,
+                            &log_id,
                         );
                     }
                 }
@@ -947,13 +981,13 @@ pub async fn video_generations(
             super::ProtectJoin::Ok(raw) => {
                 let ms = start_time.elapsed().as_millis() as u32;
                 ha.ok(&state, &channel, &url, ms).await;
-                return Ok(upstream_headers::with_request_id(
-                    upstream_headers::json_with_upstream_headers(
-                        &raw.headers,
-                        raw.body,
-                    ),
-                    &log_id,
-                ));
+                if let Some(tx) = ack_tx.take() {
+                    let _ = tx.send(Ok(upstream_headers::with_request_id(
+                        upstream_headers::json_with_upstream_headers(&raw.headers, raw.body),
+                        &log_id,
+                    )));
+                }
+                return;
             }
             super::ProtectJoin::Retry => {
                 ha.bump();
@@ -963,10 +997,27 @@ pub async fn video_generations(
         }
     }
 
-    Err(ha
+    if ack_tx.is_none() && !ha.had_upstream {
+        if let Some(id) = ha.pending_log_id {
+            let msg = ha.last_err.message();
+            let _ = sqlx::query(&state.db.format_query(
+                "UPDATE logs SET status_code = ?, is_completed = 1, error_message = ? \
+                 WHERE id = ? AND status_code = 0 AND is_completed = 0",
+            ))
+            .bind(ha.last_err.http_status() as i32)
+            .bind(&msg)
+            .bind(id)
+            .execute(&state.db.pool)
+            .await;
+        }
+    }
+    let err = ha
         .finish(
             &crate::relay::ha::HaBillCtx::new(&state, &token, model, &entry_path)
                 .category(category),
         )
-        .await)
+        .await;
+    if let Some(tx) = ack_tx.take() {
+        let _ = tx.send(Err(err));
+    }
 }

@@ -73,8 +73,8 @@ pub async fn create_user_level(
     }
 
     let id = sqlx::query(
-        &state.db.format_query(r#"INSERT INTO user_levels (name, group_key, discount, discount_type, commission_ratio, invite_reward_inviter, invite_reward_invitee, daily_invite_limit, marketing_enabled, is_default, max_token_count, allow_view_log_details, description, sort_order, invoice_enabled, invoice_mode, invoice_config)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        &state.db.format_query(r#"INSERT INTO user_levels (name, group_key, discount, discount_type, commission_ratio, commission_basis, invite_reward_inviter, invite_reward_invitee, daily_invite_limit, marketing_enabled, is_default, max_token_count, allow_view_log_details, description, sort_order, invoice_enabled, invoice_mode, invoice_config, commission_transfer_min, commission_transfer_max)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id"#)
     )
     .bind(&req.name)
@@ -82,6 +82,9 @@ pub async fn create_user_level(
     .bind(req.discount)
     .bind(req.discount_type.unwrap_or(0))
     .bind(req.commission_ratio.unwrap_or(0.0))
+    .bind(crate::services::affiliate::normalize_commission_basis(
+        req.commission_basis.as_deref().unwrap_or("consumption"),
+    ))
     .bind(req.invite_reward_inviter.unwrap_or(0.0))
     .bind(req.invite_reward_invitee.unwrap_or(0.0))
     .bind(req.daily_invite_limit.unwrap_or(10))
@@ -94,6 +97,8 @@ pub async fn create_user_level(
     .bind(req.invoice_enabled.unwrap_or(0))
     .bind(req.invoice_mode.as_deref().unwrap_or("international"))
     .bind(req.invoice_config.as_deref().unwrap_or("{}"))
+    .bind(req.commission_transfer_min.unwrap_or(0.0))
+    .bind(req.commission_transfer_max.unwrap_or(0.0))
     .fetch_one(&state.db.pool)
     .await?
     .get::<i64, _>("id");
@@ -191,6 +196,39 @@ pub async fn update_user_level(
                 .format_query("UPDATE user_levels SET commission_ratio = ? WHERE id = ?"),
         )
         .bind(commission_ratio)
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(commission_basis) = &req.commission_basis {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET commission_basis = ? WHERE id = ?"),
+        )
+        .bind(crate::services::affiliate::normalize_commission_basis(commission_basis))
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(commission_transfer_min) = req.commission_transfer_min {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET commission_transfer_min = ? WHERE id = ?"),
+        )
+        .bind(commission_transfer_min.max(0.0))
+        .bind(id)
+        .execute(&state.db.pool)
+        .await?;
+    }
+    if let Some(commission_transfer_max) = req.commission_transfer_max {
+        sqlx::query(
+            &state
+                .db
+                .format_query("UPDATE user_levels SET commission_transfer_max = ? WHERE id = ?"),
+        )
+        .bind(commission_transfer_max.max(0.0))
         .bind(id)
         .execute(&state.db.pool)
         .await?;

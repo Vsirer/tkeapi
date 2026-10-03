@@ -252,7 +252,7 @@ const TimePickerInput: React.FC<TimePickerInputProps> = ({
             {badgeDate}
           </span>
         ) : (
-          <span className="text-[10px] text-zinc-400 dark:text-zinc-500 select-none">未选日期</span>
+          <span className="text-[10px] text-zinc-400 dark:text-zinc-500 select-none">{t('logs.no_date_selected', '未选日期')}</span>
         )}
       </div>
 
@@ -283,7 +283,7 @@ const TimePickerInput: React.FC<TimePickerInputProps> = ({
               className="w-9 h-7 text-center text-xs font-mono font-semibold rounded text-zinc-900 dark:text-zinc-100 bg-zinc-100/70 dark:bg-white/5 outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 cursor-pointer flex items-center justify-center"
               title={t('logs.hour', '时 (00-23)')}
             />
-            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">时</span>
+            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">{t('logs.hour_unit', '时')}</span>
           </div>
 
           <span className="text-zinc-400 dark:text-zinc-500 font-mono text-xs select-none self-start mt-1.5 font-bold">:</span>
@@ -312,7 +312,7 @@ const TimePickerInput: React.FC<TimePickerInputProps> = ({
               className="w-9 h-7 text-center text-xs font-mono font-semibold rounded text-zinc-900 dark:text-zinc-100 bg-zinc-100/70 dark:bg-white/5 outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 cursor-pointer flex items-center justify-center"
               title={t('logs.minute', '分 (00-59)')}
             />
-            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">分</span>
+            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">{t('logs.minute_unit', '分')}</span>
           </div>
 
           <span className="text-zinc-400 dark:text-zinc-500 font-mono text-xs select-none self-start mt-1.5 font-bold">:</span>
@@ -341,7 +341,7 @@ const TimePickerInput: React.FC<TimePickerInputProps> = ({
               className="w-9 h-7 text-center text-xs font-mono font-semibold rounded text-zinc-900 dark:text-zinc-100 bg-zinc-100/70 dark:bg-white/5 outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 cursor-pointer flex items-center justify-center"
               title={t('logs.second', '秒 (00-59)')}
             />
-            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">秒</span>
+            <span className="text-[9px] text-zinc-400 dark:text-zinc-500 select-none leading-none">{t('logs.second_unit', '秒')}</span>
           </div>
         </div>
       </div>
@@ -377,13 +377,28 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
   onDateHover,
   isAdmin = false,
 }) => {
-  const { i18n } = useTranslation();
-  const isZh = (i18n.language || 'zh').startsWith('zh');
+  const { t, i18n } = useTranslation();
+  const lang = (i18n.language || 'zh').toLowerCase();
+  const isZh = lang.startsWith('zh');
+  const isJa = lang.startsWith('ja');
+  const isKo = lang.startsWith('ko');
+  const isVi = lang.startsWith('vi');
   const now = useMemo(() => timedisplayNow(), []);
 
-  const weekdays = isZh
-    ? ['日', '一', '二', '三', '四', '五', '六']
-    : ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const weekdays = useMemo(() => {
+    if (isZh) return ['日', '一', '二', '三', '四', '五', '六'];
+    if (isJa) return ['日', '月', '火', '水', '木', '金', '土'];
+    if (isKo) return ['일', '월', '화', '수', '목', '금', '토'];
+    if (isVi) return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+    return ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  }, [isZh, isJa, isKo, isVi]);
+
+  const monthTitle = useMemo(() => {
+    if (isZh || isJa) return viewMonth.format('YYYY年 M月');
+    if (isKo) return viewMonth.format('YYYY년 M월');
+    if (isVi) return viewMonth.format('MM/YYYY');
+    return viewMonth.format('MMM YYYY');
+  }, [viewMonth, isZh, isJa, isKo, isVi]);
 
   // 生成该月份日历网格
   const calendarCells = useMemo(() => {
@@ -447,7 +462,7 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
               type="button"
               onClick={onPrevYear}
               className="p-1 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-              title="上一年"
+              title={t('logs.prev_year', '上一年')}
             >
               <ChevronsLeft size={14} />
             </button>
@@ -457,7 +472,7 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
               type="button"
               onClick={onPrevMonth}
               className="p-1 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-              title="上一月"
+              title={t('logs.prev_month', '上一月')}
             >
               <ChevronLeft size={14} />
             </button>
@@ -465,7 +480,7 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
         </div>
 
         <div className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
-          {viewMonth.format(isZh ? 'YYYY年 M月' : 'MMM YYYY')}
+          {monthTitle}
         </div>
 
         <div className="flex items-center gap-0.5">
@@ -474,7 +489,7 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
               type="button"
               onClick={onNextMonth}
               className="p-1 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-              title="下一月"
+              title={t('logs.next_month', '下一月')}
             >
               <ChevronRight size={14} />
             </button>
@@ -484,7 +499,7 @@ const MonthCalendar: React.FC<MonthCalendarProps> = ({
               type="button"
               onClick={onNextYear}
               className="p-1 rounded-md hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors cursor-pointer"
-              title="下一年"
+              title={t('logs.next_year', '下一年')}
             >
               <ChevronsRight size={14} />
             </button>
@@ -940,11 +955,11 @@ const LogDateTimeRangePicker: React.FC<Props> = ({
                     </span>
                     <ArrowRight size={12} className="text-zinc-400 shrink-0" />
                     <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                      {draftEnd ? draftEnd.format('YYYY-MM-DD HH:mm:ss') : '未选结束'}
+                      {draftEnd ? draftEnd.format('YYYY-MM-DD HH:mm:ss') : t('logs.no_end_selected', '未选结束')}
                     </span>
                   </span>
                 ) : (
-                  <span className="text-zinc-400">请选择时间段</span>
+                  <span className="text-zinc-400">{t('logs.please_select_range', '请选择时间段')}</span>
                 )}
               </div>
 

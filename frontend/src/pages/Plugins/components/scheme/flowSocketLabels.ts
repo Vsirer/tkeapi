@@ -10,6 +10,8 @@
  * 可扩槽的「Prefix N」只显示汉字口名，不带序号。
  */
 
+import { localizeSchemePhrase } from './schemeParamUtils';
+
 const EXACT: Record<string, string> = {
   Prompt: '提示词',
   'Negative Prompt': '反向提示词',
@@ -70,6 +72,6 @@ export function flowSocketLabelZh(handleId: string): string {
  */
 export function flowPortSocketLabel(portLabel: string | undefined | null, handleId: string): string {
   const named = (portLabel || '').trim();
-  if (named) return named;
-  return flowSocketLabelZh(handleId);
+  if (named) return localizeSchemePhrase(named);
+  return localizeSchemePhrase(flowSocketLabelZh(handleId));
 }

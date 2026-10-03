@@ -11,10 +11,17 @@ use crate::models::{ApiToken, CreateTokenRequest, TokenListResponse, UpdateToken
 use crate::time_system::DbTs;
 use crate::AppState;
 use axum::{
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     Json,
 };
+use serde::Deserialize;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct ListTokensQuery {
+    #[serde(default)]
+    include_playground_2026: i64,
+}
 
 fn normalize_token_name(name: &str) -> AppResult<String> {
     let trimmed = name.trim();
@@ -51,6 +58,12 @@ fn make_token_kid(user_uid: &str) -> String {
     format!("{}{}", uid_suffix, random_part)
 }
 
+pub const DEDICATED_TOKEN_NAME: &str = "创作中心2026";
+
+fn is_dedicated_token(name: &str, only_playground_2026: i64) -> bool {
+    only_playground_2026 == 1 && name == DEDICATED_TOKEN_NAME
+}
+
 async fn enrich_token_period_usage(state: &AppState, tokens: &mut [ApiToken]) {
     if tokens.is_empty() {
         return;
@@ -83,15 +96,17 @@ async fn enrich_token_period_usage(state: &AppState, tokens: &mut [ApiToken]) {
 pub async fn list_tokens(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<auth::Claims>,
+    Query(query): Query<ListTokensQuery>,
 ) -> AppResult<Json<TokenListResponse>> {
-    let mut tokens: Vec<ApiToken> = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT * FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"),
-    )
-    .bind(&claims.sub)
-    .fetch_all(&state.db.pool)
-    .await?;
+    let sql = if query.include_playground_2026 == 1 {
+        "SELECT * FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"
+    } else {
+        "SELECT * FROM api_tokens WHERE user_id = ? AND COALESCE(only_playground_2026, 0) = 0 ORDER BY created_at DESC"
+    };
+    let mut tokens: Vec<ApiToken> = sqlx::query_as(&state.db.format_query(sql))
+        .bind(&claims.sub)
+        .fetch_all(&state.db.pool)
+        .await?;
 
     enrich_token_period_usage(&state, &mut tokens).await;
     let total = tokens.len() as i64;
@@ -126,6 +141,11 @@ pub async fn create_token(
     Json(request): Json<CreateTokenRequest>,
 ) -> AppResult<Json<ApiToken>> {
     let name_val = normalize_token_name(request.name.as_deref().unwrap_or("default"))?;
+    if name_val == DEDICATED_TOKEN_NAME {
+        return Err(AppError::BadRequest(
+            "创作中心2026 专用密钥由系统自动创建，不可手动新增".to_string(),
+        ));
+    }
 
     // 管理员豁免；普通用户按注册设置绑定策略硬拦截（prompt_only 不拦截）
     if claims.role != "admin" {
@@ -253,8 +273,23 @@ pub async fn update_token(
         ));
     }
 
+    if is_dedicated_token(
+        &token.name,
+        token.only_playground_2026,
+    ) {
+        return Err(AppError::BadRequest(
+            "创作中心2026 专用密钥不可修改".to_string(),
+        ));
+    }
+
     if let Some(name) = request.name {
-        token.name = normalize_token_name(&name)?;
+        let name_val = normalize_token_name(&name)?;
+        if name_val == DEDICATED_TOKEN_NAME {
+            return Err(AppError::BadRequest(
+                "创作中心2026 为系统保留名称，不可用作其它密钥".to_string(),
+            ));
+        }
+        token.name = name_val;
     }
     if let Some(quota_limit) = request.quota_limit {
         token.quota_limit = quota_limit;
@@ -346,19 +381,25 @@ pub async fn delete_token(
     Path(id): Path<i64>,
 ) -> AppResult<Json<serde_json::Value>> {
     // Check ownership
-    let row: (String, String) = sqlx::query_as(
-        &state
-            .db
-            .format_query("SELECT user_id, token_key FROM api_tokens WHERE id = ?"),
+    let row: (String, String, String, i64) = sqlx::query_as(
+        &state.db.format_query(
+            "SELECT user_id, token_key, name, only_playground_2026 FROM api_tokens WHERE id = ?",
+        ),
     )
     .bind(id)
     .fetch_optional(&state.db.pool)
     .await?
     .ok_or_else(|| AppError::NotFound("Token not found".to_string()))?;
-    let (token_user_id, token_key) = row;
+    let (token_user_id, token_key, token_name, only_playground_2026) = row;
 
     if token_user_id != claims.sub && claims.role != "admin" {
         return Err(AppError::Forbidden("Unauthorized access".to_string()));
+    }
+
+    if is_dedicated_token(&token_name, only_playground_2026) {
+        return Err(AppError::BadRequest(
+            "创作中心2026 专用密钥不可删除".to_string(),
+        ));
     }
 
     sqlx::query(&state.db.format_query("DELETE FROM api_tokens WHERE id = ?"))
@@ -440,6 +481,15 @@ pub async fn reset_token_usage(
     if token.user_id != claims.sub && claims.role != "admin" {
         return Err(AppError::Forbidden(
             "Unauthorized access to token".to_string(),
+        ));
+    }
+
+    if is_dedicated_token(
+        &token.name,
+        token.only_playground_2026,
+    ) {
+        return Err(AppError::BadRequest(
+            "创作中心2026 专用密钥不可修改".to_string(),
         ));
     }
 

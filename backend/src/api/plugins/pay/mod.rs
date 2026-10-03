@@ -364,6 +364,30 @@ pub async fn create_order(
     }))
 }
 
+/// 在线支付入账流水，并在邀请人等级为「按充值发放」时记佣。与订单 pending→paid 同事务。
+async fn insert_paid_recharge_record(
+    db: &crate::db::Database,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: &str,
+    amount: f64,
+    recharge_type: &str,
+    order_no: &str,
+) -> Result<(), sqlx::Error> {
+    let recharge_id: i64 = sqlx::query_scalar(&db.format_query(
+        "INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, ?, '', ?) RETURNING id",
+    ))
+    .bind(user_id)
+    .bind(amount)
+    .bind(recharge_type)
+    .bind(order_no)
+    .fetch_one(&mut **tx)
+    .await?;
+    crate::services::affiliate::award_recharge_commission(db, tx, user_id, recharge_id, amount)
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    Ok(())
+}
+
 /// 通用的充值入账核心逻辑，集成更新订单状态、加用户余额、记录明细三合一事务。
 /// 利用数据库行锁与 `status = 'pending'` 限制条件提供强幂等防护，杜绝高并发重复充值。
 async fn complete_recharge_payment_common(
@@ -418,14 +442,14 @@ async fn complete_recharge_payment_common(
     .map_err(|e| AppError::Internal(format!("更新用户余额失败: {:?}", e)))?;
 
     // 3. 写入充值流水明细表 recharge_records，单号独立存入 order_no 方便统计与追溯
-    sqlx::query(&state.db.format_query(
-        "INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, ?, '', ?)",
-    ))
-    .bind(user_id)
-    .bind(amount)
-    .bind(payment_method)
-    .bind(out_trade_no)
-    .execute(&mut *tx)
+    insert_paid_recharge_record(
+        &state.db,
+        &mut tx,
+        user_id,
+        amount,
+        payment_method,
+        out_trade_no,
+    )
     .await
     .map_err(|e| AppError::Internal(format!("插入充值记录失败: {:?}", e)))?;
 
@@ -816,9 +840,7 @@ pub async fn wechat_notify(State(state): State<Arc<AppState>>, body: String) -> 
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'wechat', '', ?)"))
-        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
-        .execute(&mut *tx).await {
+    if let Err(e) = insert_paid_recharge_record(&state.db, &mut tx, &order.user_id, amount, "wechat", &out_trade_no).await {
         tracing::warn!("[微信回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(resp_fail));
@@ -971,9 +993,7 @@ pub async fn alipay_notify(State(state): State<Arc<AppState>>, body: String) -> 
         return "fail".to_string();
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'alipay', '', ?)"))
-        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
-        .execute(&mut *tx).await {
+    if let Err(e) = insert_paid_recharge_record(&state.db, &mut tx, &order.user_id, amount, "alipay", &out_trade_no).await {
         tracing::warn!("[支付宝回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return "fail".to_string();
@@ -1205,9 +1225,7 @@ pub async fn stripe_notify(
         return resp_fail;
     }
 
-    if let Err(e) = sqlx::query(&state.db.format_query("INSERT INTO recharge_records (user_id, amount, recharge_type, remark, order_no) VALUES (?, ?, 'stripe', '', ?)"))
-        .bind(&order.user_id).bind(amount).bind(&out_trade_no)
-        .execute(&mut *tx).await {
+    if let Err(e) = insert_paid_recharge_record(&state.db, &mut tx, &order.user_id, amount, "stripe", &out_trade_no).await {
         tracing::warn!("[Stripe回调] 写充值记录失败: {:?}", e);
         let _ = tx.rollback().await;
         return resp_fail;

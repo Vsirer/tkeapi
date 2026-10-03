@@ -31,7 +31,7 @@ pub async fn get_bootstrap(
 ) -> AppResult<Json<ConsoleBootstrap>> {
     let (user_res, announcements_res, plugins_res) = tokio::join!(
         crate::api::user::load_profile_user(&state, &claims),
-        crate::api::announcements::load_public_announcements(&state),
+        crate::api::announcements::load_public_announcements(&state, "console"),
         crate::api::plugins::load_active_plugins(&state),
     );
 

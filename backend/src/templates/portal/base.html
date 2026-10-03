@@ -786,7 +786,18 @@ body.dark .invert-dark,
             const avatarLink = document.querySelector('.hdr-avatar-link');
             if (avatarLink) {
               const adminPath = localStorage.getItem('tokensbyte_admin_path') || 'admin1688';
-              avatarLink.href = user.role === 'admin' ? `/${adminPath}/dashboard` : '/dashboard';
+              if (user.role === 'admin') {
+                avatarLink.href = `/${adminPath}/dashboard`;
+              } else {
+                avatarLink.href = '/dashboard';
+                {% if current_page == "home" %}
+                fetch('/api/v1/plugins/active').then(function (r) { return r.json(); }).then(function (data) {
+                  var plugins = (data && data.active_plugins) || [];
+                  var pg = plugins.find(function (p) { return p && p.name === 'playground_2026'; });
+                  if (pg && pg.site_default_enabled === true) avatarLink.href = '/playground-2026';
+                }).catch(function () {});
+                {% endif %}
+              }
             }
           }
         } catch (e) {

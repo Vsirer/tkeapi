@@ -38,7 +38,7 @@ pub mod volc_enhance;
 pub use volc_enhance::{
     apply_volc_enhance_path, build_volcengine_media_enhance_body, crop_volc_cascade_video,
     extract_volc_last_frame, infer_volc_media_enhance, is_image_tool_mid, is_volc_enhance_version,
-    is_volc_preset_mid, volc_preset_blocked, link_volcengine_enhance_log,
+    is_volc_preset_mid, load_active_preset_mids, volc_preset_blocked, link_volcengine_enhance_log,
     lock_volc_cascade_s2_channel, poll_volc_cascade_stage2,
     resolve_volc_image_model, resolve_volc_video_model, submit_volc_cascade_stage2,
     volc_cascade_s1_tag, volc_inactive_filter_sql, volc_s2_from_tag,

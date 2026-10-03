@@ -1,84 +1,95 @@
 /*
  * tkeapi (tokensbyte) opensource
  * © 2026 tkeapi.com
- * @copyright      Copyright netbcloud/wstianxia 
+ * @copyright      Copyright netbcloud/wstianxia
  * @license        MIT (https://www.tkeapi.com/)
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Table, Card, Typography, Space, Input, Button, Tag, Select, Grid, List } from 'antd';
 import { listPagination, useListPager } from '../../components/ListPagination';
-import { SyncOutlined, SearchOutlined, WalletOutlined } from '@ant-design/icons';
+import { SyncOutlined, SearchOutlined, AccountBookOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import request from '../../utils/request';
 import useSettingsStore from '../../store/settings';
 import { formatApiDateTime } from '../../utils/timedisplay';
 import { defaultMonthRange, toTimeRangeParams } from '../../utils/dateRangeParams';
 import LogDateTimeRangePicker from '../../components/LogDateTimeRangePicker';
-import { rechargeTypeColor, rechargeTypeLabel, extractOrderNo, cleanRemark } from '../../utils/rechargeType';
+import { cleanRemark, extractOrderNo } from '../../utils/rechargeType';
 import type { Dayjs } from 'dayjs';
 
 const { Title, Text } = Typography;
-const { Option } = Select;
 
-interface RechargeRecord {
-  id: number;
-  user_id: string;
+interface CommissionRecord {
+  id: string;
   username: string;
   uid: string;
+  from_username?: string | null;
+  from_uid?: string | null;
   amount: number;
-  recharge_type: string;
+  ratio?: number | null;
+  source: string;
+  wallet: string;
   order_no?: string | null;
-  remark: string | null;
-  operator: string | null;
+  remark?: string | null;
+  operator?: string | null;
   created_at: string;
-  referrer_uid?: string;
-  referrer_username?: string;
 }
 
-const RechargeRecords: React.FC = () => {
+const SOURCE_OPTIONS = [
+  { value: 'consumption', label: '消费返佣', color: 'blue' },
+  { value: 'recharge', label: '充值返佣', color: 'green' },
+  { value: 'system_award', label: '系统赠送', color: 'gold' },
+  { value: 'invite_gift', label: '邀请赠送', color: 'magenta' },
+  { value: 'transfer', label: '佣金结转', color: 'cyan' },
+  { value: 'video', label: '视频返佣', color: 'purple' },
+  { value: 'refund', label: '退款回冲', color: 'red' },
+  { value: 'clawback', label: '佣金扣回', color: 'orange' },
+  { value: 'system_clawback', label: '系统钱包扣回', color: 'volcano' },
+  { value: 'other', label: '其他', color: 'default' },
+] as const;
+
+const WALLET_LABEL: Record<string, string> = {
+  commission: '佣金钱包',
+  gift: '赠送钱包',
+  system: '系统钱包',
+};
+
+function sourceMeta(source: string) {
+  return SOURCE_OPTIONS.find((item) => item.value === source) || { value: source, label: source, color: 'default' };
+}
+
+function formatRatio(ratio?: number | null) {
+  if (ratio == null || Number.isNaN(ratio)) return '-';
+  return `${parseFloat((ratio * 100).toFixed(2))}%`;
+}
+
+const CommissionRecords: React.FC = () => {
   const { t } = useTranslation();
   const screens = Grid.useBreakpoint();
   const { settings } = useSettingsStore();
   const currencySymbol = settings?.currency?.currency_symbol || '$';
-  const [data, setData] = useState<RechargeRecord[]>([]);
+  const [data, setData] = useState<CommissionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const { page, pageSize, onChange } = useListPager();
   const [search, setSearch] = useState('');
-  const [referrerSearch, setReferrerSearch] = useState('');
-  const [rechargeTypes, setRechargeTypes] = useState<string[]>([]);
-  const [selectedType, setSelectedType] = useState<string | undefined>();
+  const [source, setSource] = useState<string | undefined>();
   const [totalAmount, setTotalAmount] = useState<number>(0);
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(() => defaultMonthRange());
-
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const resp = await request.get('/finance/recharge_types');
-        const types = (resp as any) || [];
-        setRechargeTypes(types);
-      } catch(e) {
-        console.error(e);
-      }
-    };
-    init();
-  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await (request.get('/finance/recharges', {
+      const resp = await (request.get('/finance/commissions', {
         params: {
           page,
           per_page: pageSize,
           user_id: search || undefined,
-          referrer: referrerSearch || undefined,
-          recharge_type: selectedType || undefined,
-          wallet_type: 'system',
+          source: source || undefined,
           ...toTimeRangeParams(dateRange),
         }
-      }) as unknown as Promise<{ data: RechargeRecord[]; total: number; total_amount: number }>);
+      }) as unknown as Promise<{ data: CommissionRecord[]; total: number; total_amount: number }>);
       setData(resp.data);
       setTotal(resp.total);
       setTotalAmount(resp.total_amount || 0);
@@ -87,18 +98,24 @@ const RechargeRecords: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, search, referrerSearch, selectedType, dateRange]);
+  }, [page, pageSize, search, source, dateRange]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const amountText = (val: number) => (
+    <Text strong style={{ color: val >= 0 ? '#52c41a' : '#ff4d4f' }}>
+      {val >= 0 ? '+' : '-'}{currencySymbol}{Math.abs(val).toFixed(6)}
+    </Text>
+  );
 
   const columns = [
     {
       title: t('finance.order_no', { defaultValue: '订单号' }),
       key: 'order_no',
       width: 220,
-      render: (_: unknown, record: RechargeRecord) => {
+      render: (_: unknown, record: CommissionRecord) => {
         const orderNo = extractOrderNo(record);
         if (orderNo) {
           return (
@@ -123,7 +140,7 @@ const RechargeRecords: React.FC = () => {
     {
       title: t('finance.user_info'),
       key: 'user',
-      render: (record: RechargeRecord) => (
+      render: (record: CommissionRecord) => (
         <Space vertical size={0}>
           <Text strong>{record.username || '-'}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
@@ -133,22 +150,20 @@ const RechargeRecords: React.FC = () => {
       ),
     },
     {
-      title: t('finance.recharge_type'),
-      dataIndex: 'recharge_type',
-      key: 'recharge_type',
-      render: (type: string) => (
-        <Tag color={rechargeTypeColor(type)}>{rechargeTypeLabel(type)}</Tag>
-      ),
+      title: '来源类型',
+      dataIndex: 'source',
+      key: 'source',
+      width: 140,
+      render: (value: string) => {
+        const meta = sourceMeta(value);
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      },
     },
     {
       title: t('finance.amount'),
       dataIndex: 'amount',
       key: 'amount',
-      render: (val: number) => (
-        <Text strong style={{ color: val >= 0 ? '#52c41a' : '#ff4d4f' }}>
-          {val >= 0 ? '+' : '-'}{currencySymbol}{Math.abs(val).toFixed(6)}
-        </Text>
-      ),
+      render: (val: number) => amountText(val),
     },
     {
       title: t('logs.time'),
@@ -158,15 +173,15 @@ const RechargeRecords: React.FC = () => {
       render: (text: string) => formatApiDateTime(text),
     },
     {
-      title: '用户推荐人',
-      key: 'referrer',
-      render: (record: RechargeRecord) => {
-        if (!record.referrer_uid) return '-';
+      title: '来源用户',
+      key: 'from_user',
+      render: (record: CommissionRecord) => {
+        if (!record.from_uid && !record.from_username) return '-';
         return (
           <Space vertical size={0}>
-            <Text strong>{record.referrer_username || '-'}</Text>
+            <Text strong>{record.from_username || '-'}</Text>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              UID: {record.referrer_uid}
+              {record.from_uid ? `UID: ${record.from_uid}` : '-'}
             </Text>
           </Space>
         );
@@ -176,7 +191,7 @@ const RechargeRecords: React.FC = () => {
       title: t('finance.remark', { defaultValue: '备注' }),
       dataIndex: 'remark',
       key: 'remark',
-      render: (_: unknown, record: RechargeRecord) => {
+      render: (_: unknown, record: CommissionRecord) => {
         const cleaned = cleanRemark(record.remark, record.order_no);
         return <Text style={{ fontSize: 12 }}>{cleaned || '-'}</Text>;
       },
@@ -187,17 +202,31 @@ const RechargeRecords: React.FC = () => {
       key: 'operator',
       render: (text: string) => text || '-',
     },
+    {
+      title: '比例',
+      dataIndex: 'ratio',
+      key: 'ratio',
+      width: 90,
+      render: (value: number | null) => formatRatio(value),
+    },
+    {
+      title: '入账钱包',
+      dataIndex: 'wallet',
+      key: 'wallet',
+      width: 110,
+      render: (value: string) => WALLET_LABEL[value] || value || '-',
+    },
   ];
 
   return (
     <Card bordered={false}>
       <div style={{ display: 'flex', flexDirection: screens.xs ? 'column' : 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 12, alignItems: screens.xs ? 'flex-start' : 'center', gap: 16 }}>
         <Space size="small" align="center" wrap>
-            <WalletOutlined style={{ fontSize: 24, color: '#1677ff' }} />
-            <Title level={2} style={{ margin: 0, fontSize: screens.xs ? 20 : 24 }}>{t('finance.recharge_title')}</Title>
-            <Text type="secondary" style={{ marginLeft: screens.xs ? 0 : 8 }}>
-              金额合计: <Text strong style={{ color: '#1677ff', fontSize: 16 }}>{currencySymbol}{totalAmount.toFixed(6)}</Text>
-            </Text>
+          <AccountBookOutlined style={{ fontSize: 24, color: '#1677ff' }} />
+          <Title level={2} style={{ margin: 0, fontSize: screens.xs ? 20 : 24 }}>{t('menu.finance_commissions', '佣金明细')}</Title>
+          <Text type="secondary" style={{ marginLeft: screens.xs ? 0 : 8 }}>
+            当前合计: <Text strong style={{ color: totalAmount >= 0 ? '#52c41a' : '#ff4d4f', fontSize: 16 }}>{totalAmount >= 0 ? '+' : '-'}{currencySymbol}{Math.abs(totalAmount).toFixed(6)}</Text>
+          </Text>
         </Space>
         <Space wrap style={{ width: screens.xs ? '100%' : 'auto' }}>
           <LogDateTimeRangePicker
@@ -207,35 +236,27 @@ const RechargeRecords: React.FC = () => {
             className="font-size-12"
           />
           <Select
-            placeholder="按类型筛选"
             allowClear
-            value={selectedType}
-            onChange={setSelectedType}
-            style={{ width: 140 }}
-          >
-            {rechargeTypes.map(rt => (
-              <Option key={rt} value={rt}>{rechargeTypeLabel(rt)}</Option>
-            ))}
-          </Select>
-          <Input 
+            placeholder="来源类型"
+            value={source}
+            onChange={(value) => setSource(value || undefined)}
+            style={{ width: 160 }}
+            options={SOURCE_OPTIONS.map((item) => ({ value: item.value, label: item.label }))}
+          />
+          <Input
             placeholder="搜索 用户名 / UID / 订单号"
-            prefix={<SearchOutlined />} 
+            prefix={<SearchOutlined />}
             value={search}
             onChange={e => setSearch(e.target.value)}
             onPressEnter={fetchData}
-            style={{ width: 200 }}
-          />
-          <Input 
-            placeholder="搜索推荐人 用户名/UID"
-            prefix={<SearchOutlined />} 
-            value={referrerSearch}
-            onChange={e => setReferrerSearch(e.target.value)}
-            onPressEnter={fetchData}
-            style={{ width: 180 }}
+            style={{ width: 220 }}
           />
           <Button icon={<SyncOutlined />} onClick={fetchData}>{t('common.refresh')}</Button>
         </Space>
       </div>
+      <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
+        含佣金钱包流水。系统赠送是管理端给系统钱包加款后联动写入佣金钱包的记录；邀请赠送是注册邀请奖励，入账赠送钱包。
+      </Text>
 
       {screens.xs ? (
         <List
@@ -246,19 +267,17 @@ const RechargeRecords: React.FC = () => {
             current: page,
             pageSize,
             onChange,
-            size: "small"
+            size: 'small'
           })}
           renderItem={(record) => {
-            const label = rechargeTypeLabel(record.recharge_type);
-            const color = rechargeTypeColor(record.recharge_type);
-
+            const meta = sourceMeta(record.source);
             return (
               <List.Item style={{ padding: '0 0 8px 0', border: 'none' }}>
-                <Card 
-                  size="small" 
+                <Card
+                  size="small"
                   style={{ width: '100%', borderRadius: 8, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}
                   title={<Text strong>{record.username || '-'}</Text>}
-                  extra={<Tag color={color}>{label}</Tag>}
+                  extra={<Tag color={meta.color}>{meta.label}</Tag>}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>UID</Text>
@@ -284,22 +303,20 @@ const RechargeRecords: React.FC = () => {
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>金额</Text>
-                    <Text strong style={{ color: record.amount >= 0 ? '#52c41a' : '#ff4d4f' }}>
-                      {record.amount >= 0 ? '+' : '-'}{currencySymbol}{Math.abs(record.amount).toFixed(6)}
-                    </Text>
+                    {amountText(record.amount)}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>时间</Text>
                     <Text style={{ fontSize: 12 }}>{formatApiDateTime(record.created_at)}</Text>
                   </div>
-                  {record.referrer_uid && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>用户推荐人</Text>
-                    <Space vertical size={0} align="end">
-                      <Text strong style={{ fontSize: 12 }}>{record.referrer_username || '-'}</Text>
-                      <Text type="secondary" style={{ fontSize: 10 }}>UID: {record.referrer_uid}</Text>
-                    </Space>
-                  </div>
+                  {(record.from_uid || record.from_username) && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>来源用户</Text>
+                      <Space vertical size={0} align="end">
+                        <Text strong style={{ fontSize: 12 }}>{record.from_username || '-'}</Text>
+                        <Text type="secondary" style={{ fontSize: 10 }}>{record.from_uid ? `UID: ${record.from_uid}` : ''}</Text>
+                      </Space>
+                    </div>
                   )}
                   {cleanRemark(record.remark, record.order_no) && (
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -310,11 +327,19 @@ const RechargeRecords: React.FC = () => {
                     </div>
                   )}
                   {record.operator && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 0 }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>操作人</Text>
-                    <Text style={{ fontSize: 12 }}>{record.operator}</Text>
-                  </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>操作人</Text>
+                      <Text style={{ fontSize: 12 }}>{record.operator}</Text>
+                    </div>
                   )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>比例</Text>
+                    <Text style={{ fontSize: 12 }}>{formatRatio(record.ratio)}</Text>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 0 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>入账钱包</Text>
+                    <Text style={{ fontSize: 12 }}>{WALLET_LABEL[record.wallet] || record.wallet || '-'}</Text>
+                  </div>
                 </Card>
               </List.Item>
             );
@@ -322,23 +347,23 @@ const RechargeRecords: React.FC = () => {
         />
       ) : (
         <Table
-        dataSource={data}
-        columns={columns}
-        rowKey="id"
-        className="compact-table"
-        loading={loading}
-        pagination={listPagination({
-          total,
-          current: page,
-          pageSize,
-          onChange,
-        })}
-        size="small"
-        scroll={{ x: 'max-content' }}
-      />
+          dataSource={data}
+          columns={columns}
+          rowKey="id"
+          className="compact-table"
+          loading={loading}
+          pagination={listPagination({
+            total,
+            current: page,
+            pageSize,
+            onChange,
+          })}
+          size="small"
+          scroll={{ x: 'max-content' }}
+        />
       )}
     </Card>
   );
 };
 
-export default RechargeRecords;
+export default CommissionRecords;
